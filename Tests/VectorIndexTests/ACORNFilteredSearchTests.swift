@@ -6,13 +6,14 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import Core
+import DatabaseValue
 import Vector
 @testable import DatabaseEngine
 @testable import VectorIndex
 
 // MARK: - Test Model
 
-struct ACORNTestProduct: Persistable {
+struct ACORNProduct: Persistable {
     typealias ID = String
 
     var id: String
@@ -35,7 +36,7 @@ struct ACORNTestProduct: Persistable {
         self.embedding = embedding
     }
 
-    static var persistableType: String { "ACORNTestProduct" }
+    static var persistableType: String { "ACORNProduct" }
     static var allFields: [String] { ["id", "name", "category", "price", "embedding"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -53,48 +54,48 @@ struct ACORNTestProduct: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<ACORNTestProduct, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<ACORNProduct, Value>) -> String {
         switch keyPath {
-        case \ACORNTestProduct.id: return "id"
-        case \ACORNTestProduct.name: return "name"
-        case \ACORNTestProduct.category: return "category"
-        case \ACORNTestProduct.price: return "price"
-        case \ACORNTestProduct.embedding: return "embedding"
+        case \ACORNProduct.id: return "id"
+        case \ACORNProduct.name: return "name"
+        case \ACORNProduct.category: return "category"
+        case \ACORNProduct.price: return "price"
+        case \ACORNProduct.embedding: return "embedding"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<ACORNTestProduct>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<ACORNProduct>) -> String {
         switch keyPath {
-        case \ACORNTestProduct.id: return "id"
-        case \ACORNTestProduct.name: return "name"
-        case \ACORNTestProduct.category: return "category"
-        case \ACORNTestProduct.price: return "price"
-        case \ACORNTestProduct.embedding: return "embedding"
+        case \ACORNProduct.id: return "id"
+        case \ACORNProduct.name: return "name"
+        case \ACORNProduct.category: return "category"
+        case \ACORNProduct.price: return "price"
+        case \ACORNProduct.embedding: return "embedding"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<ACORNTestProduct> {
+        if let partial = keyPath as? PartialKeyPath<ACORNProduct> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - ACORN Search Context
 
-private struct ACORNTestContext {
+private struct ACORNSearchContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: HNSWIndexMaintainer<ACORNTestProduct>
+    let maintainer: HNSWIndexMaintainer<ACORNProduct>
     let dimensions: Int
     let itemsSubspace: Subspace
     let blobsSubspace: Subspace
 
-    init(dimensions: Int = 4, indexName: String = "ACORNTestProduct_embedding") async throws {
+    init(dimensions: Int = 4, indexName: String = "ACORNProduct_embedding") async throws {
         self.database = InMemoryEngine()
         self.dimensions = dimensions
         let testId = UUID().uuidString.prefix(8)
@@ -103,7 +104,7 @@ private struct ACORNTestContext {
         self.itemsSubspace = subspace.subspace("R")
         self.blobsSubspace = subspace.subspace("B")
 
-        let kind = VectorIndexKind<ACORNTestProduct>(
+        let kind = VectorIndexKind<ACORNProduct>(
             embedding: \.embedding,
             dimensions: dimensions,
             metric: .cosine
@@ -114,12 +115,12 @@ private struct ACORNTestContext {
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
             subspaceKey: indexName,
-            itemTypes: Set(["ACORNTestProduct"])
+            itemTypes: Set(["ACORNProduct"])
         )
 
         let hnswParams = VectorIndex.HNSWParameters(m: 8, efConstruction: 100, efSearch: 50)
 
-        self.maintainer = HNSWIndexMaintainer<ACORNTestProduct>(
+        self.maintainer = HNSWIndexMaintainer<ACORNProduct>(
             index: index,
             dimensions: dimensions,
             metric: .cosine,
@@ -132,19 +133,19 @@ private struct ACORNTestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
-    func insertProduct(_ product: ACORNTestProduct) async throws {
+    func insertProduct(_ product: ACORNProduct) async throws {
         try await database.withTransaction { transaction in
             // Store the item using ItemStorage
             let itemKey = itemsSubspace.pack(Tuple(product.id))
             let encoder = JSONEncoder()
             let itemData = try encoder.encode(product)
 
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
-            try await storage.write([UInt8](itemData), for: itemKey)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            try await storage.write(Bytes(itemData), for: itemKey)
 
             // Index the vector
             try await maintainer.updateIndex(
@@ -155,19 +156,19 @@ private struct ACORNTestContext {
         }
     }
 
-    func insertProducts(_ products: [ACORNTestProduct]) async throws {
+    func insertProducts(_ products: [ACORNProduct]) async throws {
         for product in products {
             try await insertProduct(product)
         }
     }
 
-    func fetchProduct(id: String) async throws -> ACORNTestProduct? {
+    func fetchProduct(id: String) async throws -> ACORNProduct? {
         try await database.withTransaction { transaction in
             let itemKey = itemsSubspace.pack(Tuple(id))
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             if let data = try await storage.read(for: itemKey) {
                 let decoder = JSONDecoder()
-                return try decoder.decode(ACORNTestProduct.self, from: Data(data))
+                return try decoder.decode(ACORNProduct.self, from: Data(data))
             }
             return nil
         }
@@ -176,18 +177,18 @@ private struct ACORNTestContext {
     func searchWithFilter(
         query: [Float],
         k: Int,
-        predicate: @escaping @Sendable (ACORNTestProduct) async throws -> Bool,
+        predicate: @escaping @Sendable (ACORNProduct) async throws -> Bool,
         acornParams: ACORNParameters = .default
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         try await database.withTransaction { transaction in
             // Create fetch function using ItemStorage for proper envelope handling
-            let fetchItem: @Sendable (Tuple, any Transaction) async throws -> ACORNTestProduct? = { primaryKey, tx in
+            let fetchItem: @Sendable (Tuple, any Transaction) async throws -> ACORNProduct? = { primaryKey, tx in
                 guard let id = primaryKey[0] as? String else { return nil }
                 let itemKey = self.itemsSubspace.pack(Tuple(id))
-                let storage = ItemStorage(transaction: tx, blobsSubspace: self.blobsSubspace)
+                let storage = ItemStorage(transaction: tx, blobsSubspace: self.blobsSubspace, configuration: .v1)
                 if let data = try await storage.read(for: itemKey) {
                     let decoder = JSONDecoder()
-                    return try decoder.decode(ACORNTestProduct.self, from: Data(data))
+                    return try decoder.decode(ACORNProduct.self, from: Data(data))
                 }
                 return nil
             }
@@ -237,7 +238,7 @@ struct ACORNParametersUnitTests {
 @Suite("ACORN Filtered Search Tests", .serialized, .heartbeat)
 struct ACORNFilteredSearchTests {
 
-    // Helper to create normalized unit vectors
+    // Creates normalized unit vectors.
     private func normalizedVector(_ components: [Float]) -> [Float] {
         let magnitude = sqrt(components.reduce(0) { $0 + $1 * $1 })
         return components.map { $0 / magnitude }
@@ -245,23 +246,23 @@ struct ACORNFilteredSearchTests {
 
     @Test("Basic filtered search")
     func testBasicFilteredSearch() async throws {
-        let ctx = try await ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNSearchContext(dimensions: 4)
 
         // Create products with different categories
         let products = [
-            ACORNTestProduct(
+            ACORNProduct(
                 id: "p1", name: "Laptop", category: "electronics", price: 1000,
                 embedding: normalizedVector([1.0, 0.0, 0.0, 0.0])
             ),
-            ACORNTestProduct(
+            ACORNProduct(
                 id: "p2", name: "Phone", category: "electronics", price: 500,
                 embedding: normalizedVector([0.9, 0.1, 0.0, 0.0])
             ),
-            ACORNTestProduct(
+            ACORNProduct(
                 id: "p3", name: "Chair", category: "furniture", price: 200,
                 embedding: normalizedVector([0.8, 0.2, 0.0, 0.0])
             ),
-            ACORNTestProduct(
+            ACORNProduct(
                 id: "p4", name: "Desk", category: "furniture", price: 300,
                 embedding: normalizedVector([0.7, 0.3, 0.0, 0.0])
             )
@@ -292,24 +293,24 @@ struct ACORNFilteredSearchTests {
 
     @Test("Filtered search respects distance ordering")
     func testFilteredSearchRespectsDistanceOrdering() async throws {
-        let ctx = try await ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNSearchContext(dimensions: 4)
 
         // Create electronics products at varying distances
         let products = [
-            ACORNTestProduct(
+            ACORNProduct(
                 id: "close", name: "Close", category: "electronics", price: 100,
                 embedding: normalizedVector([1.0, 0.0, 0.0, 0.0])
             ),
-            ACORNTestProduct(
+            ACORNProduct(
                 id: "medium", name: "Medium", category: "electronics", price: 200,
                 embedding: normalizedVector([0.7, 0.7, 0.0, 0.0])
             ),
-            ACORNTestProduct(
+            ACORNProduct(
                 id: "far", name: "Far", category: "electronics", price: 300,
                 embedding: normalizedVector([0.0, 1.0, 0.0, 0.0])
             ),
             // Furniture (should be filtered out even though close)
-            ACORNTestProduct(
+            ACORNProduct(
                 id: "furniture", name: "Furniture", category: "furniture", price: 50,
                 embedding: normalizedVector([0.99, 0.01, 0.0, 0.0])
             )
@@ -345,16 +346,16 @@ struct ACORNFilteredSearchTests {
 
     @Test("Complex predicate filter")
     func testComplexPredicateFilter() async throws {
-        let ctx = try await ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNSearchContext(dimensions: 4)
 
         let products = [
-            ACORNTestProduct(id: "p1", name: "Cheap Electronics", category: "electronics", price: 100,
+            ACORNProduct(id: "p1", name: "Cheap Electronics", category: "electronics", price: 100,
                              embedding: normalizedVector([1.0, 0.0, 0.0, 0.0])),
-            ACORNTestProduct(id: "p2", name: "Expensive Electronics", category: "electronics", price: 2000,
+            ACORNProduct(id: "p2", name: "Expensive Electronics", category: "electronics", price: 2000,
                              embedding: normalizedVector([0.9, 0.1, 0.0, 0.0])),
-            ACORNTestProduct(id: "p3", name: "Cheap Furniture", category: "furniture", price: 50,
+            ACORNProduct(id: "p3", name: "Cheap Furniture", category: "furniture", price: 50,
                              embedding: normalizedVector([0.8, 0.2, 0.0, 0.0])),
-            ACORNTestProduct(id: "p4", name: "Mid Furniture", category: "furniture", price: 500,
+            ACORNProduct(id: "p4", name: "Mid Furniture", category: "furniture", price: 500,
                              embedding: normalizedVector([0.7, 0.3, 0.0, 0.0]))
         ]
 
@@ -383,13 +384,13 @@ struct ACORNFilteredSearchTests {
 
     @Test("Filter with k limit")
     func testFilterWithKLimit() async throws {
-        let ctx = try await ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNSearchContext(dimensions: 4)
 
         // Create 10 electronics products
-        var products: [ACORNTestProduct] = []
+        var products: [ACORNProduct] = []
         for i in 0..<10 {
             let angle = Float(i) * 0.1
-            products.append(ACORNTestProduct(
+            products.append(ACORNProduct(
                 id: "p\(i)", name: "Product \(i)", category: "electronics", price: i * 100,
                 embedding: normalizedVector([cos(angle), sin(angle), 0.0, 0.0])
             ))
@@ -413,12 +414,12 @@ struct ACORNFilteredSearchTests {
 
     @Test("Filter that excludes all")
     func testFilterExcludesAll() async throws {
-        let ctx = try await ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNSearchContext(dimensions: 4)
 
         let products = [
-            ACORNTestProduct(id: "p1", name: "Product 1", category: "electronics", price: 100,
+            ACORNProduct(id: "p1", name: "Product 1", category: "electronics", price: 100,
                              embedding: normalizedVector([1.0, 0.0, 0.0, 0.0])),
-            ACORNTestProduct(id: "p2", name: "Product 2", category: "electronics", price: 200,
+            ACORNProduct(id: "p2", name: "Product 2", category: "electronics", price: 200,
                              embedding: normalizedVector([0.9, 0.1, 0.0, 0.0]))
         ]
 
@@ -440,14 +441,14 @@ struct ACORNFilteredSearchTests {
 
     @Test("ACORN expansion factor affects results")
     func testACORNExpansionFactorAffectsResults() async throws {
-        let ctx = try await ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNSearchContext(dimensions: 4)
 
         // Create a mix of products
-        var products: [ACORNTestProduct] = []
+        var products: [ACORNProduct] = []
         for i in 0..<20 {
             let category = i % 3 == 0 ? "target" : "other"
             let angle = Float(i) * 0.15
-            products.append(ACORNTestProduct(
+            products.append(ACORNProduct(
                 id: "p\(i)", name: "Product \(i)", category: category, price: i * 50,
                 embedding: normalizedVector([cos(angle), sin(angle), 0.0, 0.0])
             ))
@@ -487,16 +488,16 @@ struct ACORNFilteredSearchTests {
 
     @Test("Comparison: filtered vs unfiltered search")
     func testComparisonFilteredVsUnfiltered() async throws {
-        let ctx = try await ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNSearchContext(dimensions: 4)
 
         let products = [
-            ACORNTestProduct(id: "e1", name: "Electronics 1", category: "electronics", price: 100,
+            ACORNProduct(id: "e1", name: "Electronics 1", category: "electronics", price: 100,
                              embedding: normalizedVector([1.0, 0.0, 0.0, 0.0])),
-            ACORNTestProduct(id: "f1", name: "Furniture 1", category: "furniture", price: 200,
+            ACORNProduct(id: "f1", name: "Furniture 1", category: "furniture", price: 200,
                              embedding: normalizedVector([0.95, 0.05, 0.0, 0.0])),
-            ACORNTestProduct(id: "e2", name: "Electronics 2", category: "electronics", price: 300,
+            ACORNProduct(id: "e2", name: "Electronics 2", category: "electronics", price: 300,
                              embedding: normalizedVector([0.9, 0.1, 0.0, 0.0])),
-            ACORNTestProduct(id: "f2", name: "Furniture 2", category: "furniture", price: 400,
+            ACORNProduct(id: "f2", name: "Furniture 2", category: "furniture", price: 400,
                              embedding: normalizedVector([0.85, 0.15, 0.0, 0.0]))
         ]
 

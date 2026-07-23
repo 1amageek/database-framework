@@ -4,7 +4,11 @@
 // Tracks counts of non-null values grouped by other fields.
 // Reference: FDB Record Layer COUNT_NOT_NULL index type
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -14,7 +18,7 @@ import StorageKit
 /// **Functionality**:
 /// - Count records where a specific field is not null
 /// - Group counts by other fields
-/// - Atomic increment/decrement operations
+/// - Checked increment/decrement operations in the caller's transaction
 ///
 /// **Index Structure**:
 /// ```
@@ -31,8 +35,8 @@ import StorageKit
 /// - Update non-null→null: Decrement count
 ///
 /// **Field Access**:
-/// Uses `DataAccess.extractField` for both grouping fields and value field,
-/// which properly supports nested fields (e.g., "address.city", "user.profile.email").
+/// Uses the shared aggregation extractor. The value is evaluated first for
+/// sparse semantics; nullable grouping fields are canonicalized as null keys.
 public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMaintainer {
     // MARK: - Properties
 
@@ -45,6 +49,10 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
 
     /// The field name to check for null (supports nested fields via dot notation)
     public let valueFieldName: String
+
+    public var groupingFieldCount: Int {
+        groupByFieldNames.count
+    }
 
     // MARK: - Initialization
 
@@ -69,40 +77,20 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
         newItem: Item?,
         transaction: any Transaction
     ) async throws {
-        let oldData = try extractNullCheckData(from: oldItem)
-        let newData = try extractNullCheckData(from: newItem)
+        let oldKey = try contributionKey(from: oldItem)
+        let newKey = try contributionKey(from: newItem)
 
-        switch (oldData, newData) {
-        case (nil, let new?) where !new.isNull:
-            // Insert with non-null value
-            try await incrementCount(key: new.groupingKey, transaction: transaction)
-
-        case (let old?, nil) where !old.isNull:
-            // Delete with non-null value
-            try await decrementCount(key: old.groupingKey, transaction: transaction)
-
-        case (let old?, let new?):
-            // Update - handle null transitions
-            switch (old.isNull, new.isNull) {
-            case (true, false):
-                // null → non-null: increment
-                try await incrementCount(key: new.groupingKey, transaction: transaction)
-
-            case (false, true):
-                // non-null → null: decrement
-                try await decrementCount(key: old.groupingKey, transaction: transaction)
-
-            case (false, false) where old.groupingKey != new.groupingKey:
-                // non-null → non-null, different group
-                try await decrementCount(key: old.groupingKey, transaction: transaction)
-                try await incrementCount(key: new.groupingKey, transaction: transaction)
-
-            default:
-                // No change needed
-                break
-            }
-
-        default:
+        switch (oldKey, newKey) {
+        case let (old?, new?) where old == new:
+            break
+        case let (old?, new?):
+            try await decrementCount(key: old, transaction: transaction)
+            try await incrementCount(key: new, transaction: transaction)
+        case let (nil, new?):
+            try await incrementCount(key: new, transaction: transaction)
+        case let (old?, nil):
+            try await decrementCount(key: old, transaction: transaction)
+        case (nil, nil):
             break
         }
     }
@@ -112,10 +100,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
         id: Tuple,
         transaction: any Transaction
     ) async throws {
-        guard try !isValueNull(in: item) else { return }
-
-        let groupingValues = try evaluateGroupingFields(from: item)
-        let key = try buildGroupingKey(groupingValues)
+        guard let key = try contributionKey(from: item) else { return }
         try await incrementCount(key: key, transaction: transaction)
     }
 
@@ -123,10 +108,8 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
         for item: Item,
         id: Tuple
     ) async throws -> [Bytes] {
-        guard try !isValueNull(in: item) else { return [] }
-
-        let groupingValues = try evaluateGroupingFields(from: item)
-        return [try buildGroupingKey(groupingValues)]
+        guard let key = try contributionKey(from: item) else { return [] }
+        return [key]
     }
 
     // MARK: - Query Methods
@@ -143,60 +126,31 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     public func getAllCounts(
         transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], count: Int64)] {
-        let allCounts = try await scanAllCounts(transaction: transaction)
-        return allCounts.filter { $0.count > 0 }
+        try await scanAllCounts(transaction: transaction)
     }
 
     // MARK: - Private Helpers
 
-    private struct NullCheckData {
-        let groupingKey: Bytes
-        let isNull: Bool
-    }
-
-    private func extractNullCheckData(from item: Item?) throws -> NullCheckData? {
-        guard let item = item else { return nil }
-
-        let groupingValues = try evaluateGroupingFields(from: item)
-        let groupingKey = try buildGroupingKey(groupingValues)
-        let isNull = try isValueNull(in: item)
-
-        return NullCheckData(groupingKey: groupingKey, isNull: isNull)
-    }
-
-    /// Evaluate grouping fields from item using DataAccess
-    ///
-    /// Uses `DataAccess.extractField` which properly handles:
-    /// - Top-level fields (e.g., "category", "status")
-    /// - Nested fields (e.g., "address.city", "user.profile.name")
-    ///
-    /// All grouping fields must be non-null; throws if any is null.
-    ///
-    /// - Parameter item: The item to extract grouping fields from
-    /// - Returns: Array of tuple elements representing grouping values
-    /// - Throws: `DataAccessError.nilValueCannotBeIndexed` if any grouping field is null
-    private func evaluateGroupingFields(from item: Item) throws -> [any TupleElement] {
-        var result: [any TupleElement] = []
-        for fieldName in groupByFieldNames {
-            let values = try DataAccess.extractField(from: item, keyPath: fieldName)
-            result.append(contentsOf: values)
+    /// Returns the grouping key only when the aggregate value contributes.
+    /// Value extraction deliberately happens before grouping extraction so a
+    /// null aggregate value never fails because an unrelated group path is null.
+    private func contributionKey(from item: Item?) throws -> Bytes? {
+        guard let item,
+              let fields = try AggregationFieldExtractor.contribution(
+                from: item,
+                index: index
+              ) else {
+            return nil
         }
-        return result
-    }
-
-    /// Check if the value field is null
-    ///
-    /// Uses `DataAccess.extractField` which properly handles nested fields.
-    /// Catches `nilValueCannotBeIndexed` error to determine null status.
-    ///
-    /// - Parameter item: The item to check
-    /// - Returns: `true` if value field is null, `false` otherwise
-    private func isValueNull(in item: Item) throws -> Bool {
-        do {
-            _ = try DataAccess.extractField(from: item, keyPath: valueFieldName)
-            return false  // Value exists (not null)
-        } catch DataAccessError.nilValueCannotBeIndexed {
-            return true   // Value is null
+        guard index.kind.fieldNames.dropLast().elementsEqual(
+                  groupByFieldNames
+              ),
+              fields.grouping.count == groupByFieldNames.count,
+              index.kind.fieldNames.last == valueFieldName else {
+            throw IndexError.invalidStructure(
+                "Count-not-null index '\(index.name)' has inconsistent field metadata"
+            )
         }
+        return try buildGroupingKey(fields.grouping)
     }
 }

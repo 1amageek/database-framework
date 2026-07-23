@@ -10,6 +10,8 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -19,7 +21,10 @@ import TestSupport
 // MARK: - Test Models
 
 @Persistable
-@OWLClass("http://test.org/onto#Employee")
+@OWLClass(
+    "http://test.org/onto#Employee",
+    individualIRIBase: "http://test.org/individual/"
+)
 struct ValEmployee {
     #Directory<ValEmployee>("ontology_iri_validation_tests", "employee")
 
@@ -40,7 +45,10 @@ struct ValAssignment {
 }
 
 @Persistable
-@OWLClass("http://test.org/onto#NonExistentClass")
+@OWLClass(
+    "http://test.org/onto#NonExistentClass",
+    individualIRIBase: "http://test.org/individual/"
+)
 struct ValBadClass {
     #Directory<ValBadClass>("ontology_iri_validation_tests", "badclass")
 
@@ -71,7 +79,10 @@ struct ValDataPropAsObjectProp {
 
 /// Has @OWLDataProperty with an IRI not defined in OntologyStore
 @Persistable
-@OWLClass("http://test.org/onto#Employee")
+@OWLClass(
+    "http://test.org/onto#Employee",
+    individualIRIBase: "http://test.org/individual/"
+)
 struct ValBadDataProperty {
     #Directory<ValBadDataProperty>("ontology_iri_validation_tests", "baddataprop")
 
@@ -83,7 +94,10 @@ struct ValBadDataProperty {
 
 /// Has @OWLDataProperty that uses an ObjectProperty IRI — should fail type check
 @Persistable
-@OWLClass("http://test.org/onto#Employee")
+@OWLClass(
+    "http://test.org/onto#Employee",
+    individualIRIBase: "http://test.org/individual/"
+)
 struct ValObjPropAsDataProp {
     #Directory<ValObjPropAsDataProp>("ontology_iri_validation_tests", "objasdata")
 
@@ -103,10 +117,10 @@ struct OntologyIRIValidationTests {
     // MARK: - Helpers
 
     private func setupContext() async throws -> FDBContext {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
-        if try await database.directoryService.exists(path: ["ontology_iri_validation_tests"]) {
-            try await database.directoryService.remove(path: ["ontology_iri_validation_tests"])
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        if try await database.directoryExists(path: ["ontology_iri_validation_tests"]) {
+            try await database.removeDirectory(path: ["ontology_iri_validation_tests"])
         }
         let schema = Schema(
             [ValEmployee.self, ValAssignment.self, ValBadClass.self,
@@ -117,6 +131,7 @@ struct OntologyIRIValidationTests {
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
         return container.newContext()
@@ -152,7 +167,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Array("O".utf8))))
+        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Bytes("O".utf8))))
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -169,7 +184,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Array("O".utf8))))
+        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Bytes("O".utf8))))
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -198,7 +213,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Array("O".utf8))))
+        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Bytes("O".utf8))))
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -215,7 +230,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Array("O".utf8))))
+        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Bytes("O".utf8))))
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -242,7 +257,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Array("O".utf8))))
+        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Bytes("O".utf8))))
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -397,7 +412,7 @@ struct OntologyIRIValidationTests {
         try await loadTestOntology(context: context)
 
         let schema = Schema(
-            [OntologyTestDummy.self],
+            [OntologyPersistenceRecord.self],
             version: Schema.Version(1, 0, 0)
         )
 

@@ -1,7 +1,11 @@
 // HNSWGraphCache.swift
 // VectorIndex - In-memory cache for loaded HNSW graph snapshots
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Synchronization
 import SwiftHNSW
@@ -13,10 +17,10 @@ import SwiftHNSW
 /// resolve a different key and load the new graph from storage.
 internal final class HNSWGraphCache: Sendable {
     internal struct Key: Hashable, Sendable {
-        let subspacePrefix: [UInt8]
+        let subspacePrefix: Bytes
         let dimensions: Int
         let metric: String
-        let metadata: [UInt8]
+        let metadata: Bytes
     }
 
     internal final class Snapshot: Sendable {
@@ -54,8 +58,6 @@ internal final class HNSWGraphCache: Sendable {
         var order: [Key] = []
         var totalCost: Int = 0
     }
-
-    static let shared = HNSWGraphCache()
 
     private let state = Mutex<State>(State())
     private let maximumCost: Int

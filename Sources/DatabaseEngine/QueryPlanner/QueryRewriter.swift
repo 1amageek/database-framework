@@ -1,7 +1,11 @@
 // QueryRewriter.swift
 // QueryPlanner - Predicate optimization and rewriting
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Optimizes and rewrites predicates for better query performance
@@ -307,8 +311,7 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
         // Reconstruct bounds as comparisons
         if let lower = lowerBound {
             let op: ComparisonOperator = lower.inclusive ? .greaterThanOrEqual : .greaterThan
-            result.append(FieldComparison(
-                keyPath: comparisons[0].keyPath,
+            result.append(comparisons[0].replacing(
                 op: op,
                 value: lower.value
             ))
@@ -316,8 +319,7 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
 
         if let upper = upperBound {
             let op: ComparisonOperator = upper.inclusive ? .lessThanOrEqual : .lessThan
-            result.append(FieldComparison(
-                keyPath: comparisons[0].keyPath,
+            result.append(comparisons[0].replacing(
                 op: op,
                 value: upper.value
             ))

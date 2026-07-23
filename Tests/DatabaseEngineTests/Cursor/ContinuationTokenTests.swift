@@ -8,6 +8,7 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import Core
+import DatabaseValue
 @testable import DatabaseEngine
 
 @Suite("ContinuationToken Tests", .serialized, .heartbeat)
@@ -33,7 +34,7 @@ struct ContinuationTokenTests {
 
     @Test("Base64 round-trip preserves data")
     func base64RoundTrip() throws {
-        let originalData: [UInt8] = [0x01, 0x02, 0x03, 0x04, 0xFF, 0xFE]
+        let originalData: Bytes = [0x01, 0x02, 0x03, 0x04, 0xFF, 0xFE]
         let token = ContinuationToken(data: originalData)
 
         let base64String = token.base64String
@@ -69,7 +70,7 @@ struct ContinuationTokenTests {
             planFingerprint: fingerprint
         )
 
-        let token = originalState.toToken()
+        let token = try originalState.toToken()
         #expect(!token.isEndOfResults)
 
         let decodedState = try ContinuationState.fromToken(token)
@@ -100,7 +101,7 @@ struct ContinuationTokenTests {
             planFingerprint: fingerprint
         )
 
-        let token = originalState.toToken()
+        let token = try originalState.toToken()
         let decodedState = try ContinuationState.fromToken(token)
 
         #expect(decodedState.remainingLimit == nil)
@@ -109,7 +110,7 @@ struct ContinuationTokenTests {
 
     @Test("ContinuationState progress calculation")
     func progressCalculation() {
-        let fingerprint: [UInt8] = []
+        let fingerprint: Bytes = []
 
         // With limits
         let state1 = ContinuationState(
@@ -160,8 +161,14 @@ struct ContinuationTokenTests {
             exhaustedChildren: [0, 1]
         )
 
-        let serialized = originalOpState.serialize()
-        let decoded = try OperatorContinuationState.deserialize(serialized)
+        let state = ContinuationState(
+            scanType: .union,
+            lastKey: [],
+            planFingerprint: [],
+            operatorState: originalOpState
+        )
+        let decodedState = try ContinuationState.fromToken(try state.toToken())
+        let decoded = try #require(decodedState.operatorState)
 
         #expect(decoded.unionChildIndex == 2)
         #expect(decoded.childContinuation == [0x10, 0x20, 0x30])
@@ -176,8 +183,14 @@ struct ContinuationTokenTests {
             exhaustedChildren: nil
         )
 
-        let serialized = originalOpState.serialize()
-        let decoded = try OperatorContinuationState.deserialize(serialized)
+        let state = ContinuationState(
+            scanType: .union,
+            lastKey: [],
+            planFingerprint: [],
+            operatorState: originalOpState
+        )
+        let decodedState = try ContinuationState.fromToken(try state.toToken())
+        let decoded = try #require(decodedState.operatorState)
 
         #expect(decoded.unionChildIndex == nil)
         #expect(decoded.childContinuation == nil)
@@ -235,7 +248,7 @@ struct ContinuationTokenTests {
     @Test("CursorResult.more has continuation")
     func cursorResultMoreHasContinuation() {
         let token = ContinuationToken(data: [1, 2, 3])
-        let result: CursorResult<CursorTestUser> = .more(items: [], continuation: token)
+        let result: CursorResult<ContinuationCursorUser> = .more(items: [], continuation: token)
 
         #expect(result.hasMore == true)
         #expect(result.continuation != nil)
@@ -244,7 +257,7 @@ struct ContinuationTokenTests {
 
     @Test("CursorResult.done has no continuation")
     func cursorResultDoneHasNoContinuation() {
-        let result: CursorResult<CursorTestUser> = .done(items: [], reason: .sourceExhausted)
+        let result: CursorResult<ContinuationCursorUser> = .done(items: [], reason: .sourceExhausted)
 
         #expect(result.hasMore == false)
         #expect(result.continuation == nil)
@@ -253,7 +266,7 @@ struct ContinuationTokenTests {
 
     @Test("CursorResult.empty is empty")
     func cursorResultEmptyIsEmpty() {
-        let result: CursorResult<CursorTestUser> = .empty()
+        let result: CursorResult<ContinuationCursorUser> = .empty()
 
         #expect(result.isEmpty == true)
         #expect(result.count == 0)
@@ -264,7 +277,7 @@ struct ContinuationTokenTests {
 // MARK: - Test Model
 
 /// Test user model for cursor tests
-fileprivate struct CursorTestUser: Persistable {
+fileprivate struct ContinuationCursorUser: Persistable {
     typealias ID = String
 
     var id: String
@@ -277,7 +290,7 @@ fileprivate struct CursorTestUser: Persistable {
         self.age = age
     }
 
-    static var persistableType: String { "CursorTestUser" }
+    static var persistableType: String { "ContinuationCursorUser" }
 
     static var allFields: [String] { ["id", "name", "age"] }
 
@@ -296,26 +309,26 @@ fileprivate struct CursorTestUser: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<CursorTestUser, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<ContinuationCursorUser, Value>) -> String {
         switch keyPath {
-        case \CursorTestUser.id: return "id"
-        case \CursorTestUser.name: return "name"
-        case \CursorTestUser.age: return "age"
+        case \ContinuationCursorUser.id: return "id"
+        case \ContinuationCursorUser.name: return "name"
+        case \ContinuationCursorUser.age: return "age"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<CursorTestUser>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<ContinuationCursorUser>) -> String {
         switch keyPath {
-        case \CursorTestUser.id: return "id"
-        case \CursorTestUser.name: return "name"
-        case \CursorTestUser.age: return "age"
+        case \ContinuationCursorUser.id: return "id"
+        case \ContinuationCursorUser.name: return "name"
+        case \ContinuationCursorUser.age: return "age"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<CursorTestUser> {
+        if let partial = keyPath as? PartialKeyPath<ContinuationCursorUser> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"

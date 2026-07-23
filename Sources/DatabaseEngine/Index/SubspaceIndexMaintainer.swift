@@ -3,7 +3,11 @@
 //
 // Provides default implementations for IndexMaintainers that store data in FDB subspaces.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import StorageKit
 
@@ -102,10 +106,21 @@ extension SubspaceIndexMaintainer {
     ///   - tuple: The tuple to pack
     ///   - targetSubspace: Optional subspace to use (defaults to self.subspace)
     /// - Returns: Packed and validated key bytes
-    /// - Throws: `FDBLimitError.keyTooLarge` if key exceeds 10KB
+    /// - Throws: `DatabaseStorageLimitError.keyTooLarge` if key exceeds 10KB
     @inlinable
     public func packAndValidate(_ tuple: Tuple, in targetSubspace: Subspace? = nil) throws -> Bytes {
         let key = (targetSubspace ?? subspace).pack(tuple)
+        try validateKeySize(key)
+        return key
+    }
+
+    /// Pack borrowed tuple elements directly into the final validated key.
+    @inlinable
+    public func packAndValidate<Elements: Collection>(
+        elements: Elements,
+        in targetSubspace: Subspace? = nil
+    ) throws -> Bytes where Elements.Element == any TupleElement {
+        let key = (targetSubspace ?? subspace).pack(elements: elements)
         try validateKeySize(key)
         return key
     }
@@ -119,9 +134,8 @@ extension SubspaceIndexMaintainer {
     /// - Throws: Error if field extraction fails
     @inlinable
     public func evaluateIndexFields(from item: Item) throws -> [any TupleElement] {
-        return try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
+        return try DataAccess.evaluate(
+            item: item,
             expression: index.rootExpression
         )
     }

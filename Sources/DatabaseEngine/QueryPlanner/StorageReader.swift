@@ -1,7 +1,11 @@
 // StorageReader.swift
 // QueryPlanner - Low-level storage access abstraction
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 
@@ -18,23 +22,6 @@ import Core
 /// **Note**: Index subspace is NOT exposed here. Use `IndexQueryContext.indexSubspace(for:)`
 /// which resolves subspace via DirectoryLayer based on Persistable type.
 public protocol StorageReader: Sendable {
-
-    // MARK: - Item Access
-
-    /// Fetch a single item by ID
-    ///
-    /// - Parameters:
-    ///   - id: The item's identifier
-    ///   - type: The item type
-    /// - Returns: The item if found, nil otherwise
-    func fetchItem<T: Persistable & Codable>(id: any TupleElement, type: T.Type) async throws -> T?
-
-    /// Scan all items of a type
-    ///
-    /// - Parameter type: The item type
-    /// - Returns: Stream of items
-    func scanItems<T: Persistable & Codable>(type: T.Type) -> AsyncThrowingStream<T, Error>
-
     // MARK: - Raw Key-Value Access
 
     /// Scan a range within a subspace
@@ -54,20 +41,23 @@ public protocol StorageReader: Sendable {
         startInclusive: Bool,
         endInclusive: Bool,
         reverse: Bool
-    ) -> AsyncThrowingStream<(key: [UInt8], value: [UInt8]), Error>
+    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error>
 
     /// Get a single value by key
     ///
     /// - Parameter key: The full key
     /// - Returns: The value if found, nil otherwise
-    func getValue(key: [UInt8]) async throws -> [UInt8]?
+    func getValue(key: Bytes) async throws -> Bytes?
 }
 
 // MARK: - Default Implementations
 
 extension StorageReader {
     /// Convenience method to scan entire subspace
-    public func scanSubspace(_ subspace: Subspace, reverse: Bool = false) -> AsyncThrowingStream<(key: [UInt8], value: [UInt8]), Error> {
+    public func scanSubspace(
+        _ subspace: Subspace,
+        reverse: Bool = false
+    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
         scanRange(
             subspace: subspace,
             start: nil,
@@ -85,18 +75,18 @@ extension StorageReader {
 ///
 /// This design follows fdb-record-layer's approach where:
 /// - Index key contains: [indexedValues...][primaryKey...]
-/// - Index value contains: [coveringFieldValues...] (as Tuple)
+/// - Index value contains: canonical DBIX projection bytes
 ///
 /// **Structure**:
 /// - `itemID`: Primary key of the referenced item
 /// - `keyValues`: Values extracted from the index key (indexed fields)
-/// - `storedValues`: Values from index value (covering fields)
+/// - `coveringValue`: Canonical projection bytes from the index value
 /// - `score`: Optional relevance/distance score
 ///
 /// **Usage**:
 /// ```swift
-/// // For covering indexes, all required fields are in keyValues + storedValues
-/// // For non-covering indexes, storedValues is empty and record fetch is needed
+/// // For covering indexes, coveringValue contains the complete typed projection.
+/// // For non-covering indexes, coveringValue is empty and record fetch is needed.
 /// ```
 public struct IndexEntry: Sendable {
     /// The item ID as a Tuple (supports composite keys)
@@ -106,10 +96,8 @@ public struct IndexEntry: Sendable {
     /// These are the values from the index key portion before the primary key
     public let keyValues: Tuple
 
-    /// Values stored in the index value (covering field values)
-    /// For covering indexes, contains field values that enable record reconstruction
-    /// For non-covering indexes, this is an empty Tuple
-    public let storedValues: Tuple
+    /// Canonical DBIX bytes stored in the index value.
+    public let coveringValue: Bytes
 
     /// Optional score (relevance, distance, etc.)
     public let score: Double?
@@ -117,12 +105,12 @@ public struct IndexEntry: Sendable {
     public init(
         itemID: Tuple,
         keyValues: Tuple = Tuple(),
-        storedValues: Tuple = Tuple(),
+        coveringValue: Bytes = [],
         score: Double? = nil
     ) {
         self.itemID = itemID
         self.keyValues = keyValues
-        self.storedValues = storedValues
+        self.coveringValue = coveringValue
         self.score = score
     }
 
@@ -130,12 +118,12 @@ public struct IndexEntry: Sendable {
     public init(
         itemID: any TupleElement,
         keyValues: Tuple = Tuple(),
-        storedValues: Tuple = Tuple(),
+        coveringValue: Bytes = [],
         score: Double? = nil
     ) {
         self.itemID = Tuple([itemID])
         self.keyValues = keyValues
-        self.storedValues = storedValues
+        self.coveringValue = coveringValue
         self.score = score
     }
 }

@@ -1,7 +1,12 @@
 // CostModel.swift
 // QueryPlanner - Cost model configuration
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseMath
 
 /// Configuration for cost estimation
 ///
@@ -156,7 +161,7 @@ extension CostModel {
     /// Calculate the cost of sorting
     public func sortCost(records: Double) -> Double {
         // O(n log n) sorting, simplified as linear for cost estimation
-        records * sortWeight * log2(max(2, records))
+        records * sortWeight * DatabaseMath.binaryLogarithm(max(2, records))
     }
 
     /// Calculate the cost of deduplication

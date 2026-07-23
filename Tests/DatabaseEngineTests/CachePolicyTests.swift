@@ -7,6 +7,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import Core
 
 /// Tests for CachePolicy
@@ -99,24 +100,24 @@ struct CachePolicyTests {
 
     @Test("Query.cachePolicy defaults to .server")
     func queryDefaultCachePolicy() {
-        let query = Query<CachePolicyTestModel>()
+        let query = Query<CachePolicyRecord>()
         #expect(query.cachePolicy == .server)
     }
 
     @Test("Query.cachePolicy() fluent method sets policy")
     func queryCachePolicyFluent() {
-        let query = Query<CachePolicyTestModel>()
+        let query = Query<CachePolicyRecord>()
             .cachePolicy(.server)
         #expect(query.cachePolicy == .server)
 
-        let query2 = Query<CachePolicyTestModel>()
+        let query2 = Query<CachePolicyRecord>()
             .cachePolicy(.stale(60))
         #expect(query2.cachePolicy == .stale(60))
     }
 
     @Test("Query.cachePolicy() can be chained with other methods")
     func queryCachePolicyChaining() {
-        let query = Query<CachePolicyTestModel>()
+        let query = Query<CachePolicyRecord>()
             .cachePolicy(.server)
             .limit(10)
             .offset(5)
@@ -129,18 +130,18 @@ struct CachePolicyTests {
 
     @Test("QueryExecutor.cachePolicy() propagates to query")
     func executorCachePolicyPropagates() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema(
-            [CachePolicyTestModel.self],
+            [CachePolicyRecord.self],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Create executor with cache policy
-        let executor = context.fetch(CachePolicyTestModel.self)
+        let executor = context.fetch(CachePolicyRecord.self)
             .cachePolicy(.server)
 
         // Verify the underlying query has the cache policy set
@@ -149,18 +150,18 @@ struct CachePolicyTests {
 
     @Test("QueryExecutor.cachePolicy() can be chained with filters")
     func executorCachePolicyChainingWithFilters() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema(
-            [CachePolicyTestModel.self],
+            [CachePolicyRecord.self],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Chain cache policy with other query methods
-        let executor = context.fetch(CachePolicyTestModel.self)
+        let executor = context.fetch(CachePolicyRecord.self)
             .where(\.value > 10)
             .cachePolicy(.stale(30))
             .orderBy(\.value)
@@ -174,24 +175,24 @@ struct CachePolicyTests {
 
     @Test("fetch() with .cached uses ReadVersionCache")
     func fetchWithCachedUsesCache() async throws {
-        try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
+            let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyTestModel.self],
+                [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
             let testId = "cache-test-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyTestModel(id: testId, value: 42)
+            let model = CachePolicyRecord(id: testId, value: 42)
             context.insert(model)
             try await context.save()
 
             // First fetch with .cached - should populate cache
-            _ = try await context.fetch(CachePolicyTestModel.self)
+            _ = try await context.fetch(CachePolicyRecord.self)
                 .cachePolicy(.cached)
                 .execute()
 
@@ -200,7 +201,7 @@ struct CachePolicyTests {
             #expect(cacheInfo1 != nil)
 
             // Second fetch with .cached - should use cached version
-            _ = try await context.fetch(CachePolicyTestModel.self)
+            _ = try await context.fetch(CachePolicyRecord.self)
                 .cachePolicy(.cached)
                 .execute()
 
@@ -212,24 +213,24 @@ struct CachePolicyTests {
 
     @Test("fetch() with .server bypasses cache")
     func fetchWithServerBypassesCache() async throws {
-        try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
+            let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyTestModel.self],
+                [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
             let testId = "server-test-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyTestModel(id: testId, value: 100)
+            let model = CachePolicyRecord(id: testId, value: 100)
             context.insert(model)
             try await context.save()
 
             // First fetch with .server
-            let results = try await context.fetch(CachePolicyTestModel.self)
+            let results = try await context.fetch(CachePolicyRecord.self)
                 .cachePolicy(.server)
                 .where(\.id == testId)
                 .execute()
@@ -245,24 +246,24 @@ struct CachePolicyTests {
 
     @Test("count() respects cachePolicy")
     func countRespectsCache() async throws {
-        try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
+            let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyTestModel.self],
+                [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
             let testId = "count-test-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyTestModel(id: testId, value: 200)
+            let model = CachePolicyRecord(id: testId, value: 200)
             context.insert(model)
             try await context.save()
 
             // Count with .cached policy
-            let count = try await context.fetch(CachePolicyTestModel.self)
+            let count = try await context.fetch(CachePolicyRecord.self)
                 .cachePolicy(.cached)
                 .where(\.id == testId)
                 .count()
@@ -274,44 +275,44 @@ struct CachePolicyTests {
     @Test("default cachePolicy is .server for new queries")
     func defaultCachePolicyIsServer() {
         // Query default
-        let query = Query<CachePolicyTestModel>()
+        let query = Query<CachePolicyRecord>()
         #expect(query.cachePolicy == .server)
     }
 
     @Test("fetch() executes correctly with all CachePolicy values")
     func fetchWithAllPolicyValues() async throws {
-        try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
+            let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyTestModel.self],
+                [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
             let testId = "all-policies-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyTestModel(id: testId, value: 300)
+            let model = CachePolicyRecord(id: testId, value: 300)
             context.insert(model)
             try await context.save()
 
             // Test .server
-            let serverResults = try await context.fetch(CachePolicyTestModel.self)
+            let serverResults = try await context.fetch(CachePolicyRecord.self)
                 .cachePolicy(.server)
                 .where(\.id == testId)
                 .execute()
             #expect(serverResults.count == 1)
 
             // Test .cached
-            let cachedResults = try await context.fetch(CachePolicyTestModel.self)
+            let cachedResults = try await context.fetch(CachePolicyRecord.self)
                 .cachePolicy(.cached)
                 .where(\.id == testId)
                 .execute()
             #expect(cachedResults.count == 1)
 
             // Test .stale(60)
-            let staleResults = try await context.fetch(CachePolicyTestModel.self)
+            let staleResults = try await context.fetch(CachePolicyRecord.self)
                 .cachePolicy(.stale(60))
                 .where(\.id == testId)
                 .execute()
@@ -323,24 +324,24 @@ struct CachePolicyTests {
 
     @Test("model(for:as:) with default cachePolicy uses .server")
     func modelDefaultCachePolicy() async throws {
-        try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
+            let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyTestModel.self],
+                [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
             let testId = "model-default-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyTestModel(id: testId, value: 500)
+            let model = CachePolicyRecord(id: testId, value: 500)
             context.insert(model)
             try await context.save()
 
             // model(for:as:) with default should work
-            let result = try await context.model(for: testId, as: CachePolicyTestModel.self)
+            let result = try await context.model(for: testId, as: CachePolicyRecord.self)
             #expect(result != nil)
             #expect(result?.value == 500)
         }
@@ -348,26 +349,26 @@ struct CachePolicyTests {
 
     @Test("model(for:as:) with .cached uses ReadVersionCache")
     func modelWithCachedPolicy() async throws {
-        try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
+            let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyTestModel.self],
+                [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
             let testId = "model-cached-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyTestModel(id: testId, value: 600)
+            let model = CachePolicyRecord(id: testId, value: 600)
             context.insert(model)
             try await context.save()
 
             // First fetch with .cached
             let result1 = try await context.model(
                 for: testId,
-                as: CachePolicyTestModel.self,
+                as: CachePolicyRecord.self,
                 cachePolicy: .cached
             )
             #expect(result1 != nil)
@@ -379,7 +380,7 @@ struct CachePolicyTests {
             // Second fetch with .cached should use cached version
             let result2 = try await context.model(
                 for: testId,
-                as: CachePolicyTestModel.self,
+                as: CachePolicyRecord.self,
                 cachePolicy: .cached
             )
             #expect(result2 != nil)
@@ -389,26 +390,26 @@ struct CachePolicyTests {
 
     @Test("model(for:as:) with .stale uses cache within window")
     func modelWithStalePolicy() async throws {
-        try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
+            let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyTestModel.self],
+                [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
             let testId = "model-stale-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyTestModel(id: testId, value: 700)
+            let model = CachePolicyRecord(id: testId, value: 700)
             context.insert(model)
             try await context.save()
 
             // Fetch with .stale(60) - should work within 60 second window
             let result = try await context.model(
                 for: testId,
-                as: CachePolicyTestModel.self,
+                as: CachePolicyRecord.self,
                 cachePolicy: .stale(60)
             )
             #expect(result != nil)
@@ -418,23 +419,23 @@ struct CachePolicyTests {
 
     @Test("model(for:as:) returns nil for non-existent ID")
     func modelReturnsNilForNonExistent() async throws {
-        try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
+            let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyTestModel.self],
+                [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Try to fetch non-existent ID with various cache policies
-            let result1 = try await context.model(for: "non-existent-id", as: CachePolicyTestModel.self)
+            let result1 = try await context.model(for: "non-existent-id", as: CachePolicyRecord.self)
             #expect(result1 == nil)
 
             let result2 = try await context.model(
                 for: "non-existent-id",
-                as: CachePolicyTestModel.self,
+                as: CachePolicyRecord.self,
                 cachePolicy: .cached
             )
             #expect(result2 == nil)
@@ -444,8 +445,8 @@ struct CachePolicyTests {
     // MARK: - Test Model
 
     @Persistable
-    struct CachePolicyTestModel {
-        #Directory<CachePolicyTestModel>("test", "cachepolicy")
+    struct CachePolicyRecord {
+        #Directory<CachePolicyRecord>("test", "cachepolicy")
 
         var id: String = ULID().ulidString
         var value: Int = 0
@@ -455,7 +456,7 @@ struct CachePolicyTests {
             self.value = value
         }
 
-        #Index(ScalarIndexKind<CachePolicyTestModel>(fields: [\.value]))
+        #Index(ScalarIndexKind<CachePolicyRecord>(fields: [\.value]))
     }
 }
 #endif

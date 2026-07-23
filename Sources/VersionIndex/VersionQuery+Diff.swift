@@ -3,7 +3,11 @@
 //
 // Provides diff functionality between version history entries.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -271,7 +275,7 @@ extension VersionQueryBuilder {
         let (_, newItem) = history[0]
         let (_, oldItem) = history[1]
 
-        return ModelDiffBuilder.hasChanges(
+        return try ModelDiffBuilder.hasChanges(
             old: oldItem,
             new: newItem,
             excludeFields: excludeFields

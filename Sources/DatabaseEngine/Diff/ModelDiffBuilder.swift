@@ -3,7 +3,11 @@
 //
 // Provides detailed diff computation with array element support and custom comparators.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 // MARK: - ModelDiffBuilder
@@ -14,10 +18,6 @@ import Core
 /// - Supports element-level array diffing
 /// - Supports custom comparators for specific fields
 /// - Custom comparator results are reflected in `changeType`
-///
-/// **Comparison with `Persistable.diff(from:)`**:
-/// - `Persistable.diff(from:)`: Basic diff, Core module
-/// - `ModelDiffBuilder.diff()`: Advanced diff with options, DatabaseEngine
 ///
 /// **Usage**:
 /// ```swift
@@ -72,8 +72,8 @@ public struct ModelDiffBuilder: Sendable {
             }
 
             // Extract field values
-            let oldValue = extractFieldValue(from: old, fieldPath: fieldName)
-            let newValue = extractFieldValue(from: new, fieldPath: fieldName)
+            let oldValue = try extractFieldValue(from: old, fieldPath: fieldName)
+            let newValue = try extractFieldValue(from: new, fieldPath: fieldName)
 
             // Apply custom comparator if available
             if let comparator = options.customComparators[fieldName] {
@@ -139,14 +139,14 @@ public struct ModelDiffBuilder: Sendable {
         old: T,
         new: T,
         excludeFields: Set<String> = []
-    ) -> Bool {
+    ) throws -> Bool {
         for fieldName in T.allFields {
             if excludeFields.contains(fieldName) {
                 continue
             }
 
-            let oldValue = extractFieldValue(from: old, fieldPath: fieldName)
-            let newValue = extractFieldValue(from: new, fieldPath: fieldName)
+            let oldValue = try extractFieldValue(from: old, fieldPath: fieldName)
+            let newValue = try extractFieldValue(from: new, fieldPath: fieldName)
 
             if oldValue != newValue {
                 return true
@@ -166,7 +166,7 @@ public struct ModelDiffBuilder: Sendable {
         old: T,
         new: T,
         excludeFields: Set<String> = []
-    ) -> [String] {
+    ) throws -> [String] {
         var changed: [String] = []
 
         for fieldName in T.allFields {
@@ -174,8 +174,8 @@ public struct ModelDiffBuilder: Sendable {
                 continue
             }
 
-            let oldValue = extractFieldValue(from: old, fieldPath: fieldName)
-            let newValue = extractFieldValue(from: new, fieldPath: fieldName)
+            let oldValue = try extractFieldValue(from: old, fieldPath: fieldName)
+            let newValue = try extractFieldValue(from: new, fieldPath: fieldName)
 
             if oldValue != newValue {
                 changed.append(fieldName)
@@ -191,46 +191,19 @@ public struct ModelDiffBuilder: Sendable {
     private static func extractFieldValue<T: Persistable>(
         from item: T,
         fieldPath: String
-    ) -> FieldValue {
+    ) throws -> FieldValue {
         guard let value = item[dynamicMember: fieldPath] else {
             return .null
         }
-        return convertToFieldValue(value)
+        do {
+            return try TypeConversion.toFieldValue(value)
+        } catch {
+            throw DiffError.conversionFailed(
+                fieldPath: fieldPath,
+                valueType: String(reflecting: type(of: value))
+            )
+        }
     }
-
-    /// Convert any Sendable value to FieldValue
-    private static func convertToFieldValue(_ value: any Sendable) -> FieldValue {
-        // Try direct FieldValue conversion
-        if let fieldValue = FieldValue(value) {
-            return fieldValue
-        }
-
-        // Try FieldValueConvertible
-        if let convertible = value as? any FieldValueConvertible {
-            return convertible.toFieldValue()
-        }
-
-        // Handle arrays
-        if let array = value as? [any Sendable] {
-            let elements = array.map { convertToFieldValue($0) }
-            return .array(elements)
-        }
-
-        // Handle Optional
-        if let optional = value as? (any OptionalProtocol) {
-            if optional.isNil {
-                return .null
-            }
-            if let unwrapped = optional.wrappedAny {
-                return convertAnyToFieldValue(unwrapped)
-            }
-        }
-
-        // Fall back to string description
-        return .string(String(describing: value))
-    }
-
-
     /// Diff arrays with optional element-level detail
     private static func diffArrays(
         old: [FieldValue],
@@ -285,50 +258,4 @@ public struct ModelDiffBuilder: Sendable {
         return changes
     }
 
-    /// Convert Any value to FieldValue (for Mirror-based extraction)
-    private static func convertAnyToFieldValue(_ value: Any?) -> FieldValue {
-        guard let value = value else {
-            return .null
-        }
-
-        // Handle Optional wrapper
-        let mirror = Mirror(reflecting: value)
-        if mirror.displayStyle == .optional {
-            if let child = mirror.children.first {
-                return convertAnyToFieldValue(child.value)
-            }
-            return .null
-        }
-
-        // Try FieldValue conversion
-        if let fieldValue = FieldValue(value) {
-            return fieldValue
-        }
-
-        // Fall back to string
-        return .string(String(describing: value))
-    }
-}
-
-// MARK: - OptionalProtocol
-
-/// Protocol to detect and unwrap Optional values at runtime
-private protocol OptionalProtocol {
-    var isNil: Bool { get }
-    var wrappedAny: Any? { get }
-}
-
-extension Optional: OptionalProtocol {
-    var isNil: Bool {
-        self == nil
-    }
-
-    var wrappedAny: Any? {
-        switch self {
-        case .some(let value):
-            return value
-        case .none:
-            return nil
-        }
-    }
 }

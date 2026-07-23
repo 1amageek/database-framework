@@ -1,7 +1,11 @@
 // FusionBuilder.swift
 // DatabaseEngine - Builder for fusion queries with ResultBuilder support
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 // MARK: - FusionBuilder
@@ -150,29 +154,29 @@ public struct FusionBuilder<T: Persistable>: Sendable {
     public func execute() async throws -> [ScoredResult<T>] {
         guard !stages.isEmpty else { return [] }
 
-        var candidateIds: Set<String>? = nil
+        var candidateIDs: Set<T.ID>? = nil
         var allResults: [[ScoredResult<T>]] = []
 
         // Execute stages sequentially
         for (stageIndex, stage) in stages.enumerated() {
             // Stage 0 has no candidate restriction
             // Subsequent stages filter to candidates from previous stages
-            let stageCandidates = stageIndex > 0 ? candidateIds : nil
+            let stageCandidates = stageIndex > 0 ? candidateIDs : nil
 
             let stageResults = try await stage.execute(candidates: stageCandidates)
 
             // Update candidate set (intersection of all results in this stage)
-            var stageIds: Set<String> = []
+            var stageIDs: Set<T.ID> = []
             for results in stageResults {
                 for result in results {
-                    stageIds.insert(itemId(result.item))
+                    stageIDs.insert(result.item.id)
                 }
             }
 
-            if candidateIds == nil {
-                candidateIds = stageIds
+            if candidateIDs == nil {
+                candidateIDs = stageIDs
             } else {
-                candidateIds = candidateIds!.intersection(stageIds)
+                candidateIDs = candidateIDs!.intersection(stageIDs)
             }
 
             // Collect all results for fusion
@@ -182,9 +186,9 @@ public struct FusionBuilder<T: Persistable>: Sendable {
         // Filter all results to final candidate set
         // This ensures items filtered out in later stages don't appear in fusion
         let filteredResults: [[ScoredResult<T>]]
-        if let finalCandidates = candidateIds, !finalCandidates.isEmpty {
+        if let finalCandidates = candidateIDs, !finalCandidates.isEmpty {
             filteredResults = allResults.map { results in
-                results.filter { finalCandidates.contains(itemId($0.item)) }
+                results.filter { finalCandidates.contains($0.item.id) }
             }
         } else {
             filteredResults = allResults
@@ -203,21 +207,17 @@ public struct FusionBuilder<T: Persistable>: Sendable {
 
     // MARK: - Private Helpers
 
-    private func itemId(_ item: T) -> String {
-        "\(item.id)"
-    }
-
     private func applyAlgorithm(
         _ algorithm: Algorithm,
         to sources: [[ScoredResult<T>]]
     ) -> [ScoredResult<T>] {
-        var scores: [String: (item: T, score: Double)] = [:]
+        var scores: [T.ID: (item: T, score: Double)] = [:]
 
         switch algorithm {
         case .rrf(let k):
             for source in sources {
                 for (rank, result) in source.enumerated() {
-                    let id = itemId(result.item)
+                    let id = result.item.id
                     let rrfScore = 1.0 / Double(k + rank + 1)
                     if let existing = scores[id] {
                         scores[id] = (existing.item, existing.score + rrfScore)
@@ -230,7 +230,7 @@ public struct FusionBuilder<T: Persistable>: Sendable {
         case .sum:
             for source in sources {
                 for result in source {
-                    let id = itemId(result.item)
+                    let id = result.item.id
                     if let existing = scores[id] {
                         scores[id] = (existing.item, existing.score + result.score)
                     } else {
@@ -242,7 +242,7 @@ public struct FusionBuilder<T: Persistable>: Sendable {
         case .max:
             for source in sources {
                 for result in source {
-                    let id = itemId(result.item)
+                    let id = result.item.id
                     if let existing = scores[id] {
                         scores[id] = (existing.item, Swift.max(existing.score, result.score))
                     } else {
@@ -255,7 +255,7 @@ public struct FusionBuilder<T: Persistable>: Sendable {
             for (sourceIndex, source) in sources.enumerated() {
                 let weight = sourceIndex < weights.count ? weights[sourceIndex] : 1.0
                 for result in source {
-                    let id = itemId(result.item)
+                    let id = result.item.id
                     let weightedScore = result.score * weight
                     if let existing = scores[id] {
                         scores[id] = (existing.item, existing.score + weightedScore)

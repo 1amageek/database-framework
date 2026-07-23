@@ -7,6 +7,8 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -36,7 +38,7 @@ struct EdgeForSCC {
 struct SCCFinderTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Helpers
@@ -46,9 +48,9 @@ struct SCCFinderTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([EdgeForSCC.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
     }
 
     private func insertEdges(_ edges: [EdgeForSCC], context: FDBContext) async throws {
@@ -88,8 +90,8 @@ struct SCCFinderTests {
 
         try await insertEdges(edges, context: context)
 
-        let sccFinder = try await context.sccFinder(for: EdgeForSCC.self)
-        let result = try await sccFinder.findSCCs(edgeLabel: predicate)
+        let sccFinder = try context.stronglyConnectedComponents(for: EdgeForSCC.self)
+        let result = try await sccFinder.find(edgeLabel: predicate)
 
         // DAG should have no multi-node SCCs (all components are singletons)
         #expect(result.isDAG == true)
@@ -117,8 +119,8 @@ struct SCCFinderTests {
 
         try await insertEdges(edges, context: context)
 
-        let sccFinder = try await context.sccFinder(for: EdgeForSCC.self)
-        let result = try await sccFinder.findSCCs(edgeLabel: predicate)
+        let sccFinder = try context.stronglyConnectedComponents(for: EdgeForSCC.self)
+        let result = try await sccFinder.find(edgeLabel: predicate)
 
         // Single SCC with 3 nodes
         #expect(result.isDAG == false)
@@ -126,9 +128,9 @@ struct SCCFinderTests {
         #expect(result.largestComponentSize == 3)
 
         // All nodes should be in the same component
-        let componentA = result.nodeToComponent[a]
-        let componentB = result.nodeToComponent[b]
-        let componentC = result.nodeToComponent[c]
+        let componentA = result.nodeToComponent[.identifier(a)]
+        let componentB = result.nodeToComponent[.identifier(b)]
+        let componentC = result.nodeToComponent[.identifier(c)]
         #expect(componentA == componentB)
         #expect(componentB == componentC)
     }
@@ -165,24 +167,24 @@ struct SCCFinderTests {
 
         try await insertEdges(edges, context: context)
 
-        let sccFinder = try await context.sccFinder(for: EdgeForSCC.self)
-        let result = try await sccFinder.findSCCs(edgeLabel: predicate)
+        let sccFinder = try context.stronglyConnectedComponents(for: EdgeForSCC.self)
+        let result = try await sccFinder.find(edgeLabel: predicate)
 
         #expect(result.isDAG == false)
         #expect(result.componentCount == 2)
         #expect(result.largestComponentSize == 3)
 
         // Check that A, B, C are in one component
-        let componentA = result.nodeToComponent[a]!
-        let componentB = result.nodeToComponent[b]!
-        let componentC = result.nodeToComponent[c]!
+        let componentA = result.nodeToComponent[.identifier(a)]!
+        let componentB = result.nodeToComponent[.identifier(b)]!
+        let componentC = result.nodeToComponent[.identifier(c)]!
         #expect(componentA == componentB)
         #expect(componentB == componentC)
 
         // Check that D, E, F are in another component
-        let componentD = result.nodeToComponent[d]!
-        let componentE = result.nodeToComponent[e]!
-        let componentF = result.nodeToComponent[f]!
+        let componentD = result.nodeToComponent[.identifier(d)]!
+        let componentE = result.nodeToComponent[.identifier(e)]!
+        let componentF = result.nodeToComponent[.identifier(f)]!
         #expect(componentD == componentE)
         #expect(componentE == componentF)
 
@@ -209,9 +211,13 @@ struct SCCFinderTests {
 
         try await insertEdges(edges, context: context)
 
-        let sccFinder = try await context.sccFinder(for: EdgeForSCC.self)
+        let sccFinder = try context.stronglyConnectedComponents(for: EdgeForSCC.self)
 
-        let connected = try await sccFinder.isStronglyConnected(from: a, to: b, edgeLabel: predicate)
+        let connected = try await sccFinder.containsSameComponent(
+            a,
+            b,
+            edgeLabel: predicate
+        )
         #expect(connected == true)
     }
 
@@ -231,9 +237,13 @@ struct SCCFinderTests {
 
         try await insertEdges(edges, context: context)
 
-        let sccFinder = try await context.sccFinder(for: EdgeForSCC.self)
+        let sccFinder = try context.stronglyConnectedComponents(for: EdgeForSCC.self)
 
-        let connected = try await sccFinder.isStronglyConnected(from: a, to: b, edgeLabel: predicate)
+        let connected = try await sccFinder.containsSameComponent(
+            a,
+            b,
+            edgeLabel: predicate
+        )
         #expect(connected == false)
     }
 
@@ -263,7 +273,7 @@ struct SCCFinderTests {
 
         try await insertEdges(edges, context: context)
 
-        let sccFinder = try await context.sccFinder(for: EdgeForSCC.self)
+        let sccFinder = try context.stronglyConnectedComponents(for: EdgeForSCC.self)
         let condensation = try await sccFinder.condensationGraph(edgeLabel: predicate)
 
         // Should have 2 components
@@ -293,8 +303,8 @@ struct SCCFinderTests {
 
         try await insertEdges(edges, context: context)
 
-        let sccFinder = try await context.sccFinder(for: EdgeForSCC.self)
-        let result = try await sccFinder.findSCCs(edgeLabel: predicate)
+        let sccFinder = try context.stronglyConnectedComponents(for: EdgeForSCC.self)
+        let result = try await sccFinder.find(edgeLabel: predicate)
 
         // Single node with self-loop is a single SCC
         #expect(result.componentCount == 1)
@@ -328,8 +338,8 @@ struct SCCFinderTests {
 
         try await insertEdges(edges, context: context)
 
-        let sccFinder = try await context.sccFinder(for: EdgeForSCC.self)
-        let result = try await sccFinder.findSCCs(edgeLabel: predicate)
+        let sccFinder = try context.stronglyConnectedComponents(for: EdgeForSCC.self)
+        let result = try await sccFinder.find(edgeLabel: predicate)
 
         // Should have 3 SCCs
         #expect(result.componentCount == 3)
@@ -360,16 +370,16 @@ struct SCCFinderTests {
 
         try await insertEdges(edges, context: context)
 
-        let sccFinder = try await context.sccFinder(for: EdgeForSCC.self)
+        let sccFinder = try context.stronglyConnectedComponents(for: EdgeForSCC.self)
 
         // Test with "follows" label only
-        let followsResult = try await sccFinder.findSCCs(edgeLabel: follows)
+        let followsResult = try await sccFinder.find(edgeLabel: follows)
         #expect(followsResult.componentCount == 1)
         #expect(followsResult.largestComponentSize == 2)
         #expect(followsResult.isDAG == false)
 
         // Test with "blocks" label only
-        let blocksResult = try await sccFinder.findSCCs(edgeLabel: blocks)
+        let blocksResult = try await sccFinder.find(edgeLabel: blocks)
         #expect(blocksResult.componentCount == 2)
         #expect(blocksResult.largestComponentSize == 1)
         #expect(blocksResult.isDAG == true)
@@ -382,7 +392,7 @@ struct SCCFinderTests {
 struct GraphEdgeScannerBatchTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     private func uniqueID(_ prefix: String) -> String {
@@ -390,9 +400,9 @@ struct GraphEdgeScannerBatchTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([EdgeForSCC.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
     }
 
     private func insertEdges(_ edges: [EdgeForSCC], context: FDBContext) async throws {
@@ -408,6 +418,46 @@ struct GraphEdgeScannerBatchTests {
         edge.relationship = relationship
         edge.to = to
         return edge
+    }
+
+    private func collectOutgoingEdges(
+        scanner: GraphEdgeScanner,
+        sources: [GraphIdentity],
+        edgeLabel: GraphIdentity?,
+        transaction: any Transaction
+    ) async throws -> [GraphIdentity: [EdgeInfo]] {
+        var grouped: [GraphIdentity: [EdgeInfo]] = [:]
+        for source in Set(sources) {
+            grouped[source] = []
+        }
+        for try await edge in scanner.batchScanOutgoing(
+            from: sources,
+            edgeLabel: edgeLabel,
+            transaction: transaction
+        ) {
+            grouped[edge.source, default: []].append(edge)
+        }
+        return grouped
+    }
+
+    private func collectIncomingEdges(
+        scanner: GraphEdgeScanner,
+        targets: [GraphIdentity],
+        edgeLabel: GraphIdentity?,
+        transaction: any Transaction
+    ) async throws -> [GraphIdentity: [EdgeInfo]] {
+        var grouped: [GraphIdentity: [EdgeInfo]] = [:]
+        for target in Set(targets) {
+            grouped[target] = []
+        }
+        for try await edge in scanner.batchScanIncoming(
+            to: targets,
+            edgeLabel: edgeLabel,
+            transaction: transaction
+        ) {
+            grouped[edge.target, default: []].append(edge)
+        }
+        return grouped
     }
 
     @Test("batchScanAllOutgoing groups edges by source")
@@ -433,36 +483,40 @@ struct GraphEdgeScannerBatchTests {
         // Get the graph scanner
         guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
             $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
-        }),
-        let kind = descriptor.kind as? GraphIndexKind<EdgeForSCC> else {
+        }) else {
             throw SCCError.graphIndexNotFound
         }
+        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
 
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
         let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
+        let scanner = GraphEdgeScanner(
+            indexSubspace: graphSubspace,
+            strategy: metadata.strategy
+        )
 
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
-            try await scanner.batchScanAllOutgoing(
-                from: [a, b, c],
-                edgeLabel: predicate,
+            try await collectOutgoingEdges(
+                scanner: scanner,
+                sources: [a, b, c].map(GraphIdentity.identifier),
+                edgeLabel: .identifier(predicate),
                 transaction: transaction
             )
         }
 
         // Check grouping
-        #expect(grouped[a]?.count == 2)  // A has 2 outgoing
-        #expect(grouped[b]?.count == 1)  // B has 1 outgoing
-        #expect(grouped[c]?.count == 0)  // C has 0 outgoing (but key exists)
+        #expect(grouped[.identifier(a)]?.count == 2)  // A has 2 outgoing
+        #expect(grouped[.identifier(b)]?.count == 1)  // B has 1 outgoing
+        #expect(grouped[.identifier(c)]?.count == 0)  // C has 0 outgoing (but key exists)
 
         // Check targets
-        let aTargets = Set(grouped[a]?.map { $0.target } ?? [])
-        #expect(aTargets.contains(b))
-        #expect(aTargets.contains(c))
+        let aTargets = Set(grouped[.identifier(a)]?.map { $0.target } ?? [])
+        #expect(aTargets.contains(.identifier(b)))
+        #expect(aTargets.contains(.identifier(c)))
 
-        let bTargets = Set(grouped[b]?.map { $0.target } ?? [])
-        #expect(bTargets.contains(d))
+        let bTargets = Set(grouped[.identifier(b)]?.map { $0.target } ?? [])
+        #expect(bTargets.contains(.identifier(d)))
     }
 
     @Test("batchScanAllIncoming groups edges by target")
@@ -488,36 +542,40 @@ struct GraphEdgeScannerBatchTests {
         // Get the graph scanner
         guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
             $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
-        }),
-        let kind = descriptor.kind as? GraphIndexKind<EdgeForSCC> else {
+        }) else {
             throw SCCError.graphIndexNotFound
         }
+        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
 
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
         let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
+        let scanner = GraphEdgeScanner(
+            indexSubspace: graphSubspace,
+            strategy: metadata.strategy
+        )
 
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
-            try await scanner.batchScanAllIncoming(
-                to: [a, c, d],
-                edgeLabel: predicate,
+            try await collectIncomingEdges(
+                scanner: scanner,
+                targets: [a, c, d].map(GraphIdentity.identifier),
+                edgeLabel: .identifier(predicate),
                 transaction: transaction
             )
         }
 
         // Check grouping
-        #expect(grouped[a]?.count == 0)  // A has 0 incoming (but key exists)
-        #expect(grouped[c]?.count == 2)  // C has 2 incoming
-        #expect(grouped[d]?.count == 1)  // D has 1 incoming
+        #expect(grouped[.identifier(a)]?.count == 0)  // A has 0 incoming (but key exists)
+        #expect(grouped[.identifier(c)]?.count == 2)  // C has 2 incoming
+        #expect(grouped[.identifier(d)]?.count == 1)  // D has 1 incoming
 
         // Check sources
-        let cSources = Set(grouped[c]?.map { $0.source } ?? [])
-        #expect(cSources.contains(a))
-        #expect(cSources.contains(b))
+        let cSources = Set(grouped[.identifier(c)]?.map { $0.source } ?? [])
+        #expect(cSources.contains(.identifier(a)))
+        #expect(cSources.contains(.identifier(b)))
 
-        let dSources = Set(grouped[d]?.map { $0.source } ?? [])
-        #expect(dSources.contains(c))
+        let dSources = Set(grouped[.identifier(d)]?.map { $0.source } ?? [])
+        #expect(dSources.contains(.identifier(c)))
     }
 
     @Test("batchScanAllOutgoing returns empty dict for empty sources")
@@ -535,20 +593,24 @@ struct GraphEdgeScannerBatchTests {
 
         guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
             $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
-        }),
-        let kind = descriptor.kind as? GraphIndexKind<EdgeForSCC> else {
+        }) else {
             throw SCCError.graphIndexNotFound
         }
+        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
 
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
         let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
+        let scanner = GraphEdgeScanner(
+            indexSubspace: graphSubspace,
+            strategy: metadata.strategy
+        )
 
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
-            try await scanner.batchScanAllOutgoing(
-                from: [],  // Empty sources
-                edgeLabel: predicate,
+            try await collectOutgoingEdges(
+                scanner: scanner,
+                sources: [],  // Empty sources
+                edgeLabel: .identifier(predicate),
                 transaction: transaction
             )
         }
@@ -571,20 +633,24 @@ struct GraphEdgeScannerBatchTests {
 
         guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
             $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
-        }),
-        let kind = descriptor.kind as? GraphIndexKind<EdgeForSCC> else {
+        }) else {
             throw SCCError.graphIndexNotFound
         }
+        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
 
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
         let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
+        let scanner = GraphEdgeScanner(
+            indexSubspace: graphSubspace,
+            strategy: metadata.strategy
+        )
 
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
-            try await scanner.batchScanAllIncoming(
-                to: [],  // Empty targets
-                edgeLabel: predicate,
+            try await collectIncomingEdges(
+                scanner: scanner,
+                targets: [],  // Empty targets
+                edgeLabel: .identifier(predicate),
                 transaction: transaction
             )
         }
@@ -612,29 +678,33 @@ struct GraphEdgeScannerBatchTests {
 
         guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
             $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
-        }),
-        let kind = descriptor.kind as? GraphIndexKind<EdgeForSCC> else {
+        }) else {
             throw SCCError.graphIndexNotFound
         }
+        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
 
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
         let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
+        let scanner = GraphEdgeScanner(
+            indexSubspace: graphSubspace,
+            strategy: metadata.strategy
+        )
 
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
-            try await scanner.batchScanAllOutgoing(
-                from: [a],
+            try await collectOutgoingEdges(
+                scanner: scanner,
+                sources: [.identifier(a)],
                 edgeLabel: nil,  // Wildcard - match all labels
                 transaction: transaction
             )
         }
 
         // A should have edges with both labels
-        #expect(grouped[a]?.count == 2)
-        let targets = Set(grouped[a]?.map { $0.target } ?? [])
-        #expect(targets.contains(b))
-        #expect(targets.contains(c))
+        #expect(grouped[.identifier(a)]?.count == 2)
+        let targets = Set(grouped[.identifier(a)]?.map { $0.target } ?? [])
+        #expect(targets.contains(.identifier(b)))
+        #expect(targets.contains(.identifier(c)))
     }
 
     @Test("batchScanAllOutgoing with single node batch")
@@ -655,26 +725,30 @@ struct GraphEdgeScannerBatchTests {
 
         guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
             $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
-        }),
-        let kind = descriptor.kind as? GraphIndexKind<EdgeForSCC> else {
+        }) else {
             throw SCCError.graphIndexNotFound
         }
+        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
 
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
         let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
+        let scanner = GraphEdgeScanner(
+            indexSubspace: graphSubspace,
+            strategy: metadata.strategy
+        )
 
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
-            try await scanner.batchScanAllOutgoing(
-                from: [a],  // Single node
-                edgeLabel: predicate,
+            try await collectOutgoingEdges(
+                scanner: scanner,
+                sources: [.identifier(a)],  // Single node
+                edgeLabel: .identifier(predicate),
                 transaction: transaction
             )
         }
 
         #expect(grouped.count == 1)
-        #expect(grouped[a]?.count == 2)
+        #expect(grouped[.identifier(a)]?.count == 2)
     }
 
     @Test("batchScanAllOutgoing includes nodes with no edges")
@@ -695,29 +769,33 @@ struct GraphEdgeScannerBatchTests {
 
         guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
             $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
-        }),
-        let kind = descriptor.kind as? GraphIndexKind<EdgeForSCC> else {
+        }) else {
             throw SCCError.graphIndexNotFound
         }
+        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
 
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
         let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
+        let scanner = GraphEdgeScanner(
+            indexSubspace: graphSubspace,
+            strategy: metadata.strategy
+        )
 
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
-            try await scanner.batchScanAllOutgoing(
-                from: [a, c],  // Include node with no edges
-                edgeLabel: predicate,
+            try await collectOutgoingEdges(
+                scanner: scanner,
+                sources: [a, c].map(GraphIdentity.identifier),  // Include node with no edges
+                edgeLabel: .identifier(predicate),
                 transaction: transaction
             )
         }
 
         // Both nodes should be in result
         #expect(grouped.count == 2)
-        #expect(grouped[a]?.count == 1)
-        #expect(grouped[c]?.count == 0)  // Empty but present
-        #expect(grouped[c] != nil)
+        #expect(grouped[.identifier(a)]?.count == 1)
+        #expect(grouped[.identifier(c)]?.count == 0)  // Empty but present
+        #expect(grouped[.identifier(c)] != nil)
     }
 }
 #endif

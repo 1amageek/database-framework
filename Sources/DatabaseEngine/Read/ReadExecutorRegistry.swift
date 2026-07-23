@@ -1,16 +1,19 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
-import Synchronization
+#endif
 import Core
+import DatabaseValue
 import QueryIR
-import DatabaseClientProtocol
 
 public protocol IndexReadExecutor: Sendable {
     var kindIdentifier: String { get }
 
     /// Produce an index-native row set.
     ///
-    /// Bridges must not apply SQL `WHERE` / `ORDER BY` / projection /
-    /// `DISTINCT` / `LIMIT` / `OFFSET` — the dispatcher does. Bridges are
+    /// Executors must not apply SQL `WHERE` / `ORDER BY` / projection /
+    /// `DISTINCT` / `LIMIT` / `OFFSET` — the dispatcher does. Executors are
     /// responsible only for producing the candidate rows ordered in index-native
     /// form (e.g. distance ascending, rank descending) together with any
     /// per-row annotations (`distance`, `score`, `rank`, …).
@@ -19,24 +22,24 @@ public protocol IndexReadExecutor: Sendable {
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
-        options: ReadExecutionOptions,
-        partitionValues: [String: String]?
-    ) async throws -> BridgedRowSet
+        options: ReadExecutionContext,
+        partitions: [DatabaseObjectField]
+    ) async throws -> IndexReadResult
 }
 
 public protocol PolymorphicIndexReadExecutor: Sendable {
     var kindIdentifier: String { get }
 
     /// Produce an index-native row set for a polymorphic group. Same contract
-    /// as `IndexReadExecutor.executeRows` — no SQL post-processing in bridges.
+    /// as `IndexReadExecutor.executeRows` — no SQL post-processing in executors.
     func executeRows(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
-        options: ReadExecutionOptions,
-        partitionValues: [String: String]?
-    ) async throws -> BridgedRowSet
+        options: ReadExecutionContext,
+        partitions: [DatabaseObjectField]
+    ) async throws -> IndexReadResult
 }
 
 public protocol FusionReadExecutor: Sendable {
@@ -47,45 +50,76 @@ public protocol FusionReadExecutor: Sendable {
         selectQuery: SelectQuery,
         fusionSource: FusionSource,
         as type: T.Type,
-        options: ReadExecutionOptions,
-        partitionValues: [String: String]?
+        options: ReadExecutionContext,
+        partitions: [DatabaseObjectField]
     ) async throws -> QueryResponse
 }
 
-public final class ReadExecutorRegistry: Sendable {
-    public static let shared = ReadExecutorRegistry()
+public struct ReadExecutorRegistry: Sendable {
+    private let indexExecutors: [String: any IndexReadExecutor]
+    private let polymorphicIndexExecutors: [String: any PolymorphicIndexReadExecutor]
+    private let fusionExecutors: [String: any FusionReadExecutor]
 
-    private struct State: Sendable {
-        var indexExecutors: [String: any IndexReadExecutor] = [:]
-        var polymorphicIndexExecutors: [String: any PolymorphicIndexReadExecutor] = [:]
-        var fusionExecutors: [String: any FusionReadExecutor] = [:]
-    }
-
-    private let state = Mutex(State())
-
-    public init() {}
-
-    public func register(_ executor: any IndexReadExecutor) {
-        state.withLock { $0.indexExecutors[executor.kindIdentifier] = executor }
-    }
-
-    public func registerPolymorphic(_ executor: any PolymorphicIndexReadExecutor) {
-        state.withLock { $0.polymorphicIndexExecutors[executor.kindIdentifier] = executor }
-    }
-
-    public func register(_ executor: any FusionReadExecutor) {
-        state.withLock { $0.fusionExecutors[executor.strategyIdentifier] = executor }
+    public init(
+        indexExecutors: [any IndexReadExecutor] = [],
+        polymorphicIndexExecutors: [any PolymorphicIndexReadExecutor] = [],
+        fusionExecutors: [any FusionReadExecutor] = []
+    ) throws(DatabaseRuntimeConfigurationError) {
+        self.indexExecutors = try Self.indexExecutorsByIdentifier(indexExecutors)
+        self.polymorphicIndexExecutors = try Self.polymorphicExecutorsByIdentifier(
+            polymorphicIndexExecutors
+        )
+        self.fusionExecutors = try Self.fusionExecutorsByIdentifier(fusionExecutors)
     }
 
     public func indexExecutor(for kindIdentifier: String) -> (any IndexReadExecutor)? {
-        state.withLock { $0.indexExecutors[kindIdentifier] }
+        indexExecutors[kindIdentifier]
     }
 
     public func polymorphicIndexExecutor(for kindIdentifier: String) -> (any PolymorphicIndexReadExecutor)? {
-        state.withLock { $0.polymorphicIndexExecutors[kindIdentifier] }
+        polymorphicIndexExecutors[kindIdentifier]
     }
 
     public func fusionExecutor(for strategyIdentifier: String) -> (any FusionReadExecutor)? {
-        state.withLock { $0.fusionExecutors[strategyIdentifier] }
+        fusionExecutors[strategyIdentifier]
+    }
+
+    private static func indexExecutorsByIdentifier(
+        _ executors: [any IndexReadExecutor]
+    ) throws(DatabaseRuntimeConfigurationError) -> [String: any IndexReadExecutor] {
+        var result: [String: any IndexReadExecutor] = [:]
+        for executor in executors {
+            guard result[executor.kindIdentifier] == nil else {
+                throw .duplicateIndexReadExecutor(executor.kindIdentifier)
+            }
+            result[executor.kindIdentifier] = executor
+        }
+        return result
+    }
+
+    private static func polymorphicExecutorsByIdentifier(
+        _ executors: [any PolymorphicIndexReadExecutor]
+    ) throws(DatabaseRuntimeConfigurationError) -> [String: any PolymorphicIndexReadExecutor] {
+        var result: [String: any PolymorphicIndexReadExecutor] = [:]
+        for executor in executors {
+            guard result[executor.kindIdentifier] == nil else {
+                throw .duplicatePolymorphicIndexReadExecutor(executor.kindIdentifier)
+            }
+            result[executor.kindIdentifier] = executor
+        }
+        return result
+    }
+
+    private static func fusionExecutorsByIdentifier(
+        _ executors: [any FusionReadExecutor]
+    ) throws(DatabaseRuntimeConfigurationError) -> [String: any FusionReadExecutor] {
+        var result: [String: any FusionReadExecutor] = [:]
+        for executor in executors {
+            guard result[executor.strategyIdentifier] == nil else {
+                throw .duplicateFusionReadExecutor(executor.strategyIdentifier)
+            }
+            result[executor.strategyIdentifier] = executor
+        }
+        return result
     }
 }

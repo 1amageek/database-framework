@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.4
 import PackageDescription
 
 let hostPlatforms: [Platform] = [
@@ -15,10 +15,18 @@ let package = Package(
     ],
     products: [
         .library(name: "DatabaseEngine", targets: ["DatabaseEngine"]),
+        .library(
+            name: "DatabaseEngineFoundation",
+            targets: ["DatabaseEngineFoundation"]
+        ),
         .library(name: "DatabaseRuntime", targets: ["DatabaseRuntime"]),
         .library(name: "ScalarIndex", targets: ["ScalarIndex"]),
         .library(name: "VectorIndex", targets: ["VectorIndex"]),
         .library(name: "FullTextIndex", targets: ["FullTextIndex"]),
+        .library(
+            name: "FullTextIndexFoundation",
+            targets: ["FullTextIndexFoundation"]
+        ),
         .library(name: "SpatialIndex", targets: ["SpatialIndex"]),
         .library(name: "RankIndex", targets: ["RankIndex"]),
         .library(name: "PermutedIndex", targets: ["PermutedIndex"]),
@@ -44,11 +52,10 @@ let package = Package(
         .trait(name: "PostgreSQL"),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0629.0"),
-        .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "1.0.0"),
+        .package(path: "../database-kit"),
+        .package(path: "../swift-hnsw"),
         .package(
-            url: "https://github.com/1amageek/storage-kit.git",
-            from: "26.0629.0",
+            path: "../storage-kit",
             traits: [
                 .trait(name: "FoundationDB", condition: .when(traits: ["FoundationDB"])),
                 .trait(name: "SQLite", condition: .when(traits: ["SQLite"])),
@@ -57,27 +64,26 @@ let package = Package(
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
-        .package(url: "https://github.com/apple/swift-configuration.git", from: "1.0.0"),
+        .package(path: "../../networking/swift-crypto"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
-        .package(url: "https://github.com/1amageek/swift-yaml.git", from: "1.0.1"),
         .package(url: "https://github.com/1amageek/swift-testing-heartbeat.git", from: "0.1.0"),
     ],
     targets: [
+        .target(name: "DatabaseMath"),
         .target(
             name: "DatabaseEngine",
             dependencies: [
+                "DatabaseMath",
+                .product(name: "DatabaseDigest", package: "database-kit"),
+                .product(name: "DatabaseValue", package: "database-kit"),
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
                          condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
-                .product(name: "Crypto", package: "swift-crypto"),
-                .product(name: "Configuration", package: "swift-configuration"),
             ],
             exclude: ["README.md"],
             swiftSettings: [
@@ -94,12 +100,16 @@ let package = Package(
             exclude: ["README.md"]
         ),
         .target(
+            name: "DatabaseEngineFoundation",
+            dependencies: ["DatabaseEngine"]
+        ),
+        .target(
             name: "VectorIndex",
             dependencies: [
+                "DatabaseMath",
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "Vector", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "Logging", package: "swift-log"),
@@ -110,31 +120,41 @@ let package = Package(
         .target(
             name: "FullTextIndex",
             dependencies: [
+                "DatabaseMath",
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "FullText", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
         .target(
+            name: "FullTextIndexFoundation",
+            dependencies: ["FullTextIndex"]
+        ),
+        .target(
             name: "DatabaseRuntime",
             dependencies: [
                 "DatabaseEngine",
+                "ScalarIndex",
                 "VectorIndex",
                 "FullTextIndex",
+                "SpatialIndex",
                 "RankIndex",
                 "BitmapIndex",
                 "VersionIndex",
                 "PermutedIndex",
                 "GraphIndex",
+                "AggregationIndex",
+                "LeaderboardIndex",
+                "RelationshipIndex",
             ]
         ),
         .target(
             name: "SpatialIndex",
             dependencies: [
+                "DatabaseMath",
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Geospatial", package: "database-kit"),
@@ -148,7 +168,6 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "Rank", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
@@ -160,7 +179,6 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "Permuted", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
@@ -169,13 +187,17 @@ let package = Package(
         .target(
             name: "GraphIndex",
             dependencies: [
+                "DatabaseMath",
+                .product(name: "DatabaseDigest", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "DatabaseValue", package: "database-kit"),
+                .product(name: "DatabaseWire", package: "database-kit"),
                 "DatabaseEngine",
                 "OntologyIndex",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ],
             exclude: ["README.md"]
         ),
@@ -194,7 +216,6 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -205,7 +226,6 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -213,6 +233,7 @@ let package = Package(
         .target(
             name: "LeaderboardIndex",
             dependencies: [
+                "DatabaseMath",
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
@@ -233,6 +254,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "Relationship", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
@@ -242,10 +264,9 @@ let package = Package(
         .target(
             name: "QueryAST",
             dependencies: [
+                "DatabaseMath",
+                .product(name: "DatabaseValue", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
-                "DatabaseEngine",
-                .product(name: "Core", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -301,16 +322,10 @@ let package = Package(
             name: "DatabaseCLICore",
             dependencies: [
                 "DatabaseEngine",
-                "GraphIndex",
-                "OntologyIndex",
-                "Database",
-                "QueryAST",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "Graph", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
                          condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
-                .product(name: "YAML", package: "swift-yaml"),
             ],
             exclude: ["README.md"],
             swiftSettings: [
@@ -323,9 +338,16 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 "DatabaseRuntime",
+                "GraphIndex",
+                "OntologyIndex",
+                "RelationshipIndex",
+                "QueryAST",
+                .product(name: "DatabaseDigest", package: "database-kit"),
+                .product(name: "DatabaseValue", package: "database-kit"),
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "Relationship", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
+                .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ]
         ),
@@ -352,8 +374,10 @@ let package = Package(
             name: "TestSupport",
             dependencies: [
                 "DatabaseEngine",
+                "DatabaseRuntime",
                 "ScalarIndex",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "DatabaseValue", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
                          condition: .when(traits: ["FoundationDB"])),
@@ -372,7 +396,11 @@ let package = Package(
             name: "DatabaseEngineTests",
             dependencies: [
                 "DatabaseEngine",
+                "DatabaseRuntime",
+                .product(name: "DatabaseValue", package: "database-kit"),
                 .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "StorageKitEmbeddedCore", package: "storage-kit"),
                 .target(name: "ScalarIndex", condition: .when(platforms: hostPlatforms)),
                 .target(name: "VectorIndex", condition: .when(platforms: hostPlatforms)),
                 .target(name: "FullTextIndex", condition: .when(platforms: hostPlatforms)),
@@ -405,11 +433,36 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "DatabaseEngineTransactionTests",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "StorageKit", package: "storage-kit"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"], .when(platforms: hostPlatforms)),
+                .unsafeFlags(
+                    ["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"],
+                    .when(platforms: hostPlatforms)
+                ),
+            ]
+        ),
+        .testTarget(
             name: "DatabaseRuntimeTests",
             dependencies: [
                 "DatabaseRuntime",
                 "DatabaseEngine",
+                "ScalarIndex",
+                "VectorIndex",
+                "RelationshipIndex",
+                .product(name: "Relationship", package: "database-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
+            ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"], .when(platforms: hostPlatforms)),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"], .when(platforms: hostPlatforms))
             ]
         ),
         // ScalarIndex tests
@@ -434,6 +487,7 @@ let package = Package(
             name: "VectorIndexTests",
             dependencies: [
                 "VectorIndex",
+                "DatabaseRuntime",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Vector", package: "database-kit"),
@@ -452,10 +506,12 @@ let package = Package(
             name: "GraphIndexTests",
             dependencies: [
                 "GraphIndex",
+                "DatabaseRuntime",
                 "OntologyIndex",
                 "QueryAST",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "DatabaseValueCodable", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
@@ -472,6 +528,7 @@ let package = Package(
             name: "AggregationIndexTests",
             dependencies: [
                 "AggregationIndex",
+                "DatabaseRuntime",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
@@ -524,6 +581,7 @@ let package = Package(
             name: "RankIndexTests",
             dependencies: [
                 "RankIndex",
+                "DatabaseRuntime",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Rank", package: "database-kit"),
@@ -612,6 +670,7 @@ let package = Package(
             name: "RelationshipIndexTests",
             dependencies: [
                 "RelationshipIndex",
+                "DatabaseRuntime",
                 "DatabaseEngine",
                 "ScalarIndex",
                 "TestSupport",
@@ -635,13 +694,20 @@ let package = Package(
             name: "DatabaseServerTests",
             dependencies: [
                 "DatabaseServer",
-                "Database",
-                "VectorIndex",
+                "DatabaseRuntime",
+                "DatabaseEngine",
+                "GraphIndex",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Graph", package: "database-kit"),
+                .product(name: "DatabaseValue", package: "database-kit"),
+                .product(name: "DatabaseValueCodable", package: "database-kit"),
+                .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
-            swiftSettings: [
-                .define("SQLITE", .when(traits: ["SQLite"])),
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
         // CLI tests
@@ -666,9 +732,8 @@ let package = Package(
             name: "QueryASTTests",
             dependencies: [
                 "QueryAST",
-                "DatabaseEngine",
-                "TestSupport",
-                .product(name: "Core", package: "database-kit"),
+                .product(name: "DatabaseValue", package: "database-kit"),
+                .product(name: "QueryIR", package: "database-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
@@ -692,10 +757,13 @@ let package = Package(
             name: "DatabaseTests",
             dependencies: [
                 "Database",
+                "DatabaseRuntime",
                 "DatabaseEngine",
                 "GraphIndex",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "DatabaseValue", package: "database-kit"),
+                .product(name: "DatabaseValueCodable", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
@@ -730,6 +798,7 @@ let package = Package(
             dependencies: [
                 "BenchmarkFramework",
                 "DatabaseEngine",
+                "DatabaseRuntime",
                 "TestSupport",
                 "ScalarIndex",
                 "RankIndex",
@@ -753,6 +822,7 @@ let package = Package(
             name: "PostgreSQLTests",
             dependencies: [
                 "DatabaseEngine",
+                "DatabaseRuntime",
                 "ScalarIndex",
                 "GraphIndex",
                 "TestSupport",
@@ -772,6 +842,7 @@ let package = Package(
             name: "FDBiteTests",
             dependencies: [
                 "Database",
+                "DatabaseRuntime",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),

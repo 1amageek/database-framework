@@ -7,22 +7,23 @@ import Testing
 import TestHeartbeat
 import Foundation
 import Core
+import DatabaseValue
 
 // MARK: - Test 1: Basic circular reference with @Reference macro
 
 /// Test struct A referencing B
-struct RefTestA {
+struct CircularReferenceNodeA {
     var id: String = "A001"
 
-    @Reference(RefTestB.self)
+    @Reference(CircularReferenceNodeB.self)
     var bId: String?
 }
 
 /// Test struct B referencing A
-struct RefTestB {
+struct CircularReferenceNodeB {
     var id: String = "B001"
 
-    @Reference(RefTestA.self)
+    @Reference(CircularReferenceNodeA.self)
     var aId: String?
 }
 
@@ -53,10 +54,10 @@ struct CircularReferenceTests {
 
     @Test("Basic structs can reference each other via @Reference")
     func testBasicCircularReference() {
-        var a = RefTestA()
+        var a = CircularReferenceNodeA()
         a.bId = "B001"
 
-        var b = RefTestB()
+        var b = CircularReferenceNodeB()
         b.aId = "A001"
 
         #expect(a.bId == "B001")

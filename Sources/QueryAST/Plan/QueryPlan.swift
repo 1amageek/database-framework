@@ -5,8 +5,6 @@
 /// - PostgreSQL Query Planner (src/backend/optimizer/)
 /// - FoundationDB Record Layer Query Planning
 
-import Foundation
-
 /// Executable query plan
 public struct QueryPlan: Sendable {
     /// The plan node

@@ -1,12 +1,13 @@
 import Foundation
 import Testing
 import Core
+import DatabaseValue
 import Graph
 import StorageKit
 @testable import DatabaseEngine
 @testable import GraphIndex
 
-private struct NamedGraphStoreTestQuad: Persistable {
+private struct NamedGraphStoreQuad: Persistable {
     typealias ID = String
 
     var id: String
@@ -15,7 +16,7 @@ private struct NamedGraphStoreTestQuad: Persistable {
     var object: String
     var graph: String?
 
-    static var persistableType: String { "NamedGraphStoreTestQuad" }
+    static var persistableType: String { "NamedGraphStoreQuad" }
     static var allFields: [String] { ["id", "subject", "predicate", "object", "graph"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -33,30 +34,30 @@ private struct NamedGraphStoreTestQuad: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<NamedGraphStoreTestQuad, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<NamedGraphStoreQuad, Value>) -> String {
         switch keyPath {
-        case \NamedGraphStoreTestQuad.id: return "id"
-        case \NamedGraphStoreTestQuad.subject: return "subject"
-        case \NamedGraphStoreTestQuad.predicate: return "predicate"
-        case \NamedGraphStoreTestQuad.object: return "object"
-        case \NamedGraphStoreTestQuad.graph: return "graph"
+        case \NamedGraphStoreQuad.id: return "id"
+        case \NamedGraphStoreQuad.subject: return "subject"
+        case \NamedGraphStoreQuad.predicate: return "predicate"
+        case \NamedGraphStoreQuad.object: return "object"
+        case \NamedGraphStoreQuad.graph: return "graph"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<NamedGraphStoreTestQuad>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<NamedGraphStoreQuad>) -> String {
         switch keyPath {
-        case \NamedGraphStoreTestQuad.id: return "id"
-        case \NamedGraphStoreTestQuad.subject: return "subject"
-        case \NamedGraphStoreTestQuad.predicate: return "predicate"
-        case \NamedGraphStoreTestQuad.object: return "object"
-        case \NamedGraphStoreTestQuad.graph: return "graph"
+        case \NamedGraphStoreQuad.id: return "id"
+        case \NamedGraphStoreQuad.subject: return "subject"
+        case \NamedGraphStoreQuad.predicate: return "predicate"
+        case \NamedGraphStoreQuad.object: return "object"
+        case \NamedGraphStoreQuad.graph: return "graph"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<NamedGraphStoreTestQuad> else {
+        guard let keyPath = keyPath as? PartialKeyPath<NamedGraphStoreQuad> else {
             return "\(keyPath)"
         }
         return fieldName(for: keyPath)
@@ -66,7 +67,7 @@ private struct NamedGraphStoreTestQuad: Persistable {
 @Suite("NamedGraphStore Strategy Tests")
 struct NamedGraphStoreStrategyTests {
     private func makeMaintainer(graphField: String? = "graph") -> (
-        maintainer: GraphIndexMaintainer<NamedGraphStoreTestQuad>,
+        maintainer: GraphIndexMaintainer<NamedGraphStoreQuad>,
         indexSubspace: Subspace
     ) {
         let indexName = "NamedGraphStoreTestQuad_graph"
@@ -75,7 +76,7 @@ struct NamedGraphStoreStrategyTests {
             .subspace(indexName)
         let index = Index(
             name: indexName,
-            kind: GraphIndexKind<NamedGraphStoreTestQuad>(
+            kind: GraphIndexKind<NamedGraphStoreQuad>(
                 fromField: "subject",
                 edgeField: "predicate",
                 toField: "object",
@@ -88,9 +89,9 @@ struct NamedGraphStoreStrategyTests {
                 FieldKeyExpression(fieldName: "object"),
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["NamedGraphStoreTestQuad"])
+            itemTypes: Set(["NamedGraphStoreQuad"])
         )
-        let maintainer = GraphIndexMaintainer<NamedGraphStoreTestQuad>(
+        let maintainer = GraphIndexMaintainer<NamedGraphStoreQuad>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
@@ -111,7 +112,7 @@ struct NamedGraphStoreStrategyTests {
     @Test("namedGraphStore generates GSPO, GPOS, and GOSP graph-first keys")
     func namedGraphStoreGeneratesGraphFirstKeys() async throws {
         let setup = makeMaintainer()
-        let quad = NamedGraphStoreTestQuad(
+        let quad = NamedGraphStoreQuad(
             id: "q1",
             subject: "Alice",
             predicate: "knows",
@@ -147,7 +148,7 @@ struct NamedGraphStoreStrategyTests {
     @Test("namedGraphStore indexes nil graph as default graph sentinel")
     func namedGraphStoreIndexesNilGraphAsDefaultGraphSentinel() async throws {
         let setup = makeMaintainer()
-        let quad = NamedGraphStoreTestQuad(
+        let quad = NamedGraphStoreQuad(
             id: "q1",
             subject: "Alice",
             predicate: "knows",
@@ -159,7 +160,7 @@ struct NamedGraphStoreStrategyTests {
         #expect(keys.count == 3)
 
         let gspo = try unpack(keys[0], from: setup.indexSubspace.subspace(Int64(8)))
-        #expect(gspo[0] as? String == "")
+        #expect(gspo[0] as? Bytes == Bytes())
         #expect(gspo[1] as? String == "Alice")
         #expect(gspo[2] as? String == "knows")
         #expect(gspo[3] as? String == "Bob")
@@ -178,5 +179,99 @@ struct NamedGraphStoreStrategyTests {
         let data = try JSONEncoder().encode(GraphIndexStrategy.namedGraphStore)
         let decoded = try JSONDecoder().decode(GraphIndexStrategy.self, from: data)
         #expect(decoded == .namedGraphStore)
+    }
+
+    @Test("edge scanner applies named and default graph scopes")
+    func edgeScannerAppliesGraphScope() async throws {
+        let setup = makeMaintainer()
+        let database = InMemoryEngine()
+        let named = NamedGraphStoreQuad(
+            id: "named",
+            subject: "Alice",
+            predicate: "knows",
+            object: "Bob",
+            graph: "social"
+        )
+        let defaultGraph = NamedGraphStoreQuad(
+            id: "default",
+            subject: "Alice",
+            predicate: "knows",
+            object: "Carol",
+            graph: nil
+        )
+        try await database.withTransaction(configuration: .batch) { transaction in
+            for key in try await setup.maintainer.computeIndexKeys(
+                for: named,
+                id: Tuple(named.id)
+            ) {
+                try transaction.setValue([], for: key)
+            }
+            for key in try await setup.maintainer.computeIndexKeys(
+                for: defaultGraph,
+                id: Tuple(defaultGraph.id)
+            ) {
+                try transaction.setValue([], for: key)
+            }
+        }
+
+        let namedEdges = try await scan(
+            scope: .named("social"),
+            setup: setup,
+            database: database
+        )
+        let defaultEdges = try await scan(
+            scope: .defaultGraph,
+            setup: setup,
+            database: database
+        )
+        let allEdges = try await scan(
+            scope: .all,
+            setup: setup,
+            database: database
+        )
+
+        #expect(namedEdges == [
+            EdgeInfo(
+                source: "Alice",
+                target: "Bob",
+                edgeLabel: "knows",
+                graph: "social"
+            )
+        ])
+        #expect(defaultEdges == [
+            EdgeInfo(
+                source: "Alice",
+                target: "Carol",
+                edgeLabel: "knows"
+            )
+        ])
+        #expect(Set(allEdges.map(\.target)) == ["Bob", "Carol"])
+    }
+
+    private func scan(
+        scope: GraphScanScope,
+        setup: (
+            maintainer: GraphIndexMaintainer<NamedGraphStoreQuad>,
+            indexSubspace: Subspace
+        ),
+        database: InMemoryEngine
+    ) async throws -> [EdgeInfo] {
+        let scanner = GraphEdgeScanner(
+            indexSubspace: setup.indexSubspace,
+            strategy: .namedGraphStore,
+            scope: scope
+        )
+        return try await database.withTransaction(
+            configuration: .readOnly
+        ) { transaction in
+            var edges: [EdgeInfo] = []
+            for try await edge in scanner.scanAllEdges(
+                edgeLabel: nil,
+                transaction: transaction
+            ) {
+                edges.append(edge)
+            }
+            return edges
+        }
     }
 }

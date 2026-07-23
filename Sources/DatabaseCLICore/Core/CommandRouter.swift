@@ -13,7 +13,7 @@ enum CommandRouter {
         entities: [Schema.Entity],
         output: OutputFormatter
     ) async throws {
-        let tokens = tokenize(line)
+        let tokens = try tokenize(line)
         guard let command = tokens.first?.lowercased() else { return }
         let args = Array(tokens.dropFirst())
 
@@ -22,54 +22,13 @@ enum CommandRouter {
             printHelp(topic: args.first, output: output)
 
         case "schema":
-            if args.first?.lowercased() == "ontology" {
-                let cmd = OntologyCommands(database: dataAccess.database, output: output)
-                try await cmd.show()
-            } else {
-                let cmd = SchemaInfoCommands(entities: entities, output: output)
-                try cmd.execute(args)
-            }
-
-        case "insert":
-            let cmd = DataCommands(dataAccess: dataAccess, output: output)
-            try await cmd.insert(args: args)
-
-        case "get":
-            let cmd = DataCommands(dataAccess: dataAccess, output: output)
-            try await cmd.get(args: args)
-
-        case "update":
-            let cmd = DataCommands(dataAccess: dataAccess, output: output)
-            try await cmd.update(args: args)
-
-        case "delete":
-            let cmd = DataCommands(dataAccess: dataAccess, output: output)
-            try await cmd.delete(args: args)
-
-        case "find", "query":
-            let cmd = FindCommands(dataAccess: dataAccess, output: output)
-            try await cmd.execute(args)
-
-        case "graph":
-            let cmd = GraphCommands(dataAccess: dataAccess, output: output)
-            try await cmd.execute(args)
-
-        case "sparql":
-            let cmd = GraphCommands(dataAccess: dataAccess, output: output)
-            try await cmd.executeSPARQL(args)
-
-        case "history":
-            let cmd = HistoryCommands(output: output)
-            try await cmd.execute(args)
-
-        case "clear":
-            let cmd = ClearCommand(dataAccess: dataAccess, output: output)
-            try await cmd.execute(args)
+            let cmd = SchemaInfoCommands(entities: entities, output: output)
+            try cmd.execute(args)
 
         case "raw":
             let rawCmd = RawCommands(database: dataAccess.database, output: output)
             guard let sub = args.first else {
-                throw CLIError.invalidArguments("Usage: raw <get|set|delete|range> ...")
+                throw CLIError.invalidArguments("Usage: raw <get|range> ...")
             }
             try await rawCmd.execute(sub, args: Array(args.dropFirst()))
 
@@ -85,17 +44,6 @@ enum CommandRouter {
             switch topic {
             case "schema":
                 output.info(SchemaInfoCommands.helpText)
-                output.info(OntologyCommands.helpText)
-            case "find":
-                output.info(FindCommands.helpText)
-            case "graph", "sparql":
-                output.info(GraphCommands.helpText)
-            case "history":
-                output.info(HistoryCommands.helpText)
-            case "data", "insert", "get", "update", "delete":
-                output.info(DataCommands.helpText)
-            case "clear":
-                output.info(ClearCommand.helpText)
             case "raw":
                 output.info(RawCommands.helpText)
             default:
@@ -114,88 +62,59 @@ enum CommandRouter {
         Schema Info:
           schema list                        List all types
           schema show <TypeName>             Show type fields, types, and indexes
-          schema ontology                    Show ontology statistics and class hierarchy
 
-        Data Operations:
-          insert <TypeName> <json>           Insert a record
-          get <TypeName> <id>                Get a record by ID
-          update <TypeName> <id> <json>      Update a record
-          delete <TypeName> <id>             Delete a record
-
-        Query:
-          find <TypeName> [--where field op value] [--sort field [desc]] [--limit N]
-
-        Partition (for dynamic directory types):
-          --partition field=value            Specify partition value (repeatable)
-
-        Graph:
-          graph <TypeName> [from=<value>] [edge=<value>] [to=<value>] [--limit N]
-          sparql <TypeName> <SPARQL query>
-
-        Version History (requires embedded mode):
-          history <TypeName> <id> [--limit N]
-
-        Destructive:
-          clear <TypeName> [--force]         Clear all data for a type
-          clear --all [--force]              Clear all data for all types
-
-        Raw FDB Access:
+        Raw Storage Inspection:
           raw get <key>                      Get raw key
-          raw set <key> <value>              Set raw key-value
-          raw delete <key>                   Delete raw key
           raw range <prefix> [limit N]       Scan keys
 
         Other:
           help [topic]                       Show help
           quit                               Exit CLI
 
-        For detailed help: help <schema|find|graph|data|history|raw>
+        Query, mutation, graph, ontology, and job operations are available only
+        through the authenticated DatabaseWire client.
+
+        For detailed help: help <schema|raw>
         """)
     }
 
     // MARK: - Tokenizer
 
-    static func tokenize(_ line: String) -> [String] {
+    static func tokenize(_ line: String) throws -> [String] {
         var tokens: [String] = []
         var current = ""
-        var inQuotes = false
-        var inJSON = 0
-        var inArray = 0
-        var quoteChar: Character = "\""
+        var quote: Character?
+        var escaped = false
+        var delimiters: [Character] = []
 
         for char in line {
-            if inJSON > 0 {
+            if escaped {
                 current.append(char)
-                if char == "{" {
-                    inJSON += 1
-                } else if char == "}" {
-                    inJSON -= 1
-                }
-            } else if inArray > 0 {
+                escaped = false
+            } else if quote != nil, char == "\\" {
                 current.append(char)
-                if char == "[" {
-                    inArray += 1
-                } else if char == "]" {
-                    inArray -= 1
-                }
-            } else if inQuotes {
-                if char == quoteChar {
-                    inQuotes = false
-                    current.append(char)
-                } else {
-                    current.append(char)
+                escaped = true
+            } else if let activeQuote = quote {
+                current.append(char)
+                if char == activeQuote {
+                    quote = nil
                 }
             } else if char == "\"" || char == "'" {
-                inQuotes = true
-                quoteChar = char
+                quote = char
                 current.append(char)
-            } else if char == "{" {
-                inJSON = 1
+            } else if char == "(" || char == "[" || char == "{" {
+                delimiters.append(char)
                 current.append(char)
-            } else if char == "[" {
-                inArray = 1
+            } else if char == ")" || char == "]" || char == "}" {
+                guard let opening = delimiters.last,
+                      Self.matches(opening: opening, closing: char) else {
+                    throw CLIError.invalidArguments(
+                        "Unmatched closing delimiter '\(char)'"
+                    )
+                }
+                delimiters.removeLast()
                 current.append(char)
-            } else if char == " " || char == "\t" {
+            } else if (char == " " || char == "\t") && delimiters.isEmpty {
                 if !current.isEmpty {
                     tokens.append(current)
                     current = ""
@@ -205,10 +124,34 @@ enum CommandRouter {
             }
         }
 
+        if escaped {
+            throw CLIError.invalidArguments("Dangling escape sequence")
+        }
+        if let quote {
+            throw CLIError.invalidArguments("Unterminated quote '\(quote)'")
+        }
+        if let opening = delimiters.last {
+            throw CLIError.invalidArguments(
+                "Unterminated delimiter '\(opening)'"
+            )
+        }
+
         if !current.isEmpty {
             tokens.append(current)
         }
 
         return tokens
+    }
+
+    private static func matches(
+        opening: Character,
+        closing: Character
+    ) -> Bool {
+        switch (opening, closing) {
+        case ("(", ")"), ("[", "]"), ("{", "}"):
+            return true
+        default:
+            return false
+        }
     }
 }

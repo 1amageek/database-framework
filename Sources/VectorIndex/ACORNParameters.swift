@@ -5,7 +5,11 @@
 // Over Vector Embeddings and Structured Data", SIGMOD 2024
 // https://arxiv.org/abs/2403.04871
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// ACORN-1 filtered search parameters
 ///

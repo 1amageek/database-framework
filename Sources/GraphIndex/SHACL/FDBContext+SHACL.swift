@@ -6,11 +6,16 @@
 //
 // Reference: W3C SHACL https://www.w3.org/TR/shacl/
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Graph
 import Core
 import DatabaseEngine
+import DatabaseWire
 
 import OntologyIndex
 // MARK: - FDBContext Extension
@@ -60,7 +65,7 @@ public struct SHACLContextAPI: Sendable {
     private let context: FDBContext
 
     /// SHACL subspace key prefix
-    private static let shaclPrefix: [UInt8] = Array("S".utf8)
+    private static let shaclPrefix = Bytes("S".utf8)
 
     internal init(context: FDBContext) {
         self.context = context
@@ -94,7 +99,7 @@ public struct SHACLContextAPI: Sendable {
         let store = store()
         try await context.indexQueryContext.withTransaction { transaction in
             // Delete existing if present
-            store.delete(iri: graph.iri, transaction: transaction)
+            try store.delete(iri: graph.iri, transaction: transaction)
             // Save new shapes graph
             try store.save(graph, transaction: transaction)
         }
@@ -131,7 +136,8 @@ public struct SHACLContextAPI: Sendable {
         _ type: T.Type,
         against shapesGraphIRI: String,
         entailment: SHACLEntailment = .none,
-        ontologyIRI: String? = nil
+        ontologyIRI: String? = nil,
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
     ) async throws -> SHACLValidationReport {
         // Load shapes graph
         guard let shapesGraph = try await getShapesGraph(iri: shapesGraphIRI) else {
@@ -163,27 +169,37 @@ public struct SHACLContextAPI: Sendable {
             validationExecutor = executor
         }
 
-        // Construct validation components
-        let targetResolver = SHACLTargetResolver(executor: validationExecutor)
-        let constraintEvaluator = SHACLConstraintEvaluator(
-            executor: validationExecutor,
-            reasoner: reasoner
-        )
-        let validator = SHACLValidator(
-            shapesGraph: shapesGraph,
-            targetResolver: targetResolver,
-            constraintEvaluator: constraintEvaluator
-        )
-
-        return try await validator.validate()
+        let workBudget = SHACLValidationWorkBudget(budget: budget)
+        return try await context.indexQueryContext.withTransaction { transaction in
+            let targetResolver = SHACLTargetResolver(
+                executor: validationExecutor,
+                transaction: transaction,
+                graphScope: .defaultGraph,
+                budget: workBudget
+            )
+            let constraintEvaluator = SHACLConstraintEvaluator(
+                executor: validationExecutor,
+                transaction: transaction,
+                graphScope: .defaultGraph,
+                reasoner: reasoner,
+                budget: workBudget
+            )
+            let validator = SHACLValidator(
+                shapesGraph: shapesGraph,
+                targetResolver: targetResolver,
+                constraintEvaluator: constraintEvaluator,
+                budget: workBudget
+            )
+            return try await validator.validate()
+        }
     }
 
     /// Validate a specific node against a specific shape
     ///
     /// - Parameters:
     ///   - type: The Persistable type that holds the graph index
-    ///   - nodeIRI: The node IRI to validate
-    ///   - shapeIRI: The shape IRI to validate against
+    ///   - node: The RDF node to validate
+    ///   - shapeIdentifier: The canonical RDF node identifying the shape
     ///   - shapesGraphIRI: The shapes graph containing the shape
     /// - Returns: SHACL validation report for the specific node
     ///
@@ -191,36 +207,55 @@ public struct SHACLContextAPI: Sendable {
     /// ```swift
     /// let report = try await context.shacl.validateNode(
     ///     Statement.self,
-    ///     nodeIRI: "ex:Alice",
-    ///     against: "ex:PersonShape",
+    ///     node: .iri("https://example.com/Alice"),
+    ///     against: .iri("ex:PersonShape"),
     ///     in: "ex:PersonShapes"
     /// )
     /// ```
     public func validateNode<T: Persistable>(
         _ type: T.Type,
-        nodeIRI: String,
-        against shapeIRI: String,
-        in shapesGraphIRI: String
+        node: RDFTerm,
+        against shapeIdentifier: RDFTerm,
+        in shapesGraphIRI: String,
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
     ) async throws -> SHACLValidationReport {
         guard let shapesGraph = try await getShapesGraph(iri: shapesGraphIRI) else {
             throw SHACLError.shapesGraphNotFound(shapesGraphIRI)
         }
 
-        guard let shape = shapesGraph.findShape(iri: shapeIRI) else {
-            throw SHACLError.shapeNotFound(shapeIRI)
+        guard let shape = shapesGraph.findShape(
+            identifier: shapeIdentifier
+        ) else {
+            throw SHACLError.shapeNotFound(shapeIdentifier)
         }
 
         let executor = try await buildExecutor(for: type)
-        let targetResolver = SHACLTargetResolver(executor: executor)
-        let constraintEvaluator = SHACLConstraintEvaluator(executor: executor)
-        let validator = SHACLValidator(
-            shapesGraph: shapesGraph,
-            targetResolver: targetResolver,
-            constraintEvaluator: constraintEvaluator
-        )
-
-        let results = try await validator.validateNode(nodeIRI, against: shape)
-        return SHACLValidationReport(results: results)
+        let workBudget = SHACLValidationWorkBudget(budget: budget)
+        return try await context.indexQueryContext.withTransaction { transaction in
+            let targetResolver = SHACLTargetResolver(
+                executor: executor,
+                transaction: transaction,
+                graphScope: .defaultGraph,
+                budget: workBudget
+            )
+            let constraintEvaluator = SHACLConstraintEvaluator(
+                executor: executor,
+                transaction: transaction,
+                graphScope: .defaultGraph,
+                budget: workBudget
+            )
+            let validator = SHACLValidator(
+                shapesGraph: shapesGraph,
+                targetResolver: targetResolver,
+                constraintEvaluator: constraintEvaluator,
+                budget: workBudget
+            )
+            let results = try await validator.validateNode(
+                node,
+                against: shape
+            )
+            return SHACLValidationReport(results: results)
+        }
     }
 
     // MARK: - Shapes Graph CRUD
@@ -252,7 +287,7 @@ public struct SHACLContextAPI: Sendable {
     public func deleteShapesGraph(iri: String) async throws {
         let store = store()
         try await context.indexQueryContext.withTransaction { transaction in
-            store.delete(iri: iri, transaction: transaction)
+            try store.delete(iri: iri, transaction: transaction)
         }
     }
 
@@ -260,7 +295,7 @@ public struct SHACLContextAPI: Sendable {
     public func deleteAllShapesGraphs() async throws {
         let store = store()
         try await context.indexQueryContext.withTransaction { transaction in
-            store.deleteAll(transaction: transaction)
+            try store.deleteAll(transaction: transaction)
         }
     }
 
@@ -271,60 +306,26 @@ public struct SHACLContextAPI: Sendable {
         for type: T.Type,
         ontologyContext: OntologyContext? = nil
     ) async throws -> SPARQLQueryExecutor {
-        guard let descriptor = T.indexDescriptors.first(where: {
-            $0.kindIdentifier == GraphIndexKind<T>.identifier
-        }), let kind = descriptor.kind as? GraphIndexKind<T> else {
+        let candidates = try T.indexDescriptors.compactMap {
+            try RDFDatasetIndexSelection(descriptor: $0)
+        }
+        guard candidates.count == 1 else {
             throw SHACLError.graphIndexNotFound(String(describing: T.self))
         }
+        let selection = candidates[0]
 
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(descriptor.name)
+        let indexSubspace = typeSubspace.subspace(selection.indexName)
+        let source = try RDFDatasetSource(
+            entityName: T.persistableType,
+            selection: selection,
+            indexSubspace: indexSubspace
+        )
 
         return SPARQLQueryExecutor(
             database: context.container.engine,
-            indexSubspace: indexSubspace,
-            strategy: kind.strategy,
-            fromFieldName: kind.fromField,
-            edgeFieldName: kind.edgeField,
-            toFieldName: kind.toField,
-            graphFieldName: kind.graphField,
-            storedFieldNames: descriptor.storedFieldNames,
+            sources: [source],
             ontologyContext: ontologyContext
         )
-    }
-}
-
-// MARK: - SHACLError
-
-/// Errors for SHACL operations
-public enum SHACLError: Error, CustomStringConvertible {
-    /// Shapes graph not found
-    case shapesGraphNotFound(String)
-
-    /// Shape not found in shapes graph
-    case shapeNotFound(String)
-
-    /// Ontology not found (required for OWL entailment)
-    case ontologyNotFound(String)
-
-    /// Graph index not configured on the Persistable type
-    case graphIndexNotFound(String)
-
-    /// Invalid regular expression in a SHACL pattern constraint
-    case invalidPattern(regex: String, reason: String)
-
-    public var description: String {
-        switch self {
-        case .shapesGraphNotFound(let iri):
-            return "SHACL shapes graph not found: \(iri)"
-        case .shapeNotFound(let iri):
-            return "SHACL shape not found: \(iri)"
-        case .ontologyNotFound(let iri):
-            return "Ontology not found (required for OWL entailment): \(iri)"
-        case .graphIndexNotFound(let typeName):
-            return "GraphIndexKind not configured on type \(typeName)"
-        case .invalidPattern(let regex, let reason):
-            return "Invalid SHACL pattern '\(regex)': \(reason)"
-        }
     }
 }

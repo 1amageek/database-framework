@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Permuted
 import TestSupport
 @testable import DatabaseEngine
@@ -22,7 +23,7 @@ private struct BenchmarkContext {
     let permutation: Permutation
 
     init(permutation: Permutation? = nil) async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("bench", "permuted", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace("compound")
@@ -59,7 +60,7 @@ private struct BenchmarkContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }
@@ -142,7 +143,7 @@ private func generateLocations(count: Int) -> [BenchmarkLocation] {
     }
 }
 
-// MARK: - Benchmark Helper
+// MARK: - Benchmark Measurement
 
 private struct BenchmarkResult {
     let operation: String
@@ -173,7 +174,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Bulk insert performance - 100 locations")
     func testBulkInsert100() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         let locations = generateLocations(count: 100)
@@ -205,7 +206,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Bulk insert performance - 1000 locations")
     func testBulkInsert1000() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         let locations = generateLocations(count: 1000)
@@ -245,7 +246,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Prefix query performance - single field")
     func testPrefixQuerySingleField() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 500 locations
@@ -290,7 +291,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Prefix query performance - two fields")
     func testPrefixQueryTwoFields() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 500 locations
@@ -341,7 +342,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Exact match performance")
     func testExactMatchPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 500 locations
@@ -392,7 +393,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Scan all performance")
     func testScanAllPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         let counts = [100, 500]
@@ -439,7 +440,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Update performance")
     func testUpdatePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 100 locations
@@ -495,7 +496,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Delete performance")
     func testDeletePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 100 locations
@@ -545,7 +546,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Different permutations comparison")
     func testDifferentPermutations() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
 
         let permutations = [
             try! Permutation(indices: [0, 1, 2]),  // Identity
@@ -598,7 +599,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Inverse permutation performance")
     func testInversePermutation() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Test inverse conversion
@@ -623,7 +624,7 @@ struct PermutedIndexPerformanceTests {
 
     @Test("Scale test - 2000 locations")
     func testScale2000() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         let locationCount = 2000

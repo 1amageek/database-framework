@@ -1,23 +1,16 @@
 // VectorQuery.swift
 // VectorIndex - Query extension for vector similarity search
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 @_spi(PolymorphicRuntime) import DatabaseEngine
 import Core
 import QueryIR
-import DatabaseClientProtocol
 import StorageKit
 import Vector
-
-private enum VectorQueryRuntime {
-    static let registration: Void = {
-        VectorReadBridge.registerReadExecutors()
-    }()
-
-    static func ensureRegistered() {
-        _ = registration
-    }
-}
 
 // MARK: - Vector Query Builder
 
@@ -54,7 +47,6 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     private var acornParams: ACORNParameters = .default
 
     internal init(queryContext: IndexQueryContext, fieldName: String, dimensions: Int) {
-        VectorQueryRuntime.ensureRegistered()
         self.queryContext = queryContext
         self.fieldName = fieldName
         self.dimensions = dimensions
@@ -244,11 +236,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         configuration: TransactionConfiguration,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, distance: Double)] {
-        // Find the index descriptor to get VectorIndexKind
-        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
-              let kind = indexDescriptor.kind as? VectorIndexKind<T> else {
-            throw VectorQueryError.indexNotFound(indexName)
-        }
+        let (indexDescriptor, kind) = try resolveVectorIndex(named: indexName)
 
         // Check for VectorIndexConfiguration
         let configs = queryContext.context.container.indexConfigurations[indexName] ?? []
@@ -270,9 +258,10 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             // Create index for maintainer
             let index = Index(
                 name: indexName,
-                kind: kind,
+                kind: indexDescriptor.kind,
                 rootExpression: FieldKeyExpression(fieldName: self.fieldName),
-                keyPaths: indexDescriptor.keyPaths
+                isUnique: indexDescriptor.isUnique,
+                storedFieldNames: indexDescriptor.storedFieldNames
             )
 
             // Resolve algorithm (handle .auto case)
@@ -430,9 +419,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
         let parameters: [String: QueryParameterValue] = [
             VectorReadParameter.fieldName: .string(fieldName),
-            VectorReadParameter.dimensions: .int(Int64(dimensions)),
+            VectorReadParameter.dimensions: .int64(Int64(dimensions)),
             VectorReadParameter.queryVector: .array(vector.map { .double(Double($0)) }),
-            VectorReadParameter.k: .int(Int64(k)),
+            VectorReadParameter.k: .int64(Int64(k)),
             VectorReadParameter.metric: .string(distanceMetric.rawValue)
         ]
 
@@ -482,11 +471,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         configuration: TransactionConfiguration,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, distance: Double)] {
-        // Find the index descriptor to get configuration
-        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
-              let kind = indexDescriptor.kind as? VectorIndexKind<T> else {
-            throw VectorQueryError.indexNotFound(indexName)
-        }
+        let (indexDescriptor, kind) = try resolveVectorIndex(named: indexName)
 
         // Find the vector index configuration to check if HNSW is configured
         // Configurations are stored in the container, keyed by index name
@@ -530,9 +515,10 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             // Create the HNSW maintainer
             let index = Index(
                 name: indexName,
-                kind: kind,
+                kind: indexDescriptor.kind,
                 rootExpression: FieldKeyExpression(fieldName: self.fieldName),
-                keyPaths: indexDescriptor.keyPaths
+                isUnique: indexDescriptor.isUnique,
+                storedFieldNames: indexDescriptor.storedFieldNames
             )
 
             let maintainer = HNSWIndexMaintainer<T>(
@@ -576,10 +562,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             // Create ID to item map for efficient lookup
             var idToItem: [String: T] = [:]
             for item in items {
-                if let id = item.id as? any TupleElement {
-                    let key = Data(Tuple(id).pack()).base64EncodedString()
-                    idToItem[key] = item
-                }
+                let identifier = try item.recordIdentifierTuple()
+                let key = Data(identifier.pack()).base64EncodedString()
+                idToItem[key] = item
             }
 
             // Combine with distances
@@ -607,11 +592,33 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 return false
             }
             // 2. Match by fieldName
-            guard let kind = descriptor.kind as? VectorIndexKind<T> else {
-                return false
-            }
-            return kind.fieldNames.contains(fieldName)
+            return descriptor.fieldNames.contains(fieldName)
         }
+    }
+
+    private func resolveVectorIndex(
+        named indexName: String
+    ) throws -> (IndexDescriptor, VectorIndexKind<T>) {
+        guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
+            throw VectorQueryError.indexNotFound(indexName)
+        }
+        let kind = try VectorIndexKind<T>(canonical: descriptor.kind)
+        guard kind.fieldNames == [fieldName] else {
+            throw VectorQueryError.indexFieldMismatch(indexName)
+        }
+        guard kind.dimensions == dimensions else {
+            throw VectorQueryError.dimensionMismatch(
+                expected: kind.dimensions,
+                actual: dimensions
+            )
+        }
+        guard kind.metric.rawValue == distanceMetric.rawValue else {
+            throw VectorQueryError.metricMismatch(
+                expected: kind.metric.rawValue,
+                actual: distanceMetric.rawValue
+            )
+        }
+        return (descriptor, kind)
     }
 
     /// Build the index name based on type and field
@@ -660,7 +667,6 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
         fieldName: String,
         dimensions: Int
     ) {
-        VectorQueryRuntime.ensureRegistered()
         self.base = base
         self.fieldName = fieldName
         self.dimensions = dimensions
@@ -729,9 +735,9 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
 
         let parameters: [String: QueryParameterValue] = [
             VectorReadParameter.fieldName: .string(fieldName),
-            VectorReadParameter.dimensions: .int(Int64(dimensions)),
+            VectorReadParameter.dimensions: .int64(Int64(dimensions)),
             VectorReadParameter.queryVector: .array(vector.map { .double(Double($0)) }),
-            VectorReadParameter.k: .int(Int64(k)),
+            VectorReadParameter.k: .int64(Int64(k)),
             VectorReadParameter.metric: .string(distanceMetric.rawValue)
         ]
 
@@ -862,6 +868,12 @@ public enum VectorQueryError: Error, CustomStringConvertible {
     /// Index not found
     case indexNotFound(String)
 
+    /// The named index does not cover the requested field.
+    case indexFieldMismatch(String)
+
+    /// The requested metric differs from the index construction metric.
+    case metricMismatch(expected: String, actual: String)
+
     /// Filter not supported for this index type
     case filterNotSupported(String)
 
@@ -876,6 +888,10 @@ public enum VectorQueryError: Error, CustomStringConvertible {
             return "Vector dimension mismatch: expected \(expected), got \(actual)"
         case .indexNotFound(let name):
             return "Vector index not found: \(name)"
+        case .indexFieldMismatch(let name):
+            return "Vector index '\(name)' does not match the requested field"
+        case .metricMismatch(let expected, let actual):
+            return "Vector metric mismatch: expected \(expected), got \(actual)"
         case .filterNotSupported(let reason):
             return "Filter not supported: \(reason)"
         case .closureFilterUnsupported:

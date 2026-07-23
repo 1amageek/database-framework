@@ -1,6 +1,6 @@
-import Foundation
 import StorageKit
 import Core
+import DatabaseValue
 import Logging
 
 /// Internal storage abstraction for FoundationDB
@@ -56,7 +56,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     private let defaultPointReadPrefix: Bytes?
 
     /// Index state manager for checking index readability
-    let indexStateManager: IndexStateManager
+    let indexLifecycleStore: IndexLifecycleStore
 
     /// Violation tracker for uniqueness constraint violations
     ///
@@ -66,6 +66,9 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Index maintenance service for all index operations
     let indexMaintenanceService: IndexMaintenanceService
+
+    /// Container-wide derived record invariants.
+    private let recordMutationMaintenanceService: RecordMutationMaintenanceService
 
     // MARK: - Initialization
 
@@ -82,7 +85,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         self.subspace = subspace
         self.schema = container.schema
         self.logger = logger ?? Logger(label: "com.fdb.runtime.datastore")
-        self.metricsDelegate = metricsDelegate ?? MetricsDataStoreDelegate.shared
+        self.metricsDelegate = metricsDelegate ?? container.dataStoreDelegate
         self.securityDelegate = securityDelegate
         self.itemSubspace = subspace.subspace(SubspaceKey.items)
         self.indexSubspace = subspace.subspace(SubspaceKey.indexes)
@@ -98,7 +101,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         } else {
             self.defaultPointReadPrefix = nil
         }
-        self.indexStateManager = IndexStateManager(
+        self.indexLifecycleStore = IndexLifecycleStore(
             container: container,
             subspace: subspace,
             logger: logger
@@ -108,11 +111,16 @@ internal final class FDBDataStore: DataStore, Sendable {
             metadataSubspace: subspace.subspace(SubspaceKey.metadata)
         )
         self.indexMaintenanceService = IndexMaintenanceService(
-            indexStateManager: indexStateManager,
+            indexLifecycleStore: indexLifecycleStore,
             violationTracker: violationTracker,
             indexSubspace: indexSubspace,
+            maintainerProviders: container.runtimeConfiguration.indexMaintainerProviders,
             configurations: indexConfigurations,
             logger: logger
+        )
+        self.recordMutationMaintenanceService = RecordMutationMaintenanceService(
+            container: container,
+            maintainers: container.runtimeConfiguration.recordMutationMaintainers
         )
     }
 
@@ -157,7 +165,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         do {
             let results: [T] = try await container.engine.withTransaction(configuration: .default) { transaction in
                 // Use ItemStorage for proper handling of large values
-                let storage = ItemStorage(
+                let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
                     blobsSubspace: self.blobsSubspace
                 )
@@ -183,9 +191,9 @@ internal final class FDBDataStore: DataStore, Sendable {
     }
 
     /// Fetch a single model by ID
-    func fetch<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws -> T? {
+    func fetch<T: Persistable>(_ type: T.Type, id: T.ID) async throws -> T? {
         let result: T? = try await withAutoCommit { [self] transaction in
-            try await self.fetchByIdInTransaction(type, id: id, transaction: transaction)
+            try await self.fetchByIDInTransaction(type, id: id, transaction: transaction)
         }
 
         return result
@@ -236,7 +244,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Check index state - only use readable indexes for queries
-        let indexState = try await indexStateManager.state(of: matchingIndex.name)
+        let indexState = try await indexLifecycleStore.state(of: matchingIndex.name)
         guard indexState.isReadable else {
             logger.debug("Index '\(matchingIndex.name)' is not readable (state: \(indexState)), falling back to scan")
             return nil
@@ -245,7 +253,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Build index scan range based on condition OUTSIDE transaction
         let indexSubspaceForIndex = indexSubspace.subspace(matchingIndex.name)
         let valueTuple = condition.valueTuple
-        let keyPathsCount = matchingIndex.keyPaths.count
+        let indexedFieldCount = matchingIndex.fieldNames.count
 
         // Build value subspace using flat encoding (prefix + tuple.pack())
         // NOTE: Do NOT use indexSubspaceForIndex.subspace(valueTuple) because
@@ -264,22 +272,22 @@ internal final class FDBDataStore: DataStore, Sendable {
         case .greaterThan:
             let beginKey = valueSubspace.range().1  // End of value range = start after
             let (_, endKey) = indexSubspaceForIndex.range()
-            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: indexedFieldCount)
 
         case .greaterThanOrEqual:
             let beginKey = indexSubspaceForIndex.pack(valueTuple)
             let (_, endKey) = indexSubspaceForIndex.range()
-            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: indexedFieldCount)
 
         case .lessThan:
             let (beginKey, _) = indexSubspaceForIndex.range()
             let endKey = indexSubspaceForIndex.pack(valueTuple)
-            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: indexedFieldCount)
 
         case .lessThanOrEqual:
             let (beginKey, _) = indexSubspaceForIndex.range()
             let endKey = valueSubspace.range().1
-            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: indexedFieldCount)
 
         default:
             // Other comparisons (contains, hasPrefix, etc.) are not index-optimizable
@@ -308,7 +316,10 @@ internal final class FDBDataStore: DataStore, Sendable {
                     streamingMode: streamingMode
                 )
                 for (key, _) in sequence {
-                    if let idTuple = self.extractIDFromIndexKey(key, subspace: valueSubspace) {
+                    if let idTuple = try self.extractIDFromIndexKey(
+                        key,
+                        subspace: valueSubspace
+                    ) {
                         ids.append(idTuple)
                     }
                 }
@@ -324,7 +335,11 @@ internal final class FDBDataStore: DataStore, Sendable {
                     streamingMode: streamingMode
                 )
                 for (key, _) in sequence {
-                    if let idTuple = self.extractIDFromIndexKey(key, baseSubspace: baseSubspace, keyPathsCount: keyPathsCount) {
+                    if let idTuple = try self.extractIDFromIndexKey(
+                        key,
+                        baseSubspace: baseSubspace,
+                        keyPathsCount: keyPathsCount
+                    ) {
                         ids.append(idTuple)
                     }
                 }
@@ -355,9 +370,9 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Represents a pre-computed index scan range (Sendable)
     private enum IndexScanRange: Sendable {
-        case exactMatch(begin: [UInt8], end: [UInt8], valueSubspace: Subspace)
+        case exactMatch(begin: Bytes, end: Bytes, valueSubspace: Subspace)
         /// Range scan with keyPathsCount to know how many elements are index values vs ID
-        case range(begin: [UInt8], end: [UInt8], baseSubspace: Subspace, keyPathsCount: Int)
+        case range(begin: Bytes, end: Bytes, baseSubspace: Subspace, keyPathsCount: Int)
     }
 
     /// Extract a simple indexable condition from a predicate
@@ -439,13 +454,11 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Priority 1: Find compound index matching multiple equals conditions
         for descriptor in descriptors {
-            guard descriptor.keyPaths.count > 1 else { continue }
+            guard descriptor.fieldNames.count > 1 else { continue }
 
-            // Check if first keyPaths have matching equals conditions
+            // Check whether the leading indexed fields have equality conditions.
             var matchCount = 0
-            for keyPath in descriptor.keyPaths {
-                guard let partialKeyPath = keyPath as? PartialKeyPath<T> else { break }
-                let fieldName = T.fieldName(for: partialKeyPath)
+            for fieldName in descriptor.fieldNames {
                 if let condition = conditionsByField[fieldName], condition.op == .equal {
                     matchCount += 1
                 } else {
@@ -457,11 +470,7 @@ internal final class FDBDataStore: DataStore, Sendable {
                 var tupleElements: [any TupleElement] = []
                 var firstFieldName: String?
 
-                for keyPath in descriptor.keyPaths.prefix(matchCount) {
-                    guard let partialKeyPath = keyPath as? PartialKeyPath<T> else {
-                        break
-                    }
-                    let fieldName = T.fieldName(for: partialKeyPath)
+                for fieldName in descriptor.fieldNames.prefix(matchCount) {
                     guard let condition = conditionsByField[fieldName],
                           condition.op == .equal else {
                         break
@@ -509,14 +518,10 @@ internal final class FDBDataStore: DataStore, Sendable {
         in descriptors: [IndexDescriptor],
         type: T.Type
     ) -> IndexDescriptor? {
-        // Find an index where the first keyPath matches the condition's field
+        // Find an index where the leading field matches the condition.
         for descriptor in descriptors {
-            if let firstKeyPath = descriptor.keyPaths.first,
-               let partialKeyPath = firstKeyPath as? PartialKeyPath<T> {
-                let fieldName = T.fieldName(for: partialKeyPath)
-                if fieldName == condition.fieldName {
-                    return descriptor
-                }
+            if descriptor.fieldNames.first == condition.fieldName {
+                return descriptor
             }
         }
         return nil
@@ -528,7 +533,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     private func valueToTuple(_ value: Any) throws -> Tuple {
         // Handle FieldValue first (most common case after refactoring)
         if let fieldValue = value as? FieldValue {
-            return Tuple([fieldValue.toTupleElement()])
+            return Tuple([try fieldValue.toTupleElement()])
         }
 
         // Handle values that are already TupleElement
@@ -542,15 +547,13 @@ internal final class FDBDataStore: DataStore, Sendable {
     }
 
     /// Extract ID from an index key given a value subspace
-    private func extractIDFromIndexKey(_ key: [UInt8], subspace: Subspace) -> Tuple? {
-        do {
-            let tuple = try subspace.unpack(key)
-            // The tuple should be the ID portion
-            if tuple.count > 0 {
-                return tuple
-            }
-        } catch {
-            // Key doesn't belong to this subspace
+    private func extractIDFromIndexKey(
+        _ key: Bytes,
+        subspace: Subspace
+    ) throws -> Tuple? {
+        let tuple = try subspace.unpack(key)
+        if tuple.count > 0 {
+            return tuple
         }
         return nil
     }
@@ -564,32 +567,27 @@ internal final class FDBDataStore: DataStore, Sendable {
     ///   - key: The raw key bytes
     ///   - baseSubspace: The index subspace
     ///   - keyPathsCount: Number of index key paths (determines how many elements are values vs ID)
-    private func extractIDFromIndexKey(_ key: [UInt8], baseSubspace: Subspace, keyPathsCount: Int) -> Tuple? {
-        do {
-            let tuple = try baseSubspace.unpack(key)
-            // tuple = [value1, value2, ..., id1, id2, ...]
-            // Skip first keyPathsCount elements (index values), rest is ID
-            guard tuple.count > keyPathsCount else {
-                return nil
-            }
-
-            // Extract ID elements (everything after index values)
-            var idElements: [any TupleElement] = []
-            for i in keyPathsCount..<tuple.count {
-                if let element = tuple[i] {
-                    idElements.append(element)
-                }
-            }
-
-            guard !idElements.isEmpty else {
-                return nil
-            }
-
-            return Tuple(idElements)
-        } catch {
-            // Key doesn't belong to this subspace
+    private func extractIDFromIndexKey(
+        _ key: Bytes,
+        baseSubspace: Subspace,
+        keyPathsCount: Int
+    ) throws -> Tuple? {
+        let tuple = try baseSubspace.unpack(key)
+        guard tuple.count > keyPathsCount else {
+            return nil
         }
-        return nil
+
+        var idElements: [any TupleElement] = []
+        idElements.reserveCapacity(tuple.count - keyPathsCount)
+        for index in keyPathsCount..<tuple.count {
+            if let element = tuple[index] {
+                idElements.append(element)
+            }
+        }
+        guard !idElements.isEmpty else {
+            return nil
+        }
+        return Tuple(idElements)
     }
 
     /// Fetch models by IDs (parallel reads for 10-30× speedup)
@@ -600,7 +598,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let keys = ids.map { typeSubspace.pack($0) }
 
         return try await container.engine.withTransaction(configuration: .default) { transaction in
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
             )
@@ -783,14 +781,18 @@ internal final class FDBDataStore: DataStore, Sendable {
                type: T.self,
                limit: query.fetchLimit,
                forcedIndexName: query.forcedIndex?.indexName,
-               transaction: transaction
+               transaction: transaction,
+               workMeter: query.executionWorkMeter
            ) {
             results = indexResult.models
 
             // If index didn't cover all predicate conditions, apply remaining filters
             if indexResult.needsPostFiltering {
-                results = results.filter { model in
-                    evaluatePredicate(predicate, on: model)
+                results = try results.filter { model in
+                    try query.executionWorkMeter?.consume(
+                        at: .filterEvaluation
+                    )
+                    return evaluatePredicate(predicate, on: model)
                 }
             }
         } else {
@@ -802,20 +804,35 @@ internal final class FDBDataStore: DataStore, Sendable {
                     "Forced index '\(query.forcedIndex!.indexName)' requires a filter predicate"
                 )
             }
-            results = try await fetchAllWithTransaction(T.self, transaction: transaction)
+            results = try await fetchAllWithTransaction(
+                T.self,
+                transaction: transaction,
+                workMeter: query.executionWorkMeter
+            )
 
             // Apply predicate filter
             if let predicate = combinedPredicate {
-                results = results.filter { model in
-                    evaluatePredicate(predicate, on: model)
+                results = try results.filter { model in
+                    try query.executionWorkMeter?.consume(
+                        at: .filterEvaluation
+                    )
+                    return evaluatePredicate(predicate, on: model)
                 }
             }
         }
 
         // Apply sorting
         if !query.sortDescriptors.isEmpty {
-            results.sort { lhs, rhs in
+            try query.executionWorkMeter?.consume(
+                UInt64(results.count),
+                at: .sortInput
+            )
+            try results.sort { lhs, rhs in
                 for sortDescriptor in query.sortDescriptors {
+                    try query.executionWorkMeter?.consume(
+                        2,
+                        at: .sortComparison
+                    )
                     let result = sortDescriptor.orderedComparison(lhs, rhs)
                     if result != .orderedSame {
                         return result == .orderedAscending
@@ -835,20 +852,26 @@ internal final class FDBDataStore: DataStore, Sendable {
             results = Array(results.prefix(limit))
         }
 
+        try query.executionWorkMeter?.consume(
+            UInt64(results.count),
+            at: .projection
+        )
+
         return results
     }
 
     /// Fetch all models with an existing transaction
     private func fetchAllWithTransaction<T: Persistable>(
         _ type: T.Type,
-        transaction: any Transaction
+        transaction: any Transaction,
+        workMeter: DatabaseWorkMeter?
     ) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
         let startTime = MonotonicClock.now()
 
         do {
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
             )
@@ -856,6 +879,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
             // ItemStorage.scan handles both inline and external (split) values transparently
             for try await (_, data) in storage.scan(begin: begin, end: end, snapshot: true) {
+                try workMeter?.consume(at: .storageRow)
                 let model: T = try DataAccess.deserialize(data)
                 results.append(model)
             }
@@ -884,7 +908,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         type: T.Type,
         limit: Int?,
         forcedIndexName: String? = nil,
-        transaction: any Transaction
+        transaction: any Transaction,
+        workMeter: DatabaseWorkMeter?
     ) async throws -> IndexFetchResult<T>? {
         // Restrict descriptors when a forced index hint is present.
         let candidateDescriptors: [IndexDescriptor]
@@ -912,7 +937,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Check index state - only use readable indexes for queries
         // Use transaction-aware overload to avoid nested transaction deadlock
-        let indexState = try await indexStateManager.state(of: matchingIndex.name, transaction: transaction)
+        let indexState = try await indexLifecycleStore.state(of: matchingIndex.name, transaction: transaction)
         guard indexState.isReadable else {
             logger.debug("Index '\(matchingIndex.name)' is not readable (state: \(indexState)), falling back to scan")
             return nil
@@ -921,7 +946,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Build index scan range based on condition
         let indexSubspaceForIndex = indexSubspace.subspace(matchingIndex.name)
         let valueTuple = condition.valueTuple
-        let keyPathsCount = matchingIndex.keyPaths.count
+        let indexedFieldCount = matchingIndex.fieldNames.count
 
         // Build value subspace using flat encoding (prefix + tuple.pack())
         // NOTE: Do NOT use indexSubspaceForIndex.subspace(valueTuple) because
@@ -940,22 +965,22 @@ internal final class FDBDataStore: DataStore, Sendable {
         case .greaterThan:
             let beginKey = valueSubspace.range().1  // End of value range = start after
             let (_, endKey) = indexSubspaceForIndex.range()
-            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: indexedFieldCount)
 
         case .greaterThanOrEqual:
             let beginKey = indexSubspaceForIndex.pack(valueTuple)
             let (_, endKey) = indexSubspaceForIndex.range()
-            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: indexedFieldCount)
 
         case .lessThan:
             let (beginKey, _) = indexSubspaceForIndex.range()
             let endKey = indexSubspaceForIndex.pack(valueTuple)
-            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: indexedFieldCount)
 
         case .lessThanOrEqual:
             let (beginKey, _) = indexSubspaceForIndex.range()
             let endKey = valueSubspace.range().1
-            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: indexedFieldCount)
 
         default:
             // Other comparisons (contains, hasPrefix, etc.) are not index-optimizable
@@ -963,25 +988,37 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Execute scan with provided transaction
-        let streamingMode: StreamingMode = StreamingMode.forQuery(limit: limit)
+        let storageLimit = try boundedStorageLimit(
+            requested: limit,
+            workMeter: workMeter
+        )
+        let streamingMode: StreamingMode = StreamingMode.forQuery(
+            limit: storageLimit
+        )
 
         var ids: [Tuple] = []
-        if let limit = limit {
-            ids.reserveCapacity(limit)
+        if let storageLimit {
+            ids.reserveCapacity(min(storageLimit, 4_096))
         }
+
+        try workMeter?.consume(at: .indexScan)
 
         switch scanRange {
         case .exactMatch(let begin, let end, let valueSubspace):
             let sequence = try await transaction.collectRange(
                 from: KeySelector.firstGreaterOrEqual(begin),
                 to: KeySelector.firstGreaterOrEqual(end),
-                limit: limit ?? 0,
+                limit: storageLimit ?? 0,
                 reverse: false,
                 snapshot: true,
                 streamingMode: streamingMode
             )
             for (key, _) in sequence {
-                if let idTuple = self.extractIDFromIndexKey(key, subspace: valueSubspace) {
+                try workMeter?.consume(at: .storageRow)
+                if let idTuple = try self.extractIDFromIndexKey(
+                    key,
+                    subspace: valueSubspace
+                ) {
                     ids.append(idTuple)
                 }
             }
@@ -990,13 +1027,18 @@ internal final class FDBDataStore: DataStore, Sendable {
             let sequence = try await transaction.collectRange(
                 from: KeySelector.firstGreaterOrEqual(begin),
                 to: KeySelector.firstGreaterOrEqual(end),
-                limit: limit ?? 0,
+                limit: storageLimit ?? 0,
                 reverse: false,
                 snapshot: true,
                 streamingMode: streamingMode
             )
             for (key, _) in sequence {
-                if let idTuple = self.extractIDFromIndexKey(key, baseSubspace: baseSubspace, keyPathsCount: keyPathsCount) {
+                try workMeter?.consume(at: .storageRow)
+                if let idTuple = try self.extractIDFromIndexKey(
+                    key,
+                    baseSubspace: baseSubspace,
+                    keyPathsCount: keyPathsCount
+                ) {
                     ids.append(idTuple)
                 }
             }
@@ -1008,7 +1050,12 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Fetch models by IDs with provided transaction
-        var models = try await fetchByIdsWithTransaction(T.self, ids: ids, transaction: transaction)
+        var models = try await fetchByIdsWithTransaction(
+            T.self,
+            ids: ids,
+            transaction: transaction,
+            workMeter: workMeter
+        )
 
         // Apply GET security filter
         if let delegate = securityDelegate {
@@ -1025,15 +1072,18 @@ internal final class FDBDataStore: DataStore, Sendable {
     private func fetchByIdsWithTransaction<T: Persistable>(
         _ type: T.Type,
         ids: [Tuple],
-        transaction: any Transaction
+        transaction: any Transaction,
+        workMeter: DatabaseWorkMeter?
     ) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let keys = ids.map { typeSubspace.pack($0) }
 
-        let storage = ItemStorage(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: self.blobsSubspace
         )
+
+        try workMeter?.consume(UInt64(keys.count), at: .storageRow)
 
         // Parallel reads within the same transaction
         return try await withThrowingTaskGroup(of: (Int, T?).self) { group in
@@ -1057,6 +1107,16 @@ internal final class FDBDataStore: DataStore, Sendable {
 
             return indexed.compactMap { $0.1 }
         }
+    }
+
+    private func boundedStorageLimit(
+        requested: Int?,
+        workMeter: DatabaseWorkMeter?
+    ) throws -> Int? {
+        guard let workMeter else { return requested }
+        let budgetLimit = try workMeter.storageReadLimitWithSentinel()
+        guard let requested else { return budgetLimit }
+        return max(1, min(requested, budgetLimit))
     }
 
     /// Fetch count within an existing transaction
@@ -1107,18 +1167,37 @@ internal final class FDBDataStore: DataStore, Sendable {
     ///   - transaction: The transaction to use
     /// - Returns: The model if found, nil if not found
     /// - Throws: SecurityError if GET not allowed, or other errors on failure
-    func fetchByIdInTransaction<T: Persistable>(
+    func fetchByIDInTransaction<T: Persistable>(
         _ type: T.Type,
-        id: any TupleElement,
+        id: T.ID,
         transaction: any Transaction
     ) async throws -> T? {
-        let key = itemKey(for: T.persistableType, id: id)
+        let identifier = try RecordIdentifierKeyCodec.tuple(for: id)
+        return try await fetchByIdentifierTupleInTransaction(
+            type,
+            identifier: identifier,
+            transaction: transaction
+        )
+    }
 
-        guard let bytes = try await ItemStorage.read(
+    /// Fetches a record from an identifier tuple already produced by an index.
+    ///
+    /// Callers must validate the tuple against `T.recordIdentifierType` before
+    /// entering this storage-only path. Keeping the original tuple avoids an
+    /// otherwise redundant logical-value-to-tuple conversion.
+    func fetchByIdentifierTupleInTransaction<T: Persistable>(
+        _ type: T.Type,
+        identifier: Tuple,
+        transaction: any Transaction,
+        snapshot: Bool = false
+    ) async throws -> T? {
+        let key = itemKey(for: T.persistableType, id: identifier)
+
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
-            blobsSubspace: self.blobsSubspace,
-            for: key
-        ) else {
+            blobsSubspace: self.blobsSubspace
+        )
+        guard let bytes = try await storage.read(for: key, snapshot: snapshot) else {
             return nil
         }
 
@@ -1133,15 +1212,8 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     private func itemKey(
         for persistableType: String,
-        id: any TupleElement
+        id: Tuple
     ) -> Bytes {
-        let encodedID: Bytes
-        if let tuple = id as? Tuple {
-            encodedID = tuple.pack()
-        } else {
-            encodedID = id.encodeTuple()
-        }
-
         let keyPrefix: Bytes
         if persistableType == defaultPersistableType, let defaultPointReadPrefix {
             keyPrefix = defaultPointReadPrefix
@@ -1152,11 +1224,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             prefix.append(contentsOf: encodedType)
             keyPrefix = prefix
         }
-
-        var key = keyPrefix
-        key.reserveCapacity(key.count + encodedID.count)
-        key.append(contentsOf: encodedID)
-        return key
+        return Subspace(prefix: keyPrefix).pack(id)
     }
 
     /// Count all models with an existing transaction
@@ -1195,8 +1263,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Build value subspace using flat encoding (see fetchUsingIndexWithTransaction comment)
         let valueSubspace = Subspace(prefix: indexSubspaceForIndex.prefix + valueTuple.pack())
 
-        let beginKey: [UInt8]
-        let endKey: [UInt8]
+        let beginKey: Bytes
+        let endKey: Bytes
 
         switch condition.op {
         case .equal:
@@ -1243,8 +1311,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         let valueTuple = condition.valueTuple
 
         // Compute key range outside transaction to avoid capturing non-Sendable condition
-        let beginKey: [UInt8]
-        let endKey: [UInt8]
+        let beginKey: Bytes
+        let endKey: Bytes
 
         switch condition.op {
         case .equal:
@@ -1401,11 +1469,9 @@ internal final class FDBDataStore: DataStore, Sendable {
         _ model: T,
         transaction: any Transaction
     ) async throws {
-        // Validate and get ID
-        let validatedID = try model.validateIDForStorage()
-        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+        let idTuple = try model.recordIdentifierTuple()
 
-        // Serialize using Protobuf via DataAccess
+        // Serialize using the canonical compiled-record codec.
         let data = try DataAccess.serialize(model)
 
         // Build key
@@ -1413,7 +1479,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let key = typeSubspace.pack(idTuple)
 
         // Use ItemStorage for large value handling (stores chunks in blobs subspace)
-        let storage = ItemStorage(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: self.blobsSubspace
         )
@@ -1421,7 +1487,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Check for existing record (for index updates)
         let oldModel: T?
         if let existingBytes = try await storage.read(for: key) {
-            // Use Protobuf deserialization via DataAccess
+            // Decode using the canonical compiled-record codec.
             oldModel = try DataAccess.deserialize(existingBytes)
         } else {
             oldModel = nil
@@ -1432,6 +1498,11 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Update indexes via IndexMaintenanceService
         try await indexMaintenanceService.updateIndexes(oldModel: oldModel, newModel: model, id: idTuple, transaction: transaction)
+        try await recordMutationMaintenanceService.update(
+            oldModel: oldModel,
+            newModel: model,
+            transaction: transaction
+        )
     }
 
     // MARK: - Delete Operations
@@ -1467,17 +1538,21 @@ internal final class FDBDataStore: DataStore, Sendable {
         _ model: T,
         transaction: any Transaction
     ) async throws {
-        let validatedID = try model.validateIDForStorage()
-        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+        let idTuple = try model.recordIdentifierTuple()
 
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
         // Remove index entries first via IndexMaintenanceService
         try await indexMaintenanceService.updateIndexes(oldModel: model, newModel: nil as T?, id: idTuple, transaction: transaction)
+        try await recordMutationMaintenanceService.update(
+            oldModel: model,
+            newModel: nil,
+            transaction: transaction
+        )
 
         // Delete the record (handles external blob chunks)
-        let storage = ItemStorage(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: self.blobsSubspace
         )
@@ -1485,24 +1560,29 @@ internal final class FDBDataStore: DataStore, Sendable {
     }
 
     /// Delete model by ID
-    func delete<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws {
-        let idTuple = (id as? Tuple) ?? Tuple([id])
+    func delete<T: Persistable>(_ type: T.Type, id: T.ID) async throws {
+        let idTuple = try RecordIdentifierKeyCodec.tuple(for: id)
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
         try await container.engine.withTransaction(configuration: .default) { transaction in
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
             )
 
             // Load the model first for index cleanup
             if let bytes = try await storage.read(for: key) {
-                // Use Protobuf deserialization via DataAccess
+                // Decode using the canonical compiled-record codec.
                 let model: T = try DataAccess.deserialize(bytes)
 
                 // Remove index entries via IndexMaintenanceService
                 try await self.indexMaintenanceService.updateIndexes(oldModel: model, newModel: nil as T?, id: idTuple, transaction: transaction)
+                try await self.recordMutationMaintenanceService.update(
+                    oldModel: model,
+                    newModel: nil,
+                    transaction: transaction
+                )
             }
 
             // Delete the record (handles external blob chunks)
@@ -1641,10 +1721,9 @@ internal final class FDBDataStore: DataStore, Sendable {
         insertPreconditions: [WritePrecondition],
         deletePreconditions: [WritePrecondition]
     ) async throws -> [SerializedModel] {
-        let encoder = ProtobufEncoder()
         var serializedModels: [SerializedModel] = []
 
-        // Process inserts with single encoder
+        // Process inserts.
         for (index, model) in inserts.enumerated() {
             let precondition = insertPreconditions.indices.contains(index)
                 ? insertPreconditions[index]
@@ -1665,7 +1744,6 @@ internal final class FDBDataStore: DataStore, Sendable {
             let serialized = try await saveModelUntypedWithSecurityReturningData(
                 model,
                 transaction: transaction,
-                encoder: encoder,
                 skipExistingCheck: canSkip,
                 precondition: precondition
             )
@@ -1678,18 +1756,9 @@ internal final class FDBDataStore: DataStore, Sendable {
                 ? deletePreconditions[index]
                 : WritePrecondition.none
 
-            // Skip blob cleanup when security is disabled and no indexes:
-            // blob chunks only exist for >90KB items, and the clearRange DELETE
-            // query is unnecessary overhead for typical inline-sized records.
-            let hasIndexes = !type(of: model).indexDescriptors.isEmpty
-            let canSkipBlobs = skipExistingCheck
-                && securityDelegate == nil
-                && !hasIndexes
-                && precondition == .none
             try await deleteModelUntyped(
                 model,
                 transaction: transaction,
-                skipBlobCleanup: canSkipBlobs,
                 precondition: precondition
             )
         }
@@ -1714,7 +1783,6 @@ internal final class FDBDataStore: DataStore, Sendable {
         transaction: any Transaction,
         preconditions: [WritePrecondition] = []
     ) async throws -> [SerializedModel] {
-        let encoder = ProtobufEncoder()
         var results: [SerializedModel] = []
         results.reserveCapacity(pairs.count)
         for (index, pair) in pairs.enumerated() {
@@ -1724,7 +1792,6 @@ internal final class FDBDataStore: DataStore, Sendable {
             let serialized = try await saveModelUntypedWithSecurityReturningData(
                 pair.new,
                 transaction: transaction,
-                encoder: encoder,
                 skipExistingCheck: false,
                 providedOld: pair.old,
                 precondition: precondition
@@ -1779,7 +1846,6 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// - Parameters:
     ///   - model: The model to save
     ///   - transaction: The transaction to use
-    ///   - encoder: Reusable Protobuf encoder
     ///   - skipExistingCheck: When true, skips reading existing record from storage.
     ///     The caller (executeBatchInTransaction) ensures this is only true when ALL of:
     ///     (1) security is disabled, (2) model type has no indexes, and
@@ -1788,27 +1854,24 @@ internal final class FDBDataStore: DataStore, Sendable {
     private func saveModelUntypedWithSecurityReturningData(
         _ model: any Persistable,
         transaction: any Transaction,
-        encoder: ProtobufEncoder,
         skipExistingCheck: Bool = false,
         providedOld: (any Persistable)? = nil,
         precondition: WritePrecondition = .none
     ) async throws -> SerializedModel {
         let modelType = type(of: model)
         let persistableType = modelType.persistableType
-        let validatedID = try validateID(model.id, for: persistableType)
-        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+        let idTuple = try model.recordIdentifierTuple()
 
         let key = itemKey(for: persistableType, id: idTuple)
 
         // Use ItemStorage for large value handling (stores chunks in blobs subspace)
-        let storage = ItemStorage(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: self.blobsSubspace
         )
 
         // Check for existing record and deserialize for security evaluation and index update
         var oldModel: (any Persistable)?
-        let isNewRecord: Bool
         let existingRowPresent: Bool
 
         if let providedOld {
@@ -1832,21 +1895,17 @@ internal final class FDBDataStore: DataStore, Sendable {
             if let oldModel {
                 try securityDelegate?.evaluateUpdate(oldModel, newResource: model)
             }
-            isNewRecord = false
         } else if skipExistingCheck {
             // Fast path: caller guarantees this is a new insert with no security checks needed
-            isNewRecord = true
             existingRowPresent = false
         } else if let oldData = try await storage.read(for: key) {
             // Update - deserialize old model (used for both security and index update)
             oldModel = try DataAccess.deserializeAny(oldData, as: modelType)
             try securityDelegate?.evaluateUpdate(oldModel!, newResource: model)
-            isNewRecord = false
             existingRowPresent = true
         } else {
             // Create
             try securityDelegate?.evaluateCreate(model)
-            isNewRecord = true
             existingRowPresent = false
         }
 
@@ -1860,18 +1919,20 @@ internal final class FDBDataStore: DataStore, Sendable {
             idDescription: String(describing: model.id)
         )
 
-        // Serialize using Protobuf (encoder reused across all models)
-        let data = Array(try encoder.encode(model))
+        let data = try DatabaseRecordStorageCodec.encode(model)
 
-        // Save the record (handles compression + external storage for >90KB)
-        // Skip blob cleanup for known new records (no old blobs to clear)
-        try await storage.write(data, for: key, isNewRecord: isNewRecord)
+        try await storage.write(data, for: key)
 
         // Update indexes via IndexMaintenanceService (efficient diff-based update)
         try await indexMaintenanceService.updateIndexesUntyped(
             oldModel: oldModel,
             newModel: model,
             id: idTuple,
+            transaction: transaction
+        )
+        try await recordMutationMaintenanceService.update(
+            oldModel: oldModel,
+            newModel: model,
             transaction: transaction
         )
 
@@ -1890,7 +1951,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     private static func evaluateWritePrecondition(
         _ precondition: WritePrecondition,
         existingRowPresent: Bool,
-        currentVersion: [UInt8]?,
+        currentVersion: DatabaseBytes?,
         typeName: String,
         idDescription: String
     ) throws {
@@ -1945,14 +2006,11 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
     }
 
-    private static func recordVersionDigest(for model: any Persistable) -> [UInt8] {
-        let modelType = type(of: model)
-        let fields = Dictionary(
-            uniqueKeysWithValues: modelType.allFields.map { fieldName in
-                (fieldName, FieldReader.readFieldValue(from: model, fieldName: fieldName))
-            }
-        )
-        return Array(RecordVersionTokenCodec.digest(fields: fields))
+    private static func recordVersionDigest(
+        for model: any Persistable
+    ) throws -> DatabaseBytes {
+        let fields = try DatabaseRecordEncoder.encode(model)
+        return try RecordVersionTokenCodec.digest(fields: fields)
     }
 
     /// Delete model without type parameter (for batch operations)
@@ -1960,17 +2018,13 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// - Parameters:
     ///   - model: The model to delete
     ///   - transaction: The transaction to use
-    ///   - skipBlobCleanup: When true, skips clearing blob chunks in storage.
-    ///     Safe when security is disabled and no indexes exist (inline-only data).
     private func deleteModelUntyped(
         _ model: any Persistable,
         transaction: any Transaction,
-        skipBlobCleanup: Bool = false,
         precondition: WritePrecondition = .none
     ) async throws {
         let persistableType = type(of: model).persistableType
-        let validatedID = try validateID(model.id, for: persistableType)
-        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+        let idTuple = try model.recordIdentifierTuple()
 
         let key = itemKey(for: persistableType, id: idTuple)
 
@@ -1983,7 +2037,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             || !type(of: model).indexDescriptors.isEmpty
             || securityDelegate != nil
         if needsCurrentRow {
-            let storageProbe = ItemStorage(
+            let storageProbe = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
             )
@@ -1998,7 +2052,9 @@ internal final class FDBDataStore: DataStore, Sendable {
                 try Self.evaluateWritePrecondition(
                     precondition,
                     existingRowPresent: existingRowPresent,
-                    currentVersion: existingRowPresent ? Self.recordVersionDigest(for: indexOldModel) : nil,
+                    currentVersion: existingRowPresent
+                        ? try Self.recordVersionDigest(for: indexOldModel)
+                        : nil,
                     typeName: persistableType,
                     idDescription: String(describing: model.id)
                 )
@@ -2014,13 +2070,17 @@ internal final class FDBDataStore: DataStore, Sendable {
             id: idTuple,
             transaction: transaction
         )
+        try await recordMutationMaintenanceService.update(
+            oldModel: indexOldModel,
+            newModel: nil,
+            transaction: transaction
+        )
 
-        // Delete the record (skip blob cleanup when caller guarantees inline-only data)
-        let storage = ItemStorage(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: self.blobsSubspace
         )
-        try await storage.delete(for: key, skipBlobCleanup: skipBlobCleanup)
+        try await storage.delete(for: key)
     }
 
     // MARK: - Predicate Evaluation
@@ -2061,12 +2121,12 @@ internal final class FDBDataStore: DataStore, Sendable {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             let typeSubspace = self.itemSubspace.subspace(T.persistableType)
             let (begin, end) = typeSubspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
 
             // Also clear indexes for this type
             for descriptor in T.indexDescriptors {
                 let indexRange = self.indexSubspace.subspace(descriptor.name).range()
-                transaction.clearRange(beginKey: indexRange.0, endKey: indexRange.1)
+                try transaction.clearRange(beginKey: indexRange.0, endKey: indexRange.1)
             }
         }
     }
@@ -2089,7 +2149,8 @@ internal final class FDBDataStore: DataStore, Sendable {
                 indexSubspace: self.indexSubspace,
                 blobsSubspace: self.blobsSubspace,
                 indexMaintenanceService: self.indexMaintenanceService,
-                securityDelegate: self.securityDelegate
+                securityDelegate: self.securityDelegate,
+                itemStorageFactory: self.container.itemStorageFactory
             )
             return try await operation(context)
         }

@@ -13,6 +13,7 @@ import Synchronization
 import TestSupport
 @testable import Core
 @testable import DatabaseEngine
+import DatabaseRuntime
 
 /// Tests for DBConfiguration and IndexConfiguration API
 @Suite("DBConfiguration Tests", .serialized, .heartbeat)
@@ -21,10 +22,10 @@ struct DBConfigurationTests {
     // MARK: - Test Models
 
     @Persistable
-    struct ConfigTestUser {
-        #Directory<ConfigTestUser>("config_tests", "users")
-        #Index(ScalarIndexKind<ConfigTestUser>(fields: [\.name]))
-        #Index(ScalarIndexKind<ConfigTestUser>(fields: [\.embedding]))
+    struct IndexConfigurationUser {
+        #Directory<IndexConfigurationUser>("config_tests", "users")
+        #Index(ScalarIndexKind<IndexConfigurationUser>(fields: [\.name]))
+        #Index(ScalarIndexKind<IndexConfigurationUser>(fields: [\.embedding]))
 
         var name: String = ""
         var embedding: [Float] = []
@@ -34,24 +35,25 @@ struct DBConfigurationTests {
 
     @Test("DBContainer accepts indexConfigurations")
     func singleConfigurationAPI() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([ConfigTestUser.self])
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([IndexConfigurationUser.self])
 
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
                 indexConfigurations: [
-                    TestVectorConfig(
+                    ContainerEmbeddingConfiguration(
                         fieldName: "embedding",
-                        modelTypeName: "ConfigTestUser",
+                        modelTypeName: "IndexConfigurationUser",
                         dimensions: 512,
-                        testValue: "single-config-test"
+                        profileIdentifier: "single-config-test"
                     )
                 ]
             ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
 
@@ -62,22 +64,23 @@ struct DBConfigurationTests {
 
     @Test("DBContainer groups multiple configurations by indexName")
     func multipleConfigurationsGroupedByIndexName() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([ConfigTestUser.self])
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([IndexConfigurationUser.self])
 
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
                 indexConfigurations: [
-                    TestFullTextConfig(fieldName: "name", modelTypeName: "ConfigTestUser", language: "en"),
-                    TestFullTextConfig(fieldName: "name", modelTypeName: "ConfigTestUser", language: "ja"),
-                    TestFullTextConfig(fieldName: "name", modelTypeName: "ConfigTestUser", language: "zh"),
-                    TestVectorConfig(fieldName: "embedding", modelTypeName: "ConfigTestUser", dimensions: 256, testValue: "test")
+                    ContainerLocalizedTextConfiguration(fieldName: "name", modelTypeName: "IndexConfigurationUser", language: "en"),
+                    ContainerLocalizedTextConfiguration(fieldName: "name", modelTypeName: "IndexConfigurationUser", language: "ja"),
+                    ContainerLocalizedTextConfiguration(fieldName: "name", modelTypeName: "IndexConfigurationUser", language: "zh"),
+                    ContainerEmbeddingConfiguration(fieldName: "embedding", modelTypeName: "IndexConfigurationUser", dimensions: 256, profileIdentifier: "test")
                 ]
             ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
 
@@ -88,14 +91,15 @@ struct DBConfigurationTests {
 
     @Test("DBContainer with empty indexConfigurations")
     func emptyIndexConfigurations() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([ConfigTestUser.self])
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([IndexConfigurationUser.self])
 
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
 
@@ -106,59 +110,61 @@ struct DBConfigurationTests {
 
     @Test("indexConfiguration(for:as:) returns correct typed configuration")
     func indexConfigurationTypedAccess() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([ConfigTestUser.self])
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([IndexConfigurationUser.self])
 
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
                 indexConfigurations: [
-                    TestVectorConfig(
+                    ContainerEmbeddingConfiguration(
                         fieldName: "embedding",
-                        modelTypeName: "ConfigTestUser",
+                        modelTypeName: "IndexConfigurationUser",
                         dimensions: 768,
-                        testValue: "typed-access"
+                        profileIdentifier: "typed-access"
                     )
                 ]
             ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
 
         let vectorConfig = container.indexConfiguration(
             for: "ConfigTestUser_embedding",
-            as: TestVectorConfig.self
+            as: ContainerEmbeddingConfiguration.self
         )
 
         #expect(vectorConfig != nil)
         #expect(vectorConfig?.dimensions == 768)
-        #expect(vectorConfig?.testValue == "typed-access")
+        #expect(vectorConfig?.profileIdentifier == "typed-access")
     }
 
     @Test("indexConfigurations(for:as:) returns all matching typed configurations")
     func indexConfigurationsTypedAccess() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([ConfigTestUser.self])
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([IndexConfigurationUser.self])
 
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
                 indexConfigurations: [
-                    TestFullTextConfig(fieldName: "name", modelTypeName: "ConfigTestUser", language: "en"),
-                    TestFullTextConfig(fieldName: "name", modelTypeName: "ConfigTestUser", language: "ja")
+                    ContainerLocalizedTextConfiguration(fieldName: "name", modelTypeName: "IndexConfigurationUser", language: "en"),
+                    ContainerLocalizedTextConfiguration(fieldName: "name", modelTypeName: "IndexConfigurationUser", language: "ja")
                 ]
             ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
 
         let ftConfigs = container.indexConfigurations(
             for: "ConfigTestUser_name",
-            as: TestFullTextConfig.self
+            as: ContainerLocalizedTextConfiguration.self
         )
 
         #expect(ftConfigs.count == 2)
@@ -174,8 +180,8 @@ struct DBConfigurationTests {
 struct DBConfigurationPropertiesTests {
 
     @Persistable
-    struct ConfigTestUser {
-        #Directory<ConfigTestUser>("config_tests", "users")
+    struct IndexConfigurationUser {
+        #Directory<IndexConfigurationUser>("config_tests", "users")
         var name: String = ""
         var embedding: [Float] = []
     }
@@ -183,7 +189,7 @@ struct DBConfigurationPropertiesTests {
     @Test("DBConfiguration stores all properties correctly")
     func allPropertiesStored() {
         let configs: [any IndexConfiguration] = [
-            TestVectorConfig(fieldName: "embedding", modelTypeName: "ConfigTestUser", dimensions: 128, testValue: "test")
+            ContainerEmbeddingConfiguration(fieldName: "embedding", modelTypeName: "IndexConfigurationUser", dimensions: 128, profileIdentifier: "test")
         ]
 
         let config = DBConfiguration(
@@ -210,7 +216,7 @@ struct DBConfigurationPropertiesTests {
             name: "debug-test",
             backend: .fdb(),
             indexConfigurations: [
-                TestVectorConfig(fieldName: "embedding", modelTypeName: "ConfigTestUser", dimensions: 64, testValue: "test")
+                ContainerEmbeddingConfiguration(fieldName: "embedding", modelTypeName: "IndexConfigurationUser", dimensions: 64, profileIdentifier: "test")
             ]
         )
 
@@ -222,33 +228,33 @@ struct DBConfigurationPropertiesTests {
 
 // MARK: - Test IndexConfiguration Implementations
 
-struct TestVectorConfig: IndexConfiguration, Sendable {
+struct ContainerEmbeddingConfiguration: IndexConfiguration, Sendable {
     static var kindIdentifier: String { "scalar" }
 
     let fieldName: String
     let _modelTypeName: String
     var modelTypeName: String { _modelTypeName }
-    var keyPath: AnyKeyPath { \DBConfigurationTests.ConfigTestUser.embedding }
+    var keyPath: AnyKeyPath { \DBConfigurationTests.IndexConfigurationUser.embedding }
     var indexName: String { "\(_modelTypeName)_\(fieldName)" }
 
     let dimensions: Int
-    let testValue: String
+    let profileIdentifier: String
 
-    init(fieldName: String, modelTypeName: String, dimensions: Int, testValue: String) {
+    init(fieldName: String, modelTypeName: String, dimensions: Int, profileIdentifier: String) {
         self.fieldName = fieldName
         self._modelTypeName = modelTypeName
         self.dimensions = dimensions
-        self.testValue = testValue
+        self.profileIdentifier = profileIdentifier
     }
 }
 
-struct TestFullTextConfig: IndexConfiguration, Sendable {
+struct ContainerLocalizedTextConfiguration: IndexConfiguration, Sendable {
     static var kindIdentifier: String { "scalar" }
 
     let fieldName: String
     let _modelTypeName: String
     var modelTypeName: String { _modelTypeName }
-    var keyPath: AnyKeyPath { \DBConfigurationTests.ConfigTestUser.name }
+    var keyPath: AnyKeyPath { \DBConfigurationTests.IndexConfigurationUser.name }
     var indexName: String { "\(_modelTypeName)_\(fieldName)" }
 
     let language: String

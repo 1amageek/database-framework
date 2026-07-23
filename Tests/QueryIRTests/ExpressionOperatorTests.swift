@@ -223,22 +223,22 @@ struct ExpressionOperatorTests {
 
     // MARK: - Expression Builder Helpers
 
-    @Test func columnHelper() {
+    @Test func columnBuildsUnqualifiedReference() {
         let col = Expression.col("name")
         #expect(col == .column(ColumnRef(column: "name")))
     }
 
-    @Test func qualifiedColumnHelper() {
+    @Test func columnBuildsQualifiedReference() {
         let col = Expression.col("users", "name")
         #expect(col == .column(ColumnRef(table: "users", column: "name")))
     }
 
-    @Test func variableHelper() {
+    @Test func variableBuildsReference() {
         let v = Expression.var("person")
         #expect(v == .variable(Variable("person")))
     }
 
-    @Test func literalHelpers() {
+    @Test func literalBuildersPreserveValues() {
         #expect(Expression.string("hello") == .literal(.string("hello")))
         #expect(Expression.int(42) == .literal(.int(42)))
         #expect(Expression.double(3.14) == .literal(.double(3.14)))

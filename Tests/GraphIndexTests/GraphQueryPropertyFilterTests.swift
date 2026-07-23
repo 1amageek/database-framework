@@ -5,6 +5,7 @@
 import Testing
 import Foundation
 import Core
+import DatabaseRuntime
 import Graph
 import DatabaseEngine
 import StorageKit
@@ -41,7 +42,7 @@ struct GraphQueryPropertyFilterTests {
     // MARK: - Setup
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     private func uniqueID(_ prefix: String) -> String {
@@ -53,12 +54,12 @@ struct GraphQueryPropertyFilterTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
 
 
-        try? await database.directoryService.remove(path: ["test", "social_edges_query"])
+        try? await database.removeDirectory(path: ["test", "social_edges_query"])
         try await container.ensureIndexesReady()
 
         return container

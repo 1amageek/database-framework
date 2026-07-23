@@ -4,7 +4,11 @@
 // Reference: FDB Record Layer IndexingMerger.java (violation tracking during merge)
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/IndexingMerger.java
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 import Logging
@@ -19,7 +23,7 @@ import Logging
 ///
 /// **Storage Format**:
 /// ```
-/// [metadataSubspace]/_violations/[indexName]/[valueKey] → ViolationRecord (JSON)
+/// [metadataSubspace]/_violations/[indexName]/[valueKey] → ViolationRecord (binary)
 /// ```
 ///
 /// **Lifecycle**:
@@ -109,7 +113,7 @@ public final class UniquenessViolationTracker: Sendable {
     public func recordViolation(
         indexName: String,
         persistableType: String,
-        valueKey: [UInt8],
+        valueKey: Bytes,
         primaryKey: Tuple,
         transaction: any Transaction
     ) async throws {
@@ -120,7 +124,7 @@ public final class UniquenessViolationTracker: Sendable {
         // Check if violation already exists
         if let existingData = try await transaction.getValue(for: key, snapshot: false) {
             // Parse existing violation and add new primary key
-            let violation = try JSONDecoder().decode(UniquenessViolation.self, from: Data(existingData))
+            let violation = try UniquenessViolationCodec.decode(existingData)
 
             // Check if this PK is already recorded
             if !violation.primaryKeys.contains(where: { $0 == pkBytes }) {
@@ -133,8 +137,10 @@ public final class UniquenessViolationTracker: Sendable {
                     detectedAt: violation.detectedAt
                 )
 
-                let data = try JSONEncoder().encode(updatedViolation)
-                transaction.setValue(Array(data), for: key)
+                try transaction.setValue(
+                    try UniquenessViolationCodec.encode(updatedViolation),
+                    for: key
+                )
 
                 logger.debug(
                     "Added primary key to existing violation",
@@ -157,8 +163,10 @@ public final class UniquenessViolationTracker: Sendable {
                 detectedAt: Date()
             )
 
-            let data = try JSONEncoder().encode(violation)
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(
+                try UniquenessViolationCodec.encode(violation),
+                for: key
+            )
 
             logger.info(
                 "Recorded new uniqueness violation",
@@ -182,7 +190,7 @@ public final class UniquenessViolationTracker: Sendable {
     public func recordViolation(
         indexName: String,
         persistableType: String,
-        valueKey: [UInt8],
+        valueKey: Bytes,
         existingPrimaryKey: Tuple,
         newPrimaryKey: Tuple,
         transaction: any Transaction
@@ -195,7 +203,7 @@ public final class UniquenessViolationTracker: Sendable {
 
         // Check if violation already exists
         if let existingData = try await transaction.getValue(for: key, snapshot: false) {
-            let violation = try JSONDecoder().decode(UniquenessViolation.self, from: Data(existingData))
+            let violation = try UniquenessViolationCodec.decode(existingData)
 
             // Merge primary keys
             var allPKs = violation.primaryKeys
@@ -214,8 +222,10 @@ public final class UniquenessViolationTracker: Sendable {
                 detectedAt: violation.detectedAt
             )
 
-            let data = try JSONEncoder().encode(updatedViolation)
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(
+                try UniquenessViolationCodec.encode(updatedViolation),
+                for: key
+            )
         } else {
             // Create new violation with both keys
             let violation = UniquenessViolation(
@@ -226,8 +236,10 @@ public final class UniquenessViolationTracker: Sendable {
                 detectedAt: Date()
             )
 
-            let data = try JSONEncoder().encode(violation)
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(
+                try UniquenessViolationCodec.encode(violation),
+                for: key
+            )
 
             logger.info(
                 "Recorded uniqueness violation",
@@ -286,10 +298,7 @@ public final class UniquenessViolationTracker: Sendable {
                 break
             }
 
-            let violation = try JSONDecoder().decode(
-                UniquenessViolation.self,
-                from: Data(value)
-            )
+            let violation = try UniquenessViolationCodec.decode(value)
             violations.append(violation)
             count += 1
         }
@@ -321,10 +330,7 @@ public final class UniquenessViolationTracker: Sendable {
         let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
         for (_, value) in sequence {
-            let violation = try JSONDecoder().decode(
-                UniquenessViolation.self,
-                from: Data(value)
-            )
+            let violation = try UniquenessViolationCodec.decode(value)
 
             if let maxLimit = limit {
                 let currentCount = result[violation.indexName]?.count ?? 0
@@ -407,7 +413,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// - Returns: Resolution result
     public func verifyResolution(
         indexName: String,
-        valueKey: [UInt8],
+        valueKey: Bytes,
         indexSubspace: Subspace
     ) async throws -> ViolationResolution {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
@@ -423,7 +429,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// Verify if a violation has been resolved within a transaction
     public func verifyResolution(
         indexName: String,
-        valueKey: [UInt8],
+        valueKey: Bytes,
         indexSubspace: Subspace,
         transaction: any Transaction
     ) async throws -> ViolationResolution {
@@ -435,21 +441,21 @@ public final class UniquenessViolationTracker: Sendable {
             return .notFound
         }
 
-        let violation = try JSONDecoder().decode(UniquenessViolation.self, from: Data(violationData))
+        let violation = try UniquenessViolationCodec.decode(violationData)
 
         // Check actual index for duplicates
         let valueSubspace = Subspace(prefix: indexSubspace.prefix + valueKey)
         let (begin, end) = valueSubspace.range()
 
-        var foundPrimaryKeys: [[UInt8]] = []
+        var foundPrimaryKeys: [Bytes] = []
         let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
         for (key, _) in sequence {
             // Extract primary key from index key
-            let keyBytes = Array(key)
-            if keyBytes.count > valueSubspace.prefix.count {
-                let pkBytes = Array(keyBytes.dropFirst(valueSubspace.prefix.count))
-                foundPrimaryKeys.append(pkBytes)
+            if key.count > valueSubspace.prefix.count {
+                foundPrimaryKeys.append(
+                    key[valueSubspace.prefix.count..<key.count]
+                )
             }
         }
 
@@ -478,7 +484,7 @@ public final class UniquenessViolationTracker: Sendable {
     ///   - valueKey: The value key to clear
     public func clearViolation(
         indexName: String,
-        valueKey: [UInt8]
+        valueKey: Bytes
     ) async throws {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.clearViolation(
@@ -492,12 +498,12 @@ public final class UniquenessViolationTracker: Sendable {
     /// Clear a violation record within a transaction
     public func clearViolation(
         indexName: String,
-        valueKey: [UInt8],
+        valueKey: Bytes,
         transaction: any Transaction
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let key = subspace.pack(Tuple(valueKey))
-        transaction.clear(key: key)
+        try transaction.clear(key: key)
 
         logger.info(
             "Cleared violation record",
@@ -523,7 +529,7 @@ public final class UniquenessViolationTracker: Sendable {
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
-        transaction.clearRange(beginKey: begin, endKey: end)
+        try transaction.clearRange(beginKey: begin, endKey: end)
 
         logger.info(
             "Cleared all violations for index",

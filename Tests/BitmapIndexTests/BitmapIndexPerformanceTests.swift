@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import BitmapIndex
 
 // MARK: - Test Model
 
-private struct PerfProduct: Persistable {
+private struct BitmapBenchmarkProduct: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ private struct PerfProduct: Persistable {
         self.status = status
     }
 
-    static var persistableType: String { "PerfProduct" }
+    static var persistableType: String { "BitmapBenchmarkProduct" }
     static var allFields: [String] { ["id", "category", "brand", "status"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,58 +46,58 @@ private struct PerfProduct: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<PerfProduct, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<BitmapBenchmarkProduct, Value>) -> String {
         switch keyPath {
-        case \PerfProduct.id: return "id"
-        case \PerfProduct.category: return "category"
-        case \PerfProduct.brand: return "brand"
-        case \PerfProduct.status: return "status"
+        case \BitmapBenchmarkProduct.id: return "id"
+        case \BitmapBenchmarkProduct.category: return "category"
+        case \BitmapBenchmarkProduct.brand: return "brand"
+        case \BitmapBenchmarkProduct.status: return "status"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<PerfProduct>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<BitmapBenchmarkProduct>) -> String {
         switch keyPath {
-        case \PerfProduct.id: return "id"
-        case \PerfProduct.category: return "category"
-        case \PerfProduct.brand: return "brand"
-        case \PerfProduct.status: return "status"
+        case \BitmapBenchmarkProduct.id: return "id"
+        case \BitmapBenchmarkProduct.category: return "category"
+        case \BitmapBenchmarkProduct.brand: return "brand"
+        case \BitmapBenchmarkProduct.status: return "status"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PerfProduct> {
+        if let partial = keyPath as? PartialKeyPath<BitmapBenchmarkProduct> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Performance Test Helper
+// MARK: - Bitmap Benchmark Context
 
-private struct PerfTestContext {
+private struct BitmapBenchmarkContext {
     let database: any StorageEngine
     let subspace: Subspace
-    let maintainer: BitmapIndexMaintainer<PerfProduct>
+    let maintainer: BitmapIndexMaintainer<BitmapBenchmarkProduct>
     let indexName: String
 
     init(testName: String) async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
-        self.indexName = "PerfProduct_bitmap_category"
+        self.indexName = "BitmapBenchmarkProduct_bitmap_category"
         self.subspace = Subspace(prefix: Tuple("test", "bitmap_perf", String(testId), testName).pack())
 
         let indexSubspace = subspace.subspace("I").subspace(indexName)
         let index = Index(
             name: indexName,
-            kind: BitmapIndexKind<PerfProduct>(field: \.category),
+            kind: BitmapIndexKind<BitmapBenchmarkProduct>(field: \.category),
             rootExpression: FieldKeyExpression(fieldName: "category"),
             subspaceKey: indexName,
-            itemTypes: Set(["PerfProduct"])
+            itemTypes: Set(["BitmapBenchmarkProduct"])
         )
 
-        self.maintainer = BitmapIndexMaintainer<PerfProduct>(
+        self.maintainer = BitmapIndexMaintainer<BitmapBenchmarkProduct>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -106,12 +107,12 @@ private struct PerfTestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }
 
-// MARK: - Benchmark Helper
+// MARK: - Benchmark Measurement
 
 private func benchmark(_ name: String, iterations: Int = 1, operation: () async throws -> Void) async throws -> (totalMs: Double, perIterationMs: Double) {
     let start = DispatchTime.now()
@@ -310,12 +311,12 @@ struct BitmapIndexFDBPerformanceTests {
 
     @Test("Bulk insert performance - 100 records, 10 categories")
     func testBulkInsert100Records() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await PerfTestContext(testName: "bulk_insert_100")
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapBenchmarkContext(testName: "bulk_insert_100")
 
         let categories = (0..<10).map { "category-\($0)" }
         let products = (0..<100).map { i in
-            PerfProduct(
+            BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: categories[i % 10],
                 brand: "brand-\(i % 5)",
@@ -327,7 +328,7 @@ struct BitmapIndexFDBPerformanceTests {
             try await ctx.database.withTransaction { transaction in
                 for product in products {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as PerfProduct?,
+                        oldItem: nil as BitmapBenchmarkProduct?,
                         newItem: product,
                         transaction: transaction
                     )
@@ -349,12 +350,12 @@ struct BitmapIndexFDBPerformanceTests {
 
     @Test("Bulk insert performance - 1000 records, 10 categories")
     func testBulkInsert1000Records() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await PerfTestContext(testName: "bulk_insert_1000")
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapBenchmarkContext(testName: "bulk_insert_1000")
 
         let categories = (0..<10).map { "category-\($0)" }
         let products = (0..<1000).map { i in
-            PerfProduct(
+            BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: categories[i % 10],
                 brand: "brand-\(i % 50)",
@@ -366,7 +367,7 @@ struct BitmapIndexFDBPerformanceTests {
             try await ctx.database.withTransaction { transaction in
                 for product in products {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as PerfProduct?,
+                        oldItem: nil as BitmapBenchmarkProduct?,
                         newItem: product,
                         transaction: transaction
                     )
@@ -388,13 +389,13 @@ struct BitmapIndexFDBPerformanceTests {
 
     @Test("Query performance - single value lookup")
     func testQueryPerformanceSingleValue() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await PerfTestContext(testName: "query_single")
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapBenchmarkContext(testName: "query_single")
 
         // Setup: Insert 1000 records
         let categories = (0..<10).map { "category-\($0)" }
         let products = (0..<1000).map { i in
-            PerfProduct(
+            BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: categories[i % 10],
                 brand: "brand-\(i % 50)",
@@ -405,7 +406,7 @@ struct BitmapIndexFDBPerformanceTests {
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PerfProduct?,
+                    oldItem: nil as BitmapBenchmarkProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -441,13 +442,13 @@ struct BitmapIndexFDBPerformanceTests {
 
     @Test("Query performance - OR query")
     func testQueryPerformanceOrQuery() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await PerfTestContext(testName: "query_or")
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapBenchmarkContext(testName: "query_or")
 
         // Setup: Insert 1000 records
         let categories = (0..<10).map { "category-\($0)" }
         let products = (0..<1000).map { i in
-            PerfProduct(
+            BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: categories[i % 10],
                 brand: "brand-\(i % 50)",
@@ -458,7 +459,7 @@ struct BitmapIndexFDBPerformanceTests {
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PerfProduct?,
+                    oldItem: nil as BitmapBenchmarkProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -485,31 +486,31 @@ struct BitmapIndexFDBPerformanceTests {
 
     @Test("Query performance - AND query across indexes")
     func testQueryPerformanceAndQuery() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "bitmap_perf", String(testId), "query_and").pack())
 
         // Create two indexes: category and brand
-        let categoryMaintainer = BitmapIndexMaintainer<PerfProduct>(
+        let categoryMaintainer = BitmapIndexMaintainer<BitmapBenchmarkProduct>(
             index: Index(
                 name: "category_idx",
-                kind: BitmapIndexKind<PerfProduct>(field: \.category),
+                kind: BitmapIndexKind<BitmapBenchmarkProduct>(field: \.category),
                 rootExpression: FieldKeyExpression(fieldName: "category"),
                 subspaceKey: "category_idx",
-                itemTypes: Set(["PerfProduct"])
+                itemTypes: Set(["BitmapBenchmarkProduct"])
             ),
             subspace: subspace.subspace("I").subspace("category_idx"),
             idExpression: FieldKeyExpression(fieldName: "id")
         )
 
-        let brandMaintainer = BitmapIndexMaintainer<PerfProduct>(
+        let brandMaintainer = BitmapIndexMaintainer<BitmapBenchmarkProduct>(
             index: Index(
                 name: "brand_idx",
-                kind: BitmapIndexKind<PerfProduct>(field: \.brand),
+                kind: BitmapIndexKind<BitmapBenchmarkProduct>(field: \.brand),
                 rootExpression: FieldKeyExpression(fieldName: "brand"),
                 subspaceKey: "brand_idx",
-                itemTypes: Set(["PerfProduct"])
+                itemTypes: Set(["BitmapBenchmarkProduct"])
             ),
             subspace: subspace.subspace("I").subspace("brand_idx"),
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -519,7 +520,7 @@ struct BitmapIndexFDBPerformanceTests {
         let categories = (0..<10).map { "category-\($0)" }
         let brands = (0..<20).map { "brand-\($0)" }
         let products = (0..<1000).map { i in
-            PerfProduct(
+            BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: categories[i % 10],
                 brand: brands[i % 20],
@@ -530,12 +531,12 @@ struct BitmapIndexFDBPerformanceTests {
         try await database.withTransaction { transaction in
             for product in products {
                 try await categoryMaintainer.updateIndex(
-                    oldItem: nil as PerfProduct?,
+                    oldItem: nil as BitmapBenchmarkProduct?,
                     newItem: product,
                     transaction: transaction
                 )
                 try await brandMaintainer.updateIndex(
-                    oldItem: nil as PerfProduct?,
+                    oldItem: nil as BitmapBenchmarkProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -565,18 +566,18 @@ struct BitmapIndexFDBPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
     @Test("Primary key retrieval performance")
     func testPrimaryKeyRetrievalPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await PerfTestContext(testName: "pk_retrieval")
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapBenchmarkContext(testName: "pk_retrieval")
 
         // Setup: Insert 1000 records
         let products = (0..<1000).map { i in
-            PerfProduct(
+            BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: "category-\(i % 10)",
                 brand: "brand-\(i % 50)",
@@ -587,7 +588,7 @@ struct BitmapIndexFDBPerformanceTests {
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PerfProduct?,
+                    oldItem: nil as BitmapBenchmarkProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -616,12 +617,12 @@ struct BitmapIndexFDBPerformanceTests {
 
     @Test("Update performance - category change")
     func testUpdatePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await PerfTestContext(testName: "update")
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapBenchmarkContext(testName: "update")
 
         // Setup: Insert 100 records
         var products = (0..<100).map { i in
-            PerfProduct(
+            BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: "category-0",
                 brand: "brand-\(i % 10)",
@@ -632,7 +633,7 @@ struct BitmapIndexFDBPerformanceTests {
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PerfProduct?,
+                    oldItem: nil as BitmapBenchmarkProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -682,12 +683,12 @@ struct BitmapIndexFDBPerformanceTests {
 
     @Test("Delete performance")
     func testDeletePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await PerfTestContext(testName: "delete")
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapBenchmarkContext(testName: "delete")
 
         // Setup: Insert 100 records
         let products = (0..<100).map { i in
-            PerfProduct(
+            BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: "category-\(i % 10)",
                 brand: "brand-\(i % 10)",
@@ -698,7 +699,7 @@ struct BitmapIndexFDBPerformanceTests {
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PerfProduct?,
+                    oldItem: nil as BitmapBenchmarkProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -711,7 +712,7 @@ struct BitmapIndexFDBPerformanceTests {
                 for product in products {
                     try await ctx.maintainer.updateIndex(
                         oldItem: product,
-                        newItem: nil as PerfProduct?,
+                        newItem: nil as BitmapBenchmarkProduct?,
                         transaction: transaction
                     )
                 }
@@ -732,11 +733,11 @@ struct BitmapIndexFDBPerformanceTests {
 
     @Test("ScanItem performance")
     func testScanItemPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await PerfTestContext(testName: "scan_item")
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapBenchmarkContext(testName: "scan_item")
 
         let products = (0..<1000).map { i in
-            PerfProduct(
+            BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: "category-\(i % 10)",
                 brand: "brand-\(i % 50)",
@@ -765,12 +766,12 @@ struct BitmapIndexFDBPerformanceTests {
 
     @Test("High cardinality performance - 100 distinct values")
     func testHighCardinalityPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await PerfTestContext(testName: "high_cardinality")
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapBenchmarkContext(testName: "high_cardinality")
 
         // 100 distinct categories, 10 products each
         let products = (0..<1000).map { i in
-            PerfProduct(
+            BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: "category-\(i % 100)",
                 brand: "brand-\(i % 50)",
@@ -782,7 +783,7 @@ struct BitmapIndexFDBPerformanceTests {
             try await ctx.database.withTransaction { transaction in
                 for product in products {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as PerfProduct?,
+                        oldItem: nil as BitmapBenchmarkProduct?,
                         newItem: product,
                         transaction: transaction
                     )

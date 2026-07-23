@@ -5,12 +5,7 @@
 // These tests validate the complete SHACL validation path:
 //   User Code -> FDBContext.shacl -> SHACLValidator -> SHACLTargetResolver/SHACLConstraintEvaluator -> FDB
 //
-// All literal values are stored using RDFTerm N-Triples encoding (W3C RDF 1.1):
-//   IRI:       "ex:Alice"                    → stored as-is
-//   Literal:   RDFTerm.string("Alice").encoded → stored as "\"Alice\""
-//   Typed:     RDFTerm.integer(30).encoded    → stored as "\"30\"^^xsd:integer"
-//   Lang:      RDFTerm.langString("hi", language: "en").encoded → "\"hi\"@en"
-//   BlankNode: "_:b1"                         → stored as-is
+// Literal values use the canonical role-preserving RDF term storage codec.
 //
 // Reference: W3C SHACL https://www.w3.org/TR/shacl/
 
@@ -19,6 +14,8 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseRuntime
+import DatabaseValue
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -28,19 +25,18 @@ import TestSupport
 
 /// RDF-like statement for SHACL validation testing
 @Persistable
-struct SHACLTestStatement {
-    #Directory<SHACLTestStatement>("shacl_validation_tests", "statements")
+struct SHACLValidationStatement {
+    #Directory<SHACLValidationStatement>("shacl_validation_tests", "statements")
 
     var id: String = ULID().ulidString
-    var subject: String = ""
-    var predicate: String = ""
-    var object: String = ""
+    var subject: DatabaseRDFTerm = .iri("urn:subject")
+    var predicate: DatabaseRDFTerm = .iri("urn:predicate")
+    var object: DatabaseRDFTerm = .iri("urn:object")
 
-    #Index(GraphIndexKind<SHACLTestStatement>(
-        from: \.subject,
-        edge: \.predicate,
-        to: \.object,
-        strategy: .hexastore
+    #Index(RDFQuadIndexKind<SHACLValidationStatement>(
+        subject: \.subject,
+        predicate: \.predicate,
+        object: \.object
     ))
 }
 
@@ -48,58 +44,65 @@ struct SHACLTestStatement {
 
 @Suite("SHACL Validation Tests", .serialized, .heartbeat)
 struct SHACLValidationTests {
+    private static let rdfType =
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
 
     // MARK: - Setup Helpers
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([SHACLTestStatement.self], version: Schema.Version(1, 0, 0))
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([SHACLValidationStatement.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.directoryService.exists(path: ["shacl_validation_tests", "statements"]) {
-            try await container.engine.directoryService.remove(path: ["shacl_validation_tests", "statements"])
+        if try await container.engine.directoryExists(path: ["shacl_validation_tests", "statements"]) {
+            try await container.engine.removeDirectory(path: ["shacl_validation_tests", "statements"])
         }
         try await container.ensureIndexesReady()
         try await container.newContext().shacl.deleteAllShapesGraphs()
     }
 
-    private func insertStatements(_ statements: [SHACLTestStatement], context: FDBContext) async throws {
+    private func insertStatements(_ statements: [SHACLValidationStatement], context: FDBContext) async throws {
         for statement in statements {
             context.insert(statement)
         }
         try await context.save()
     }
 
-    private func makeStatement(subject: String, predicate: String, object: String) -> SHACLTestStatement {
-        var stmt = SHACLTestStatement()
-        stmt.subject = subject
-        stmt.predicate = predicate
+    private func makeStatement(
+        subject: String,
+        predicate: String,
+        object: DatabaseRDFTerm
+    ) -> SHACLValidationStatement {
+        var stmt = SHACLValidationStatement()
+        stmt.subject = .iri(subject)
+        stmt.predicate = .iri(predicate)
         stmt.object = object
         return stmt
     }
 
     /// Insert a standard person dataset for SHACL tests.
-    /// Literal values use RDFTerm encoding; IRI values (rdf:type objects) are stored as-is.
+    /// Insert a canonical RDF dataset for validation tests.
     private func insertPersonData(context: FDBContext) async throws {
         try await insertStatements([
             // Alice is a Person with name and email
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice").encoded),
-            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("alice@example.com").encoded),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("alice@example.com")),
             // Bob is a Person with name
-            makeStatement(subject: "ex:Bob", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Bob", predicate: "ex:name", object: RDFTerm.string("Bob").encoded),
+            makeStatement(subject: "ex:Bob", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Bob", predicate: "ex:name", object: RDFTerm.string("Bob")),
             // Carol is a Person with name and age
-            makeStatement(subject: "ex:Carol", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Carol", predicate: "ex:name", object: RDFTerm.string("Carol").encoded),
-            makeStatement(subject: "ex:Carol", predicate: "ex:age", object: RDFTerm.integer(30).encoded),
+            makeStatement(subject: "ex:Carol", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Carol", predicate: "ex:name", object: RDFTerm.string("Carol")),
+            makeStatement(subject: "ex:Carol", predicate: "ex:age", object: RDFTerm.integer(30)),
         ], context: context)
     }
 
@@ -109,7 +112,7 @@ struct SHACLValidationTests {
             iri: "ex:PersonShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:PersonShape",
+                    identifier: .iri("ex:PersonShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -144,7 +147,7 @@ struct SHACLValidationTests {
         #expect(loaded?.shapes.count == 1)
 
         if case .node(let nodeShape) = loaded?.shapes.first {
-            #expect(nodeShape.iri == "ex:PersonShape")
+            #expect(nodeShape.identifier == .iri("ex:PersonShape"))
             #expect(nodeShape.targets.count == 1)
             #expect(nodeShape.propertyShapes.count == 1)
         } else {
@@ -226,7 +229,7 @@ struct SHACLValidationTests {
 
         // Validate
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:PersonShapes"
         )
 
@@ -248,8 +251,8 @@ struct SHACLValidationTests {
 
         // Insert data: Dave is a Person but has NO ex:name
         try await insertStatements([
-            makeStatement(subject: "ex:Dave", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Dave", predicate: "ex:age", object: RDFTerm.integer(25).encoded),
+            makeStatement(subject: "ex:Dave", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Dave", predicate: "ex:age", object: RDFTerm.integer(25)),
         ], context: context)
 
         // Shape: Person must have ex:name (minCount 1)
@@ -257,7 +260,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:PersonShapes"
         )
 
@@ -265,7 +268,7 @@ struct SHACLValidationTests {
         #expect(report.violations.count >= 1)
 
         let violation = report.violations.first
-        #expect(violation?.focusNode == "ex:Dave")
+        #expect(violation?.focusNode == .iri("ex:Dave"))
         #expect(violation?.sourceConstraintComponent == "sh:MinCountConstraintComponent")
 
         try await cleanup(container: container)
@@ -281,9 +284,9 @@ struct SHACLValidationTests {
 
         // Insert data: Eve is a Person with TWO names (RDFTerm-encoded literals)
         try await insertStatements([
-            makeStatement(subject: "ex:Eve", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Eve", predicate: "ex:name", object: RDFTerm.string("Eve").encoded),
-            makeStatement(subject: "ex:Eve", predicate: "ex:name", object: RDFTerm.string("Evelyn").encoded),
+            makeStatement(subject: "ex:Eve", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Eve", predicate: "ex:name", object: RDFTerm.string("Eve")),
+            makeStatement(subject: "ex:Eve", predicate: "ex:name", object: RDFTerm.string("Evelyn")),
         ], context: context)
 
         // Shape: Person must have exactly one ex:name (minCount 1, maxCount 1)
@@ -291,7 +294,7 @@ struct SHACLValidationTests {
             iri: "ex:StrictPersonShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:StrictPersonShape",
+                    identifier: .iri("ex:StrictPersonShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -305,7 +308,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:StrictPersonShapes"
         )
 
@@ -314,7 +317,7 @@ struct SHACLValidationTests {
             $0.sourceConstraintComponent == "sh:MaxCountConstraintComponent"
         }
         #expect(maxViolations.count >= 1)
-        #expect(maxViolations.first?.focusNode == "ex:Eve")
+        #expect(maxViolations.first?.focusNode == .iri("ex:Eve"))
 
         try await cleanup(container: container)
     }
@@ -331,10 +334,10 @@ struct SHACLValidationTests {
 
         // Insert data (rdf:type objects are IRIs — no RDFTerm encoding needed)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:knows", object: "ex:Bob"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:knows", object: .iri("ex:Bob")),
             // Bob is an Organization, not a Person
-            makeStatement(subject: "ex:Bob", predicate: "rdf:type", object: "ex:Organization"),
+            makeStatement(subject: "ex:Bob", predicate: Self.rdfType, object: .iri("ex:Organization")),
         ], context: context)
 
         // Shape: ex:knows values must be instances of ex:Person
@@ -342,7 +345,7 @@ struct SHACLValidationTests {
             iri: "ex:KnowsShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:KnowsPersonShape",
+                    identifier: .iri("ex:KnowsPersonShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -356,7 +359,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:KnowsShapes"
         )
 
@@ -379,8 +382,8 @@ struct SHACLValidationTests {
 
         // Insert data: Alice knows a blank node (stored with _: prefix)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:knows", object: "_:blank1"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:knows", object: .blankNode("blank1")),
         ], context: context)
 
         // Shape: ex:knows values must be IRIs (sh:nodeKind sh:IRI)
@@ -388,7 +391,7 @@ struct SHACLValidationTests {
             iri: "ex:NodeKindShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:IRIOnlyShape",
+                    identifier: .iri("ex:IRIOnlyShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -402,7 +405,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:NodeKindShapes"
         )
 
@@ -426,9 +429,9 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has a name (literal) and knows Bob (IRI)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice").encoded),
-            makeStatement(subject: "ex:Alice", predicate: "ex:knows", object: "ex:Bob"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:knows", object: .iri("ex:Bob")),
         ], context: context)
 
         // Shape 1: ex:name must be a literal
@@ -436,7 +439,7 @@ struct SHACLValidationTests {
             iri: "ex:LiteralShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:NameLiteralShape",
+                    identifier: .iri("ex:NameLiteralShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -450,7 +453,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(literalShapes)
 
         let report1 = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:LiteralShapes"
         )
         // Name is a literal → no violation
@@ -463,7 +466,7 @@ struct SHACLValidationTests {
             iri: "ex:IRIShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:NameIRIShape",
+                    identifier: .iri("ex:NameIRIShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -477,7 +480,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(iriShapes)
 
         let report2 = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:IRIShapes"
         )
         // Name is a literal, not IRI → violation
@@ -500,9 +503,9 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has a string name and integer age
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice").encoded),
-            makeStatement(subject: "ex:Alice", predicate: "ex:age", object: RDFTerm.integer(30).encoded),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:age", object: RDFTerm.integer(30)),
         ], context: context)
 
         // Shape: ex:name must be xsd:string, ex:age must be xsd:integer
@@ -510,16 +513,16 @@ struct SHACLValidationTests {
             iri: "ex:DatatypeShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:DatatypePersonShape",
+                    identifier: .iri("ex:DatatypePersonShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
                             path: .predicate("ex:name"),
-                            constraints: [.datatype("xsd:string")]
+                            constraints: [.datatype(XSDDatatype.string.iri)]
                         ),
                         PropertyShape(
                             path: .predicate("ex:age"),
-                            constraints: [.datatype("xsd:integer")]
+                            constraints: [.datatype(XSDDatatype.integer.iri)]
                         ),
                     ]
                 ))
@@ -528,7 +531,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:DatatypeShapes"
         )
         // Both match their datatypes → no violation
@@ -541,12 +544,12 @@ struct SHACLValidationTests {
             iri: "ex:WrongDatatypeShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:WrongDatatypeShape",
+                    identifier: .iri("ex:WrongDatatypeShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
                             path: .predicate("ex:name"),
-                            constraints: [.datatype("xsd:integer")]
+                            constraints: [.datatype(XSDDatatype.integer.iri)]
                         ),
                     ]
                 ))
@@ -555,7 +558,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(wrongShapes)
 
         let report2 = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:WrongDatatypeShapes"
         )
         // Name is xsd:string, expected xsd:integer → violation
@@ -578,8 +581,8 @@ struct SHACLValidationTests {
 
         // Insert data: ex:knows value is an IRI (not a literal)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:knows", object: "ex:Bob"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:knows", object: .iri("ex:Bob")),
         ], context: context)
 
         // Shape: ex:knows must be xsd:string (impossible for an IRI)
@@ -587,12 +590,12 @@ struct SHACLValidationTests {
             iri: "ex:DatatypeIRIShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:DatatypeIRIShape",
+                    identifier: .iri("ex:DatatypeIRIShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
                             path: .predicate("ex:knows"),
-                            constraints: [.datatype("xsd:string")]
+                            constraints: [.datatype(XSDDatatype.string.iri)]
                         ),
                     ]
                 ))
@@ -601,7 +604,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:DatatypeIRIShapes"
         )
         // IRI is not a literal → datatype violation
@@ -626,8 +629,8 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has an empty name (RDFTerm-encoded empty literal)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("").encoded),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("")),
         ], context: context)
 
         // Shape: ex:name must have minLength 1
@@ -635,7 +638,7 @@ struct SHACLValidationTests {
             iri: "ex:MinLengthShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:NameLengthShape",
+                    identifier: .iri("ex:NameLengthShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -649,7 +652,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:MinLengthShapes"
         )
 
@@ -672,8 +675,8 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has an invalid email (RDFTerm-encoded literal)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("not-an-email").encoded),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("not-an-email")),
         ], context: context)
 
         // Shape: ex:email must match email-like pattern
@@ -681,7 +684,7 @@ struct SHACLValidationTests {
             iri: "ex:PatternShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:EmailPatternShape",
+                    identifier: .iri("ex:EmailPatternShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -695,7 +698,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:PatternShapes"
         )
 
@@ -716,15 +719,15 @@ struct SHACLValidationTests {
         let context = container.newContext()
 
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("alice@example.com").encoded),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("alice@example.com")),
         ], context: context)
 
         let shapesGraph = SHACLShapesGraph(
             iri: "ex:InvalidPatternShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:InvalidEmailPatternShape",
+                    identifier: .iri("ex:InvalidEmailPatternShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -739,7 +742,7 @@ struct SHACLValidationTests {
 
         do {
             _ = try await context.shacl.validate(
-                SHACLTestStatement.self,
+                SHACLValidationStatement.self,
                 against: "ex:InvalidPatternShapes"
             )
             Issue.record("Expected SHACLError.invalidPattern to be thrown")
@@ -765,11 +768,11 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has labels in English (allowed) and Japanese (not allowed)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
             makeStatement(subject: "ex:Alice", predicate: "rdfs:label",
-                          object: RDFTerm.langString("Alice", language: "en").encoded),
+                          object: RDFTerm.langString("Alice", language: "en")),
             makeStatement(subject: "ex:Alice", predicate: "rdfs:label",
-                          object: RDFTerm.langString("アリス", language: "ja").encoded),
+                          object: RDFTerm.langString("アリス", language: "ja")),
         ], context: context)
 
         // Shape: rdfs:label must have language in ["en", "de", "fr"]
@@ -777,7 +780,7 @@ struct SHACLValidationTests {
             iri: "ex:LangShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:LabelLangShape",
+                    identifier: .iri("ex:LabelLangShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -791,7 +794,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:LangShapes"
         )
 
@@ -817,10 +820,10 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has age 30 (valid), Bob has age 200 (too high)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:age", object: RDFTerm.integer(30).encoded),
-            makeStatement(subject: "ex:Bob", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Bob", predicate: "ex:age", object: RDFTerm.integer(200).encoded),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:age", object: RDFTerm.integer(30)),
+            makeStatement(subject: "ex:Bob", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Bob", predicate: "ex:age", object: RDFTerm.integer(200)),
         ], context: context)
 
         // Shape: ex:age must be between 0 and 150 (inclusive)
@@ -828,7 +831,7 @@ struct SHACLValidationTests {
             iri: "ex:RangeShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:AgeRangeShape",
+                    identifier: .iri("ex:AgeRangeShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -845,7 +848,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:RangeShapes"
         )
 
@@ -855,7 +858,7 @@ struct SHACLValidationTests {
             $0.sourceConstraintComponent == "sh:MaxInclusiveConstraintComponent"
         }
         #expect(rangeViolations.count >= 1)
-        #expect(rangeViolations.first?.focusNode == "ex:Bob")
+        #expect(rangeViolations.first?.focusNode == .iri("ex:Bob"))
 
         try await cleanup(container: container)
     }
@@ -872,9 +875,9 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has name (declared) and age (unexpected)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice").encoded),
-            makeStatement(subject: "ex:Alice", predicate: "ex:age", object: RDFTerm.integer(30).encoded),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:age", object: RDFTerm.integer(30)),
         ], context: context)
 
         // Shape: closed shape only allows rdf:type and ex:name
@@ -883,9 +886,9 @@ struct SHACLValidationTests {
             iri: "ex:ClosedShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:ClosedPersonShape",
+                    identifier: .iri("ex:ClosedPersonShape"),
                     targets: [.class_("ex:Person")],
-                    constraints: [.closed(ignoredProperties: ["rdf:type"])],
+                    constraints: [.closed(ignoredProperties: [Self.rdfType])],
                     propertyShapes: [
                         PropertyShape(
                             path: .predicate("ex:name"),
@@ -898,7 +901,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:ClosedShapes"
         )
 
@@ -930,9 +933,9 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has name (declared), age (in ignoredProperties), and rdf:type (also ignored)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice").encoded),
-            makeStatement(subject: "ex:Alice", predicate: "ex:age", object: RDFTerm.integer(30).encoded),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:age", object: RDFTerm.integer(30)),
         ], context: context)
 
         // Shape: closed shape, but ex:age and rdf:type are in ignoredProperties
@@ -940,9 +943,11 @@ struct SHACLValidationTests {
             iri: "ex:ClosedIgnoredShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:ClosedIgnoredPersonShape",
+                    identifier: .iri("ex:ClosedIgnoredPersonShape"),
                     targets: [.class_("ex:Person")],
-                    constraints: [.closed(ignoredProperties: ["rdf:type", "ex:age"])],
+                    constraints: [
+                        .closed(ignoredProperties: [Self.rdfType, "ex:age"])
+                    ],
                     propertyShapes: [
                         PropertyShape(
                             path: .predicate("ex:name"),
@@ -955,7 +960,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:ClosedIgnoredShapes"
         )
 
@@ -977,7 +982,7 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has rdf:type ex:Person but NOT ex:Agent (both are IRIs)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
         ], context: context)
 
         // Shape: every Person must have rdf:type ex:Agent as well
@@ -985,11 +990,11 @@ struct SHACLValidationTests {
             iri: "ex:HasValueShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:AgentRequiredShape",
+                    identifier: .iri("ex:AgentRequiredShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
-                            path: .predicate("rdf:type"),
+                            path: .predicate(Self.rdfType),
                             constraints: [.hasValue(.iri("ex:Agent"))]
                         )
                     ]
@@ -999,7 +1004,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:HasValueShapes"
         )
 
@@ -1022,8 +1027,8 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has status "ex:draft" (IRI) which is not in the allowed list
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:status", object: "ex:draft"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:status", object: .iri("ex:draft")),
         ], context: context)
 
         // Shape: ex:status must be one of [ex:active, ex:inactive] (IRIs)
@@ -1031,7 +1036,7 @@ struct SHACLValidationTests {
             iri: "ex:InConstraintShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:StatusShape",
+                    identifier: .iri("ex:StatusShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -1045,7 +1050,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:InConstraintShapes"
         )
 
@@ -1068,8 +1073,8 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has status literal "active"
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:status", object: RDFTerm.string("active").encoded),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:status", object: RDFTerm.string("active")),
         ], context: context)
 
         // Shape: ex:status must have value "active" (literal)
@@ -1077,7 +1082,7 @@ struct SHACLValidationTests {
             iri: "ex:HasValueLiteralShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:StatusLiteralShape",
+                    identifier: .iri("ex:StatusLiteralShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -1091,7 +1096,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:HasValueLiteralShapes"
         )
 
@@ -1113,9 +1118,9 @@ struct SHACLValidationTests {
 
         // Insert data: Alice and Bob both have names (RDFTerm-encoded literals)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice").encoded),
-            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("alice@example.com").encoded),
-            makeStatement(subject: "ex:Bob", predicate: "ex:name", object: RDFTerm.string("Bob").encoded),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("alice@example.com")),
+            makeStatement(subject: "ex:Bob", predicate: "ex:name", object: RDFTerm.string("Bob")),
             // Bob has no email
         ], context: context)
 
@@ -1124,8 +1129,8 @@ struct SHACLValidationTests {
             iri: "ex:TargetNodeShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:AliceEmailShape",
-                    targets: [.node("ex:Alice")],
+                    identifier: .iri("ex:AliceEmailShape"),
+                    targets: [.node(.iri("ex:Alice"))],
                     propertyShapes: [
                         PropertyShape(
                             path: .predicate("ex:email"),
@@ -1138,7 +1143,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:TargetNodeShapes"
         )
 
@@ -1159,11 +1164,11 @@ struct SHACLValidationTests {
 
         // Insert data: two Persons, one Animal (RDFTerm-encoded literals)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice").encoded),
-            makeStatement(subject: "ex:Bob", predicate: "rdf:type", object: "ex:Person"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice")),
+            makeStatement(subject: "ex:Bob", predicate: Self.rdfType, object: .iri("ex:Person")),
             // Bob has NO name -> will violate
-            makeStatement(subject: "ex:Fido", predicate: "rdf:type", object: "ex:Animal"),
+            makeStatement(subject: "ex:Fido", predicate: Self.rdfType, object: .iri("ex:Animal")),
             // Fido has no name, but Animals are not targeted
         ], context: context)
 
@@ -1172,14 +1177,14 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:PersonShapes"
         )
 
         // Alice conforms, Bob does not, Fido is not targeted
         #expect(report.conforms == false)
         #expect(report.violations.count == 1)
-        #expect(report.violations.first?.focusNode == "ex:Bob")
+        #expect(report.violations.first?.focusNode == .iri("ex:Bob"))
 
         try await cleanup(container: container)
     }
@@ -1194,11 +1199,11 @@ struct SHACLValidationTests {
 
         // Insert data: Alice and Bob have emails (RDFTerm-encoded literals), Carol does not
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("alice@example.com").encoded),
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice").encoded),
-            makeStatement(subject: "ex:Bob", predicate: "ex:email", object: RDFTerm.string("bob@example.com").encoded),
+            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("alice@example.com")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice")),
+            makeStatement(subject: "ex:Bob", predicate: "ex:email", object: RDFTerm.string("bob@example.com")),
             // Bob has email but no name -> violation
-            makeStatement(subject: "ex:Carol", predicate: "ex:name", object: RDFTerm.string("Carol").encoded),
+            makeStatement(subject: "ex:Carol", predicate: "ex:name", object: RDFTerm.string("Carol")),
             // Carol has no email, so she is NOT targeted
         ], context: context)
 
@@ -1207,7 +1212,7 @@ struct SHACLValidationTests {
             iri: "ex:SubjectsOfShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:EmailHolderShape",
+                    identifier: .iri("ex:EmailHolderShape"),
                     targets: [.subjectsOf("ex:email")],
                     propertyShapes: [
                         PropertyShape(
@@ -1221,7 +1226,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:SubjectsOfShapes"
         )
 
@@ -1233,7 +1238,7 @@ struct SHACLValidationTests {
             $0.sourceConstraintComponent == "sh:MinCountConstraintComponent"
         }
         #expect(nameViolations.count == 1)
-        #expect(nameViolations.first?.focusNode == "ex:Bob")
+        #expect(nameViolations.first?.focusNode == .iri("ex:Bob"))
 
         try await cleanup(container: container)
     }
@@ -1248,7 +1253,7 @@ struct SHACLValidationTests {
 
         // Insert data: Dave is a Person with no name (would normally violate)
         try await insertStatements([
-            makeStatement(subject: "ex:Dave", predicate: "rdf:type", object: "ex:Person"),
+            makeStatement(subject: "ex:Dave", predicate: Self.rdfType, object: .iri("ex:Person")),
         ], context: context)
 
         // Shape: deactivated PersonShape
@@ -1256,7 +1261,7 @@ struct SHACLValidationTests {
             iri: "ex:DeactivatedShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:DeactivatedPersonShape",
+                    identifier: .iri("ex:DeactivatedPersonShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -1271,7 +1276,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:DeactivatedShapes"
         )
 
@@ -1294,15 +1299,15 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has string name (valid), Bob has integer "name" (valid via or), Carol has no name
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
             makeStatement(subject: "ex:Alice", predicate: "ex:identifier",
-                          object: RDFTerm.string("alice123").encoded),
-            makeStatement(subject: "ex:Bob", predicate: "rdf:type", object: "ex:Person"),
+                          object: RDFTerm.string("alice123")),
+            makeStatement(subject: "ex:Bob", predicate: Self.rdfType, object: .iri("ex:Person")),
             makeStatement(subject: "ex:Bob", predicate: "ex:identifier",
-                          object: RDFTerm.integer(42).encoded),
-            makeStatement(subject: "ex:Carol", predicate: "rdf:type", object: "ex:Person"),
+                          object: RDFTerm.integer(42)),
+            makeStatement(subject: "ex:Carol", predicate: Self.rdfType, object: .iri("ex:Person")),
             makeStatement(subject: "ex:Carol", predicate: "ex:identifier",
-                          object: RDFTerm.boolean(true).encoded),
+                          object: RDFTerm.boolean(true)),
         ], context: context)
 
         // Shape: ex:identifier must be either xsd:string or xsd:integer
@@ -1310,15 +1315,19 @@ struct SHACLValidationTests {
             iri: "ex:OrShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:IdentifierShape",
+                    identifier: .iri("ex:IdentifierShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
                             path: .predicate("ex:identifier"),
                             constraints: [
                                 .or([
-                                    .node(NodeShape(constraints: [.datatype("xsd:string")])),
-                                    .node(NodeShape(constraints: [.datatype("xsd:integer")])),
+                                    .node(NodeShape(constraints: [
+                                        .datatype(XSDDatatype.string.iri)
+                                    ])),
+                                    .node(NodeShape(constraints: [
+                                        .datatype(XSDDatatype.integer.iri)
+                                    ])),
                                 ])
                             ]
                         )
@@ -1329,20 +1338,20 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:OrShapes"
         )
 
         // Alice (string) and Bob (integer) conform; Carol (boolean) violates
         #expect(report.conforms == false)
         let orViolations = report.violations.filter {
-            $0.focusNode == "ex:Carol"
+            $0.focusNode == .iri("ex:Carol")
         }
         #expect(orViolations.count >= 1)
 
         // Alice and Bob should have no violations
-        let aliceViolations = report.violations.filter { $0.focusNode == "ex:Alice" }
-        let bobViolations = report.violations.filter { $0.focusNode == "ex:Bob" }
+        let aliceViolations = report.violations.filter { $0.focusNode == .iri("ex:Alice") }
+        let bobViolations = report.violations.filter { $0.focusNode == .iri("ex:Bob") }
         #expect(aliceViolations.isEmpty)
         #expect(bobViolations.isEmpty)
 
@@ -1359,11 +1368,14 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has name "Alice" (string), Bob has name with integer datatype
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice").encoded),
-            makeStatement(subject: "ex:Bob", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Bob", predicate: "ex:name",
-                          object: RDFTerm.literal(OWLLiteral(lexicalForm: "42", datatype: "xsd:integer")).encoded),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice")),
+            makeStatement(subject: "ex:Bob", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(
+                subject: "ex:Bob",
+                predicate: "ex:name",
+                object: RDFTerm.integer(42)
+            ),
         ], context: context)
 
         // Shape: ex:name must NOT be xsd:integer
@@ -1371,13 +1383,15 @@ struct SHACLValidationTests {
             iri: "ex:NotShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:NameNotIntegerShape",
+                    identifier: .iri("ex:NameNotIntegerShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
                             path: .predicate("ex:name"),
                             constraints: [
-                                .not(.node(NodeShape(constraints: [.datatype("xsd:integer")])))
+                                .not(.node(NodeShape(constraints: [
+                                    .datatype(XSDDatatype.integer.iri)
+                                ])))
                             ]
                         )
                     ]
@@ -1387,17 +1401,17 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:NotShapes"
         )
 
         // Alice's name is xsd:string → passes sh:not(xsd:integer)
         // Bob's name is xsd:integer → fails sh:not(xsd:integer)
         #expect(report.conforms == false)
-        let notViolations = report.violations.filter { $0.focusNode == "ex:Bob" }
+        let notViolations = report.violations.filter { $0.focusNode == .iri("ex:Bob") }
         #expect(notViolations.count >= 1)
 
-        let aliceViolations = report.violations.filter { $0.focusNode == "ex:Alice" }
+        let aliceViolations = report.violations.filter { $0.focusNode == .iri("ex:Alice") }
         #expect(aliceViolations.isEmpty)
 
         try await cleanup(container: container)
@@ -1415,13 +1429,13 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has two English labels (duplicate lang tag)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
             makeStatement(subject: "ex:Alice", predicate: "rdfs:label",
-                          object: RDFTerm.langString("Alice", language: "en").encoded),
+                          object: RDFTerm.langString("Alice", language: "en")),
             makeStatement(subject: "ex:Alice", predicate: "rdfs:label",
-                          object: RDFTerm.langString("Ali", language: "en").encoded),
+                          object: RDFTerm.langString("Ali", language: "en")),
             makeStatement(subject: "ex:Alice", predicate: "rdfs:label",
-                          object: RDFTerm.langString("Alicia", language: "es").encoded),
+                          object: RDFTerm.langString("Alicia", language: "es")),
         ], context: context)
 
         // Shape: rdfs:label must have unique language tags
@@ -1429,7 +1443,7 @@ struct SHACLValidationTests {
             iri: "ex:UniqueLangShapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:UniqueLangShape",
+                    identifier: .iri("ex:UniqueLangShape"),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
@@ -1443,7 +1457,7 @@ struct SHACLValidationTests {
         try await context.shacl.loadShapes(shapesGraph)
 
         let report = try await context.shacl.validate(
-            SHACLTestStatement.self,
+            SHACLValidationStatement.self,
             against: "ex:UniqueLangShapes"
         )
 
@@ -1469,9 +1483,9 @@ struct SHACLValidationTests {
 
         // Insert data (RDFTerm-encoded literals)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
-            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice").encoded),
-            makeStatement(subject: "ex:Bob", predicate: "rdf:type", object: "ex:Person"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
+            makeStatement(subject: "ex:Alice", predicate: "ex:name", object: RDFTerm.string("Alice")),
+            makeStatement(subject: "ex:Bob", predicate: Self.rdfType, object: .iri("ex:Person")),
             // Bob has no name
         ], context: context)
 
@@ -1481,23 +1495,23 @@ struct SHACLValidationTests {
 
         // Validate only Alice
         let aliceReport = try await context.shacl.validateNode(
-            SHACLTestStatement.self,
-            nodeIRI: "ex:Alice",
-            against: "ex:PersonShape",
+            SHACLValidationStatement.self,
+            node: .iri("ex:Alice"),
+            against: .iri("ex:PersonShape"),
             in: "ex:PersonShapes"
         )
         #expect(aliceReport.conforms == true)
 
         // Validate only Bob
         let bobReport = try await context.shacl.validateNode(
-            SHACLTestStatement.self,
-            nodeIRI: "ex:Bob",
-            against: "ex:PersonShape",
+            SHACLValidationStatement.self,
+            node: .iri("ex:Bob"),
+            against: .iri("ex:PersonShape"),
             in: "ex:PersonShapes"
         )
         #expect(bobReport.conforms == false)
         #expect(bobReport.violations.count >= 1)
-        #expect(bobReport.violations.first?.focusNode == "ex:Bob")
+        #expect(bobReport.violations.first?.focusNode == .iri("ex:Bob"))
 
         try await cleanup(container: container)
     }
@@ -1514,13 +1528,13 @@ struct SHACLValidationTests {
 
         // Insert some data (doesn't matter what)
         try await insertStatements([
-            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
+            makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
         ], context: context)
 
         // Validate against a shapes graph that does not exist
         do {
             _ = try await context.shacl.validate(
-                SHACLTestStatement.self,
+                SHACLValidationStatement.self,
                 against: "ex:NonexistentShapes"
             )
             Issue.record("Expected SHACLError.shapesGraphNotFound to be thrown")

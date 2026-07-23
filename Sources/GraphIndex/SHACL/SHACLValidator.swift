@@ -7,7 +7,11 @@
 // Reference: W3C SHACL §3 (Validation)
 // https://www.w3.org/TR/shacl/#validation
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Graph
 import DatabaseEngine
@@ -29,15 +33,18 @@ public struct SHACLValidator: Sendable {
     private let shapesGraph: SHACLShapesGraph
     private let targetResolver: SHACLTargetResolver
     private let constraintEvaluator: SHACLConstraintEvaluator
+    private let budget: SHACLValidationWorkBudget
 
-    init(
+    public init(
         shapesGraph: SHACLShapesGraph,
         targetResolver: SHACLTargetResolver,
-        constraintEvaluator: SHACLConstraintEvaluator
+        constraintEvaluator: SHACLConstraintEvaluator,
+        budget: SHACLValidationWorkBudget
     ) {
         self.shapesGraph = shapesGraph
         self.targetResolver = targetResolver
         self.constraintEvaluator = constraintEvaluator
+        self.budget = budget
     }
 
     // MARK: - Full Validation
@@ -57,10 +64,30 @@ public struct SHACLValidator: Sendable {
         var allResults: [SHACLValidationResult] = []
 
         for shape in shapesGraph.activeShapes {
+            try budget.consume(at: .projection)
             let results = try await validateShape(shape)
             allResults.append(contentsOf: results)
         }
 
+        return SHACLValidationReport(results: allResults)
+    }
+
+    /// Validate explicit focus nodes against every active shape.
+    public func validate(
+        focusNodes: [RDFTerm]
+    ) async throws -> SHACLValidationReport {
+        let canonicalFocusNodes = Array(Set(focusNodes)).sorted()
+        var allResults: [SHACLValidationResult] = []
+        for shape in shapesGraph.activeShapes {
+            for focusNode in canonicalFocusNodes {
+                try budget.consume(at: .projection)
+                let results = try await evaluateShapeOnFocusNode(
+                    shape,
+                    focusNode: focusNode
+                )
+                allResults.append(contentsOf: results)
+            }
+        }
         return SHACLValidationReport(results: allResults)
     }
 
@@ -70,11 +97,12 @@ public struct SHACLValidator: Sendable {
     private func validateShape(_ shape: SHACLShape) async throws -> [SHACLValidationResult] {
         let focusNodes = try await targetResolver.resolve(
             shape.targets,
-            shapeIRI: shape.iri
+            shapeIdentifier: shape.identifier
         )
 
         var results: [SHACLValidationResult] = []
         for focusNode in focusNodes {
+            try budget.consume(at: .projection)
             let nodeResults = try await evaluateShapeOnFocusNode(shape, focusNode: focusNode)
             results.append(contentsOf: nodeResults)
         }
@@ -84,7 +112,7 @@ public struct SHACLValidator: Sendable {
     /// Evaluate a shape against a single focus node
     private func evaluateShapeOnFocusNode(
         _ shape: SHACLShape,
-        focusNode: String
+        focusNode: RDFTerm
     ) async throws -> [SHACLValidationResult] {
         switch shape {
         case .node(let nodeShape):
@@ -106,7 +134,7 @@ public struct SHACLValidator: Sendable {
     /// (W3C SHACL §4.8.1).
     private func evaluateNodeShape(
         _ nodeShape: NodeShape,
-        focusNode: String
+        focusNode: RDFTerm
     ) async throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
 
@@ -114,8 +142,9 @@ public struct SHACLValidator: Sendable {
         let declaredPropertyIRIs = nodeShape.propertyShapes.compactMap { $0.path.predicateIRI }
 
         // Evaluate node-level constraints (focus node is the value node)
-        let focusAsValue: [RDFTerm] = [.iri(focusNode)]
+        let focusAsValue: [RDFTerm] = [focusNode]
         for constraint in nodeShape.constraints {
+            try budget.consume(at: .projection)
             // Augment sh:closed with declared property paths (§4.8.1)
             let effectiveConstraint: SHACLConstraint
             if case .closed(let ignoredProperties) = constraint {
@@ -132,7 +161,7 @@ public struct SHACLValidator: Sendable {
                 path: nil,
                 severity: nodeShape.severity,
                 messages: nodeShape.messages,
-                sourceShape: nodeShape.iri,
+                sourceShape: nodeShape.identifier,
                 validator: self
             )
             results.append(contentsOf: constraintResults)
@@ -140,6 +169,7 @@ public struct SHACLValidator: Sendable {
 
         // Evaluate property shapes
         for propertyShape in nodeShape.propertyShapes {
+            try budget.consume(at: .projection)
             if propertyShape.deactivated { continue }
             let propResults = try await evaluatePropertyShape(
                 propertyShape,
@@ -160,7 +190,7 @@ public struct SHACLValidator: Sendable {
     /// 3. Evaluate nested property shapes
     private func evaluatePropertyShape(
         _ propertyShape: PropertyShape,
-        focusNode: String
+        focusNode: RDFTerm
     ) async throws -> [SHACLValidationResult] {
         // Collect value nodes via SPARQL property path
         let valueNodes = try await constraintEvaluator.collectValueNodes(
@@ -172,6 +202,7 @@ public struct SHACLValidator: Sendable {
 
         // Evaluate constraints against value nodes
         for constraint in propertyShape.constraints {
+            try budget.consume(at: .projection)
             let constraintResults = try await constraintEvaluator.evaluate(
                 constraint: constraint,
                 focusNode: focusNode,
@@ -179,7 +210,7 @@ public struct SHACLValidator: Sendable {
                 path: propertyShape.path,
                 severity: propertyShape.severity,
                 messages: propertyShape.messages,
-                sourceShape: propertyShape.iri,
+                sourceShape: propertyShape.identifier,
                 validator: self
             )
             results.append(contentsOf: constraintResults)
@@ -187,16 +218,16 @@ public struct SHACLValidator: Sendable {
 
         // Evaluate nested property shapes
         for nestedShape in propertyShape.propertyShapes {
+            try budget.consume(at: .projection)
             if nestedShape.deactivated { continue }
             // For nested property shapes, each value node becomes a focus node
             for value in valueNodes {
-                if case .iri(let nodeIRI) = value {
-                    let nestedResults = try await evaluatePropertyShape(
-                        nestedShape,
-                        focusNode: nodeIRI
-                    )
-                    results.append(contentsOf: nestedResults)
-                }
+                try budget.consume(at: .projection)
+                let nestedResults = try await evaluatePropertyShape(
+                    nestedShape,
+                    focusNode: value
+                )
+                results.append(contentsOf: nestedResults)
             }
         }
 
@@ -215,9 +246,9 @@ public struct SHACLValidator: Sendable {
     ///   - shape: The shape to validate against
     /// - Returns: Array of validation results (empty if the node conforms)
     public func validateNode(
-        _ nodeIRI: String,
+        _ node: RDFTerm,
         against shape: SHACLShape
     ) async throws -> [SHACLValidationResult] {
-        try await evaluateShapeOnFocusNode(shape, focusNode: nodeIRI)
+        try await evaluateShapeOnFocusNode(shape, focusNode: node)
     }
 }

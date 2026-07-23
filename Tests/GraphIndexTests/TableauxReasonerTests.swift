@@ -1296,7 +1296,13 @@ struct TableauxReasonerDataPropertyTests {
         let reasoner = TableauxReasoner(ontology: ontology)
 
         let result = reasoner.checkSatisfiability(
-            .dataHasValue(property: "ex:age", literal: OWLLiteral(lexicalForm: "30", datatype: "xsd:integer"))
+            .dataHasValue(
+                property: "ex:age",
+                literal: OWLLiteral(
+                    lexicalForm: "30",
+                    datatype: XSDDatatype.integer.typedLiteralDatatype
+                )
+            )
         )
         #expect(result.isSatisfiable)
     }
@@ -1308,7 +1314,10 @@ struct TableauxReasonerDataPropertyTests {
         ontology.axioms.append(.dataPropertyAssertion(
             subject: "ex:alice",
             property: "ex:age",
-            value: OWLLiteral(lexicalForm: "30", datatype: "xsd:integer")
+            value: OWLLiteral(
+                lexicalForm: "30",
+                datatype: XSDDatatype.integer.typedLiteralDatatype
+            )
         ))
 
         let reasoner = TableauxReasoner(ontology: ontology)
@@ -1316,7 +1325,10 @@ struct TableauxReasonerDataPropertyTests {
             individual: "ex:alice",
             classExpr: .dataHasValue(
                 property: "ex:age",
-                literal: OWLLiteral(lexicalForm: "30", datatype: "xsd:integer")
+                literal: OWLLiteral(
+                    lexicalForm: "30",
+                    datatype: XSDDatatype.integer.typedLiteralDatatype
+                )
             )
         ))
     }

@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 
@@ -201,8 +205,8 @@ public struct MigrationContext: Sendable {
     /// **Implementation**:
     /// 1. Identify target entity from index name or keyPaths
     /// 2. Convert IndexDescriptor to Index with proper itemTypes
-    /// 3. Register index with IndexManager for target entity store only
-    /// 4. Enable index (sets to writeOnly via IndexStateManager)
+    /// 3. Register index with DatabaseIndexRegistry for target entity store only
+    /// 4. Enable index (sets to writeOnly via IndexLifecycleStore)
     /// 5. Build index (via OnlineIndexer using EntityIndexBuilder)
     /// 6. Mark as readable (automatically done by OnlineIndexer after build completes)
     ///
@@ -226,7 +230,7 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let indexManager = IndexManager(
+        let indexRegistry = DatabaseIndexRegistry(
             container: container,
             subspace: info.subspace
         )
@@ -240,20 +244,20 @@ public struct MigrationContext: Sendable {
 
         // 4. Register index (in-memory, fails if already registered)
         do {
-            try indexManager.register(index: index)
-        } catch IndexManagerError.duplicateIndex {
-            // Index already registered in this IndexManager instance - OK
+            try indexRegistry.register(index: index)
+        } catch DatabaseIndexRegistryError.duplicateIndex {
+            // Index already registered in this DatabaseIndexRegistry instance - OK
             // This can happen if migration is run multiple times
         }
 
         // 5. Enable index (disabled → writeOnly)
         // Check current state first to ensure idempotency
-        let currentState = try await indexManager.state(of: index.name)
+        let currentState = try await indexRegistry.state(of: index.name)
 
         switch currentState {
         case .disabled:
             // Normal case: enable the index
-            try await indexManager.enable(index.name)
+            try await indexRegistry.enable(index.name)
         case .readable:
             // Index already built - nothing to do
             return
@@ -262,43 +266,25 @@ public struct MigrationContext: Sendable {
             break
         }
 
-        // 6. Build index via OnlineIndexer using EntityIndexBuilder
-        //
-        // Uses the persistableType stored in Schema.Entity directly,
-        // avoiding the need for a separate registration step.
-        // The EntityIndexBuilder.buildIndex(forPersistableType:) method
-        // uses the _EntityIndexBuildable protocol to dispatch to the
-        // concrete type's buildEntityIndex implementation.
+        // 6. Build the index from the compiled type held by Schema.Entity.
 
         // Get configurations for this index (HNSW params, full-text settings, etc.)
         let configs = indexConfigurations[index.name] ?? []
 
-        do {
-            // Use the persistableType directly from Entity (always present at runtime)
-            guard let persistableType = targetEntity.persistableType else {
-                throw FDBRuntimeError.internalError("Entity '\(targetEntity.name)' has no Persistable type (decoded from wire?)")
-            }
-            try await EntityIndexBuilder.buildIndex(
-                forPersistableType: persistableType,
-                container: container,
-                storeSubspace: info.subspace,
-                index: index,
-                indexStateManager: indexManager.stateManager,
-                batchSize: batchSize,
-                configurations: configs
+        guard let persistableType = targetEntity.persistableType else {
+            throw FDBRuntimeError.internalError(
+                "Entity '\(targetEntity.name)' has no compiled Persistable type"
             )
-        } catch let error as EntityIndexBuilderError {
-            // Re-throw with more context
-            switch error {
-            case .typeNotBuildable(let typeName, let reason):
-                throw FDBRuntimeError.internalError(
-                    "Cannot build index for entity '\(targetEntity.name)' (type: \(typeName)): \(reason). " +
-                    "Ensure the type was created from a Persistable & Codable type, not manually."
-                )
-            default:
-                throw error
-            }
         }
+        try await EntityIndexBuilder.buildIndex(
+            for: persistableType,
+            container: container,
+            storeSubspace: info.subspace,
+            index: index,
+            indexLifecycleStore: indexRegistry.lifecycleStore,
+            batchSize: batchSize,
+            configurations: configs
+        )
     }
 
     /// Add a new logical polymorphic index and build it online.
@@ -316,7 +302,7 @@ public struct MigrationContext: Sendable {
     /// **Implementation** (all in single atomic transaction):
     /// 1. Identify target entity from Schema
     /// 2. Create FormerIndex metadata entry
-    /// 3. Disable index (via IndexStateManager)
+    /// 3. Disable index (via IndexLifecycleStore)
     /// 4. Clear all index data (range clear)
     ///
     /// - Parameters:
@@ -354,7 +340,7 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let indexManager = IndexManager(
+        let indexRegistry = DatabaseIndexRegistry(
             container: container,
             subspace: info.subspace
         )
@@ -370,7 +356,7 @@ public struct MigrationContext: Sendable {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             // Write FormerIndex entry
             let timestamp = Date().timeIntervalSince1970
-            transaction.setValue(
+            try transaction.setValue(
                 Tuple(
                     Int64(addedVersion.major),
                     Int64(addedVersion.minor),
@@ -381,10 +367,10 @@ public struct MigrationContext: Sendable {
             )
 
             // Disable index state
-            try await indexManager.stateManager.disable(indexName, transaction: transaction)
+            try await indexRegistry.lifecycleStore.disable(indexName, transaction: transaction)
 
             // Clear index data
-            transaction.clearRange(
+            try transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
             )
@@ -430,20 +416,20 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let indexManager = IndexManager(
+        let indexRegistry = DatabaseIndexRegistry(
             container: container,
             subspace: info.subspace
         )
 
-        // 4. Convert and register index first (needed for IndexManager operations)
+        // 4. Convert and register index first (needed for DatabaseIndexRegistry operations)
         let index = try convertDescriptorToIndex(
             indexDescriptor,
             entity: targetEntity,
             itemTypes: Set([targetEntity.name])
         )
         do {
-            try indexManager.register(index: index)
-        } catch IndexManagerError.duplicateIndex {
+            try indexRegistry.register(index: index)
+        } catch DatabaseIndexRegistryError.duplicateIndex {
             // Index already registered - OK
         }
 
@@ -453,17 +439,17 @@ public struct MigrationContext: Sendable {
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             // Disable index (from any state)
-            try await indexManager.stateManager.disable(indexName, transaction: transaction)
+            try await indexRegistry.lifecycleStore.disable(indexName, transaction: transaction)
 
             // Clear existing data
-            transaction.clearRange(
+            try transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
             )
 
             // Enable index (disabled → writeOnly)
             // Note: We just disabled it above, so this will succeed
-            try await indexManager.stateManager.enable(indexName, transaction: transaction)
+            try await indexRegistry.lifecycleStore.enable(indexName, transaction: transaction)
         }
 
         // 6. Build index via OnlineIndexer using EntityIndexBuilder
@@ -471,24 +457,20 @@ public struct MigrationContext: Sendable {
         // Get configurations for this index (HNSW params, full-text settings, etc.)
         let configs = indexConfigurations[indexName] ?? []
 
-        do {
-            try await EntityIndexBuilder.buildIndex(
-                entityName: targetEntity.name,
-                container: container,
-                storeSubspace: info.subspace,
-                index: index,
-                indexStateManager: indexManager.stateManager,
-                batchSize: batchSize,
-                configurations: configs
-            )
-        } catch EntityIndexBuilderError.entityNotRegistered {
+        guard let persistableType = targetEntity.persistableType else {
             throw FDBRuntimeError.internalError(
-                "Cannot rebuild index for entity '\(targetEntity.name)': " +
-                "Entity not registered in IndexBuilderRegistry. " +
-                "Ensure DBContainer is created with Schema([YourType.self, ...]) " +
-                "or manually register using IndexBuilderRegistry.shared.register(YourType.self)"
+                "Entity '\(targetEntity.name)' has no compiled Persistable type"
             )
         }
+        try await EntityIndexBuilder.buildIndex(
+            for: persistableType,
+            container: container,
+            storeSubspace: info.subspace,
+            index: index,
+            indexLifecycleStore: indexRegistry.lifecycleStore,
+            batchSize: batchSize,
+            configurations: configs
+        )
     }
 
     private func addPolymorphicIndex(
@@ -497,12 +479,12 @@ public struct MigrationContext: Sendable {
         batchSize: Int
     ) async throws {
         let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let stateManager = IndexStateManager(container: container, subspace: subspace)
-        let currentState = try await stateManager.state(of: indexName)
+        let lifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
+        let currentState = try await lifecycleStore.state(of: indexName)
 
         switch currentState {
         case .disabled:
-            try await stateManager.enable(indexName)
+            try await lifecycleStore.enable(indexName)
         case .readable:
             return
         case .writeOnly:
@@ -513,10 +495,10 @@ public struct MigrationContext: Sendable {
             indexName: indexName,
             group: group,
             subspace: subspace,
-            stateManager: stateManager,
+            lifecycleStore: lifecycleStore,
             batchSize: batchSize
         )
-        try await stateManager.makeReadable(indexName)
+        try await lifecycleStore.makeReadable(indexName)
     }
 
     private func removePolymorphicIndex(
@@ -525,7 +507,7 @@ public struct MigrationContext: Sendable {
         addedVersion: Schema.Version
     ) async throws {
         let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let stateManager = IndexStateManager(container: container, subspace: subspace)
+        let lifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
         let formerIndexKey = subspace
             .subspace("storeInfo")
             .subspace("formerIndexes")
@@ -537,7 +519,7 @@ public struct MigrationContext: Sendable {
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             let timestamp = Date().timeIntervalSince1970
-            transaction.setValue(
+            try transaction.setValue(
                 Tuple(
                     Int64(addedVersion.major),
                     Int64(addedVersion.minor),
@@ -547,8 +529,8 @@ public struct MigrationContext: Sendable {
                 for: formerIndexKey
             )
 
-            try await stateManager.disable(indexName, transaction: transaction)
-            transaction.clearRange(
+            try await lifecycleStore.disable(indexName, transaction: transaction)
+            try transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
             )
@@ -561,48 +543,49 @@ public struct MigrationContext: Sendable {
         batchSize: Int
     ) async throws {
         let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let stateManager = IndexStateManager(container: container, subspace: subspace)
+        let lifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
         let indexRange = subspace
             .subspace(SubspaceKey.indexes)
             .subspace(indexName)
             .range()
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            try await stateManager.disable(indexName, transaction: transaction)
-            transaction.clearRange(
+            try await lifecycleStore.disable(indexName, transaction: transaction)
+            try transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
             )
-            try await stateManager.enable(indexName, transaction: transaction)
+            try await lifecycleStore.enable(indexName, transaction: transaction)
         }
 
         try await buildPolymorphicIndexEntries(
             indexName: indexName,
             group: group,
             subspace: subspace,
-            stateManager: stateManager,
+            lifecycleStore: lifecycleStore,
             batchSize: batchSize
         )
-        try await stateManager.makeReadable(indexName)
+        try await lifecycleStore.makeReadable(indexName)
     }
 
     private func buildPolymorphicIndexEntries(
         indexName: String,
         group: PolymorphicGroup,
         subspace: Subspace,
-        stateManager: IndexStateManager,
+        lifecycleStore: IndexLifecycleStore,
         batchSize: Int
     ) async throws {
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let configurations = indexConfigurations[indexName] ?? []
         let maintenanceService = IndexMaintenanceService(
-            indexStateManager: stateManager,
+            indexLifecycleStore: lifecycleStore,
             violationTracker: UniquenessViolationTracker(
                 container: container,
                 metadataSubspace: subspace.subspace(SubspaceKey.metadata)
             ),
             indexSubspace: subspace.subspace(SubspaceKey.indexes),
+            maintainerProviders: container.runtimeConfiguration.indexMaintainerProviders,
             configurations: configurations
         )
         let memberTypeNames = Set(group.memberTypeNames)
@@ -627,8 +610,8 @@ public struct MigrationContext: Sendable {
                 let batchBegin = begin
                 let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(
                     configuration: .batch
-                ) { transaction -> (Int, [UInt8]?) in
-                    let storage = ItemStorage(
+                ) { transaction -> (Int, Bytes?) in
+                    let storage = self.container.itemStorageFactory.make(
                         transaction: transaction,
                         blobsSubspace: blobsSubspace
                     )
@@ -640,7 +623,7 @@ public struct MigrationContext: Sendable {
                     )
 
                     var itemsInBatch = 0
-                    var lastProcessedKey: [UInt8]?
+                    var lastProcessedKey: Bytes?
                     for try await (key, data) in scanSequence {
                         let item = try DataAccess.deserializeAny(data, as: persistableType)
                         let compositeID = try itemSubspace.unpack(key)
@@ -652,7 +635,7 @@ public struct MigrationContext: Sendable {
                             logicalTypeName: group.identifier,
                             transaction: transaction
                         )
-                        lastProcessedKey = Array(key)
+                        lastProcessedKey = key
                         itemsInBatch += 1
                     }
 
@@ -756,18 +739,17 @@ public struct MigrationContext: Sendable {
         let itemType = T.persistableType
         let subspace = try await container.resolveDirectory(for: T.self)
 
-        let encoder = ProtobufEncoder()
-        let data = try encoder.encode(item)
-        let validatedID = try item.validateIDForStorage()
-        let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
+        let data = try DataAccess.serialize(item)
+        let identifier = try item.recordIdentifierTuple()
+        let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(identifier)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         try await container.engine.withTransaction(configuration: .default) { transaction in
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
-            try await storage.write(Array(data), for: itemKey)
+            try await storage.write(data, for: itemKey)
         }
     }
 
@@ -782,12 +764,12 @@ public struct MigrationContext: Sendable {
         let itemType = T.persistableType
         let subspace = try await container.resolveDirectory(for: T.self)
 
-        let validatedID = try item.validateIDForStorage()
-        let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
+        let identifier = try item.recordIdentifierTuple()
+        let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(identifier)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         try await container.engine.withTransaction(configuration: .default) { transaction in
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
@@ -810,23 +792,21 @@ public struct MigrationContext: Sendable {
 
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(itemType)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        let encoder = ProtobufEncoder()  // Reuse across all batches (Sendable)
-
         // Process in batches
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = Array(items[batchStart..<batchEnd])
 
             try await container.engine.withTransaction(configuration: .batch) { transaction in
-                let storage = ItemStorage(
+                let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
                 )
                 for item in batch {
-                    let data = try encoder.encode(item)
-                    let validatedID = try item.validateIDForStorage()
-                    let itemKey = itemSubspace.pack(Tuple(validatedID))
-                    try await storage.write(Array(data), for: itemKey)
+                    let data = try DataAccess.serialize(item)
+                    let identifier = try item.recordIdentifierTuple()
+                    let itemKey = itemSubspace.pack(identifier)
+                    try await storage.write(data, for: itemKey)
                 }
             }
         }
@@ -854,13 +834,13 @@ public struct MigrationContext: Sendable {
             let batch = items[batchStart..<batchEnd]
 
             try await container.engine.withTransaction(configuration: .batch) { transaction in
-                let storage = ItemStorage(
+                let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
                 )
                 for item in batch {
-                    let validatedID = try item.validateIDForStorage()
-                    let itemKey = itemSubspace.pack(Tuple(validatedID))
+                    let identifier = try item.recordIdentifierTuple()
+                    let itemKey = itemSubspace.pack(identifier)
                     try await storage.delete(for: itemKey)
                 }
             }
@@ -944,28 +924,28 @@ public struct MigrationContext: Sendable {
         return totalCount
     }
 
-    // MARK: - Legacy Storage Cleanup
+    // MARK: - Source-Schema Storage Cleanup
 
-    /// Range-clear a legacy type's storage directory.
+    /// Range-clear a source-schema type's storage directory.
     ///
     /// When a schema migration moves a type from one `#Directory` to another
     /// (e.g., V1 `#Directory<V1>("old", "users")` → V2 `#Directory<V2>("new", "users")`),
     /// custom migration code is responsible for copying the data. Afterwards
     /// the V1 location still holds the original rows and their indexes.
-    /// Call this with the legacy type (`V1.self`) to reclaim that space.
+    /// Call this with the source-schema type (`V1.self`) to reclaim that space.
     ///
     /// Uses the type's own `#Directory` definition via
     /// `container.resolveDirectory(for: T.self)`, so V1 and V2 — even with the
     /// same `persistableType` — clear independent subspaces.
     ///
-    /// - Parameter type: The legacy Persistable type whose storage should be removed.
+    /// - Parameter type: The source-schema Persistable type whose storage should be removed.
     /// - Throws: Any error from directory resolution or the clearRange transaction.
-    public func purgeLegacyStorage<T: Persistable>(_ type: T.Type) async throws {
+    public func purgeSourceSchemaStorage<T: Persistable>(_ type: T.Type) async throws {
         let subspace = try await container.resolveDirectory(for: T.self)
         let (beginKey, endKey) = subspace.range()
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.clearRange(beginKey: beginKey, endKey: endKey)
+            try transaction.clearRange(beginKey: beginKey, endKey: endKey)
         }
     }
 
@@ -1054,26 +1034,20 @@ public struct MigrationContext: Sendable {
         entity: Schema.Entity,
         itemTypes: Set<String>
     ) throws -> Index {
-        // Convert AnyKeyPaths to field name strings using the entity's Persistable type
-        // (for backward compatibility with KeyExpression-based code)
-        guard let persistableType = entity.persistableType else {
+        guard entity.persistableType != nil else {
             throw FDBRuntimeError.internalError("Entity '\(entity.name)' has no Persistable type (decoded from wire?)")
-        }
-        let fieldNames = descriptor.keyPaths.map { keyPath in
-            persistableType.fieldName(for: keyPath)
         }
 
         // Build KeyExpression from field names using factory
         // This properly handles nested paths (e.g., "address.city" → NestExpression)
-        let keyExpression = KeyExpressionFactory.from(keyPaths: fieldNames)
+        let keyExpression = KeyExpressionFactory.from(
+            keyPaths: descriptor.fieldNames
+        )
 
-        // Create Index with both KeyExpression and original KeyPaths
-        // KeyPaths enable direct subscript access optimization in IndexMaintainer
         return Index(
             name: descriptor.name,
             kind: descriptor.kind,
             rootExpression: keyExpression,
-            keyPaths: descriptor.keyPaths,  // Preserve for direct KeyPath extraction
             subspaceKey: descriptor.name,
             itemTypes: itemTypes,  // Scoped to specific entity
             storedFieldNames: descriptor.storedFieldNames
@@ -1149,8 +1123,6 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
 	                    let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
 	                    var lastKey: Bytes? = nil
-	                    let decoder = ProtobufDecoder()
-
                     while !Task.isCancelled {
                         // Capture lastKey for Sendable closure
                         let currentLastKey = lastKey
@@ -1159,7 +1131,7 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
 	                        let batch: [(key: Bytes, value: Bytes)] = try await container.engine.withTransaction(configuration: .batch) { transaction in
 	                            let rangeBegin = currentLastKey.map { $0 + [0x00] } ?? beginKey
 
-	                            let storage = ItemStorage(
+	                            let storage = self.container.itemStorageFactory.make(
 	                                transaction: transaction,
 	                                blobsSubspace: blobsSubspace
 	                            )
@@ -1179,7 +1151,7 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
 	                        // Process batch and yield items
 	                        for (key, value) in batch {
 	                            do {
-	                                let item = try decoder.decode(T.self, from: Data(value))
+	                                let item: T = try DataAccess.deserialize(value)
 	                                continuation.yield(item)
                             } catch {
                                 // Log decode error but continue processing

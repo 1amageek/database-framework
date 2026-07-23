@@ -5,10 +5,9 @@
 import Testing
 import Foundation
 import StorageKit
-import FDBStorage
 import Core
+import DatabaseValue
 import Graph
-import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
 
@@ -81,70 +80,151 @@ private struct Edge: Persistable {
 
 // MARK: - Test Helper
 
-private struct TestContext {
+private struct GraphAlgorithmContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: GraphIndexMaintainer<Edge>
-    let kind: GraphIndexKind<Edge>
-    let indexName: String
 
-    init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "GraphAlgoEdge_graph") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(
+        indexName: String = "GraphAlgoEdge_graph"
+    ) async throws {
+        self.database = InMemoryEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "graphalgo", String(testId)).pack())
-        self.indexName = indexName
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
-
-        self.kind = GraphIndexKind<Edge>(
-            from: \.source,
-            edge: \.label,
-            to: \.target,
-            strategy: strategy
-        )
-
-        let index = Index(
-            name: indexName,
-            kind: kind,
-            rootExpression: ConcatenateKeyExpression(children: [
-                FieldKeyExpression(fieldName: "source"),
-                FieldKeyExpression(fieldName: "target"),
-                FieldKeyExpression(fieldName: "label")
-            ]),
-            subspaceKey: indexName,
-            itemTypes: Set(["GraphAlgoEdge"])
-        )
-
-        self.maintainer = GraphIndexMaintainer<Edge>(
-            index: index,
-            subspace: indexSubspace,
-            idExpression: FieldKeyExpression(fieldName: "id"),
-            fromField: kind.fromField,
-            edgeField: kind.edgeField,
-            toField: kind.toField,
-            strategy: strategy
-        )
     }
 
     func cleanup() async throws {
         let range = subspace.range()
         try await database.withTransaction(configuration: .batch) { tx in
-            tx.clearRange(beginKey: range.0, endKey: range.1)
+            try tx.clearRange(beginKey: range.0, endKey: range.1)
             // Note: withTransaction automatically commits on success - don't call commit() explicitly
         }
     }
 
-    /// Insert edges using GraphIndexMaintainer
+    func cleanupReportingFailure() async {
+        do {
+            try await cleanup()
+        } catch {
+            Issue.record("Graph test cleanup failed: \(error)")
+        }
+    }
+
+    /// Inserts canonical adjacency keys so these tests isolate scanner and
+    /// algorithm behavior from record-schema and index-maintainer behavior.
     func insertEdges(_ edges: [Edge]) async throws {
         try await database.withTransaction(configuration: .batch) { transaction in
             for edge in edges {
-                try await maintainer.updateIndex(
-                    oldItem: nil,
-                    newItem: edge,
-                    transaction: transaction
+                try transaction.setValue(
+                    Bytes(),
+                    for: indexSubspace.subspace(Int64(0)).pack(
+                        Tuple(edge.source, edge.label, edge.target)
+                    )
+                )
+                try transaction.setValue(
+                    Bytes(),
+                    for: indexSubspace.subspace(Int64(1)).pack(
+                        Tuple(edge.target, edge.label, edge.source)
+                    )
                 )
             }
-            // Note: withTransaction automatically commits on success - don't call commit() explicitly
+        }
+    }
+
+    func shortestPath(
+        from source: String,
+        to target: String,
+        edgeLabel: String? = nil,
+        configuration: ShortestPathConfiguration = .default
+    ) async throws -> ShortestPathResult {
+        try await database.withTransaction { transaction in
+            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let finder = ShortestPathFinder(
+                snapshot: snapshot,
+                subspace: indexSubspace,
+                configuration: configuration
+            )
+            return try await finder.findShortestPath(
+                from: .identifier(source),
+                to: .identifier(target),
+                edgeLabel: edgeLabel.map(GraphIdentity.identifier)
+            )
+        }
+    }
+
+    func allShortestPaths(
+        from source: String,
+        to target: String,
+        edgeLabel: String? = nil,
+        configuration: ShortestPathConfiguration = .default
+    ) async throws -> AllShortestPathsResult {
+        try await database.withTransaction { transaction in
+            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let finder = ShortestPathFinder(
+                snapshot: snapshot,
+                subspace: indexSubspace,
+                configuration: configuration
+            )
+            return try await finder.findAllShortestPaths(
+                from: .identifier(source),
+                to: .identifier(target),
+                edgeLabel: edgeLabel.map(GraphIdentity.identifier)
+            )
+        }
+    }
+
+    func pageRank(
+        configuration: PageRankConfiguration = .default,
+        edgeLabel: String? = nil
+    ) async throws -> PageRankResult {
+        try await database.withTransaction { transaction in
+            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let computer = PageRankComputer(
+                snapshot: snapshot,
+                subspace: indexSubspace,
+                configuration: configuration
+            )
+            return try await computer.compute(
+                edgeLabel: edgeLabel.map(GraphIdentity.identifier)
+            )
+        }
+    }
+
+    func communities(
+        configuration: CommunityDetectionConfiguration = .default,
+        edgeLabel: String? = nil
+    ) async throws -> CommunityResult {
+        try await database.withTransaction { transaction in
+            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let detector = CommunityDetector(
+                snapshot: snapshot,
+                subspace: indexSubspace,
+                configuration: configuration
+            )
+            return try await detector.detect(
+                edgeLabel: edgeLabel.map(GraphIdentity.identifier)
+            )
+        }
+    }
+
+    func localCommunity(
+        for node: String,
+        maxHops: Int,
+        configuration: CommunityDetectionConfiguration = .default,
+        edgeLabel: String? = nil
+    ) async throws -> Set<GraphIdentity> {
+        try await database.withTransaction { transaction in
+            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let detector = CommunityDetector(
+                snapshot: snapshot,
+                subspace: indexSubspace,
+                configuration: configuration
+            )
+            return try await detector.detectLocalCommunity(
+                for: .identifier(node),
+                maxHops: maxHops,
+                edgeLabel: edgeLabel.map(GraphIdentity.identifier)
+            )
         }
     }
 }
@@ -202,8 +282,8 @@ struct PathLengthTests {
 struct GraphPathTests {
 
     @Test("GraphPath length is correct")
-    func lengthCalculation() {
-        let path = GraphPath<Edge>(
+    func lengthCalculation() throws {
+        let path = try GraphPath(
             nodeIDs: ["A", "B", "C", "D"],
             edgeLabels: ["e1", "e2", "e3"],
             weights: nil
@@ -214,8 +294,8 @@ struct GraphPathTests {
     }
 
     @Test("GraphPath totalWeight with weights")
-    func totalWeightCalculation() {
-        let path = GraphPath<Edge>(
+    func totalWeightCalculation() throws {
+        let path = try GraphPath(
             nodeIDs: ["A", "B", "C"],
             edgeLabels: ["e1", "e2"],
             weights: [1.5, 2.5]
@@ -224,8 +304,8 @@ struct GraphPathTests {
     }
 
     @Test("GraphPath totalWeight without weights uses length")
-    func totalWeightWithoutWeights() {
-        let path = GraphPath<Edge>(
+    func totalWeightWithoutWeights() throws {
+        let path = try GraphPath(
             nodeIDs: ["A", "B", "C", "D"],
             edgeLabels: ["e1", "e2", "e3"],
             weights: nil
@@ -234,8 +314,8 @@ struct GraphPathTests {
     }
 
     @Test("GraphPath isEmpty for single node")
-    func isEmptyForSingleNode() {
-        let path = GraphPath<Edge>(
+    func isEmptyForSingleNode() throws {
+        let path = try GraphPath(
             nodeIDs: ["A"],
             edgeLabels: [],
             weights: nil
@@ -245,6 +325,28 @@ struct GraphPathTests {
         // The path *length* is 0 (no edges), but the path itself exists.
         #expect(path.isEmpty == false)
         #expect(path.length == 0)
+    }
+
+    @Test("GraphPath rejects an edge count that does not match its nodes")
+    func rejectsMismatchedEdgeCount() {
+        #expect(throws: GraphPathError.self) {
+            _ = try GraphPath(
+                nodeIDs: ["A", "B", "C"],
+                edgeLabels: ["edge"],
+                weights: nil
+            )
+        }
+    }
+
+    @Test("GraphPath rejects non-finite weights")
+    func rejectsNonFiniteWeights() {
+        #expect(throws: GraphPathError.self) {
+            _ = try GraphPath(
+                nodeIDs: ["A", "B"],
+                edgeLabels: ["edge"],
+                weights: [.infinity]
+            )
+        }
     }
 }
 
@@ -360,17 +462,13 @@ struct ShortestPathConfigurationTests {
 
 // MARK: - ShortestPathFinder Integration Tests
 
-@Suite("ShortestPathFinder Integration Tests", .serialized, .tags(.requiresFDB), .heartbeat)
+@Suite("ShortestPathFinder Integration Tests", .serialized)
 struct ShortestPathFinderIntegrationTests {
-
-    init() async throws {
-        try await FDBTestSetup.shared.initialize()
-    }
 
     @Test("Find shortest path in simple graph")
     func simpleShortestPath() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Create a simple graph: A -> B -> C -> D
         let edges = [
@@ -380,13 +478,7 @@ struct ShortestPathFinderIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let finder = ShortestPathFinder<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: .default
-        )
-
-        let result = try await finder.findShortestPath(from: "A", to: "D")
+        let result = try await ctx.shortestPath(from: "A", to: "D")
 
         #expect(result.isConnected == true)
         #expect(result.distance == 3)
@@ -395,8 +487,8 @@ struct ShortestPathFinderIntegrationTests {
 
     @Test("No path between disconnected nodes")
     func noPathDisconnected() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Create disconnected graph: A -> B, C -> D
         let edges = [
@@ -405,13 +497,7 @@ struct ShortestPathFinderIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let finder = ShortestPathFinder<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: .default
-        )
-
-        let result = try await finder.findShortestPath(from: "A", to: "D")
+        let result = try await ctx.shortestPath(from: "A", to: "D")
 
         #expect(result.isConnected == false)
         #expect(result.path == nil)
@@ -419,8 +505,8 @@ struct ShortestPathFinderIntegrationTests {
 
     @Test("Shortest path with edge label filter")
     func shortestPathWithEdgeFilter() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // A -> B (follows), A -> C (blocks), C -> D (follows)
         // With "follows" filter, should find A -> B only path or no path to D
@@ -432,13 +518,11 @@ struct ShortestPathFinderIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let finder = ShortestPathFinder<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: .default
+        let result = try await ctx.shortestPath(
+            from: "A",
+            to: "D",
+            edgeLabel: "follows"
         )
-
-        let result = try await finder.findShortestPath(from: "A", to: "D", edgeLabel: "follows")
 
         #expect(result.isConnected == true)
         #expect(result.distance == 2)  // A -> B -> D
@@ -446,8 +530,8 @@ struct ShortestPathFinderIntegrationTests {
 
     @Test("Shortest path with edgeLabel=nil (wildcard) considers ALL edge labels")
     func shortestPathWithWildcardEdgeLabel() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Graph with multiple edge labels:
         // A -> B (follows)
@@ -464,15 +548,13 @@ struct ShortestPathFinderIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let finder = ShortestPathFinder<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: .default
-        )
-
         // edgeLabel=nil means "match ALL labels" (wildcard)
         // Use default bidirectional BFS
-        let result = try await finder.findShortestPath(from: "A", to: "D", edgeLabel: nil)
+        let result = try await ctx.shortestPath(
+            from: "A",
+            to: "D",
+            edgeLabel: nil
+        )
 
         #expect(result.isConnected == true)
         #expect(result.distance == 2)  // A -> C -> D
@@ -480,21 +562,110 @@ struct ShortestPathFinderIntegrationTests {
         // Since B has no outgoing edges to D, path must be A -> C -> D
         #expect(result.path?.length == 2)
     }
+
+    @Test("Bidirectional search reconstructs the backward half in edge direction")
+    func bidirectionalBackwardPathReconstruction() async throws {
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
+
+        // The wider forward frontier forces the next expansion to scan incoming
+        // edges from the target side and meet at B.
+        let edges = [
+            Edge(source: "A", target: "B", label: "edge"),
+            Edge(source: "A", target: "C", label: "edge"),
+            Edge(source: "A", target: "D", label: "edge"),
+            Edge(source: "B", target: "X", label: "edge"),
+            Edge(source: "X", target: "T", label: "edge"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let result = try await ctx.shortestPath(
+            from: "A",
+            to: "T",
+            edgeLabel: "edge",
+            configuration: ShortestPathConfiguration(
+                maxDepth: 3,
+                bidirectional: true,
+                batchSize: 100,
+                maxNodesExplored: 100
+            )
+        )
+
+        #expect(result.isConnected)
+        #expect(result.distance == 3)
+        #expect(result.path?.nodeIDs == ["A", "B", "X", "T"])
+        #expect(result.path?.edgeLabels == ["edge", "edge", "edge"])
+    }
+
+    @Test("Bidirectional search is complete when either frontier is exhausted")
+    func bidirectionalExhaustedFrontierIsComplete() async throws {
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
+
+        // A wider forward frontier makes the second expansion inspect T. Since
+        // T has no incoming edges, no path can exist regardless of forward depth.
+        try await ctx.insertEdges([
+            Edge(source: "A", target: "B", label: "edge"),
+            Edge(source: "A", target: "C", label: "edge"),
+        ])
+
+        let result = try await ctx.shortestPath(
+            from: "A",
+            to: "T",
+            edgeLabel: "edge",
+            configuration: ShortestPathConfiguration(
+                maxDepth: 2,
+                bidirectional: true,
+                batchSize: 100,
+                maxNodesExplored: 100
+            )
+        )
+
+        #expect(result.path == nil)
+        #expect(result.isComplete)
+        #expect(result.limitReason == nil)
+    }
+
+    @Test("All-shortest search returns every equal-length path")
+    func allEqualLengthShortestPaths() async throws {
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
+
+        let edges = [
+            Edge(source: "A", target: "B", label: "edge"),
+            Edge(source: "A", target: "C", label: "edge"),
+            Edge(source: "B", target: "T", label: "edge"),
+            Edge(source: "C", target: "T", label: "edge"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let result = try await ctx.allShortestPaths(
+            from: "A",
+            to: "T",
+            edgeLabel: "edge"
+        )
+        let actualPaths = Set(result.paths.map(\.nodeIDs))
+        let expectedPaths: Set<[GraphIdentity]> = [
+            ["A", "B", "T"],
+            ["A", "C", "T"],
+        ]
+
+        #expect(result.isComplete)
+        #expect(result.limitReason == nil)
+        #expect(result.distance == 2)
+        #expect(actualPaths == expectedPaths)
+    }
 }
 
 // MARK: - PageRankComputer Integration Tests
 
-@Suite("PageRankComputer Integration Tests", .serialized, .tags(.requiresFDB), .heartbeat)
+@Suite("PageRankComputer Integration Tests", .serialized)
 struct PageRankComputerIntegrationTests {
-
-    init() async throws {
-        try await FDBTestSetup.shared.initialize()
-    }
 
     @Test("PageRank on simple directed graph")
     func simplePageRank() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Simple graph: A -> B -> C, A -> C
         // C should have highest PageRank (receives from both A and B)
@@ -505,9 +676,7 @@ struct PageRankComputerIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
+        let result = try await ctx.pageRank(
             configuration: PageRankConfiguration(
                 dampingFactor: 0.85,
                 maxIterations: 50,
@@ -515,8 +684,6 @@ struct PageRankComputerIntegrationTests {
                 batchSize: 100
             )
         )
-
-        let result = try await computer.compute()
 
         #expect(result.nodeCount == 3)
         #expect(result.iterations > 0)
@@ -528,8 +695,8 @@ struct PageRankComputerIntegrationTests {
 
     @Test("PageRank converges")
     func pageRankConverges() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Create a cycle: A -> B -> C -> A
         let edges = [
@@ -539,9 +706,7 @@ struct PageRankComputerIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
+        let result = try await ctx.pageRank(
             configuration: PageRankConfiguration(
                 dampingFactor: 0.85,
                 maxIterations: 100,
@@ -549,8 +714,6 @@ struct PageRankComputerIntegrationTests {
                 batchSize: 100
             )
         )
-
-        let result = try await computer.compute()
 
         // In a symmetric cycle, all nodes should have equal PageRank
         let scores = result.scores
@@ -565,8 +728,8 @@ struct PageRankComputerIntegrationTests {
 
     @Test("PageRank with edgeLabel=nil (wildcard) considers ALL edge labels")
     func pageRankWithWildcardEdgeLabel() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Graph with multiple edge labels:
         // A -> C (follows)
@@ -583,19 +746,15 @@ struct PageRankComputerIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
+        let result = try await ctx.pageRank(
             configuration: PageRankConfiguration(
                 dampingFactor: 0.85,
                 maxIterations: 50,
                 convergenceThreshold: 1e-6,
                 batchSize: 100
-            )
+            ),
+            edgeLabel: nil
         )
-
-        // edgeLabel=nil means "match ALL labels" (wildcard)
-        let result = try await computer.compute(edgeLabel: nil)
 
         // All 4 nodes should be discovered
         #expect(result.nodeCount == 4)
@@ -617,8 +776,8 @@ struct PageRankComputerIntegrationTests {
 
     @Test("PageRank with specific edgeLabel filters correctly")
     func pageRankWithSpecificEdgeLabel() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Graph with multiple edge labels:
         // A -> C (follows)
@@ -631,19 +790,15 @@ struct PageRankComputerIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
+        let result = try await ctx.pageRank(
             configuration: PageRankConfiguration(
                 dampingFactor: 0.85,
                 maxIterations: 50,
                 convergenceThreshold: 1e-6,
                 batchSize: 100
-            )
+            ),
+            edgeLabel: "follows"
         )
-
-        // Only consider "follows" edges
-        let result = try await computer.compute(edgeLabel: "follows")
 
         // Only A and C should be discovered (B is not connected via "follows")
         #expect(result.nodeCount == 2)
@@ -658,17 +813,13 @@ struct PageRankComputerIntegrationTests {
 
 // MARK: - CommunityDetector Integration Tests
 
-@Suite("CommunityDetector Integration Tests", .serialized, .tags(.requiresFDB), .heartbeat)
+@Suite("CommunityDetector Integration Tests", .serialized)
 struct CommunityDetectorIntegrationTests {
-
-    init() async throws {
-        try await FDBTestSetup.shared.initialize()
-    }
 
     @Test("Detect obvious communities")
     func detectObviousCommunities() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Two fully connected cliques with one bridge
         // Clique 1: A, B, C
@@ -695,9 +846,7 @@ struct CommunityDetectorIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let detector = CommunityDetector<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
+        let result = try await ctx.communities(
             configuration: CommunityDetectionConfiguration(
                 maxIterations: 100,
                 batchSize: 100,
@@ -705,8 +854,6 @@ struct CommunityDetectorIntegrationTests {
                 minCommunitySize: 1
             )
         )
-
-        let result = try await detector.detect()
 
         // Should detect at least 2 communities (might merge due to bridge)
         #expect(result.communityCount >= 1)
@@ -722,8 +869,8 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Detect local community")
     func detectLocalCommunity() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Simple star graph: A connected to B, C, D
         let edges = [
@@ -736,13 +883,7 @@ struct CommunityDetectorIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let detector = CommunityDetector<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: .default
-        )
-
-        let localCommunity = try await detector.detectLocalCommunity(for: "A", maxHops: 2)
+        let localCommunity = try await ctx.localCommunity(for: "A", maxHops: 2)
 
         // Should find all connected nodes
         #expect(localCommunity.contains("A"))
@@ -753,8 +894,8 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Deterministic results with seed")
     func deterministicResultsWithSeed() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Create a graph with multiple possible community assignments
         // This tests that the same seed produces the same results
@@ -789,15 +930,9 @@ struct CommunityDetectorIntegrationTests {
             seed: seed
         )
 
-        let detector = CommunityDetector<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: config
-        )
-
-        let result1 = try await detector.detect()
-        let result2 = try await detector.detect()
-        let result3 = try await detector.detect()
+        let result1 = try await ctx.communities(configuration: config)
+        let result2 = try await ctx.communities(configuration: config)
+        let result3 = try await ctx.communities(configuration: config)
 
         // All runs should produce identical community assignments
         #expect(result1.assignments == result2.assignments)
@@ -808,8 +943,8 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Different seeds produce different results")
     func differentSeedsProduceDifferentResults() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Create a larger graph where different seeds may lead to different results
         var edges: [Edge] = []
@@ -825,20 +960,8 @@ struct CommunityDetectorIntegrationTests {
         let config1 = CommunityDetectionConfiguration(seed: 111)
         let config2 = CommunityDetectionConfiguration(seed: 222)
 
-        let detector1 = CommunityDetector<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: config1
-        )
-
-        let detector2 = CommunityDetector<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: config2
-        )
-
-        let result1 = try await detector1.detect()
-        let result2 = try await detector2.detect()
+        let result1 = try await ctx.communities(configuration: config1)
+        let result2 = try await ctx.communities(configuration: config2)
 
         // Both should find communities (the ring should form one big SCC)
         #expect(result1.communityCount >= 1)
@@ -850,8 +973,8 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Modularity computation")
     func modularityComputation() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Two clearly separated cliques should have high modularity
         let edges = [
@@ -880,13 +1003,7 @@ struct CommunityDetectorIntegrationTests {
             seed: 42
         )
 
-        let detector = CommunityDetector<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: config
-        )
-
-        let result = try await detector.detect()
+        let result = try await ctx.communities(configuration: config)
 
         // Modularity should be computed
         #expect(result.modularity != nil)
@@ -902,8 +1019,8 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Three or more communities")
     func threeOrMoreCommunities() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Create 3 separate cliques with no connections between them
         let edges = [
@@ -927,13 +1044,7 @@ struct CommunityDetectorIntegrationTests {
             seed: 42
         )
 
-        let detector = CommunityDetector<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: config
-        )
-
-        let result = try await detector.detect()
+        let result = try await ctx.communities(configuration: config)
 
         // Should detect 3 separate communities (disconnected components)
         #expect(result.communityCount == 3)
@@ -951,8 +1062,8 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Single node isolation")
     func singleNodeIsolation() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Graph with isolated node
         let edges = [
@@ -964,13 +1075,9 @@ struct CommunityDetectorIntegrationTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let detector = CommunityDetector<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
+        let result = try await ctx.communities(
             configuration: CommunityDetectionConfiguration(seed: 42)
         )
-
-        let result = try await detector.detect()
 
         // Should detect at least 2 communities
         #expect(result.communityCount >= 2)
@@ -985,17 +1092,13 @@ struct CommunityDetectorIntegrationTests {
 
 // MARK: - PageRank Edge Case Tests
 
-@Suite("PageRank Edge Case Tests", .serialized, .tags(.requiresFDB), .heartbeat)
+@Suite("PageRank Edge Case Tests", .serialized)
 struct PageRankEdgeCaseTests {
-
-    init() async throws {
-        try await FDBTestSetup.shared.initialize()
-    }
 
     @Test("Sink node handling")
     func sinkNodeHandling() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Graph with sink node (no outgoing edges)
         // A -> B -> C (sink)
@@ -1005,9 +1108,7 @@ struct PageRankEdgeCaseTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
+        let result = try await ctx.pageRank(
             configuration: PageRankConfiguration(
                 dampingFactor: 0.85,
                 maxIterations: 100,
@@ -1015,8 +1116,6 @@ struct PageRankEdgeCaseTests {
                 batchSize: 100
             )
         )
-
-        let result = try await computer.compute()
 
         // Should find all 3 nodes
         #expect(result.nodeCount == 3)
@@ -1032,8 +1131,8 @@ struct PageRankEdgeCaseTests {
 
     @Test("Disconnected graph components")
     func disconnectedGraphComponents() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Two disconnected components
         // Component 1: A -> B
@@ -1044,9 +1143,7 @@ struct PageRankEdgeCaseTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
+        let result = try await ctx.pageRank(
             configuration: PageRankConfiguration(
                 dampingFactor: 0.85,
                 maxIterations: 100,
@@ -1054,8 +1151,6 @@ struct PageRankEdgeCaseTests {
                 batchSize: 100
             )
         )
-
-        let result = try await computer.compute()
 
         // Should find all 4 nodes
         #expect(result.nodeCount == 4)
@@ -1078,8 +1173,8 @@ struct PageRankEdgeCaseTests {
 
     @Test("Self-loop node")
     func selfLoopNode() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Node with self-loop
         let edges = [
@@ -1088,9 +1183,7 @@ struct PageRankEdgeCaseTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
+        let result = try await ctx.pageRank(
             configuration: PageRankConfiguration(
                 dampingFactor: 0.85,
                 maxIterations: 100,
@@ -1098,8 +1191,6 @@ struct PageRankEdgeCaseTests {
                 batchSize: 100
             )
         )
-
-        let result = try await computer.compute()
 
         // Should find 2 nodes
         #expect(result.nodeCount == 2)
@@ -1112,8 +1203,8 @@ struct PageRankEdgeCaseTests {
 
     @Test("Convergence threshold validation")
     func convergenceThresholdValidation() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Simple cycle for predictable convergence
         let edges = [
@@ -1131,13 +1222,7 @@ struct PageRankEdgeCaseTests {
             batchSize: 100
         )
 
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: strictConfig
-        )
-
-        let result = try await computer.compute()
+        let result = try await ctx.pageRank(configuration: strictConfig)
 
         // Should converge (delta should be <= threshold)
         #expect(result.convergenceDelta <= 1e-10 || result.iterations == 1000)
@@ -1152,8 +1237,8 @@ struct PageRankEdgeCaseTests {
 
     @Test("Max iterations limit")
     func maxIterationsLimit() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Use a directed chain (not a cycle) that takes multiple iterations to converge.
         // In a chain A -> B -> C -> ... -> T, scores propagate through the chain,
@@ -1174,13 +1259,7 @@ struct PageRankEdgeCaseTests {
             batchSize: 100
         )
 
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: config
-        )
-
-        let result = try await computer.compute()
+        let result = try await ctx.pageRank(configuration: config)
 
         // Should stop at max iterations (chain graph doesn't converge quickly)
         #expect(result.iterations == 5)
@@ -1193,17 +1272,11 @@ struct PageRankEdgeCaseTests {
 
     @Test("Empty graph")
     func emptyGraph() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // No edges
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
-            configuration: .default
-        )
-
-        let result = try await computer.compute()
+        let result = try await ctx.pageRank()
 
         // Should handle empty graph gracefully
         #expect(result.nodeCount == 0)
@@ -1213,8 +1286,8 @@ struct PageRankEdgeCaseTests {
 
     @Test("Star graph hub dominance")
     func starGraphHubDominance() async throws {
-        let ctx = try await TestContext()
-        defer { Task { try? await ctx.cleanup() } }
+        let ctx = try await GraphAlgorithmContext()
+        defer { Task { await ctx.cleanupReportingFailure() } }
 
         // Star graph: all nodes point to center hub
         // A, B, C, D all point to H
@@ -1226,9 +1299,7 @@ struct PageRankEdgeCaseTests {
         ]
         try await ctx.insertEdges(edges)
 
-        let computer = PageRankComputer<Edge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace,
+        let result = try await ctx.pageRank(
             configuration: PageRankConfiguration(
                 dampingFactor: 0.85,
                 maxIterations: 100,
@@ -1236,8 +1307,6 @@ struct PageRankEdgeCaseTests {
                 batchSize: 100
             )
         )
-
-        let result = try await computer.compute()
 
         // Hub should have highest score
         let topNode = result.topK(1).first

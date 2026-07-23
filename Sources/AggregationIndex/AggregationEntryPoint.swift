@@ -4,7 +4,11 @@
 // Follows the EntryPoint → QueryBuilder pattern used by other index types
 // (VectorEntryPoint, FullTextEntryPoint, SpatialEntryPoint)
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import DatabaseEngine
 import Core
 
@@ -32,7 +36,7 @@ import Core
 ///     .sum(\.amount)
 ///     .execute()
 ///
-/// // (Future) Force specific index
+/// // Force a specific index
 /// let stats = try await context.aggregate(Order.self)
 ///     .using(index: "Order_count_region")
 ///     .execute()
@@ -72,7 +76,7 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
     ///   - keyPath: KeyPath to the numeric field to sum
     ///   - name: Name for the aggregation result
     /// - Returns: AggregationQueryBuilder for chaining
-    public func sum<V: Numeric>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
+    public func sum<V: IndexNumericValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
             .sum(keyPath, as: name)
     }
@@ -83,7 +87,7 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
     ///   - keyPath: KeyPath to the numeric field to average
     ///   - name: Name for the aggregation result
     /// - Returns: AggregationQueryBuilder for chaining
-    public func avg<V: Numeric>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
+    public func avg<V: IndexNumericValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
             .avg(keyPath, as: name)
     }
@@ -94,7 +98,7 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
     ///   - keyPath: KeyPath to the comparable field
     ///   - name: Name for the aggregation result
     /// - Returns: AggregationQueryBuilder for chaining
-    public func min<V: Comparable>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
+    public func min<V: IndexComparableValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
             .min(keyPath, as: name)
     }
@@ -105,12 +109,42 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
     ///   - keyPath: KeyPath to the comparable field
     ///   - name: Name for the aggregation result
     /// - Returns: AggregationQueryBuilder for chaining
-    public func max<V: Comparable>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
+    public func max<V: IndexComparableValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
             .max(keyPath, as: name)
     }
 
-    // MARK: - (Future) Index Selection
+    /// Add a DISTINCT aggregation (global - no grouping)
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to the field whose distinct values are counted
+    ///   - name: Name for the aggregation result
+    /// - Returns: AggregationQueryBuilder for chaining
+    public func distinct<V>(
+        _ keyPath: KeyPath<T, V>,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
+        AggregationQueryBuilder(queryContext: queryContext)
+            .distinct(keyPath, as: name)
+    }
+
+    /// Add a PERCENTILE aggregation (global - no grouping)
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to the numeric field
+    ///   - percentile: Quantile between zero and one
+    ///   - name: Name for the aggregation result
+    /// - Returns: AggregationQueryBuilder for chaining
+    public func percentile<V: IndexNumericValue>(
+        _ keyPath: KeyPath<T, V>,
+        p percentile: Double,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
+        AggregationQueryBuilder(queryContext: queryContext)
+            .percentile(keyPath, p: percentile, as: name)
+    }
+
+    // MARK: - Index Selection
 
     /// Force use of a specific index
     ///
@@ -158,7 +192,7 @@ extension FDBContext {
     ///
     /// **Automatic Index Selection**:
     /// When a matching precomputed index exists (e.g., `CountIndexKind`, `SumIndexKind`),
-    /// the system automatically uses it for O(1) performance. Otherwise, it falls back
+    /// the system automatically uses its bounded group scan. Otherwise, it falls back
     /// to O(n) in-memory computation.
     ///
     /// - Parameter type: The Persistable type to aggregate

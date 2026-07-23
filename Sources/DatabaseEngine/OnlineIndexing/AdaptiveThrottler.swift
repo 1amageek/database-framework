@@ -4,7 +4,6 @@
 // Reference: FDB Record Layer IndexingThrottle.java
 // Dynamically adjusts batch size and delay based on operation success/failure.
 
-import Foundation
 import Synchronization
 import StorageKit
 
@@ -236,12 +235,17 @@ public final class AdaptiveThrottler: Sendable {
     }
 
     private let configuration: ThrottleConfiguration
+    private let clock: any StorageMonotonicClock
     private let state: Mutex<State>
 
     // MARK: - Initialization
 
-    public init(configuration: ThrottleConfiguration = .default) {
+    public init(
+        configuration: ThrottleConfiguration = .default,
+        clock: any StorageMonotonicClock = SystemStorageClock()
+    ) {
         self.configuration = configuration
+        self.clock = clock
         self.state = Mutex(State(
             currentBatchSize: configuration.initialBatchSize,
             currentDelayMs: configuration.initialDelayMs
@@ -335,11 +339,6 @@ public final class AdaptiveThrottler: Sendable {
             return storageError.isRetryable
         }
 
-        // Generic timeout errors
-        if (error as NSError).domain == NSURLErrorDomain {
-            return true
-        }
-
         return false
     }
 
@@ -349,7 +348,10 @@ public final class AdaptiveThrottler: Sendable {
     public func waitBeforeNextBatch() async throws {
         let delayMs = currentDelayMs
         if delayMs > 0 {
-            try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+            let deadline = clock.now.advanced(
+                by: .milliseconds(Int64(delayMs))
+            )
+            try await clock.sleep(until: deadline)
         }
     }
 

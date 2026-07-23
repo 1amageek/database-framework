@@ -1,7 +1,11 @@
 // StatisticsStorage.swift
 // QueryPlanner - FoundationDB persistence for statistics
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 import Synchronization
@@ -10,12 +14,12 @@ import Synchronization
 ///
 /// **Storage Layout**:
 /// ```
-/// [subspace]/_statistics/table/[typeName]               → TableStatisticsData (JSON)
-/// [subspace]/_statistics/field/[typeName]/[fieldName]   → FieldStatisticsData (JSON)
-/// [subspace]/_statistics/index/[indexName]              → IndexStatisticsData (JSON)
-/// [subspace]/_statistics/search/vector/[indexName]      → VectorIndexStatistics (JSON)
-/// [subspace]/_statistics/search/fulltext/[indexName]    → FullTextIndexStatistics (JSON)
-/// [subspace]/_statistics/search/spatial/[indexName]     → SpatialIndexStatistics (JSON)
+/// [subspace]/_statistics/table/[typeName]               → TableStatisticsData (STAT v1)
+/// [subspace]/_statistics/field/[typeName]/[fieldName]   → FieldStatisticsData (STAT v1)
+/// [subspace]/_statistics/index/[indexName]              → IndexStatisticsData (STAT v1)
+/// [subspace]/_statistics/search/vector/[indexName]      → VectorStatisticsData (STAT v1)
+/// [subspace]/_statistics/search/fulltext/[indexName]    → FullTextStatisticsData (STAT v1)
+/// [subspace]/_statistics/search/spatial/[indexName]     → SpatialStatisticsData (STAT v1)
 /// ```
 ///
 /// **Usage**:
@@ -56,10 +60,10 @@ public final class StatisticsStorage: Sendable {
     /// Save table statistics
     public func saveTableStatistics(typeName: String, stats: TableStatisticsData) async throws {
         let key = statsSubspace.subspace("table").pack(Tuple([typeName]))
-        let data = try ProtobufEncoder().encode(stats)
+        let data = try StatisticsRecordCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(data, for: key)
         }
     }
 
@@ -71,7 +75,7 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try ProtobufDecoder().decode(TableStatisticsData.self, from: Data(data))
+            return try StatisticsRecordCodec.decodeTable(data)
         }
     }
 
@@ -80,31 +84,21 @@ public final class StatisticsStorage: Sendable {
         let tableSubspace = statsSubspace.subspace("table")
 
         return try await container.engine.withTransaction(configuration: .batch) { transaction in
-            let decoder = ProtobufDecoder()
             var results: [String: TableStatisticsData] = [:]
 
             let (begin, end) = tableSubspace.range()
             for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
-                // Graceful skip for malformed keys (batch operation pattern)
-                let keyTuple: Tuple
-                do {
-                    keyTuple = try tableSubspace.unpack(key)
-                } catch {
-                    // Skip malformed statistics key - may occur during migration or corruption
-                    continue
+                let keyTuple = try tableSubspace.unpack(key)
+                guard keyTuple.count == 1 else {
+                    throw StatisticsStorageError.malformedKey(
+                        expectedElementCount: 1,
+                        actual: keyTuple.count
+                    )
                 }
-                guard let typeName = keyTuple[0] as? String else {
-                    continue
+                guard let typeName = try keyTuple.element(at: 0) as? String else {
+                    throw StatisticsStorageError.malformedKeyElement
                 }
-
-                // Graceful skip for corrupted statistics data
-                do {
-                    let stats = try decoder.decode(TableStatisticsData.self, from: Data(value))
-                    results[typeName] = stats
-                } catch {
-                    // Skip corrupted entry - statistics can be regenerated
-                    continue
-                }
+                results[typeName] = try StatisticsRecordCodec.decodeTable(value)
             }
 
             return results
@@ -116,10 +110,10 @@ public final class StatisticsStorage: Sendable {
     /// Save field statistics
     public func saveFieldStatistics(typeName: String, fieldName: String, stats: FieldStatisticsData) async throws {
         let key = statsSubspace.subspace("field").subspace(typeName).pack(Tuple([fieldName]))
-        let data = try ProtobufEncoder().encode(stats)
+        let data = try StatisticsRecordCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(data, for: key)
         }
     }
 
@@ -131,7 +125,7 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try ProtobufDecoder().decode(FieldStatisticsData.self, from: Data(data))
+            return try StatisticsRecordCodec.decodeField(data)
         }
     }
 
@@ -140,31 +134,21 @@ public final class StatisticsStorage: Sendable {
         let fieldSubspace = statsSubspace.subspace("field").subspace(typeName)
 
         return try await container.engine.withTransaction(configuration: .batch) { transaction in
-            let decoder = ProtobufDecoder()
             var results: [String: FieldStatisticsData] = [:]
 
             let (begin, end) = fieldSubspace.range()
             for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
-                // Graceful skip for malformed keys (batch operation pattern)
-                let keyTuple: Tuple
-                do {
-                    keyTuple = try fieldSubspace.unpack(key)
-                } catch {
-                    // Skip malformed field statistics key - may occur during migration or corruption
-                    continue
+                let keyTuple = try fieldSubspace.unpack(key)
+                guard keyTuple.count == 1 else {
+                    throw StatisticsStorageError.malformedKey(
+                        expectedElementCount: 1,
+                        actual: keyTuple.count
+                    )
                 }
-                guard let fieldName = keyTuple[0] as? String else {
-                    continue
+                guard let fieldName = try keyTuple.element(at: 0) as? String else {
+                    throw StatisticsStorageError.malformedKeyElement
                 }
-
-                // Graceful skip for corrupted statistics data
-                do {
-                    let stats = try decoder.decode(FieldStatisticsData.self, from: Data(value))
-                    results[fieldName] = stats
-                } catch {
-                    // Skip corrupted entry - statistics can be regenerated
-                    continue
-                }
+                results[fieldName] = try StatisticsRecordCodec.decodeField(value)
             }
 
             return results
@@ -176,10 +160,10 @@ public final class StatisticsStorage: Sendable {
     /// Save index statistics
     public func saveIndexStatistics(indexName: String, stats: IndexStatisticsData) async throws {
         let key = statsSubspace.subspace("index").pack(Tuple([indexName]))
-        let data = try ProtobufEncoder().encode(stats)
+        let data = try StatisticsRecordCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(data, for: key)
         }
     }
 
@@ -191,7 +175,7 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try ProtobufDecoder().decode(IndexStatisticsData.self, from: Data(data))
+            return try StatisticsRecordCodec.decodeIndex(data)
         }
     }
 
@@ -200,10 +184,10 @@ public final class StatisticsStorage: Sendable {
     /// Save vector index statistics
     public func saveVectorStatistics(indexName: String, stats: VectorStatisticsData) async throws {
         let key = statsSubspace.subspace("search").subspace("vector").pack(Tuple([indexName]))
-        let data = try ProtobufEncoder().encode(stats)
+        let data = try StatisticsRecordCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(data, for: key)
         }
     }
 
@@ -215,17 +199,17 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try ProtobufDecoder().decode(VectorStatisticsData.self, from: Data(data))
+            return try StatisticsRecordCodec.decodeVector(data)
         }
     }
 
     /// Save full-text index statistics
     public func saveFullTextStatistics(indexName: String, stats: FullTextStatisticsData) async throws {
         let key = statsSubspace.subspace("search").subspace("fulltext").pack(Tuple([indexName]))
-        let data = try ProtobufEncoder().encode(stats)
+        let data = try StatisticsRecordCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(data, for: key)
         }
     }
 
@@ -237,17 +221,17 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try ProtobufDecoder().decode(FullTextStatisticsData.self, from: Data(data))
+            return try StatisticsRecordCodec.decodeFullText(data)
         }
     }
 
     /// Save spatial index statistics
     public func saveSpatialStatistics(indexName: String, stats: SpatialStatisticsData) async throws {
         let key = statsSubspace.subspace("search").subspace("spatial").pack(Tuple([indexName]))
-        let data = try ProtobufEncoder().encode(stats)
+        let data = try StatisticsRecordCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(data, for: key)
         }
     }
 
@@ -259,7 +243,7 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try ProtobufDecoder().decode(SpatialStatisticsData.self, from: Data(data))
+            return try StatisticsRecordCodec.decodeSpatial(data)
         }
     }
 
@@ -268,26 +252,24 @@ public final class StatisticsStorage: Sendable {
     /// Delete all statistics for a type
     public func deleteAllStatistics(typeName: String) async throws {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            try transaction.setOption(forOption: .accessSystemKeys)
             // Delete table stats (single key range)
             let tableKey = self.statsSubspace.subspace("table").pack(Tuple([typeName]))
             let tableKeyEnd = tableKey + [0x00]
-            transaction.clearRange(beginKey: tableKey, endKey: tableKeyEnd)
+            try transaction.clearRange(beginKey: tableKey, endKey: tableKeyEnd)
 
             // Delete all field stats
             let fieldSubspace = self.statsSubspace.subspace("field").subspace(typeName)
             let (begin, end) = fieldSubspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
     /// Delete index statistics
     public func deleteIndexStatistics(indexName: String) async throws {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            try transaction.setOption(forOption: .accessSystemKeys)
             let key = self.statsSubspace.subspace("index").pack(Tuple([indexName]))
             let keyEnd = key + [0x00]
-            transaction.clearRange(beginKey: key, endKey: keyEnd)
+            try transaction.clearRange(beginKey: key, endKey: keyEnd)
         }
     }
 

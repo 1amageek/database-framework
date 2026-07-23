@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import BitmapIndex
 
 // MARK: - Test Model
 
-struct TestProduct: Persistable {
+struct BitmapIndexedProduct: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ struct TestProduct: Persistable {
         self.inStock = inStock
     }
 
-    static var persistableType: String { "TestProduct" }
+    static var persistableType: String { "BitmapIndexedProduct" }
     static var allFields: [String] { ["id", "category", "brand", "inStock"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,57 +46,57 @@ struct TestProduct: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestProduct, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<BitmapIndexedProduct, Value>) -> String {
         switch keyPath {
-        case \TestProduct.id: return "id"
-        case \TestProduct.category: return "category"
-        case \TestProduct.brand: return "brand"
-        case \TestProduct.inStock: return "inStock"
+        case \BitmapIndexedProduct.id: return "id"
+        case \BitmapIndexedProduct.category: return "category"
+        case \BitmapIndexedProduct.brand: return "brand"
+        case \BitmapIndexedProduct.inStock: return "inStock"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestProduct>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<BitmapIndexedProduct>) -> String {
         switch keyPath {
-        case \TestProduct.id: return "id"
-        case \TestProduct.category: return "category"
-        case \TestProduct.brand: return "brand"
-        case \TestProduct.inStock: return "inStock"
+        case \BitmapIndexedProduct.id: return "id"
+        case \BitmapIndexedProduct.category: return "category"
+        case \BitmapIndexedProduct.brand: return "brand"
+        case \BitmapIndexedProduct.inStock: return "inStock"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestProduct> {
+        if let partial = keyPath as? PartialKeyPath<BitmapIndexedProduct> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Bitmap Index Context
 
-private struct TestContext {
+private struct BitmapIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: BitmapIndexMaintainer<TestProduct>
+    let maintainer: BitmapIndexMaintainer<BitmapIndexedProduct>
 
-    init(indexName: String = "TestProduct_category") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(indexName: String = "BitmapIndexedProduct_category") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "bitmap", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         let index = Index(
             name: indexName,
-            kind: BitmapIndexKind<TestProduct>(field: \.category),
+            kind: BitmapIndexKind<BitmapIndexedProduct>(field: \.category),
             rootExpression: FieldKeyExpression(fieldName: "category"),
             subspaceKey: indexName,
-            itemTypes: Set(["TestProduct"])
+            itemTypes: Set(["BitmapIndexedProduct"])
         )
 
-        self.maintainer = BitmapIndexMaintainer<TestProduct>(
+        self.maintainer = BitmapIndexMaintainer<BitmapIndexedProduct>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -105,7 +106,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -350,14 +351,14 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("Insert adds to bitmap")
     func testInsertAddsToBitmap() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
-        let product = TestProduct(id: "p1", category: "electronics", brand: "Sony")
+        let product = BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestProduct?,
+                oldItem: nil as BitmapIndexedProduct?,
                 newItem: product,
                 transaction: transaction
             )
@@ -371,19 +372,19 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("Multiple inserts with same category")
     func testMultipleInsertsWithSameCategory() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         let products = [
-            TestProduct(id: "p1", category: "electronics", brand: "Sony"),
-            TestProduct(id: "p2", category: "electronics", brand: "Samsung"),
-            TestProduct(id: "p3", category: "electronics", brand: "LG")
+            BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
+            BitmapIndexedProduct(id: "p2", category: "electronics", brand: "Samsung"),
+            BitmapIndexedProduct(id: "p3", category: "electronics", brand: "LG")
         ]
 
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -398,19 +399,19 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("Multiple inserts with different categories")
     func testMultipleInsertsWithDifferentCategories() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         let products = [
-            TestProduct(id: "p1", category: "electronics", brand: "Sony"),
-            TestProduct(id: "p2", category: "clothing", brand: "Nike"),
-            TestProduct(id: "p3", category: "books", brand: "Penguin")
+            BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
+            BitmapIndexedProduct(id: "p2", category: "clothing", brand: "Nike"),
+            BitmapIndexedProduct(id: "p3", category: "books", brand: "Penguin")
         ]
 
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -435,15 +436,15 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("Delete removes from bitmap")
     func testDeleteRemovesFromBitmap() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
-        let product = TestProduct(id: "p1", category: "electronics", brand: "Sony")
+        let product = BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestProduct?,
+                oldItem: nil as BitmapIndexedProduct?,
                 newItem: product,
                 transaction: transaction
             )
@@ -456,7 +457,7 @@ struct BitmapIndexMaintainerBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: product,
-                newItem: nil as TestProduct?,
+                newItem: nil as BitmapIndexedProduct?,
                 transaction: transaction
             )
         }
@@ -469,20 +470,20 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("Delete one of many maintains others")
     func testDeleteOneOfMany() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         let products = [
-            TestProduct(id: "p1", category: "electronics", brand: "Sony"),
-            TestProduct(id: "p2", category: "electronics", brand: "Samsung"),
-            TestProduct(id: "p3", category: "electronics", brand: "LG")
+            BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
+            BitmapIndexedProduct(id: "p2", category: "electronics", brand: "Samsung"),
+            BitmapIndexedProduct(id: "p3", category: "electronics", brand: "LG")
         ]
 
         // Insert all
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -493,7 +494,7 @@ struct BitmapIndexMaintainerBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: products[1],  // Samsung
-                newItem: nil as TestProduct?,
+                newItem: nil as BitmapIndexedProduct?,
                 transaction: transaction
             )
         }
@@ -508,15 +509,15 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("Update category changes bitmap membership")
     func testUpdateCategory() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
-        let oldProduct = TestProduct(id: "p1", category: "electronics", brand: "Sony")
+        let oldProduct = BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestProduct?,
+                oldItem: nil as BitmapIndexedProduct?,
                 newItem: oldProduct,
                 transaction: transaction
             )
@@ -526,7 +527,7 @@ struct BitmapIndexMaintainerBehaviorTests {
         #expect(electronicsCountBefore == 1)
 
         // Update category
-        let newProduct = TestProduct(id: "p1", category: "appliances", brand: "Sony")
+        let newProduct = BitmapIndexedProduct(id: "p1", category: "appliances", brand: "Sony")
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: oldProduct,
@@ -546,22 +547,22 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("Update non-indexed field keeps bitmap membership")
     func testUpdateNonIndexedField() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
-        let oldProduct = TestProduct(id: "p1", category: "electronics", brand: "Sony")
+        let oldProduct = BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestProduct?,
+                oldItem: nil as BitmapIndexedProduct?,
                 newItem: oldProduct,
                 transaction: transaction
             )
         }
 
         // Update brand (non-indexed field)
-        let newProduct = TestProduct(id: "p1", category: "electronics", brand: "Panasonic")
+        let newProduct = BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Panasonic")
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: oldProduct,
@@ -580,56 +581,56 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("AND query returns intersection")
     func testAndQueryReturnsIntersection() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         // Create separate maintainers for category and brand
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "bitmap", String(testId)).pack())
 
         let categoryIndexSubspace = subspace.subspace("I").subspace("category_idx")
         let brandIndexSubspace = subspace.subspace("I").subspace("brand_idx")
 
-        let categoryMaintainer = BitmapIndexMaintainer<TestProduct>(
+        let categoryMaintainer = BitmapIndexMaintainer<BitmapIndexedProduct>(
             index: Index(
                 name: "category_idx",
-                kind: BitmapIndexKind<TestProduct>(field: \.category),
+                kind: BitmapIndexKind<BitmapIndexedProduct>(field: \.category),
                 rootExpression: FieldKeyExpression(fieldName: "category"),
                 subspaceKey: "category_idx",
-                itemTypes: Set(["TestProduct"])
+                itemTypes: Set(["BitmapIndexedProduct"])
             ),
             subspace: categoryIndexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
 
-        let brandMaintainer = BitmapIndexMaintainer<TestProduct>(
+        let brandMaintainer = BitmapIndexMaintainer<BitmapIndexedProduct>(
             index: Index(
                 name: "brand_idx",
-                kind: BitmapIndexKind<TestProduct>(field: \.brand),
+                kind: BitmapIndexKind<BitmapIndexedProduct>(field: \.brand),
                 rootExpression: FieldKeyExpression(fieldName: "brand"),
                 subspaceKey: "brand_idx",
-                itemTypes: Set(["TestProduct"])
+                itemTypes: Set(["BitmapIndexedProduct"])
             ),
             subspace: brandIndexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
 
         let products = [
-            TestProduct(id: "p1", category: "electronics", brand: "Sony"),
-            TestProduct(id: "p2", category: "electronics", brand: "Samsung"),
-            TestProduct(id: "p3", category: "clothing", brand: "Sony"),
-            TestProduct(id: "p4", category: "clothing", brand: "Nike")
+            BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
+            BitmapIndexedProduct(id: "p2", category: "electronics", brand: "Samsung"),
+            BitmapIndexedProduct(id: "p3", category: "clothing", brand: "Sony"),
+            BitmapIndexedProduct(id: "p4", category: "clothing", brand: "Nike")
         ]
 
         // Insert into both indexes
         try await database.withTransaction { transaction in
             for product in products {
                 try await categoryMaintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )
                 try await brandMaintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -650,7 +651,7 @@ struct BitmapIndexMaintainerBehaviorTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -658,19 +659,19 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("OR query returns union")
     func testOrQueryReturnsUnion() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         let products = [
-            TestProduct(id: "p1", category: "electronics", brand: "Sony"),
-            TestProduct(id: "p2", category: "clothing", brand: "Nike"),
-            TestProduct(id: "p3", category: "books", brand: "Penguin")
+            BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
+            BitmapIndexedProduct(id: "p2", category: "clothing", brand: "Nike"),
+            BitmapIndexedProduct(id: "p3", category: "books", brand: "Penguin")
         ]
 
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -687,20 +688,20 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("getAllDistinctValues returns all categories")
     func testGetAllDistinctValues() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         let products = [
-            TestProduct(id: "p1", category: "electronics", brand: "Sony"),
-            TestProduct(id: "p2", category: "clothing", brand: "Nike"),
-            TestProduct(id: "p3", category: "books", brand: "Penguin"),
-            TestProduct(id: "p4", category: "electronics", brand: "Samsung")
+            BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
+            BitmapIndexedProduct(id: "p2", category: "clothing", brand: "Nike"),
+            BitmapIndexedProduct(id: "p3", category: "books", brand: "Penguin"),
+            BitmapIndexedProduct(id: "p4", category: "electronics", brand: "Samsung")
         ]
 
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -720,19 +721,19 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("getPrimaryKeys returns correct IDs")
     func testGetPrimaryKeysReturnsCorrectIds() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         let products = [
-            TestProduct(id: "product-001", category: "electronics", brand: "Sony"),
-            TestProduct(id: "product-002", category: "electronics", brand: "Samsung"),
-            TestProduct(id: "product-003", category: "clothing", brand: "Nike")
+            BitmapIndexedProduct(id: "product-001", category: "electronics", brand: "Sony"),
+            BitmapIndexedProduct(id: "product-002", category: "electronics", brand: "Samsung"),
+            BitmapIndexedProduct(id: "product-003", category: "clothing", brand: "Nike")
         ]
 
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -756,12 +757,12 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("scanItem adds to bitmap")
     func testScanItemAddsToBitmap() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         let products = [
-            TestProduct(id: "p1", category: "electronics", brand: "Sony"),
-            TestProduct(id: "p2", category: "electronics", brand: "Samsung")
+            BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
+            BitmapIndexedProduct(id: "p2", category: "electronics", brand: "Samsung")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -784,10 +785,10 @@ struct BitmapIndexMaintainerBehaviorTests {
 
     @Test("computeIndexKeys returns expected keys")
     func testComputeIndexKeys() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
-        let product = TestProduct(id: "p1", category: "electronics", brand: "Sony")
+        let product = BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony")
         let keys = try await ctx.maintainer.computeIndexKeys(for: product, id: Tuple("p1"))
 
         // Should have keys for data subspace entry
@@ -804,8 +805,8 @@ struct BitmapIndexEdgeCasesTests {
 
     @Test("Empty bitmap query returns empty")
     func testEmptyBitmapQuery() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         let bitmap = try await ctx.getBitmap(for: "nonexistent")
         #expect(bitmap.cardinality == 0, "Non-existent category should return empty bitmap")
@@ -815,15 +816,15 @@ struct BitmapIndexEdgeCasesTests {
 
     @Test("Sequential ID management across transactions")
     func testSequentialIdManagement() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         // Insert products in separate transactions
         for i in 1...5 {
-            let product = TestProduct(id: "p\(i)", category: "electronics", brand: "Brand\(i)")
+            let product = BitmapIndexedProduct(id: "p\(i)", category: "electronics", brand: "Brand\(i)")
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -842,15 +843,15 @@ struct BitmapIndexEdgeCasesTests {
 
     @Test("Large number of entries")
     func testLargeNumberOfEntries() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         // Insert 100 products
         try await ctx.database.withTransaction { transaction in
             for i in 1...100 {
-                let product = TestProduct(id: "p\(i)", category: "electronics", brand: "Brand")
+                let product = BitmapIndexedProduct(id: "p\(i)", category: "electronics", brand: "Brand")
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -868,19 +869,19 @@ struct BitmapIndexEdgeCasesTests {
 
     @Test("Special characters in field values")
     func testSpecialCharactersInValues() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BitmapIndexContext()
 
         let products = [
-            TestProduct(id: "p1", category: "electronics & gadgets", brand: "Sony"),
-            TestProduct(id: "p2", category: "home/kitchen", brand: "KitchenAid"),
-            TestProduct(id: "p3", category: "toys (kids)", brand: "LEGO")
+            BitmapIndexedProduct(id: "p1", category: "electronics & gadgets", brand: "Sony"),
+            BitmapIndexedProduct(id: "p2", category: "home/kitchen", brand: "KitchenAid"),
+            BitmapIndexedProduct(id: "p3", category: "toys (kids)", brand: "LEGO")
         ]
 
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestProduct?,
+                    oldItem: nil as BitmapIndexedProduct?,
                     newItem: product,
                     transaction: transaction
                 )

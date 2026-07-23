@@ -3,8 +3,13 @@
 //
 // Reference: Samet, H. "Foundations of Multidimensional and Metric Data Structures", 2006
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import DatabaseEngine
+import DatabaseMath
 import Core
 import StorageKit
 import Geospatial
@@ -90,7 +95,7 @@ public struct CellDistanceCalculator: Sendable {
 
         // Adjust longitude span based on latitude (cells are narrower near poles)
         let latRad = abs(center.latitude) * .pi / 180.0
-        let lonHalfSize = halfSize / max(cos(latRad), 0.1)
+        let lonHalfSize = halfSize / max(DatabaseMath.cosine(latRad), 0.1)
 
         return (
             minLat: max(-90, center.latitude - halfSize),
@@ -167,9 +172,15 @@ public struct CellDistanceCalculator: Sendable {
         let dLat = (to.latitude - from.latitude) * .pi / 180.0
         let dLon = (to.longitude - from.longitude) * .pi / 180.0
 
-        let a = sin(dLat / 2) * sin(dLat / 2) +
-                cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2)
-        let c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        let halfLatitudeSine = DatabaseMath.sine(dLat / 2)
+        let halfLongitudeSine = DatabaseMath.sine(dLon / 2)
+        let a = halfLatitudeSine * halfLatitudeSine +
+                DatabaseMath.cosine(lat1) * DatabaseMath.cosine(lat2) *
+                halfLongitudeSine * halfLongitudeSine
+        let c = 2 * DatabaseMath.arcTangent(
+            y: DatabaseMath.squareRoot(a),
+            x: DatabaseMath.squareRoot(1 - a)
+        )
 
         return earthRadiusMeters * c
     }

@@ -2,8 +2,10 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import Rank
 import DatabaseEngine
+import DatabaseRuntime
 import RankIndex
 import BenchmarkFramework
 import StorageKit
@@ -26,18 +28,19 @@ struct RangeTreeBenchmark {
     private let database: any StorageEngine
 
     init() async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
     }
 
     private func makeContext() async throws -> FDBContext {
-        if try await database.directoryService.exists(path: ["benchmarks", "rank_players"]) {
-            try await database.directoryService.remove(path: ["benchmarks", "rank_players"])
+        if try await database.directoryExists(path: ["benchmarks", "rank_players"]) {
+            try await database.removeDirectory(path: ["benchmarks", "rank_players"])
         }
 
         let schema = Schema([BenchmarkPlayer.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         try await container.ensureIndexesReady()

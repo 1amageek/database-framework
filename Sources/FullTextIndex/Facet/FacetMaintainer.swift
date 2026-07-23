@@ -3,7 +3,11 @@
 //
 // Reference: Faceted search patterns from Elasticsearch and Solr
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -180,12 +184,12 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
             // Store document's facet values for reverse lookup
             let docFacetKey = docFacetsSubspace.subspace(field).pack(id)
             let valuesElements: [any TupleElement] = values.map { $0 as any TupleElement }
-            transaction.setValue(Tuple(valuesElements).pack(), for: docFacetKey)
+            try transaction.setValue(Tuple(valuesElements).pack(), for: docFacetKey)
 
             // Increment global facet counts
             for value in values {
                 let facetKey = facetsSubspace.subspace(field).pack(Tuple(value))
-                transaction.atomicOp(key: facetKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
+                try transaction.atomicOp(key: facetKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
             }
         }
     }
@@ -201,12 +205,12 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
 
             // Remove document's facet values
             let docFacetKey = docFacetsSubspace.subspace(field).pack(id)
-            transaction.clear(key: docFacetKey)
+            try transaction.clear(key: docFacetKey)
 
             // Decrement global facet counts
             for value in values {
                 let facetKey = facetsSubspace.subspace(field).pack(Tuple(value))
-                transaction.atomicOp(key: facetKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
+                try transaction.atomicOp(key: facetKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
             }
         }
     }
@@ -230,7 +234,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
                 field: field
             )
 
-            let count = ByteConversion.bytesToInt64(value)
+            let count = try ByteConversion.bytesToInt64(value)
             if count > 0 {  // Only include non-zero counts
                 facets.append((value: facetValue, count: count))
             }

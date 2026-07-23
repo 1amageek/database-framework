@@ -94,7 +94,7 @@ jobs:
 
       - name: Provision postgres role and test database
         # Homebrew's postgresql@16 creates a superuser matching $USER (e.g. "runner"),
-        # not "postgres". Create the "postgres" role expected by PostgreSQLTestSetup.
+        # not "postgres". Create the "postgres" role expected by PostgreSQLScenarioCoordinator.
         run: |
           psql -d postgres -v ON_ERROR_STOP=1 <<'SQL'
           DO $$

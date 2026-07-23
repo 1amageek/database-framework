@@ -4,7 +4,6 @@
 // This file is part of GraphIndex module, not DatabaseEngine.
 // Provides graph-based filtering and scoring for Fusion queries.
 
-import Foundation
 import Core
 import Graph
 import DatabaseEngine
@@ -164,17 +163,14 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             guard descriptor.kindIdentifier == GraphIndexKind<T>.identifier else {
                 return false
             }
-            guard let kind = descriptor.kind as? GraphIndexKind<T> else {
-                return false
-            }
             // Match by source field
-            return kind.fieldNames.contains(fieldName)
+            return descriptor.fieldNames.contains(fieldName)
         }
     }
 
     // MARK: - FusionQuery
 
-    public func execute(candidates: Set<String>?) async throws -> [ScoredResult<T>] {
+    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
         guard sourceValue != nil || targetValue != nil else {
             throw FusionQueryError.invalidConfiguration("Must specify from() or to() for Connected query")
         }
@@ -184,8 +180,11 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
         // If no candidates, fetch items by their graph node values
         let items: [T]
-        if let candidateIds = candidates {
-            items = try await queryContext.fetchItemsByStringIds(type: T.self, ids: Array(candidateIds))
+        if let candidateIDs = candidates {
+            items = try await queryContext.fetchItems(
+                identifiers: Array(candidateIDs),
+                type: T.self
+            )
         } else {
             // Fetch items that match connected node values
             items = try await fetchItemsByNodeValues(connectedNodes.map(\.node))
@@ -231,13 +230,9 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(descriptor.name)
 
-        // Get graph strategy from descriptor
-        let strategy: GraphIndexStrategy
-        if let kind = descriptor.kind as? GraphIndexKind<T> {
-            strategy = kind.strategy
-        } else {
-            strategy = .adjacency  // Default
-        }
+        let strategy = try PropertyGraphIndexMetadata(
+            canonical: descriptor.kind
+        ).strategy
 
         // BFS traversal
         var visited: Set<String> = []
@@ -291,15 +286,6 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Graph Index Reading
 
-    /// Subspace keys for graph index storage (matches GraphIndexMaintainer)
-    private enum GraphSubspaceKey: Int64 {
-        case out = 0    // Outgoing edges: [out]/[edge]/[from]/[to]
-        case `in` = 1   // Incoming edges: [in]/[edge]/[to]/[from]
-        case spo = 2    // Subject-Predicate-Object: [spo]/[from]/[edge]/[to]
-        case pos = 3    // Predicate-Object-Subject: [pos]/[edge]/[to]/[from]
-        case osp = 4    // Object-Subject-Predicate: [osp]/[to]/[from]/[edge]
-    }
-
     /// Find neighbors of a node via graph index
     private func findNeighbors(
         node: String,
@@ -307,250 +293,67 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         strategy: GraphIndexStrategy,
         transaction: any Transaction
     ) async throws -> [String] {
+        guard strategy != .quadStore else {
+            throw GraphIndexError.unsupportedQueryPattern(
+                pattern: "String-based connectivity",
+                strategy: strategy
+            )
+        }
+
+        let scanner = GraphEdgeScanner(
+            indexSubspace: indexSubspace,
+            strategy: strategy,
+            scope: .all
+        )
+        let nodeIdentity = GraphIdentity.identifier(node)
+        let edgeIdentity = edgeType.map(GraphIdentity.identifier)
         var results: Set<String> = []
 
         switch direction {
         case .outgoing:
-            let outNeighbors = try await queryOutgoingEdges(
-                transaction: transaction,
-                subspace: indexSubspace,
-                strategy: strategy,
-                from: node
-            )
-            results.formUnion(outNeighbors)
+            for try await edge in scanner.scanOutgoing(
+                from: nodeIdentity,
+                edgeLabel: edgeIdentity,
+                transaction: transaction
+            ) {
+                results.insert(
+                    try edge.target.requirePropertyGraphIdentifier()
+                )
+            }
 
         case .incoming:
-            let inNeighbors = try await queryIncomingEdges(
-                transaction: transaction,
-                subspace: indexSubspace,
-                strategy: strategy,
-                to: node
-            )
-            results.formUnion(inNeighbors)
+            for try await edge in scanner.scanIncoming(
+                to: nodeIdentity,
+                edgeLabel: edgeIdentity,
+                transaction: transaction
+            ) {
+                results.insert(
+                    try edge.source.requirePropertyGraphIdentifier()
+                )
+            }
 
         case .both:
-            let outNeighbors = try await queryOutgoingEdges(
-                transaction: transaction,
-                subspace: indexSubspace,
-                strategy: strategy,
-                from: node
-            )
-            let inNeighbors = try await queryIncomingEdges(
-                transaction: transaction,
-                subspace: indexSubspace,
-                strategy: strategy,
-                to: node
-            )
-            results.formUnion(outNeighbors)
-            results.formUnion(inNeighbors)
+            for try await edge in scanner.scanOutgoing(
+                from: nodeIdentity,
+                edgeLabel: edgeIdentity,
+                transaction: transaction
+            ) {
+                results.insert(
+                    try edge.target.requirePropertyGraphIdentifier()
+                )
+            }
+            for try await edge in scanner.scanIncoming(
+                to: nodeIdentity,
+                edgeLabel: edgeIdentity,
+                transaction: transaction
+            ) {
+                results.insert(
+                    try edge.source.requirePropertyGraphIdentifier()
+                )
+            }
         }
 
         return Array(results)
-    }
-
-    /// Query outgoing edges from a node
-    private func queryOutgoingEdges(
-        transaction: any Transaction,
-        subspace: Subspace,
-        strategy: GraphIndexStrategy,
-        from: String
-    ) async throws -> [String] {
-        var results: [String] = []
-
-        switch strategy {
-        case .adjacency:
-            // Key format: [out]/[edge]/[from]/[to]
-            let outSubspace = subspace.subspace(GraphSubspaceKey.out.rawValue)
-            if let edge = edgeType {
-                let edgeFromSubspace = outSubspace.subspace(edge).subspace(from)
-                let (beginKey, endKey) = edgeFromSubspace.range()
-                let stream = try await transaction.collectRange(
-                    from: .firstGreaterOrEqual(beginKey),
-                    to: .firstGreaterOrEqual(endKey),
-                    snapshot: true
-                )
-                for (key, _) in stream {
-                    if let unpacked = try? edgeFromSubspace.unpack(key),
-                       let to = unpacked[0] as? String {
-                        results.append(to)
-                    }
-                }
-            } else {
-                // Scan all edge types for this from node
-                let (beginKey, endKey) = outSubspace.range()
-                let stream = try await transaction.collectRange(
-                    from: .firstGreaterOrEqual(beginKey),
-                    to: .firstGreaterOrEqual(endKey),
-                    snapshot: true
-                )
-                for (key, _) in stream {
-                    if let unpacked = try? outSubspace.unpack(key),
-                       unpacked.count >= 3,
-                       let fromNode = unpacked[1] as? String,
-                       let to = unpacked[2] as? String,
-                       fromNode == from {
-                        results.append(to)
-                    }
-                }
-            }
-
-        case .tripleStore, .hexastore:
-            // Key format: [spo]/[from]/[edge]/[to]
-            let spoSubspace = subspace.subspace(GraphSubspaceKey.spo.rawValue)
-            let fromSubspace = spoSubspace.subspace(from)
-            if let edge = edgeType {
-                let edgeSubspace = fromSubspace.subspace(edge)
-                let (beginKey, endKey) = edgeSubspace.range()
-                let stream = try await transaction.collectRange(
-                    from: .firstGreaterOrEqual(beginKey),
-                    to: .firstGreaterOrEqual(endKey),
-                    snapshot: true
-                )
-                for (key, _) in stream {
-                    if let unpacked = try? edgeSubspace.unpack(key),
-                       let to = unpacked[0] as? String {
-                        results.append(to)
-                    }
-                }
-            } else {
-                let (beginKey, endKey) = fromSubspace.range()
-                let stream = try await transaction.collectRange(
-                    from: .firstGreaterOrEqual(beginKey),
-                    to: .firstGreaterOrEqual(endKey),
-                    snapshot: true
-                )
-                for (key, _) in stream {
-                    if let unpacked = try? fromSubspace.unpack(key),
-                       unpacked.count >= 2,
-                       let to = unpacked[1] as? String {
-                        results.append(to)
-                    }
-                }
-            }
-
-        case .namedGraphStore:
-            // Key format: [gspo]/[graph]/[from]/[edge]/[to]
-            let gspoSubspace = subspace.subspace(Int64(8))
-            let (beginKey, endKey) = gspoSubspace.range()
-            let stream = try await transaction.collectRange(
-                from: .firstGreaterOrEqual(beginKey),
-                to: .firstGreaterOrEqual(endKey),
-                snapshot: true
-            )
-            for (key, _) in stream {
-                let unpacked = try gspoSubspace.unpack(key)
-                guard unpacked.count >= 4,
-                      let fromNode = unpacked[1] as? String,
-                      let edgeValue = unpacked[2] as? String,
-                      let target = unpacked[3] as? String,
-                      fromNode == from else {
-                    continue
-                }
-                if let edge = edgeType, edgeValue != edge {
-                    continue
-                }
-                results.append(target)
-            }
-        }
-
-        return results
-    }
-
-    /// Query incoming edges to a node
-    private func queryIncomingEdges(
-        transaction: any Transaction,
-        subspace: Subspace,
-        strategy: GraphIndexStrategy,
-        to: String
-    ) async throws -> [String] {
-        var results: [String] = []
-
-        switch strategy {
-        case .adjacency:
-            // Key format: [in]/[edge]/[to]/[from]
-            let inSubspace = subspace.subspace(GraphSubspaceKey.`in`.rawValue)
-            if let edge = edgeType {
-                let edgeToSubspace = inSubspace.subspace(edge).subspace(to)
-                let (beginKey, endKey) = edgeToSubspace.range()
-                let stream = try await transaction.collectRange(
-                    from: .firstGreaterOrEqual(beginKey),
-                    to: .firstGreaterOrEqual(endKey),
-                    snapshot: true
-                )
-                for (key, _) in stream {
-                    if let unpacked = try? edgeToSubspace.unpack(key),
-                       let from = unpacked[0] as? String {
-                        results.append(from)
-                    }
-                }
-            } else {
-                let (beginKey, endKey) = inSubspace.range()
-                let stream = try await transaction.collectRange(
-                    from: .firstGreaterOrEqual(beginKey),
-                    to: .firstGreaterOrEqual(endKey),
-                    snapshot: true
-                )
-                for (key, _) in stream {
-                    if let unpacked = try? inSubspace.unpack(key),
-                       unpacked.count >= 3,
-                       let toNode = unpacked[1] as? String,
-                       let from = unpacked[2] as? String,
-                       toNode == to {
-                        results.append(from)
-                    }
-                }
-            }
-
-        case .tripleStore, .hexastore:
-            // Key format: [osp]/[to]/[from]/[edge]
-            let ospSubspace = subspace.subspace(GraphSubspaceKey.osp.rawValue)
-            let toSubspace = ospSubspace.subspace(to)
-            let (beginKey, endKey) = toSubspace.range()
-            let stream = try await transaction.collectRange(
-                from: .firstGreaterOrEqual(beginKey),
-                to: .firstGreaterOrEqual(endKey),
-                snapshot: true
-            )
-            for (key, _) in stream {
-                if let unpacked = try? toSubspace.unpack(key),
-                   unpacked.count >= 2,
-                   let from = unpacked[0] as? String {
-                    if let edge = edgeType {
-                        if let edgeValue = unpacked[1] as? String, edgeValue == edge {
-                            results.append(from)
-                        }
-                    } else {
-                        results.append(from)
-	                    }
-	                }
-	            }
-
-        case .namedGraphStore:
-            // Key format: [gosp]/[graph]/[to]/[from]/[edge]
-            let gospSubspace = subspace.subspace(Int64(10))
-            let (beginKey, endKey) = gospSubspace.range()
-            let stream = try await transaction.collectRange(
-                from: .firstGreaterOrEqual(beginKey),
-                to: .firstGreaterOrEqual(endKey),
-                snapshot: true
-            )
-            for (key, _) in stream {
-                let unpacked = try gospSubspace.unpack(key)
-                guard unpacked.count >= 4,
-                      let toNode = unpacked[1] as? String,
-                      let source = unpacked[2] as? String,
-                      let edgeValue = unpacked[3] as? String,
-                      toNode == to else {
-                    continue
-                }
-                if let edge = edgeType, edgeValue != edge {
-                    continue
-                }
-                results.append(source)
-            }
-        }
-
-        return results
     }
 
     /// Fetch items by their node field values
@@ -564,7 +367,21 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
         // Strategy 1: If the field is the ID field, use direct ID lookup
         if fieldName == "id" {
-            return try await queryContext.fetchItemsByStringIds(type: T.self, ids: nodeValues)
+            guard T.recordIdentifierType == .string else {
+                throw FusionQueryError.invalidConfiguration(
+                    "Graph node identifiers require a String record identifier when the graph field is 'id'"
+                )
+            }
+            let identifierTuples = try nodeValues.map { nodeValue in
+                try RecordIdentifierKeyCodec.tuple(
+                    for: .string(nodeValue),
+                    expectedType: T.recordIdentifierType
+                )
+            }
+            return try await queryContext.fetchItems(
+                ids: identifierTuples,
+                type: T.self
+            )
         }
 
         // Strategy 2: If there's a ScalarIndex on this field, use it
@@ -597,14 +414,9 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             // Check if it's a ScalarIndex
             guard descriptor.kindIdentifier == "scalar" else { return false }
 
-            // Check if the field is the first field in the index
-            // ScalarIndex names follow pattern: TypeName_field1_field2...
-            let indexFields = descriptor.name
-                .replacingOccurrences(of: "\(T.persistableType)_", with: "")
-                .split(separator: "_")
-                .map(String.init)
-
-            return indexFields.first == fieldName
+            // The first indexed field defines the scalar lookup prefix. Read the
+            // canonical descriptor metadata instead of parsing its display name.
+            return descriptor.fieldNames.first == fieldName
         }
     }
 
@@ -635,7 +447,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         }
 
         // Deduplicate IDs by packed representation
-        var seenPacked: Set<[UInt8]> = []
+        var seenPacked: Set<Bytes> = []
         var uniqueIds: [Tuple] = []
         for id in allIds {
             let packed = id.pack()

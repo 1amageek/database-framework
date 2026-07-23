@@ -1,10 +1,10 @@
 # AggregationIndex
 
-Materialized aggregations maintained incrementally with atomic FDB operations.
+Materialized aggregations maintained incrementally in storage transactions.
 
 ## Overview
 
-AggregationIndex provides pre-computed aggregation values that are maintained atomically as data changes. Instead of computing aggregates on-the-fly (which requires scanning all records), AggregationIndex stores computed values that are updated incrementally with each insert, update, or delete operation.
+AggregationIndex provides pre-computed aggregation values that are maintained transactionally as data changes. Instead of computing aggregates on-the-fly (which requires scanning all records), AggregationIndex stores computed values that are updated incrementally with each insert, update, or delete operation.
 
 **Aggregation Types**:
 - **COUNT**: Count of records grouped by fields
@@ -22,25 +22,42 @@ COUNT / COUNT_NOT_NULL:
   [indexSubspace][groupValue1][groupValue2]... = Int64
 
 SUM:
-  [indexSubspace][groupValue1][groupValue2]... = Int64 (integers)
-  [indexSubspace][groupValue1][groupValue2]... = scaled Int64 (floats, 6 decimals)
+  [indexSubspace][groupValue1]...["sum"] = Int64 / UInt64 / compensated Double state
+  [indexSubspace][groupValue1]...["count"] = positive Int64
 
 MIN/MAX:
-  [indexSubspace][groupValue1]...[value][primaryKey] = '' (empty)
+  [indexSubspace][0][groupValue1]...[value][primaryKey] = covering value
+  [indexSubspace][1][groupValue1]... = Tuple(value, primaryKey...)
 
 AVERAGE:
-  [indexSubspace][groupValue1]...["sum"] = Int64/scaled Int64
-  [indexSubspace][groupValue1]...["count"] = Int64
+  [indexSubspace][groupValue1]...["sum"] = Int128 / UInt128 / compensated Double state
+  [indexSubspace][groupValue1]...["count"] = positive Int64
 
 COUNT_UPDATES:
   [indexSubspace][primaryKey] = Int64 (update count)
 
 DISTINCT (HyperLogLog++):
-  [indexSubspace][groupValue1][groupValue2]... = Serialized HLL (~16KB JSON)
+  [indexSubspace][0][groupValue1]...[canonicalValue] = positive Int64 refcount
+  [indexSubspace][1][groupValue1]... = bounded six-bit HLL binary frame
+  [indexSubspace][2][groupValue1]... = fixed 16-byte (unique count, scan bytes)
 
 PERCENTILE (t-digest):
-  [indexSubspace][groupValue1][groupValue2]... = Serialized TDigest (~10KB binary)
+  [indexSubspace][0][groupValue1]...[canonicalDouble] = positive Int64 refcount
+  [indexSubspace][1][groupValue1]... = strict bounded TDigest v1 frame
+  [indexSubspace][2][groupValue1]... = fixed 16-byte (unique count, scan bytes)
 ```
+
+For a global aggregation, the empty grouping tuple is represented by the
+relevant subspace prefix itself. Because a subspace range excludes that exact
+prefix, global COUNT, MIN/MAX summaries, DISTINCT summaries, and PERCENTILE
+summaries use bounded direct reads; grouped queries continue to use bounded
+range scans.
+
+Nullable grouping fields are encoded as a canonical null tuple value and form
+one real group. For sparse aggregates, only a null aggregate value is excluded;
+the value is evaluated before grouping so `COUNT_NOT_NULL`, SUM, AVERAGE,
+MIN/MAX, DISTINCT, and PERCENTILE never reject an otherwise excluded row merely
+because its grouping field is null.
 
 ## Architecture
 
@@ -57,7 +74,8 @@ AggregationIndex follows the EntryPoint → QueryBuilder pattern used by other i
 │  AggregationEntryPoint<Order>                                          │
 │       │                                                                │
 │       ├── .groupBy(\.region) → AggregationQueryBuilder                 │
-│       ├── .count() / .sum() → AggregationQueryBuilder (global)         │
+│       ├── .count() / .sum() / .distinct() → builder (global)           │
+│       ├── .percentile() / .min() / .max() → builder (global)           │
 │       └── .using(index:) → force specific index (optional)             │
 │                                                                        │
 │  AggregationQueryBuilder                                               │
@@ -71,10 +89,10 @@ AggregationIndex follows the EntryPoint → QueryBuilder pattern used by other i
 │              ▼                                                         │
 │       ┌─────────────────────────────────────────┐                      │
 │       │   Execution Strategy Selector           │                      │
-│       │   (AggregationIndexKindProtocol)        │                      │
+│       │   (canonical descriptor metadata)       │                      │
 │       ├─────────────────────────────────────────┤                      │
 │       │ • Check matching indexes for each agg   │                      │
-│       │ • All matched? → Index-backed [O(1)]    │                      │
+│       │ • All matched? → Index-backed [O(G)]    │                      │
 │       │ • Any unmatched? → In-memory [O(n)]     │                      │
 │       └─────────────────────────────────────────┘                      │
 │              │                                                         │
@@ -89,7 +107,8 @@ AggregationIndex follows the EntryPoint → QueryBuilder pattern used by other i
 |-----------|------|------|
 | `AggregationEntryPoint` | `AggregationEntryPoint.swift` | Entry point from `FDBContext.aggregate()` |
 | `AggregationQueryBuilder` | `AggregationQuery.swift` | Fluent API for building queries |
-| `AggregationIndexKindProtocol` | `AggregationIndexKindProtocol.swift` | Common protocol for index matching |
+| `AggregationIndexMetadata` | `AggregationIndexMetadata.swift` | Strict canonical metadata validation and matching |
+| `*IndexMaintainerProvider` | `*IndexMaintainerProvider.swift` | Explicit runtime maintainer construction |
 | `*IndexMaintainer` | `*IndexMaintainer.swift` | Index-specific maintenance and query |
 
 ## Use Cases
@@ -140,7 +159,7 @@ let result = try await maintainer.getAverage(
 print("Avg order: \(result.average), Count: \(result.count)")
 ```
 
-**Performance**: O(1) for single group queries, maintained atomically on each sale.
+**Performance**: O(1) for single group queries, maintained transactionally on each sale.
 
 ### 2. Min/Max Price Tracking
 
@@ -173,6 +192,12 @@ let maxPrice = try await maxMaintainer.getMax(
     transaction: transaction
 )
 ```
+
+`getSum` returns a canonical `FieldValue`. `getAverage` returns a canonical
+`FieldValue` average plus its positive membership count; the internal wide sum
+is deliberately not exposed through the narrower value model. Code that
+specifically requires `Double` can call `getSumAsDouble` or
+`getAverageAsDouble`; those adapters reject integer results that would round.
 
 **Performance**: O(1) using FDB tuple ordering (first/last key in range).
 
@@ -252,7 +277,12 @@ for (grouping, count, _) in allCounts {
 }
 ```
 
-**Important**: HyperLogLog is add-only. Deleting a PageView does NOT decrease the unique count. This index reflects "visitors ever seen", not "current visitors".
+The membership layer is exact. Deleting the final reference to a value rebuilds
+the affected HLL summary in the same transaction, so the estimate always reflects
+the current committed records. Every group stores a fixed 16-byte metadata frame
+containing its exact unique-member count and the exact key/value bytes required
+for a rebuild. A group whose metadata and summary are not both present is
+rejected as corruption before membership mutation.
 
 ### 5. Latency Percentile Monitoring (PERCENTILE)
 
@@ -296,7 +326,9 @@ if let s = stats {
 }
 ```
 
-**Important**: t-digest is add-only. Deleting a request does NOT update the percentiles. This index reflects "latencies ever recorded", not "current request latencies".
+Deleting or changing a request rebuilds every affected digest from exact
+reference-counted membership in the same transaction. A summary never includes a
+deleted historical value.
 
 ### 6. Query Builder API
 
@@ -322,10 +354,10 @@ for result in stats {
     if let orderCount = result.aggregateInt64("orderCount") {
         print("  Orders: \(orderCount)")
     }
-    if let totalSales = result.aggregateDouble("totalSales") {
+    if let totalSales = try result.aggregateDouble("totalSales") {
         print("  Total Sales: \(totalSales)")
     }
-    if let avgOrder = result.aggregateDouble("avgOrderValue") {
+    if let avgOrder = try result.aggregateDouble("avgOrderValue") {
         print("  Avg Order: \(avgOrder)")
     }
 }
@@ -336,7 +368,7 @@ for result in stats {
 | Accessor Method | Return Type | Use For |
 |-----------------|-------------|---------|
 | `aggregateInt64(_:)` | `Int64?` | count, distinct |
-| `aggregateDouble(_:)` | `Double?` | sum, avg, percentile, numeric min/max |
+| `aggregateDouble(_:)` | `throws -> Double?` | Exact sum, avg, percentile, numeric min/max conversion |
 | `aggregateString(_:)` | `String?` | string min/max |
 | `groupKeyInt64(_:)` | `Int64?` | integer group keys |
 | `groupKeyString(_:)` | `String?` | string group keys |
@@ -392,9 +424,9 @@ let result = try await averageMaintainer.getAverage(
     groupingValues: ["Electronics"],
     transaction: transaction
 )
-print("Sum: \(result.sum), Count: \(result.count), Avg: \(result.average)")
+print("Count: \(result.count), Avg: \(result.average)")
 
-// O(1) min/max lookup (direct access REQUIRED for index-backed MIN/MAX)
+// O(1) min/max lookup for one group
 let minPrice = try await minMaintainer.getMin(
     groupingValues: ["Electronics"],
     transaction: transaction
@@ -407,10 +439,11 @@ let minPrice = try await minMaintainer.getMin(
 |----------|---------------------|
 | Single aggregation, high frequency | Direct Maintainer (O(1)) |
 | Multiple aggregations, same groupBy | Query Builder (automatic index selection) |
-| MIN/MAX queries | Direct Maintainer (not supported in batch queries) |
+| MIN/MAX single-group lookup | Direct Maintainer (O(1)) |
 | Ad-hoc analysis | Query Builder (flexible) |
 
-**Note**: MIN/MAX indexes use sorted storage optimized for individual lookups (`getMin()`/`getMax()`), not batch queries. The Query Builder always uses in-memory computation for MIN/MAX aggregations.
+**Note**: MIN/MAX indexes support both direct single-group lookup and bounded
+batch scans used by the Query Builder.
 
 ## Type Preservation
 
@@ -428,16 +461,24 @@ let rate: Double? = result.groupKeyDouble("rate")     // Double fields
 | Aggregation | Return Type | Empty Group |
 |-------------|-------------|-------------|
 | count | `FieldValue.int64` | `0` |
-| sum | `FieldValue.double` | `0.0` |
-| avg | `FieldValue.double` | `0.0` |
+| sum | exact `FieldValue.int64` / `uint64`, or `double` | `nil` |
+| avg | exact integer when integral, otherwise `double` | `nil` |
 | min | `FieldValue?` | `nil` |
 | max | `FieldValue?` | `nil` |
+| distinct | `FieldValue.int64` | `0` |
+| percentile | `FieldValue.double` | `nil` |
 
 **Important**: `min`/`max` return `nil` for empty groups, not `0`. This distinguishes "no data" from "minimum is zero".
 
+`AggregateResult` does not expose an implicit record-count property. A count is
+part of the result only when the query explicitly requests `.count(as:)`, and
+the returned `FieldValue.int64` is the canonical count. This keeps indexed and
+in-memory execution semantically identical: an index that does not maintain a
+record count never substitutes an invented zero.
+
 ```swift
 // Correctly handle empty groups
-if let minAmount = result.aggregateDouble("minAmount") {
+if let minAmount = try result.aggregateDouble("minAmount") {
     print("Minimum: \(minAmount)")
 } else {
     print("No data in this group")
@@ -454,52 +495,52 @@ if let minAmount = result.aggregateDouble("minAmount") {
 
 ## Design Patterns
 
-### Atomic Operations
+### Transactional Aggregate Mutations
 
-All aggregation indexes use FDB's atomic mutation operations:
+SUM and AVERAGE replace the typed aggregate and membership count in one
+transaction:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                 Atomic Update Pattern                           │
+│              Transactional Update Pattern                      │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  Insert Record                                                  │
-│     └── atomic_add(groupKey, +value)                            │
+│     ├── checked_add(sum, value)                                 │
+│     └── checked_increment(count)                                │
 │                                                                 │
 │  Delete Record                                                  │
-│     └── atomic_add(groupKey, -value)                            │
+│     ├── checked_subtract(sum, value)                            │
+│     ├── checked_decrement(count)                                │
+│     └── clear sum/count when count reaches zero                 │
 │                                                                 │
 │  Update Record (same group)                                     │
-│     └── atomic_add(groupKey, newValue - oldValue)               │
+│     └── checked_replace(sum, removing: old, adding: new)        │
 │                                                                 │
 │  Update Record (different group)                                │
-│     ├── atomic_add(oldGroupKey, -oldValue)                      │
-│     └── atomic_add(newGroupKey, +newValue)                      │
+│     ├── remove old contribution and membership                 │
+│     └── add new contribution and membership                    │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Benefits**:
-- No read-before-write (reduces conflict)
-- Thread-safe without explicit locking
-- Commutative (order-independent)
+Integer overflow, unsigned underflow, negative counts, malformed companion
+entries, and non-finite floating-point results are typed failures. The storage
+transaction provides the concurrency and rollback boundary.
 
 ### Floating-Point Storage
 
-Double values are stored as scaled Int64 for atomic addition:
+Double values are stored as a fixed two-component Neumaier accumulator:
 
 ```swift
-// Double → Int64 (6 decimal places preserved)
-let scaled: Int64 = Int64(value * 1_000_000)
-
-// Int64 → Double
-let original: Double = Double(scaled) / 1_000_000
-
-// Precision: 6 decimal places (e.g., 123456.789012)
-// Range: ±9,223,372,036,854.775807
+state.add(value)
+let materialized = try state.total()
 ```
 
-**Trade-off**: 6 decimal places is sufficient for most financial calculations. For higher precision, use integer cents/units instead of floating-point currency.
+Both components and their materialized total must remain finite. This preserves
+low-order contributions across materialized updates while rejecting NaN,
+infinity, and overflow. Applications requiring decimal arithmetic should use an
+exact integer unit or an exact decimal field rather than binary floating point.
 
 ### Min/Max Using Tuple Ordering
 
@@ -523,12 +564,12 @@ Max Query: Get last key in grouping subspace (reverse scan)
 | Record count per group | `CountIndexKind` | 8 bytes/group | O(1) |
 | Non-null field count | `CountNotNullIndexKind` | 8 bytes/group | O(1) |
 | Update frequency | `CountUpdatesIndexKind` | 8 bytes/record | O(1) |
-| Sum of values | `SumIndexKind` | 8 bytes/group | O(1) |
+| Sum of values | `SumIndexKind` | 16 bytes integer / 24 bytes floating per group | O(1) |
 | Min value | `MinIndexKind` | ~20 bytes/record | O(1) |
 | Max value | `MaxIndexKind` | ~20 bytes/record | O(1) |
-| Average (sum/count) | `AverageIndexKind` | 16 bytes/group | O(1) |
-| Unique count (approx) | `DistinctIndexKind` | ~16KB/group | O(1) |
-| Percentiles (approx) | `PercentileIndexKind` | ~10KB/group | O(1) |
+| Average (sum/count) | `AverageIndexKind` | 24 bytes/group | O(1) |
+| Unique count (approx) | `DistinctIndexKind` | membership + bounded HLL/group | O(1) read |
+| Percentiles (approx) | `PercentileIndexKind` | membership + bounded digest/group | O(1) read |
 
 ### Grouping Field Selection
 
@@ -564,7 +605,7 @@ DISTINCT and PERCENTILE aggregations support both **in-memory computation** and 
 | Layer | Method | Index Required? | Complexity | Use Case |
 |-------|--------|-----------------|------------|----------|
 | **Query Builder** | In-memory | No | O(n) | Most users (90%) |
-| **IndexMaintainer** | Precomputed | Yes (`#Index`) | O(1) | High-frequency, large-scale |
+| **IndexMaintainer** | Precomputed | Yes (`#Index`) | O(1) group read | High-frequency, large-scale |
 
 **User Experience**: Queries work without explicit index definition. When a matching index exists, it's automatically used for O(1) performance.
 
@@ -620,9 +661,9 @@ let stats = try await context.aggregate(PageView.self)
 │     └── No → Index not needed                                   │
 │     └── Yes ↓                                                   │
 │                                                                 │
-│  Frequent deletions? (HLL/TDigest are add-only)                 │
-│     └── Yes → Index not recommended (becomes inaccurate)        │
-│     └── No → ✅ Define the index                                │
+│  Frequent deletes/updates in very large groups?                 │
+│     └── Yes → Account for bounded O(D) summary rebuilds         │
+│     └── No → Inserts and reads use incremental summaries        │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -634,15 +675,17 @@ let stats = try await context.aggregate(PageView.self)
 | **DISTINCT** | HyperLogLog++ | ~0.81% error | ~16KB | Heule et al. (Google, 2013) |
 | **PERCENTILE** | t-digest | High at extremes (p99.9) | ~10KB | Dunning & Ertl (2019) |
 
-### Important Limitations (Precomputed Index Only)
+### Mutation Semantics (Precomputed Index)
 
 | Operation | Behavior | Reason |
 |-----------|----------|--------|
-| Insert | Value added to sketch | Normal |
-| Update | New value added, old remains | Sketches are add-only |
-| Delete | **Count/percentile unchanged** | Cannot remove from sketch |
+| Insert | Refcount update plus incremental summary update | Same transaction |
+| Update | Old membership removed, new membership added, affected digest rebuilt | Same transaction |
+| Delete | Refcount removed; affected summary rebuilt when required | Same transaction |
 
-**Note**: Precomputed DISTINCT/PERCENTILE indexes reflect "values ever seen", not "current values". For accurate current-state aggregations, use in-memory computation (no index).
+Membership scans, group scans, requested-percentile counts, decoded summaries, and
+aggregate scanned bytes all have explicit limits. Exceeding a limit fails the
+request; it never returns a partial aggregate.
 
 ### Automatic Index Selection
 
@@ -657,17 +700,14 @@ AggregationQueryBuilder.execute()
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  For each aggregation:                                           │
-│    1. Is it MIN or MAX?                                          │
-│       └── Yes → Always in-memory (no batch API)                  │
-│                                                                  │
-│    2. Find matching IndexDescriptor:                             │
-│       • Index kind conforms to AggregationIndexKindProtocol?     │
+│    1. Find matching IndexDescriptor:                             │
+│       • canonical kind identifier matches?                       │
 │       • aggregationType matches? (count, sum, avg, etc.)         │
 │       • groupByFieldNames match exactly?                         │
 │       • aggregationValueField matches? (if applicable)           │
 │                                                                  │
-│    3. Match found?                                               │
-│       └── Yes → Use IndexMaintainer [O(1)]                       │
+│    2. Match found?                                               │
+│       └── Yes → Use bounded IndexMaintainer scan [O(G)]          │
 │       └── No → Compute in-memory [O(n)]                          │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -688,8 +728,8 @@ AggregationQueryBuilder.execute()
 ```
 
 **Index Matching Criteria**:
-1. Index kind conforms to `AggregationIndexKindProtocol`
-2. `aggregationType` matches (count, sum, average, distinct, percentile)
+1. Descriptor kind identifier and canonical metadata operation agree
+2. Operation matches (count, sum, average, min, max, distinct, percentile)
 3. `groupByFieldNames` match exactly (same fields, same order)
 4. `aggregationValueField` matches (for non-COUNT aggregations)
 
@@ -701,63 +741,55 @@ AggregationQueryBuilder.execute()
 | AVG | `AverageIndexKind` | `getAllAverages()` |
 | DISTINCT | `DistinctIndexKind` | `getAllDistinctCounts()` |
 | PERCENTILE | `PercentileIndexKind` | `getAllPercentiles()` |
-| MIN | `MinIndexKind` | ❌ Not supported (use `getMin()` directly) |
-| MAX | `MaxIndexKind` | ❌ Not supported (use `getMax()` directly) |
-
-**Why MIN/MAX Are Excluded**:
-MIN/MAX indexes store individual values sorted by the value field, optimized for:
-- `getMin(groupingValues:)` - O(1) first key lookup
-- `getMax(groupingValues:)` - O(1) last key lookup
-
-They don't have batch APIs (`getAllMins()`/`getAllMaxs()`) because:
-1. Each group requires a separate range scan
-2. Storage is per-record, not per-group (unlike COUNT/SUM)
-3. The Query Builder's in-memory MIN/MAX is already efficient for batch results
+| MIN | `MinIndexKind` | `getAllMins()` |
+| MAX | `MaxIndexKind` | `getAllMaxs()` |
 
 ## Implementation Status
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| COUNT aggregation | ✅ Complete | Atomic increment/decrement |
+| COUNT aggregation | ✅ Complete | Checked transactional increment/decrement |
 | COUNT_NOT_NULL aggregation | ✅ Complete | Tracks non-null values |
 | COUNT_UPDATES aggregation | ✅ Complete | Tracks update frequency |
-| SUM aggregation | ✅ Complete | Int64 and Double (scaled) |
+| SUM aggregation | ✅ Complete | Signed, unsigned, and compensated finite Double |
 | MIN aggregation | ✅ Complete | Uses tuple ordering |
 | MAX aggregation | ✅ Complete | Uses tuple ordering |
 | AVERAGE aggregation | ✅ Complete | Sum + Count internally |
 | Composite grouping | ✅ Complete | Multiple grouping fields |
 | Sparse index (nil) | ✅ Complete | nil values excluded |
 | Query Builder API | ✅ Complete | Fluent API with HAVING clause |
-| Index-backed queries | ✅ Complete | Automatic index selection for COUNT/SUM/AVG/DISTINCT/PERCENTILE |
-| DISTINCT aggregation | ✅ Complete | HyperLogLog++ (~0.81% error, add-only) |
-| PERCENTILE aggregation | ✅ Complete | t-digest (high accuracy at extremes, add-only) |
-| AggregationIndexKindProtocol | ✅ Complete | Common protocol for index matching |
+| Index-backed queries | ✅ Complete | Automatic index selection for all aggregation families |
+| DISTINCT aggregation | ✅ Complete | Delete-capable exact membership + bounded HyperLogLog summary |
+| PERCENTILE aggregation | ✅ Complete | Delete-capable exact membership + bounded t-digest summary |
+| Canonical metadata matching | ✅ Complete | Strict descriptor metadata, no runtime kind downcast |
 | AggregationEntryPoint | ✅ Complete | EntryPoint pattern (like Vector/FullText) |
 
 **Query Builder Execution Paths**:
 | Aggregation | Index Defined | Execution |
 |-------------|--------------|-----------|
-| COUNT | Yes | O(1) via `CountIndexMaintainer.getAllCounts()` |
+| COUNT | Yes | O(G) via `CountIndexMaintainer.getAllCounts()` |
 | COUNT | No | O(n) in-memory |
-| SUM | Yes | O(1) via `SumIndexMaintainer.getAllSums()` |
+| SUM | Yes | O(G) via `SumIndexMaintainer.getAllSums()` |
 | SUM | No | O(n) in-memory |
-| AVG | Yes | O(1) via `AverageIndexMaintainer.getAllAverages()` |
+| AVG | Yes | O(G) via `AverageIndexMaintainer.getAllAverages()` |
 | AVG | No | O(n) in-memory |
-| DISTINCT | Yes | O(1) via `DistinctIndexMaintainer.getAllDistinctCounts()` |
+| DISTINCT | Yes | O(G) via `DistinctIndexMaintainer.getAllDistinctCounts()` |
 | DISTINCT | No | O(n) in-memory (exact, using Set) |
-| PERCENTILE | Yes | O(1) via `PercentileIndexMaintainer.getAllPercentiles()` |
+| PERCENTILE | Yes | O(G) via `PercentileIndexMaintainer.getAllPercentiles()` |
 | PERCENTILE | No | O(n) in-memory (exact, using sorted array) |
-| MIN | Any | O(n) in-memory (batch query not supported) |
-| MAX | Any | O(n) in-memory (batch query not supported) |
+| MIN | Yes | O(groups) via `MinIndexMaintainer.getAllMins()` |
+| MIN | No | O(n) in-memory |
+| MAX | Yes | O(groups) via `MaxIndexMaintainer.getAllMaxs()` |
+| MAX | No | O(n) in-memory |
 
 ## Performance Characteristics
 
 | Operation | Time Complexity | Notes |
 |-----------|----------------|-------|
-| Insert (single group) | O(1) | Atomic add |
-| Update (same group) | O(1) | Atomic add (delta) |
-| Update (different group) | O(1) | Two atomic adds |
-| Delete | O(1) | Atomic add (negative) |
+| Insert (single group) | O(1) | Transactional checked add + count |
+| Update (same group) | O(1), or O(D) for sketch rebuild | D = distinct members in the affected sketch group |
+| Update (different group) | O(1), or O(D) for sketch rebuild | Transactional remove + add |
+| Delete | O(1), or O(D) for sketch rebuild | Clears empty membership and summary groups |
 | Get single group | O(1) | Direct key lookup |
 | Get all groups | O(G) | G = number of groups |
 | Min/Max query | O(1) | Single key selector |
@@ -770,17 +802,16 @@ They don't have batch APIs (`getAllMins()`/`getAllMaxs()`) because:
 | COUNT | 8 bytes | - |
 | COUNT_NOT_NULL | 8 bytes | - |
 | COUNT_UPDATES | - | 8 bytes |
-| SUM (Int64) | 8 bytes | - |
-| SUM (Double) | 8 bytes (scaled) | - |
-| MIN/MAX | - | ~20-50 bytes |
-| AVERAGE | 16 bytes (sum + count) | - |
-| DISTINCT | ~16KB (HyperLogLog) | - |
-| PERCENTILE | ~10KB (t-digest) | - |
+| SUM | 16 bytes integer / 24 bytes floating (sum state + count) | - |
+| MIN/MAX | one aggregate cache entry | one ordered individual entry |
+| AVERAGE | 24 bytes (wide/compensated sum state + count) | - |
+| DISTINCT | bounded six-bit HLL summary + 16-byte count/scan metadata | 8-byte refcount per canonical distinct value |
+| PERCENTILE | bounded t-digest summary + 16-byte count/scan metadata | 8-byte refcount per canonical Double value |
 
 ### FDB Considerations
 
-- **Atomic operations**: Uses FDB's `.add` mutation type
-- **No read-modify-write**: Reduces transaction conflicts
+- **Transactional updates**: Aggregate and membership entries share one commit boundary
+- **Conflict safety**: Read-modify-write keys participate in backend conflict detection
 - **Hot keys**: High-cardinality grouping creates many keys
 - **Transaction limits**: 10MB write limit per transaction
 
@@ -844,74 +875,9 @@ Run with: `swift test --filter "PerformanceBenchmarks.MinMaxBatchBenchmark"`
 
 *Benchmarks run with Swift Testing `PerformanceBenchmarks` on Apple Silicon Mac and local Docker FoundationDB cluster.*
 
-## Migration Guide
-
-### Breaking Changes (v2.0)
-
-The `AggregateResult` type has been updated for type-safe value handling:
-
-**1. Group Key Access**
-
-```swift
-// Before
-if let region = result.groupKey["region"] as? String { ... }
-
-// After
-if let region = result.groupKeyString("region") { ... }
-// Or access FieldValue directly
-if let fieldValue = result.groupKey["region"] {
-    let region = fieldValue.stringValue
-}
-```
-
-**2. Aggregate Access**
-
-```swift
-// Before
-if let count = result.aggregates["orderCount"] as? Int { ... }
-if let sum = result.aggregates["totalSales"] as? Double { ... }
-
-// After
-if let count = result.aggregateInt64("orderCount") { ... }
-if let sum = result.aggregateDouble("totalSales") { ... }
-```
-
-**3. Having Clause**
-
-```swift
-// Before
-.having { $0.aggregates["count"] as? Int ?? 0 > 10 }
-
-// After
-.having { $0.aggregateInt64("count") ?? 0 > 10 }
-```
-
-**4. Min/Max Empty Handling**
-
-```swift
-// Before: returned 0 for empty groups (ambiguous)
-let min = result.aggregates["minPrice"] as? Double ?? 0
-
-// After: returns nil for empty groups (explicit)
-if let min = result.aggregateDouble("minPrice") {
-    // Has data
-} else {
-    // Empty group - no data
-}
-```
-
-### Type Mapping
-
-| Old Type | New Type | Accessor |
-|----------|----------|----------|
-| `[String: any Sendable]` (groupKey) | `[String: FieldValue]` | `groupKeyString()`, `groupKeyInt64()`, `groupKeyDouble()` |
-| `[String: any Sendable]` (aggregates) | `[String: FieldValue?]` | `aggregateString()`, `aggregateInt64()`, `aggregateDouble()` |
-
 ## References
 
 - [FDB Record Layer Aggregate Indexes](https://github.com/FoundationDB/fdb-record-layer) - Reference implementation
-- [Atomic Operations in FDB](https://apple.github.io/foundationdb/developer-guide.html#atomic-operations) - FoundationDB documentation
 - [Materialized Aggregates](https://en.wikipedia.org/wiki/Aggregate_function#Incremental_updates) - Database concept
-- [Fixed-Point Arithmetic](https://en.wikipedia.org/wiki/Fixed-point_arithmetic) - For floating-point storage
 - [HyperLogLog++](https://research.google/pubs/pub40671/) - Heule, Nunkesser, Hall (Google, 2013) - Cardinality estimation algorithm
 - [t-digest](https://github.com/tdunning/t-digest) - Dunning & Ertl (2019) - Streaming quantile estimation

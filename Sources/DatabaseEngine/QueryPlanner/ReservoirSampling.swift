@@ -1,8 +1,13 @@
 // ReservoirSampling.swift
 // QueryPlanner - Efficient sampling for histogram construction
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 import StorageKit
 
 /// Reservoir Sampling implementation using Algorithm L
@@ -103,7 +108,9 @@ public struct ReservoirSampling<T: Sendable>: Sendable {
     /// This gives W an initial value following the correct distribution
     private mutating func initializeAlgorithmL() {
         // W = random()^(1/k) = exp(log(random()) / k)
-        w = exp(log(Double.random(in: 0..<1)) / Double(reservoirSize))
+        w = DatabaseMath.exponential(
+            DatabaseMath.naturalLogarithm(Double.random(in: 0..<1)) / Double(reservoirSize)
+        )
         calculateNextSampleIndex()
     }
 
@@ -121,13 +128,17 @@ public struct ReservoirSampling<T: Sendable>: Sendable {
 
         // Use log1p(-w) = log(1-w) for numerical stability when w is small
         // Note: log1p(x) = log(1 + x), so log1p(-w) = log(1 - w)
-        let skip = floor(log(u) / log1p(-w))
+        let skip = DatabaseMath.floor(
+            DatabaseMath.naturalLogarithm(u) / DatabaseMath.logarithmOfOnePlus(-w)
+        )
 
         // Next sample index (1-based in paper, we use 0-based so add elementsSeen)
         nextSampleIndex = elementsSeen + Int(skip) + 1
 
         // Update W for next iteration: W = W * random()^(1/k)
-        w = w * exp(log(Double.random(in: 0..<1)) / Double(reservoirSize))
+        w *= DatabaseMath.exponential(
+            DatabaseMath.naturalLogarithm(Double.random(in: 0..<1)) / Double(reservoirSize)
+        )
     }
 
     /// Add multiple elements
@@ -174,7 +185,9 @@ extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
     ///
     /// - Parameter bucketCount: Number of histogram buckets (default: 100)
     /// - Returns: Array of histogram buckets
-    public func buildHistogram(bucketCount: Int = 100) -> [HistogramBucket] {
+    public func buildHistogram(
+        bucketCount: Int = 100
+    ) throws -> [HistogramBucket] {
         guard !reservoir.isEmpty else { return [] }
 
         let sorted = reservoir.sorted()
@@ -186,15 +199,25 @@ extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
         // Handle case where we have fewer unique values than buckets
         let uniqueValues = Set(sorted)
         if uniqueValues.count <= bucketCount {
-            return buildValueBasedBuckets(sorted: sorted, scaleFactor: scaleFactor)
+            return try buildValueBasedBuckets(
+                sorted: sorted,
+                scaleFactor: scaleFactor
+            )
         }
 
         // Equi-height bucketing
-        return buildEquiHeightBuckets(sorted: sorted, bucketCount: bucketCount, scaleFactor: scaleFactor)
+        return try buildEquiHeightBuckets(
+            sorted: sorted,
+            bucketCount: bucketCount,
+            scaleFactor: scaleFactor
+        )
     }
 
     /// Build buckets where each unique value gets its own bucket
-    private func buildValueBasedBuckets(sorted: [T], scaleFactor: Double) -> [HistogramBucket] {
+    private func buildValueBasedBuckets(
+        sorted: [T],
+        scaleFactor: Double
+    ) throws -> [HistogramBucket] {
         var buckets: [HistogramBucket] = []
         var cumulativeCount = 0
 
@@ -212,7 +235,7 @@ extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
             let scaledCount = Int(Double(count) * scaleFactor)
             cumulativeCount += scaledCount
 
-            guard let comparableValue = FieldValue(tupleElement: value) else { continue }
+            let comparableValue = try FieldValue(tupleElement: value)
             buckets.append(HistogramBucket(
                 lowerBound: comparableValue,
                 upperBound: comparableValue,
@@ -225,7 +248,11 @@ extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
     }
 
     /// Build equi-height buckets (approximately equal number of values per bucket)
-    private func buildEquiHeightBuckets(sorted: [T], bucketCount: Int, scaleFactor: Double) -> [HistogramBucket] {
+    private func buildEquiHeightBuckets(
+        sorted: [T],
+        bucketCount: Int,
+        scaleFactor: Double
+    ) throws -> [HistogramBucket] {
         let valuesPerBucket = max(1, sorted.count / bucketCount)
         var buckets: [HistogramBucket] = []
         var cumulativeCount = 0
@@ -235,11 +262,8 @@ extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
             let startIndex = i
             let endIndex = min(i + valuesPerBucket, sorted.count)
 
-            guard let lowerBound = FieldValue(tupleElement: sorted[startIndex]),
-                  let upperBound = FieldValue(tupleElement: sorted[endIndex - 1]) else {
-                i = endIndex
-                continue
-            }
+            let lowerBound = try FieldValue(tupleElement: sorted[startIndex])
+            let upperBound = try FieldValue(tupleElement: sorted[endIndex - 1])
             let count = endIndex - startIndex
 
             let scaledCount = Int(Double(count) * scaleFactor)
@@ -389,7 +413,7 @@ extension ReservoirSampling where T: BinaryFloatingPoint {
 
         let mean = sum / count
         let variance = count > 1 ? (sumSquared - sum * sum / count) / (count - 1) : 0
-        let stdDev = sqrt(max(0, variance))
+        let stdDev = DatabaseMath.squareRoot(max(0, variance))
 
         return (mean, stdDev, minVal, maxVal)
     }

@@ -16,14 +16,14 @@ struct TransactionComprehensiveTests {
 
     @Test("Multiple getRange() calls in single transaction")
     func multipleGetRangeInSingleTransaction() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
 
         // Setup: Write 50 keys
         try await runner.run(configuration: .default) { tx in
             for i in 0..<50 {
-                tx.setValue([UInt8(i)], for: [0, 1, UInt8(i)])
+                try tx.setValue([UInt8(i)], for: [0, 1, UInt8(i)])
             }
         }
 
@@ -59,14 +59,14 @@ struct TransactionComprehensiveTests {
 
     @Test("100 getRange() calls in single transaction")
     func hundredGetRangeCalls() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
 
         // Setup: Write 100 keys
         try await runner.run(configuration: .default) { tx in
             for i in 0..<100 {
-                tx.setValue([UInt8(i % 256)], for: [0, 2, UInt8(i % 256)])
+                try tx.setValue([UInt8(i % 256)], for: [0, 2, UInt8(i % 256)])
             }
         }
 
@@ -96,13 +96,13 @@ struct TransactionComprehensiveTests {
 
     @Test("Iterator fully consumed")
     func iteratorFullyConsumed() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
 
         try await runner.run(configuration: .default) { tx in
             for i in 0..<10 {
-                tx.setValue([UInt8(i)], for: [0, 3, UInt8(i)])
+                try tx.setValue([UInt8(i)], for: [0, 3, UInt8(i)])
             }
         }
 
@@ -120,13 +120,13 @@ struct TransactionComprehensiveTests {
 
     @Test("Iterator partially consumed")
     func iteratorPartiallyConsumed() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
 
         try await runner.run(configuration: .default) { tx in
             for i in 0..<100 {
-                tx.setValue([UInt8(i % 256)], for: [0, 4, UInt8(i % 256)])
+                try tx.setValue([UInt8(i % 256)], for: [0, 4, UInt8(i % 256)])
             }
         }
 
@@ -145,13 +145,13 @@ struct TransactionComprehensiveTests {
 
     @Test("Multiple concurrent iterators")
     func multipleConcurrentIterators() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
 
         try await runner.run(configuration: .default) { tx in
             for i in 0..<20 {
-                tx.setValue([UInt8(i)], for: [0, 5, UInt8(i)])
+                try tx.setValue([UInt8(i)], for: [0, 5, UInt8(i)])
             }
         }
 
@@ -184,13 +184,13 @@ struct TransactionComprehensiveTests {
 
     @Test("Snapshot read does not conflict")
     func snapshotReadDoesNotConflict() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
 
         // Setup initial data
         try await runner.run(configuration: .default) { tx in
-            tx.setValue([1], for: [0, 6, 1])
+            try tx.setValue([1], for: [0, 6, 1])
         }
 
         // Read with snapshot: true (should not add to conflict range)
@@ -209,13 +209,13 @@ struct TransactionComprehensiveTests {
 
     @Test("Non-snapshot read adds to conflict range")
     func nonSnapshotReadAddsToConflictRange() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
 
         // Setup initial data
         try await runner.run(configuration: .default) { tx in
-            tx.setValue([1], for: [0, 7, 1])
+            try tx.setValue([1], for: [0, 7, 1])
         }
 
         // Read with snapshot: false (adds to conflict range)
@@ -236,15 +236,15 @@ struct TransactionComprehensiveTests {
 
     @Test("Scan 1000 items with getRange")
     func scanThousandItems() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
 
         // Setup: Write 1000 items
         try await runner.run(configuration: .default) { tx in
             for i in 0..<1000 {
                 let key = [0, 8] + withUnsafeBytes(of: i.bigEndian) { Array($0) }
-                tx.setValue([UInt8(i % 256)], for: key)
+                try tx.setValue([UInt8(i % 256)], for: Bytes(key))
             }
         }
 
@@ -271,15 +271,15 @@ struct TransactionComprehensiveTests {
 
     @Test("Nested getRange iteration")
     func nestedGetRangeIteration() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
 
         // Setup: 5 groups × 10 items
         try await runner.run(configuration: .default) { tx in
             for group in 0..<5 {
                 for item in 0..<10 {
-                    tx.setValue([UInt8(item)], for: [0, 9, UInt8(group), UInt8(item)])
+                    try tx.setValue([UInt8(item)], for: [0, 9, UInt8(group), UInt8(item)])
                 }
             }
         }
@@ -316,14 +316,14 @@ struct TransactionComprehensiveTests {
 
     @Test("Transaction commit succeeds after multiple getRange")
     func commitSucceedsAfterMultipleGetRange() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
 
         // Write initial data
         try await runner.run(configuration: .default) { tx in
             for i in 0..<50 {
-                tx.setValue([UInt8(i)], for: [0, 10, UInt8(i)])
+                try tx.setValue([UInt8(i)], for: [0, 10, UInt8(i)])
             }
         }
 
@@ -349,7 +349,7 @@ struct TransactionComprehensiveTests {
             }
 
             // Write something to verify commit works
-            tx.setValue([99], for: [0, 10, 99])
+            try tx.setValue([99], for: [0, 10, 99])
         }
 
         // Verify the write was committed

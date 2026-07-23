@@ -5,7 +5,7 @@
 /// - PostgreSQL Cost Model (src/backend/optimizer/path/costsize.c)
 /// - FoundationDB Record Layer Cost Estimation
 
-import Foundation
+import DatabaseMath
 
 /// Query execution cost estimate
 public struct QueryCost: Sendable, Equatable, Comparable {
@@ -125,7 +125,9 @@ public struct CostEstimator: Sendable {
 
     /// Estimate cost of table scan
     public func tableScanCost(rows: Double, width: Int) -> QueryCost {
-        let pages = ceil(rows * Double(width) / 8192.0)  // Assume 8KB pages
+        let pages = DatabaseMath.ceiling(
+            rows * Double(width) / 8192.0
+        )  // Assume 8KB pages
         let diskCost = pages * model.seqPageCost
         let cpuCost = rows * model.cpuTupleCost
         return QueryCost(total: diskCost + cpuCost, rows: rows, width: width)
@@ -133,8 +135,12 @@ public struct CostEstimator: Sendable {
 
     /// Estimate cost of index scan
     public func indexScanCost(rows: Double, indexRows: Double, width: Int) -> QueryCost {
-        let indexPages = ceil(indexRows / 100.0)  // Assume 100 entries per page
-        let dataPages = ceil(rows / 10.0)  // Assume clustered factor 10
+        let indexPages = DatabaseMath.ceiling(
+            indexRows / 100.0
+        )  // Assume 100 entries per page
+        let dataPages = DatabaseMath.ceiling(
+            rows / 10.0
+        )  // Assume clustered factor 10
         let diskCost = indexPages * model.seqPageCost + dataPages * model.randomPageCost
         let cpuCost = indexRows * model.cpuIndexTupleCost + rows * model.cpuTupleCost
         return QueryCost(startup: indexPages * model.seqPageCost, total: diskCost + cpuCost, rows: rows, width: width)
@@ -171,7 +177,9 @@ public struct CostEstimator: Sendable {
 
     /// Estimate cost of sort
     public func sortCost(_ input: QueryCost) -> QueryCost {
-        let comparisons = input.rows * log2(max(input.rows, 2))
+        let comparisons = input.rows * DatabaseMath.binaryLogarithm(
+            max(input.rows, 2)
+        )
         let cpuCost = comparisons * model.cpuOperatorCost
         return QueryCost(startup: input.total + cpuCost, total: input.total + cpuCost, rows: input.rows, width: input.width)
     }
@@ -224,14 +232,18 @@ public struct CostEstimator: Sendable {
     /// Estimate cost of vector search (HNSW)
     public func vectorSearchCost(k: Int, dimensions: Int, datasetSize: Double) -> QueryCost {
         // HNSW search is O(log N * M * efSearch) where M is the max connections
-        let comparisons = log2(max(datasetSize, 2)) * Double(k) * 10.0
+        let comparisons = DatabaseMath.binaryLogarithm(
+            max(datasetSize, 2)
+        ) * Double(k) * 10.0
         let cpuCost = comparisons * Double(dimensions) * model.cpuOperatorCost
         return QueryCost(total: cpuCost, rows: Double(k), width: dimensions * 8)
     }
 
     /// Estimate cost of full-text search
     public func fullTextSearchCost(estimatedMatches: Double, documentCount: Double) -> QueryCost {
-        let indexLookupCost = log2(max(documentCount, 2)) * model.randomPageCost
+        let indexLookupCost = DatabaseMath.binaryLogarithm(
+            max(documentCount, 2)
+        ) * model.randomPageCost
         let matchCost = estimatedMatches * model.cpuTupleCost
         return QueryCost(startup: indexLookupCost, total: indexLookupCost + matchCost, rows: estimatedMatches)
     }

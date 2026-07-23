@@ -4,6 +4,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Vector
 import TestSupport
 @testable import DatabaseEngine
@@ -24,8 +25,8 @@ protocol PolymorphicVectorE2EDocument: Polymorphable {
 extension PolymorphicVectorE2EDocument {
     public static var polymorphableType: String { "PolymorphicVectorE2EDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("polymorphic_vector_e2e_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("polymorphic_vector_e2e_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -72,8 +73,8 @@ protocol PolymorphicVectorNoIndexDocument: Polymorphable {
 extension PolymorphicVectorNoIndexDocument {
     public static var polymorphableType: String { "PolymorphicVectorNoIndexDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("polymorphic_vector_no_index_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("polymorphic_vector_no_index_shared")]
     }
 }
 
@@ -96,8 +97,8 @@ protocol PolymorphicOptionalVectorE2EDocument: Polymorphable {
 extension PolymorphicOptionalVectorE2EDocument {
     public static var polymorphableType: String { "PolymorphicOptionalVectorE2EDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("polymorphic_optional_vector_e2e_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("polymorphic_optional_vector_e2e_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -141,8 +142,8 @@ struct PolymorphicVectorIndexE2ETests {
     private let optionalIndexName = "PolymorphicOptionalVectorE2EDocument_embedding"
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema(
             [PolymorphicVectorArticle.self, PolymorphicVectorReport.self],
             version: Schema.Version(1, 0, 0)
@@ -151,13 +152,14 @@ struct PolymorphicVectorIndexE2ETests {
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try vectorRuntimeConfiguration(),
             security: .disabled
         )
     }
 
     private func setupOptionalContainer() async throws -> DBContainer {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema(
             [PolymorphicOptionalVectorArticle.self, PolymorphicOptionalVectorReport.self],
             version: Schema.Version(1, 0, 0)
@@ -166,13 +168,14 @@ struct PolymorphicVectorIndexE2ETests {
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try vectorRuntimeConfiguration(),
             security: .disabled
         )
     }
 
     private func setupNoIndexContainer() async throws -> DBContainer {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema(
             [PolymorphicVectorNoIndexArticle.self],
             version: Schema.Version(1, 0, 0)
@@ -181,7 +184,18 @@ struct PolymorphicVectorIndexE2ETests {
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try vectorRuntimeConfiguration(),
             security: .disabled
+        )
+    }
+
+    private func vectorRuntimeConfiguration() throws -> DatabaseRuntimeConfiguration {
+        try DatabaseRuntimeConfiguration(
+            indexMaintainerProviders: [
+                VectorIndexMaintainerProvider()
+            ],
+            indexReadExecutors: [VectorReadExecutors.indexExecutor],
+            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor]
         )
     }
 
@@ -196,8 +210,8 @@ struct PolymorphicVectorIndexE2ETests {
             ["polymorphic_optional_vector_e2e_reports"],
             ["polymorphic_optional_vector_e2e_shared"],
         ] {
-            if try await container.engine.directoryService.exists(path: path) {
-                try await container.engine.directoryService.remove(path: path)
+            if try await container.engine.directoryExists(path: path) {
+                try await container.engine.removeDirectory(path: path)
             }
         }
         try await container.ensureIndexesReady()
@@ -277,10 +291,16 @@ struct PolymorphicVectorIndexE2ETests {
             ).first { $0.name == indexName }
         )
 
-        #expect(articleDescriptor.kind is VectorIndexKind<PolymorphicVectorArticle>)
-        #expect(reportDescriptor.kind is VectorIndexKind<PolymorphicVectorReport>)
-        #expect(articleDescriptor.keyPaths.first is PartialKeyPath<PolymorphicVectorArticle>)
-        #expect(reportDescriptor.keyPaths.first is PartialKeyPath<PolymorphicVectorReport>)
+        let articleKind = try VectorIndexKind<PolymorphicVectorArticle>(
+            canonical: articleDescriptor.kind
+        )
+        let reportKind = try VectorIndexKind<PolymorphicVectorReport>(
+            canonical: reportDescriptor.kind
+        )
+        #expect(articleKind.fieldNames == ["embedding"])
+        #expect(reportKind.fieldNames == ["embedding"])
+        #expect(articleKind.dimensions == 3)
+        #expect(reportKind.dimensions == 3)
     }
 
     @Test("Polymorphic vector query requires a query vector")
@@ -342,8 +362,6 @@ struct PolymorphicVectorIndexE2ETests {
     func polymorphicOptionalVectorKeyPathOverloadQueriesSharedIndexEndToEnd() async throws {
         let container = try await setupOptionalContainer()
         try await cleanup(container: container)
-        VectorReadBridge.registerReadExecutors()
-
         let context = container.newContext()
         let article = PolymorphicOptionalVectorArticle(
             title: "Optional Anchor",
@@ -382,8 +400,6 @@ struct PolymorphicVectorIndexE2ETests {
     func polymorphicVectorIndexIsMaintainedAndQueriedEndToEnd() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        VectorReadBridge.registerReadExecutors()
-
         let context = container.newContext()
 
         let article = PolymorphicVectorArticle(

@@ -1,241 +1,196 @@
-// DirectoryPath.swift
-// DatabaseEngine - Directory path resolution for dynamic directories
-
-import Foundation
 import Core
-import StorageKit
+import DatabaseValue
 
-// MARK: - Helper Function
-
-/// Convert a value to directory path string
-///
-/// - Parameter value: The value to convert
-/// - Returns: String representation for directory path
-package func directoryPathString(from value: Any) -> String {
-    switch value {
-    case let str as String:
-        return str
-    case let uuid as UUID:
-        return uuid.uuidString
-    default:
-        return "\(value)"
-    }
-}
-
-// MARK: - DirectoryPath
-
-/// Holds field values needed to resolve a directory path
-///
-/// Used to capture Field values for directory resolution when
-/// the type has a dynamic directory (contains `Field(\.keyPath)` components).
-///
-/// **Usage**:
-/// ```swift
-/// // Query-side: via .partition() fluent API
-/// let orders = try await context.fetch(Order.self)
-///     .partition(\.tenantID, equals: "tenant_123")
-///     .execute()
-///
-/// // From model instance
-/// let path = DirectoryPath<Order>.from(order)
-/// ```
-public struct DirectoryPath<T: Persistable>: @unchecked Sendable {
-    /// Field-value pairs for directory resolution
-    internal var fieldValues: [(keyPath: PartialKeyPath<T>, value: any Sendable)] = []
+/// Holds the typed field values required to resolve a compiled directory path.
+public struct DirectoryPath<T: Persistable>: Sendable {
+    internal var fieldValues: [DirectoryFieldBinding] = []
 
     public init() {}
 
-    /// Set a field value (overwrites if already exists)
     public mutating func set<V: Sendable>(_ keyPath: KeyPath<T, V>, to value: V) {
-        // Remove existing value for this keyPath if present
-        fieldValues.removeAll { $0.keyPath == keyPath }
-        fieldValues.append((keyPath, value))
+        let name = T.fieldName(for: keyPath)
+        fieldValues.removeAll { $0.name == name }
+        fieldValues.append(DirectoryFieldBinding(name: name, value: value))
     }
 
-    /// Check if a specific keyPath has a value
     public func hasValue(for keyPath: PartialKeyPath<T>) -> Bool {
-        fieldValues.contains { $0.keyPath == keyPath }
+        let name = T.fieldName(for: keyPath)
+        return fieldValues.contains { $0.name == name }
     }
 
-    /// Get value for a keyPath
     public func value<V>(for keyPath: KeyPath<T, V>) -> V? {
-        fieldValues.first { $0.keyPath == keyPath }?.value as? V
+        let name = T.fieldName(for: keyPath)
+        return fieldValues.first { $0.name == name }?.value as? V
     }
 
-    /// Validate all required directory fields have values
-    ///
-    /// - Throws: `DirectoryPathError.missingFields` if any required field is missing
     public func validate() throws {
-        let requiredKeyPaths = T.directoryFieldKeyPaths
-        guard !requiredKeyPaths.isEmpty else { return }
-
-        let providedKeyPaths = Set(fieldValues.map { $0.keyPath as AnyKeyPath })
-        let requiredSet = Set(requiredKeyPaths.map { $0 as AnyKeyPath })
-
-        let missing = requiredSet.subtracting(providedKeyPaths)
-        guard missing.isEmpty else {
-            let fieldNames = missing.compactMap { keyPath -> String? in
-                T.fieldName(for: keyPath)
+        let requiredNames = T.directoryFieldNames
+        guard !requiredNames.isEmpty else {
+            guard fieldValues.isEmpty else {
+                throw DirectoryPathError.invalidField(
+                    typeName: T.persistableType,
+                    field: fieldValues[0].name,
+                    reason: "the entity has a static directory"
+                )
             }
-            throw DirectoryPathError.missingFields(fieldNames)
+            return
+        }
+
+        let providedNames = Set(fieldValues.map(\.name))
+        let missingNames = Set(requiredNames).subtracting(providedNames)
+        guard missingNames.isEmpty else {
+            throw DirectoryPathError.missingFields(missingNames.sorted())
+        }
+        let unexpectedNames = providedNames.subtracting(requiredNames)
+        guard unexpectedNames.isEmpty else {
+            throw DirectoryPathError.invalidField(
+                typeName: T.persistableType,
+                field: unexpectedNames.sorted()[0],
+                reason: "the field is not part of the compiled directory"
+            )
         }
     }
 
-    /// Resolve to path string components.
-    ///
-    /// - Precondition: `validate()` has succeeded for this path. Unresolved
-    ///   `Field` components are **silently skipped** — this is intentional, so
-    ///   that `resolve()` stays non-throwing and callable from pure-sync
-    ///   contexts (e.g. cache-key generation). Call sites MUST NOT feed the
-    ///   result into a live directory subspace or compare it to another
-    ///   partition's resolved path without first calling `validate()`, because
-    ///   a partial path like `["R", "Order"]` (tenant field missing) can
-    ///   collide with an unrelated valid path and silently cross-contaminate
-    ///   data or cache entries.
-    ///
-    /// The engine's `resolveDirectory` path enforces this by always calling
-    /// `validate()` before using the resolved components for I/O; cache-key
-    /// generation only consults caches that were themselves populated from
-    /// validated paths, so a lookup with an invalid path cannot hit. If you
-    /// introduce a new call site, preserve this invariant.
-    internal func resolve() -> [String] {
+    internal func resolve() throws -> [String] {
+        let partitions = try canonicalPartitions()
+        let partitionsByName = Dictionary(
+            uniqueKeysWithValues: partitions.map { ($0.name, $0.value) }
+        )
         var path: [String] = []
+        path.reserveCapacity(T.directoryPathComponents.count)
+
         for component in T.directoryPathComponents {
-            if let pathElement = component as? Path {
-                path.append(pathElement.value)
-            } else if let stringElement = component as? String {
-                path.append(stringElement)
-            } else if let fieldElement = component as? Field<T> {
-                if let field = fieldValues.first(where: { $0.keyPath == fieldElement.value }) {
-                    path.append(directoryPathString(from: field.value))
+            switch component {
+            case .staticPath(let value):
+                path.append(value)
+            case .dynamicField(let name):
+                guard let value = partitionsByName[name] else {
+                    throw DirectoryPathError.missingFields([name])
                 }
-                // else: silently skipped — see precondition above.
+                path.append(try CanonicalDirectoryPartitionCodec.encode(value))
             }
         }
         return path
     }
 
-    /// Create from a model instance
-    ///
-    /// Extracts all Field values from the instance.
+    internal func canonicalPartitions() throws -> [DatabaseObjectField] {
+        try validate()
+        var partitions: [DatabaseObjectField] = []
+        var seenNames = Set<String>()
+
+        for name in T.directoryFieldNames {
+            guard seenNames.insert(name).inserted else {
+                throw DirectoryPathError.invalidField(
+                    typeName: T.persistableType,
+                    field: name,
+                    reason: "the field occurs more than once in the compiled directory"
+                )
+            }
+            guard let binding = fieldValues.first(where: { $0.name == name }) else {
+                throw DirectoryPathError.missingFields([name])
+            }
+            guard let schema = T.fieldSchemas.first(where: { $0.name == name }),
+                  schema.fieldNumber > 0,
+                  let number = UInt32(exactly: schema.fieldNumber) else {
+                throw DirectoryPathError.invalidField(
+                    typeName: T.persistableType,
+                    field: name,
+                    reason: "the field is missing from the compiled schema"
+                )
+            }
+            guard !schema.isOptional, !schema.isArray, schema.type != .nested else {
+                throw DirectoryPathError.invalidField(
+                    typeName: T.persistableType,
+                    field: name,
+                    reason: "partition fields must be required scalar values"
+                )
+            }
+            let value = try DatabaseRecordEncoder.encodeValue(
+                binding.value,
+                schema: schema,
+                entity: T.persistableType
+            )
+            guard value != .null else {
+                throw DirectoryPathError.invalidField(
+                    typeName: T.persistableType,
+                    field: name,
+                    reason: "partition fields cannot be null"
+                )
+            }
+            partitions.append(
+                DatabaseObjectField(number: number, name: name, value: value)
+            )
+        }
+        return partitions
+    }
+
     public static func from(_ model: T) -> DirectoryPath<T> {
         var path = DirectoryPath<T>()
-        for component in T.directoryPathComponents {
-            if let fieldElement = component as? Field<T> {
-                let keyPath = fieldElement.value
-                let fieldName = T.fieldName(for: keyPath)
-                if let value = model[dynamicMember: fieldName] {
-                    path.fieldValues.append((keyPath, value))
-                }
+        for name in T.directoryFieldNames {
+            if let value = model[dynamicMember: name] {
+                path.fieldValues.append(DirectoryFieldBinding(name: name, value: value))
             }
         }
         return path
     }
 }
 
-// MARK: - Persistable Extension
+/// Eager, type-erased representation of a validated directory path.
+public struct AnyDirectoryPath: Sendable {
+    private let components: [String]
+    private let partitions: [DatabaseObjectField]
 
-extension Persistable {
-    /// Extract Field keyPaths from directoryPathComponents
-    public static var directoryFieldKeyPaths: [PartialKeyPath<Self>] {
-        directoryPathComponents.compactMap { ($0 as? Field<Self>)?.value }
-    }
-}
-
-// DirectoryPathError and Persistable.directoryFieldNames are now in database-kit Core module.
-
-// MARK: - Type-Erased DirectoryPath
-
-/// Type-erased wrapper for DirectoryPath
-///
-/// Used when the generic type is not known at compile time.
-public struct AnyDirectoryPath: @unchecked Sendable {
-    private let _resolve: () -> [String]
-    private let _validate: () throws -> Void
-
-    /// Create from a typed DirectoryPath
-    public init<T: Persistable>(_ path: DirectoryPath<T>) {
-        self._resolve = { path.resolve() }
-        self._validate = { try path.validate() }
+    public init<T: Persistable>(_ path: DirectoryPath<T>) throws {
+        self.components = try path.resolve()
+        self.partitions = try path.canonicalPartitions()
     }
 
-    /// Create for a static directory type (no Field components)
-    public init(for type: any Persistable.Type) {
-        let components = type.directoryPathComponents
-        self._resolve = {
-            var path: [String] = []
-            for component in components {
-                if let pathElement = component as? Path {
-                    path.append(pathElement.value)
-                } else if let stringElement = component as? String {
-                    path.append(stringElement)
-                }
-            }
-            return path
+    public init(for type: any Persistable.Type) throws {
+        guard !type.hasDynamicDirectory else {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: type.persistableType,
+                fields: type.directoryFieldNames
+            )
         }
-        self._validate = {
-            let hasDynamic = components.contains { $0 is any DynamicDirectoryElement }
-            if hasDynamic {
+
+        var resolved: [String] = []
+        resolved.reserveCapacity(type.directoryPathComponents.count)
+        for component in type.directoryPathComponents {
+            switch component {
+            case .staticPath(let value):
+                resolved.append(value)
+            case .dynamicField:
                 throw DirectoryPathError.dynamicFieldsRequired(
                     typeName: type.persistableType,
                     fields: type.directoryFieldNames
                 )
             }
         }
+        self.components = resolved
+        self.partitions = []
     }
 
-    /// Create from field values and type
-    public init(fieldValues: [(keyPath: AnyKeyPath, value: any Sendable)], type: any Persistable.Type) {
-        let components = type.directoryPathComponents
-        self._resolve = {
-            var path: [String] = []
-            for component in components {
-                if let pathElement = component as? Path {
-                    path.append(pathElement.value)
-                } else if let stringElement = component as? String {
-                    path.append(stringElement)
-                } else if let dynamicElement = component as? any DynamicDirectoryElement {
-                    let keyPath = dynamicElement.anyKeyPath
-                    if let field = fieldValues.first(where: { $0.keyPath == keyPath }) {
-                        path.append(directoryPathString(from: field.value))
-                    }
-                }
+    package init(
+        fieldValues: [(name: String, value: any Sendable)],
+        type: any Persistable.Type
+    ) throws {
+        func bind<T: Persistable>(_ concreteType: T.Type) throws -> AnyDirectoryPath {
+            var path = DirectoryPath<T>()
+            path.fieldValues = fieldValues.map {
+                DirectoryFieldBinding(name: $0.name, value: $0.value)
             }
-            return path
+            return try AnyDirectoryPath(path)
         }
-        self._validate = {
-            var requiredKeyPaths: Set<AnyKeyPath> = []
-            for component in components {
-                if let dynamicElement = component as? any DynamicDirectoryElement {
-                    requiredKeyPaths.insert(dynamicElement.anyKeyPath)
-                }
-            }
-
-            let providedKeyPaths = Set(fieldValues.map { $0.keyPath })
-            let missing = requiredKeyPaths.subtracting(providedKeyPaths)
-
-            guard missing.isEmpty else {
-                let fieldNames = components.compactMap { component -> String? in
-                    guard let dynamicElement = component as? any DynamicDirectoryElement,
-                          missing.contains(dynamicElement.anyKeyPath) else { return nil }
-                    return type.fieldName(for: dynamicElement.anyKeyPath)
-                }
-                throw DirectoryPathError.missingFields(fieldNames)
-            }
-        }
+        self = try _openExistential(type, do: bind)
     }
 
-    /// Resolve to path string components.
-    ///
-    /// Shares the precondition of `DirectoryPath<T>.resolve()`: unresolved
-    /// dynamic `Field` components are silently skipped, so callers must call
-    /// `validate()` first before using the result for anything other than
-    /// looking up caches that were themselves populated from validated paths.
     public func resolve() -> [String] {
-        _resolve()
+        components
     }
 
-    public func validate() throws {
-        try _validate()
+    public func validate() throws {}
+
+    public func canonicalPartitions() -> [DatabaseObjectField] {
+        partitions
     }
 }

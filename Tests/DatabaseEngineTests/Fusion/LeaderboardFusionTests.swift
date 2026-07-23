@@ -8,29 +8,31 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import LeaderboardIndex
 
 // MARK: - Test Model
 
 /// Game score model with time-windowed leaderboard index
 @Persistable
-struct LeaderboardTestScore {
-    #Directory<LeaderboardTestScore>("test", "leaderboard")
+struct LeaderboardFusionScore {
+    #Directory<LeaderboardFusionScore>("test", "leaderboard")
     var id: String = UUID().uuidString
     var playerId: String = ""
     var playerName: String = ""
     var score: Int64 = 0
     var region: String = "global"
 
-    #Index(TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>(
+    #Index(TimeWindowLeaderboardIndexKind<LeaderboardFusionScore>(
         scoreField: \.score,
         window: .daily,
         windowCount: 7
     ))
 
-    #Index(TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>(
+    #Index(TimeWindowLeaderboardIndexKind<LeaderboardFusionScore>(
         scoreField: \.score,
         groupBy: [\.region],
         window: .daily,
@@ -45,7 +47,7 @@ struct LeaderboardUnitTests {
 
     @Test("TimeWindowLeaderboardIndexKind identifier")
     func testLeaderboardIndexKindIdentifier() {
-        let identifier = TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>.identifier
+        let identifier = TimeWindowLeaderboardIndexKind<LeaderboardFusionScore>.identifier
         #expect(identifier == "time_window_leaderboard")
     }
 
@@ -68,7 +70,7 @@ struct LeaderboardUnitTests {
 
     @Test("ScoredResult initialization")
     func testScoredResultInitialization() {
-        let score = LeaderboardTestScore(playerId: "p1", playerName: "Alice", score: 1000)
+        let score = LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 1000)
         let result = ScoredResult(item: score, score: 0.75)
 
         #expect(result.score == 0.75)
@@ -95,9 +97,9 @@ struct LeaderboardUnitTests {
     @Test("Scores sorted by game score descending")
     func testScoresSorting() {
         let scores = [
-            LeaderboardTestScore(playerId: "p1", playerName: "Alice", score: 500),
-            LeaderboardTestScore(playerId: "p2", playerName: "Bob", score: 1000),
-            LeaderboardTestScore(playerId: "p3", playerName: "Charlie", score: 750)
+            LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 500),
+            LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 1000),
+            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 750)
         ]
 
         let sorted = scores.sorted { $0.score > $1.score }
@@ -110,9 +112,9 @@ struct LeaderboardUnitTests {
     @Test("Filter by region")
     func testFilterByRegion() {
         let scores = [
-            LeaderboardTestScore(playerId: "p1", playerName: "Alice", score: 1000, region: "asia"),
-            LeaderboardTestScore(playerId: "p2", playerName: "Bob", score: 800, region: "europe"),
-            LeaderboardTestScore(playerId: "p3", playerName: "Charlie", score: 900, region: "asia")
+            LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 1000, region: "asia"),
+            LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 800, region: "europe"),
+            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 900, region: "asia")
         ]
 
         let asiaScores = scores.filter { $0.region == "asia" }
@@ -123,9 +125,9 @@ struct LeaderboardUnitTests {
     @Test("Group scores by region")
     func testGroupByRegion() {
         let scores = [
-            LeaderboardTestScore(playerId: "p1", playerName: "Alice", score: 1000, region: "asia"),
-            LeaderboardTestScore(playerId: "p2", playerName: "Bob", score: 800, region: "europe"),
-            LeaderboardTestScore(playerId: "p3", playerName: "Charlie", score: 900, region: "asia")
+            LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 1000, region: "asia"),
+            LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 800, region: "europe"),
+            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 900, region: "asia")
         ]
 
         let grouped = Dictionary(grouping: scores, by: \.region)
@@ -142,20 +144,20 @@ struct LeaderboardEdgeCaseTests {
 
     @Test("Zero score")
     func testZeroScore() {
-        let score = LeaderboardTestScore(playerId: "p1", playerName: "Newbie", score: 0)
+        let score = LeaderboardFusionScore(playerId: "p1", playerName: "Newbie", score: 0)
         #expect(score.score == 0)
     }
 
     @Test("Negative score")
     func testNegativeScore() {
-        let score = LeaderboardTestScore(playerId: "p1", playerName: "Penalty", score: -100)
+        let score = LeaderboardFusionScore(playerId: "p1", playerName: "Penalty", score: -100)
         #expect(score.score == -100)
     }
 
     @Test("Int64 boundary scores")
     func testInt64BoundaryScores() {
-        let maxScore = LeaderboardTestScore(playerId: "p1", playerName: "Max", score: Int64.max)
-        let minScore = LeaderboardTestScore(playerId: "p2", playerName: "Min", score: Int64.min)
+        let maxScore = LeaderboardFusionScore(playerId: "p1", playerName: "Max", score: Int64.max)
+        let minScore = LeaderboardFusionScore(playerId: "p2", playerName: "Min", score: Int64.min)
 
         #expect(maxScore.score == Int64.max)
         #expect(minScore.score == Int64.min)
@@ -163,7 +165,7 @@ struct LeaderboardEdgeCaseTests {
 
     @Test("Unicode in player name and region")
     func testUnicodeSupport() {
-        let score = LeaderboardTestScore(
+        let score = LeaderboardFusionScore(
             playerId: "p1",
             playerName: "日本人プレイヤー",
             score: 1000,
@@ -176,7 +178,7 @@ struct LeaderboardEdgeCaseTests {
     @Test("Ties in scores")
     func testTiedScores() {
         let scores = (0..<10).map { i in
-            LeaderboardTestScore(playerId: "p\(i)", playerName: "Player\(i)", score: 1000)
+            LeaderboardFusionScore(playerId: "p\(i)", playerName: "Player\(i)", score: 1000)
         }
 
         #expect(scores.allSatisfy { $0.score == 1000 })
@@ -192,8 +194,8 @@ struct LeaderboardEdgeCaseTests {
     @Test("k larger than result count")
     func testKLargerThanResults() {
         let scores = [
-            LeaderboardTestScore(playerId: "p1", playerName: "Alice", score: 1000),
-            LeaderboardTestScore(playerId: "p2", playerName: "Bob", score: 900)
+            LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 1000),
+            LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 900)
         ]
 
         let k = 100
@@ -209,14 +211,14 @@ struct LeaderboardEdgeCaseTests {
 struct LeaderboardIntegrationTests {
 
     private func createContainer() async throws -> DBContainer {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([LeaderboardTestScore.self])
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([LeaderboardFusionScore.self])
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "leaderboard"])
+        try? await container.engine.removeDirectory(path: ["test", "leaderboard"])
     }
 
     @Test("Insert and retrieve scores via FDBContext")
@@ -225,7 +227,7 @@ struct LeaderboardIntegrationTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let score = LeaderboardTestScore(
+        let score = LeaderboardFusionScore(
             playerId: "player1",
             playerName: "Alice",
             score: 1000,
@@ -237,7 +239,7 @@ struct LeaderboardIntegrationTests {
         try await context.save()
 
         // Fetch back
-        let fetched = try await context.fetch(LeaderboardTestScore.self)
+        let fetched = try await context.fetch(LeaderboardFusionScore.self)
             .where(\.id == scoreId)
             .first()
         #expect(fetched != nil)
@@ -252,9 +254,9 @@ struct LeaderboardIntegrationTests {
         let context = container.newContext()
 
         let scores = [
-            LeaderboardTestScore(playerId: "p1", playerName: "Alice", score: 1000),
-            LeaderboardTestScore(playerId: "p2", playerName: "Bob", score: 900),
-            LeaderboardTestScore(playerId: "p3", playerName: "Charlie", score: 800)
+            LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 1000),
+            LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 900),
+            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 800)
         ]
 
         for score in scores {
@@ -264,7 +266,7 @@ struct LeaderboardIntegrationTests {
 
         // Verify all inserted
         for score in scores {
-            let fetched = try await context.fetch(LeaderboardTestScore.self)
+            let fetched = try await context.fetch(LeaderboardFusionScore.self)
                 .where(\.id == score.id)
                 .first()
             #expect(fetched != nil, "Score for \(score.playerName) should exist")
@@ -277,13 +279,13 @@ struct LeaderboardIntegrationTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let asiaScore = LeaderboardTestScore(
+        let asiaScore = LeaderboardFusionScore(
             playerId: "p1",
             playerName: "Alice",
             score: 1000,
             region: "asia"
         )
-        let europeScore = LeaderboardTestScore(
+        let europeScore = LeaderboardFusionScore(
             playerId: "p2",
             playerName: "Bob",
             score: 900,
@@ -296,10 +298,10 @@ struct LeaderboardIntegrationTests {
         context.insert(europeScore)
         try await context.save()
 
-        let fetchedAsia = try await context.fetch(LeaderboardTestScore.self)
+        let fetchedAsia = try await context.fetch(LeaderboardFusionScore.self)
             .where(\.id == asiaId)
             .first()
-        let fetchedEurope = try await context.fetch(LeaderboardTestScore.self)
+        let fetchedEurope = try await context.fetch(LeaderboardFusionScore.self)
             .where(\.id == europeId)
             .first()
 
@@ -313,7 +315,7 @@ struct LeaderboardIntegrationTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        var score = LeaderboardTestScore(
+        var score = LeaderboardFusionScore(
             playerId: "p1",
             playerName: "Alice",
             score: 500
@@ -328,7 +330,7 @@ struct LeaderboardIntegrationTests {
         context.insert(score)
         try await context.save()
 
-        let fetched = try await context.fetch(LeaderboardTestScore.self)
+        let fetched = try await context.fetch(LeaderboardFusionScore.self)
             .where(\.id == scoreId)
             .first()
         #expect(fetched?.score == 1500)
@@ -340,7 +342,7 @@ struct LeaderboardIntegrationTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let score = LeaderboardTestScore(
+        let score = LeaderboardFusionScore(
             playerId: "p1",
             playerName: "ToDelete",
             score: 100
@@ -351,7 +353,7 @@ struct LeaderboardIntegrationTests {
         try await context.save()
 
         // Verify exists
-        let beforeDelete = try await context.fetch(LeaderboardTestScore.self)
+        let beforeDelete = try await context.fetch(LeaderboardFusionScore.self)
             .where(\.id == scoreId)
             .first()
         #expect(beforeDelete != nil)
@@ -361,7 +363,7 @@ struct LeaderboardIntegrationTests {
         try await context.save()
 
         // Verify deleted
-        let afterDelete = try await context.fetch(LeaderboardTestScore.self)
+        let afterDelete = try await context.fetch(LeaderboardFusionScore.self)
             .where(\.id == scoreId)
             .first()
         #expect(afterDelete == nil)
@@ -375,7 +377,7 @@ struct LeaderboardIndexDescriptorTests {
 
     @Test("Index descriptors are correctly defined")
     func testIndexDescriptors() {
-        let descriptors = LeaderboardTestScore.indexDescriptors
+        let descriptors = LeaderboardFusionScore.indexDescriptors
 
         // Should have at least the leaderboard indexes
         let leaderboardIndexes = descriptors.filter {
@@ -387,13 +389,11 @@ struct LeaderboardIndexDescriptorTests {
 
     @Test("Index descriptor has correct field names")
     func testIndexDescriptorFieldNames() {
-        let descriptors = LeaderboardTestScore.indexDescriptors
+        let descriptors = LeaderboardFusionScore.indexDescriptors
 
         let scoreIndex = descriptors.first { descriptor in
-            guard let kind = descriptor.kind as? TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64> else {
-                return false
-            }
-            return kind.fieldNames.contains("score") && !kind.fieldNames.contains("region")
+            descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<LeaderboardFusionScore>.identifier
+                && descriptor.kind.fieldNames == ["score"]
         }
 
         #expect(scoreIndex != nil, "Should have a score-only leaderboard index")
@@ -401,13 +401,11 @@ struct LeaderboardIndexDescriptorTests {
 
     @Test("Grouped index has groupBy field")
     func testGroupedIndexDescriptor() {
-        let descriptors = LeaderboardTestScore.indexDescriptors
+        let descriptors = LeaderboardFusionScore.indexDescriptors
 
         let regionIndex = descriptors.first { descriptor in
-            guard let kind = descriptor.kind as? TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64> else {
-                return false
-            }
-            return kind.fieldNames.contains("region")
+            descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<LeaderboardFusionScore>.identifier
+                && descriptor.kind.fieldNames == ["region", "score"]
         }
 
         #expect(regionIndex != nil, "Should have a region-grouped leaderboard index")
@@ -422,14 +420,14 @@ struct LeaderboardErrorTests {
     @Test("FusionQueryError descriptions")
     func testFusionQueryErrorDescriptions() {
         let error = FusionQueryError.indexNotFound(
-            type: "LeaderboardTestScore",
+            type: "LeaderboardFusionScore",
             field: "unknownField",
             kind: "leaderboard"
         )
 
         #expect(error.description.contains("leaderboard"))
         #expect(error.description.contains("unknownField"))
-        #expect(error.description.contains("LeaderboardTestScore"))
+        #expect(error.description.contains("LeaderboardFusionScore"))
     }
 }
 #endif

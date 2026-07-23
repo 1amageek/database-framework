@@ -7,16 +7,16 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
 // MARK: - Test Model
 
-struct MaxTestScore: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct SubjectScore {
+    var id: String = ""
     var subject: String
     var studentName: String
     var score: Int64
@@ -27,62 +27,18 @@ struct MaxTestScore: Persistable {
         self.studentName = studentName
         self.score = score
     }
-
-    static var persistableType: String { "MaxTestScore" }
-    static var allFields: [String] { ["id", "subject", "studentName", "score"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "subject": return subject
-        case "studentName": return studentName
-        case "score": return score
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<MaxTestScore, Value>) -> String {
-        switch keyPath {
-        case \MaxTestScore.id: return "id"
-        case \MaxTestScore.subject: return "subject"
-        case \MaxTestScore.studentName: return "studentName"
-        case \MaxTestScore.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<MaxTestScore>) -> String {
-        switch keyPath {
-        case \MaxTestScore.id: return "id"
-        case \MaxTestScore.subject: return "subject"
-        case \MaxTestScore.studentName: return "studentName"
-        case \MaxTestScore.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<MaxTestScore> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
-// MARK: - Test Helper
+// MARK: - Maximum Index Context
 
-private struct TestContext {
+private struct MaximumIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: MaxIndexMaintainer<MaxTestScore, Int64>
+    let maintainer: MaxIndexMaintainer<SubjectScore, Int64>
 
-    init(indexName: String = "MaxTestScore_subject_score") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(indexName: String = "SubjectScore_subject_score") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "max", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -90,16 +46,16 @@ private struct TestContext {
         // Expression: subject + score (grouping + max value)
         let index = Index(
             name: indexName,
-            kind: MaxIndexKind<MaxTestScore, Int64>(groupBy: [\.subject], value: \.score),
+            kind: MaxIndexKind<SubjectScore, Int64>(groupBy: [\.subject], value: \.score),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
                 FieldKeyExpression(fieldName: "score")
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["MaxTestScore"])
+            itemTypes: Set(["SubjectScore"])
         )
 
-        self.maintainer = MaxIndexMaintainer<MaxTestScore, Int64>(
+        self.maintainer = MaxIndexMaintainer<SubjectScore, Int64>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -109,7 +65,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -143,14 +99,14 @@ struct MaxIndexBehaviorTests {
 
     @Test("Insert adds to sorted set")
     func testInsertAddsToSortedSet() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MaximumIndexContext()
 
-        let score = MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95)
+        let score = SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 95)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as MaxTestScore?,
+                oldItem: nil as SubjectScore?,
                 newItem: score,
                 transaction: transaction
             )
@@ -165,19 +121,19 @@ struct MaxIndexBehaviorTests {
 
     @Test("Multiple inserts create multiple entries")
     func testMultipleInserts() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MaximumIndexContext()
 
         let scores = [
-            MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
-            MaxTestScore(id: "s2", subject: "Math", studentName: "Bob", score: 88),
-            MaxTestScore(id: "s3", subject: "Math", studentName: "Charlie", score: 72)
+            SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
+            SubjectScore(id: "s2", subject: "Math", studentName: "Bob", score: 88),
+            SubjectScore(id: "s3", subject: "Math", studentName: "Charlie", score: 72)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for score in scores {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as MaxTestScore?,
+                    oldItem: nil as SubjectScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -195,15 +151,15 @@ struct MaxIndexBehaviorTests {
 
     @Test("Delete removes from sorted set")
     func testDeleteRemovesFromSortedSet() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MaximumIndexContext()
 
-        let score = MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95)
+        let score = SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 95)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as MaxTestScore?,
+                oldItem: nil as SubjectScore?,
                 newItem: score,
                 transaction: transaction
             )
@@ -217,7 +173,7 @@ struct MaxIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: score,
-                newItem: nil as MaxTestScore?,
+                newItem: nil as SubjectScore?,
                 transaction: transaction
             )
         }
@@ -232,22 +188,22 @@ struct MaxIndexBehaviorTests {
 
     @Test("Update changes position in sorted set")
     func testUpdateChangesPosition() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MaximumIndexContext()
 
-        let score = MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 85)
+        let score = SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 85)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as MaxTestScore?,
+                oldItem: nil as SubjectScore?,
                 newItem: score,
                 transaction: transaction
             )
         }
 
         // Update score
-        let updatedScore = MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 98)
+        let updatedScore = SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 98)
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: score,
@@ -270,19 +226,19 @@ struct MaxIndexBehaviorTests {
 
     @Test("getMax returns maximum value")
     func testGetMaxReturnsMaximum() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MaximumIndexContext()
 
         let scores = [
-            MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
-            MaxTestScore(id: "s2", subject: "Math", studentName: "Bob", score: 88),
-            MaxTestScore(id: "s3", subject: "Math", studentName: "Charlie", score: 72)
+            SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
+            SubjectScore(id: "s2", subject: "Math", studentName: "Bob", score: 88),
+            SubjectScore(id: "s3", subject: "Math", studentName: "Charlie", score: 72)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for score in scores {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as MaxTestScore?,
+                    oldItem: nil as SubjectScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -297,20 +253,20 @@ struct MaxIndexBehaviorTests {
 
     @Test("Multiple groups are independent")
     func testMultipleGroupsIndependent() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MaximumIndexContext()
 
         let scores = [
-            MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
-            MaxTestScore(id: "s2", subject: "Math", studentName: "Bob", score: 88),
-            MaxTestScore(id: "s3", subject: "Science", studentName: "Alice", score: 92),
-            MaxTestScore(id: "s4", subject: "Science", studentName: "Charlie", score: 99)
+            SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
+            SubjectScore(id: "s2", subject: "Math", studentName: "Bob", score: 88),
+            SubjectScore(id: "s3", subject: "Science", studentName: "Alice", score: 92),
+            SubjectScore(id: "s4", subject: "Science", studentName: "Charlie", score: 99)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for score in scores {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as MaxTestScore?,
+                    oldItem: nil as SubjectScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -328,8 +284,8 @@ struct MaxIndexBehaviorTests {
 
     @Test("getMax for non-existent group throws error")
     func testGetMaxNonExistentGroupThrowsError() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MaximumIndexContext()
 
         await #expect(throws: IndexError.self) {
             _ = try await ctx.getMax(for: "NonExistent")
@@ -342,12 +298,12 @@ struct MaxIndexBehaviorTests {
 
     @Test("ScanItem adds to sorted set")
     func testScanItemAddsToSortedSet() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MaximumIndexContext()
 
         let scores = [
-            MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
-            MaxTestScore(id: "s2", subject: "Math", studentName: "Bob", score: 88)
+            SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
+            SubjectScore(id: "s2", subject: "Math", studentName: "Bob", score: 88)
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -374,19 +330,19 @@ struct MaxIndexBehaviorTests {
 
     @Test("Max updates correctly when maximum item is deleted")
     func testMaxUpdatesOnMaximumDelete() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MaximumIndexContext()
 
         let scores = [
-            MaxTestScore(id: "s1", subject: "Math", studentName: "Low", score: 60),
-            MaxTestScore(id: "s2", subject: "Math", studentName: "High", score: 100)
+            SubjectScore(id: "s1", subject: "Math", studentName: "Low", score: 60),
+            SubjectScore(id: "s2", subject: "Math", studentName: "High", score: 100)
         ]
 
         // Insert both
         try await ctx.database.withTransaction { transaction in
             for score in scores {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as MaxTestScore?,
+                    oldItem: nil as SubjectScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -400,7 +356,7 @@ struct MaxIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: scores[1],
-                newItem: nil as MaxTestScore?,
+                newItem: nil as SubjectScore?,
                 transaction: transaction
             )
         }

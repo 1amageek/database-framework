@@ -3,9 +3,14 @@
 //
 // Maintains rank indexes using Range Tree algorithm for efficient ranking queries.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
+import Rank
 import StorageKit
 
 /// Maintainer for RANK indexes with compile-time type safety
@@ -44,7 +49,7 @@ import StorageKit
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric & Codable & Sendable>: SubspaceIndexMaintainer {
+public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: SubspaceIndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression
@@ -55,7 +60,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     private let scoresSubspace: Subspace
 
     // Key for atomic entry count (O(1) count queries)
-    private let countKey: [UInt8]
+    private let countKey: Bytes
 
     public init(
         index: Index,
@@ -85,18 +90,18 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     ) async throws {
         if let oldItem = oldItem {
             if let oldKey = try buildScoreKey(for: oldItem) {
-                transaction.clear(key: oldKey)
+                try transaction.clear(key: oldKey)
                 let decrementBytes = ByteConversion.int64ToBytes(-1)
-                transaction.atomicOp(key: countKey, param: decrementBytes, mutationType: .add)
+                try transaction.atomicOp(key: countKey, param: decrementBytes, mutationType: .add)
             }
         }
 
         if let newItem = newItem {
             if let newKey = try buildScoreKey(for: newItem) {
-                let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
-                transaction.setValue(value, for: newKey)
+                let value = try CoveringValueBuilder.build(for: newItem, index: index)
+                try transaction.setValue(value, for: newKey)
                 let incrementBytes = ByteConversion.int64ToBytes(1)
-                transaction.atomicOp(key: countKey, param: incrementBytes, mutationType: .add)
+                try transaction.atomicOp(key: countKey, param: incrementBytes, mutationType: .add)
             }
         }
     }
@@ -108,11 +113,11 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         transaction: any Transaction
     ) async throws {
         if let scoreKey = try buildScoreKey(for: item, id: id) {
-            let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
-            transaction.setValue(value, for: scoreKey)
+            let value = try CoveringValueBuilder.build(for: item, index: index)
+            try transaction.setValue(value, for: scoreKey)
             // Increment count atomically
             let incrementBytes = ByteConversion.int64ToBytes(1)
-            transaction.atomicOp(key: countKey, param: incrementBytes, mutationType: .add)
+            try transaction.atomicOp(key: countKey, param: incrementBytes, mutationType: .add)
         }
     }
 
@@ -151,7 +156,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         results.reserveCapacity(entries.count)
         for entry in entries {
             let score = try TupleDecoder.decode(entry.scoreElement, as: Score.self)
-            let primaryKey: [any TupleElement] = (0..<entry.primaryKey.count).compactMap { entry.primaryKey[$0] }
+            let primaryKey = try entry.primaryKey.elements()
             results.append((score: score, primaryKey: primaryKey))
         }
         return results
@@ -191,8 +196,9 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
 
         let scoreElement = try TupleEncoder.encode(score)
 
-        // Build prefix for this score, then append 0xFF to get past all entries with this score
-        let scorePrefixEnd = scoresSubspace.pack(Tuple(scoreElement)) + [0xFF]
+        // Build prefix for this score, then append 0xFF to get past all entries with this score.
+        var scorePrefixEnd = scoresSubspace.pack(Tuple(scoreElement))
+        scorePrefixEnd.append(0xFF)
 
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(scorePrefixEnd),
@@ -223,7 +229,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         guard let bytes = try await transaction.getValue(for: countKey, snapshot: true) else {
             return 0
         }
-        return ByteConversion.bytesToInt64(bytes)
+        return try RankCounterCodec.decode(bytes)
     }
 
     /// Get score at a given percentile
@@ -249,11 +255,14 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
 
         let totalCount = try await getCount(transaction: transaction)
         guard totalCount > 0 else { return nil }
+        guard let totalCountInt = Int(exactly: totalCount) else {
+            throw RankCounterError.exceedsPlatformInt(totalCount)
+        }
 
         // Calculate how many top entries we need
         // 95th percentile = score at rank 5% = need top (5% + 1) entries
         let targetRank = Int(Double(totalCount) * (1.0 - percentile))
-        let k = min(targetRank + 1, Int(totalCount))
+        let k = min(targetRank + 1, totalCountInt)
 
         if k <= 0 {
             // 100th percentile - return highest score
@@ -282,15 +291,14 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
-    private func buildScoreKey(for item: Item, id: Tuple? = nil) throws -> [UInt8]? {
+    private func buildScoreKey(for item: Item, id: Tuple? = nil) throws -> Bytes? {
         // Evaluate index expression using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
         // Sparse index: if score field is nil, return nil (no index entry)
         let scoreValues: [any TupleElement]
         do {
-            scoreValues = try DataAccess.evaluateIndexFields(
-                from: item,
-                keyPaths: index.keyPaths,
+            scoreValues = try DataAccess.evaluate(
+                item: item,
                 expression: index.rootExpression
             )
         } catch DataAccessError.nilValueCannotBeIndexed {
@@ -298,12 +306,20 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
             return nil
         }
 
-        guard !scoreValues.isEmpty else {
-            return nil
+        guard scoreValues.count == 1 else {
+            throw RankIndexError.invalidScore(
+                "Rank index requires exactly one score element; received \(scoreValues.count)"
+            )
         }
 
         // Extract score as Score type (type-safe)
         let score = try TupleDecoder.decode(scoreValues[0], as: Score.self)
+        if let value = score as? Double, value.isNaN {
+            throw RankIndexError.invalidScore("NaN cannot be ordered in a rank index")
+        }
+        if let value = score as? Float, value.isNaN {
+            throw RankIndexError.invalidScore("NaN cannot be ordered in a rank index")
+        }
 
         // Extract primary key
         let primaryKeyTuple: Tuple
@@ -317,13 +333,8 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         // Score conforms to Numeric, which includes TupleElement-compatible types
         let scoreElement = try TupleEncoder.encode(score)
         var allElements: [any TupleElement] = [scoreElement]
-        for i in 0..<primaryKeyTuple.count {
-            if let element = primaryKeyTuple[i] {
-                allElements.append(element)
-            }
-        }
+        allElements.append(contentsOf: try primaryKeyTuple.elements())
 
         return try packAndValidate(Tuple(allElements), in: scoresSubspace)
     }
 }
-

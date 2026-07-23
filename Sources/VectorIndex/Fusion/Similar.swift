@@ -4,9 +4,9 @@
 // This file is part of VectorIndex module, not DatabaseEngine.
 // DatabaseEngine does not know about VectorIndexKind.
 
-import Foundation
 import Core
 import DatabaseEngine
+import DatabaseValue
 import StorageKit
 import Vector
 
@@ -148,16 +148,13 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
                 return false
             }
             // 2. Match by fieldName
-            guard let kind = descriptor.kind as? VectorIndexKind<T> else {
-                return false
-            }
-            return kind.fieldNames.contains(fieldName)
+            return descriptor.fieldNames.contains(fieldName)
         }
     }
 
     // MARK: - FusionQuery
 
-    public func execute(candidates: Set<String>?) async throws -> [ScoredResult<T>] {
+    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
         guard let vector = queryVector else { return [] }
 
         // Find index descriptor
@@ -174,14 +171,14 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         // Execute search with candidate-aware strategy
         let searchResults: [(item: T, distance: Double)]
 
-        if let candidateIds = candidates, !candidateIds.isEmpty {
+        if let candidateIDs = candidates, !candidateIDs.isEmpty {
             // Candidate-aware search strategies:
             // 1. Small candidate set: Brute-force (guarantees recall)
             // 2. Large candidate set: Expanded-k with post-filtering
             searchResults = try await executeWithCandidates(
                 indexName: indexName,
                 queryVector: vector,
-                candidateIds: candidateIds
+                candidateIDs: candidateIDs
             )
         } else {
             // No candidates - standard kNN search via index
@@ -267,9 +264,8 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         var results: [(pk: Tuple, distance: Double)] = []
 
         for (key, value) in sequence {
-            // Skip HNSW metadata keys
-            if let keyStr = String(data: Data(key), encoding: .utf8),
-               keyStr.contains("hnsw") {
+            // Skip HNSW marker keys without materializing the binary key as Data/String.
+            if containsHNSWMarker(in: key) {
                 continue
             }
 
@@ -344,16 +340,16 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     private func executeWithCandidates(
         indexName: String,
         queryVector: [Float],
-        candidateIds: Set<String>
+        candidateIDs: Set<T.ID>
     ) async throws -> [(item: T, distance: Double)] {
         // Threshold for switching between brute-force and expanded-k
         let bruteForceThreshold = 1000
 
-        if candidateIds.count <= bruteForceThreshold {
+        if candidateIDs.count <= bruteForceThreshold {
             // Small candidate set: brute-force guarantees recall
             return try await computeDistancesForCandidates(
                 queryVector: queryVector,
-                candidateIds: candidateIds
+                candidateIDs: candidateIDs
             )
         } else {
             // Large candidate set: expanded kNN with post-filtering
@@ -362,14 +358,14 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
             // - k * 10: Base expansion for sparse distributions
             // - candidateIds.count / 2: Scale with candidate set size
             // - k + 2000: Minimum expansion to ensure good recall
-            // - sqrt(candidateIds.count) * k: Sublinear scaling for very large sets
+            // - sqrt(candidateIDs.count) * k: Sublinear scaling for very large sets
             //
             // Reference: Empirical studies show recall degrades gracefully when
             // expansion factor is at least sqrt(N) * k for N candidates.
-            let sqrtScaled = Int(Double(candidateIds.count).squareRoot()) * k
+            let sqrtScaled = Int(Double(candidateIDs.count).squareRoot()) * k
             let expandedK = min(
-                candidateIds.count,
-                max(k * 10, candidateIds.count / 2, k + 2000, sqrtScaled)
+                candidateIDs.count,
+                max(k * 10, candidateIDs.count / 2, k + 2000, sqrtScaled)
             )
 
             var results = try await executeVectorSearch(
@@ -380,7 +376,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
 
             // Filter to candidates
             results = results.filter { result in
-                candidateIds.contains("\(result.item.id)")
+                candidateIDs.contains(result.item.id)
             }
 
             // Trim to k
@@ -398,10 +394,13 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// Used when candidate set is small enough for brute-force approach.
     private func computeDistancesForCandidates(
         queryVector: [Float],
-        candidateIds: Set<String>
+        candidateIDs: Set<T.ID>
     ) async throws -> [(item: T, distance: Double)] {
         // Fetch candidate items
-        let items = try await queryContext.fetchItemsByStringIds(type: T.self, ids: Array(candidateIds))
+        let items = try await queryContext.fetchItems(
+            identifiers: Array(candidateIDs),
+            type: T.self
+        )
 
         var results: [(item: T, distance: Double)] = []
 
@@ -462,4 +461,90 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
             return Double(-dot)
         }
     }
+}
+
+/// Searches valid UTF-8 tuple-key bytes for the lower-case ASCII marker.
+///
+/// The previous `String(data:encoding:)` path rejected malformed UTF-8. This
+/// validator preserves that behavior while avoiding both `Data` and `String`
+/// materialization in the scan loop.
+func containsHNSWMarker(in key: Bytes) -> Bool {
+    var index = 0
+    var containsMarker = false
+    while index < key.count {
+        if index + 3 < key.count,
+           key[index] == 104,
+           key[index + 1] == 110,
+           key[index + 2] == 115,
+           key[index + 3] == 119 {
+            containsMarker = true
+        }
+
+        let leadingByte = key[index]
+        let sequenceLength: Int
+        switch leadingByte {
+        case 0x00...0x7F:
+            sequenceLength = 1
+        case 0xC2...0xDF:
+            sequenceLength = 2
+        case 0xE0:
+            guard index + 2 < key.count,
+                  key[index + 1] >= 0xA0,
+                  key[index + 1] <= 0xBF,
+                  isUTF8Continuation(key[index + 2]) else {
+                return false
+            }
+            sequenceLength = 3
+        case 0xE1...0xEC, 0xEE...0xEF:
+            sequenceLength = 3
+        case 0xED:
+            guard index + 2 < key.count,
+                  key[index + 1] >= 0x80,
+                  key[index + 1] <= 0x9F,
+                  isUTF8Continuation(key[index + 2]) else {
+                return false
+            }
+            sequenceLength = 3
+        case 0xF0:
+            guard index + 3 < key.count,
+                  key[index + 1] >= 0x90,
+                  key[index + 1] <= 0xBF,
+                  isUTF8Continuation(key[index + 2]),
+                  isUTF8Continuation(key[index + 3]) else {
+                return false
+            }
+            sequenceLength = 4
+        case 0xF1...0xF3:
+            sequenceLength = 4
+        case 0xF4:
+            guard index + 3 < key.count,
+                  key[index + 1] >= 0x80,
+                  key[index + 1] <= 0x8F,
+                  isUTF8Continuation(key[index + 2]),
+                  isUTF8Continuation(key[index + 3]) else {
+                return false
+            }
+            sequenceLength = 4
+        default:
+            return false
+        }
+
+        guard index + sequenceLength <= key.count else { return false }
+        if leadingByte != 0xE0,
+           leadingByte != 0xED,
+           leadingByte != 0xF0,
+           leadingByte != 0xF4 {
+            for continuationIndex in (index + 1)..<(index + sequenceLength) {
+                guard isUTF8Continuation(key[continuationIndex]) else {
+                    return false
+                }
+            }
+        }
+        index += sequenceLength
+    }
+    return containsMarker
+}
+
+private func isUTF8Continuation(_ byte: UInt8) -> Bool {
+    byte >= 0x80 && byte <= 0xBF
 }

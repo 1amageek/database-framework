@@ -1,71 +1,216 @@
-// Literal+SPARQL.swift
-// GraphIndex - SPARQL-aware Literal to FieldValue conversion
-//
-// Unlike LiteralBridge.toFieldValue() (DatabaseEngine) which returns nil for
-// RDF-specific types (IRI, blankNode, typedLiteral, langLiteral), this extension
-// converts ALL Literal cases to FieldValue for SPARQL execution contexts.
-//
-// Conversion rules align with GraphPatternConverter.convertTerm() for consistency:
-//   .iri(v)           → .string(v)            (same as convertTerm(.iri))
-//   .blankNode(v)     → .string("_:v")        (same as convertTerm(.blankNode))
-//   .typedLiteral     → XSD datatype-aware conversion (SPARQL §17.1)
-//   .langLiteral(v,_) → .string(v)            (string value preserved)
-//   .date(d)          → .string(ISO8601)
-//   .timestamp(d)     → .string(ISO8601)
-
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
-import QueryIR
+#endif
 import Core
-import DatabaseEngine
+import DatabaseValue
+import QueryIR
 
 extension QueryIR.Literal {
-
-    /// Convert a Literal to FieldValue in SPARQL execution context.
-    ///
-    /// Delegates to `toFieldValue()` for common types (null, bool, int, double, string, binary, array).
-    /// Handles RDF-specific types that `toFieldValue()` returns nil for.
-    /// This method never returns nil.
-    public func toSPARQLFieldValue() -> FieldValue {
-        if let fv = self.toFieldValue() { return fv }
+    /// Converts a SPARQL term literal without erasing its RDF identity or datatype.
+    public func toSPARQLFieldValue() throws -> FieldValue {
         switch self {
+        case .null:
+            throw SPARQLLiteralConversionError.nullTermUnsupported
+        case .array:
+            throw SPARQLLiteralConversionError.arrayTermUnsupported
+        case .bool(let value):
+            return try Self.rdfLiteral(
+                value ? "true" : "false",
+                datatype: "http://www.w3.org/2001/XMLSchema#boolean"
+            )
+        case .int(let value):
+            return try Self.rdfLiteral(
+                String(value),
+                datatype: "http://www.w3.org/2001/XMLSchema#integer"
+            )
+        case .uint(let value):
+            return try Self.rdfLiteral(
+                String(value),
+                datatype: "http://www.w3.org/2001/XMLSchema#unsignedLong"
+            )
+        case .decimal(let coefficient, let scale):
+            let lexicalForm: String
+            do {
+                lexicalForm = try DatabaseExactDecimal(
+                    coefficient: coefficient,
+                    scale: scale
+                ).decimalLexicalForm(
+                    maximumUTF8Count: SPARQLExecutionLimits.maximumLiteralUTF8Count
+                )
+            } catch let error {
+                switch error {
+                case .invalidMaximumUTF8Count:
+                    throw SPARQLLiteralConversionError.invalidLexicalForm(
+                        value: String(coefficient),
+                        datatype: "http://www.w3.org/2001/XMLSchema#decimal"
+                    )
+                case .representationTooLarge(let required, let maximum):
+                    throw SPARQLLiteralConversionError.literalTooLarge(
+                        requiredUTF8Count: required,
+                        maximumUTF8Count: maximum
+                    )
+                }
+            }
+            return try Self.rdfLiteral(
+                lexicalForm,
+                datatype: "http://www.w3.org/2001/XMLSchema#decimal"
+            )
+        case .double(let value):
+            return try Self.rdfLiteral(
+                Self.xsdDoubleLexicalForm(value),
+                datatype: "http://www.w3.org/2001/XMLSchema#double"
+            )
+        case .string(let value):
+            return try Self.rdfLiteral(
+                value,
+                datatype: "http://www.w3.org/2001/XMLSchema#string"
+            )
+        case .date(let value):
+            return try Self.rdfLiteral(
+                DatabaseLiteralEncoding.iso8601(value),
+                datatype: "http://www.w3.org/2001/XMLSchema#date"
+            )
+        case .timestamp(let value):
+            return try Self.rdfLiteral(
+                DatabaseLiteralEncoding.iso8601(value),
+                datatype: "http://www.w3.org/2001/XMLSchema#dateTime"
+            )
+        case .binary(let bytes):
+            return try Self.rdfLiteral(
+                DatabaseLiteralEncoding.base64(bytes),
+                datatype: "http://www.w3.org/2001/XMLSchema#base64Binary"
+            )
+        case .uuid(let value):
+            return try Self.rdfLiteral(
+                value.description,
+                datatype: "urn:uuid"
+            )
         case .iri(let value):
-            return .string(value)
-        case .blankNode(let value):
-            return .string("_:\(value)")
+            return .rdfTerm(.iri(value))
+        case .blankNode(let identifier):
+            return .rdfTerm(.blankNode(identifier))
         case .typedLiteral(let value, let datatype):
-            return Self.convertTypedLiteral(value: value, datatype: datatype)
-        case .langLiteral(let value, _):
-            return .string(value)
-        case .date(let date):
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withFullDate]
-            return .string(formatter.string(from: date))
-        case .timestamp(let date):
-            return .string(ISO8601DateFormatter().string(from: date))
-        case .array(let literals):
-            return .array(literals.map { $0.toSPARQLFieldValue() })
-        default:
-            // Unreachable: toFieldValue() covers null, bool, int, double, string, binary
-            // and all other cases are handled explicitly above.
-            return .null
+            return try Self.rdfLiteral(value, datatype: datatype)
+        case .langLiteral(let value, let language):
+            let tag: DatabaseRDFLanguageTag
+            do {
+                tag = try DatabaseRDFLanguageTag(language)
+            } catch {
+                throw SPARQLLiteralConversionError.invalidLexicalForm(
+                    value: value,
+                    datatype: DatabaseRDFIRI.rdfLanguageString.rawValue
+                )
+            }
+            return .rdfTerm(
+                .literal(
+                    DatabaseRDFLiteral(
+                        lexicalForm: value,
+                        language: tag
+                    )
+                )
+            )
+        case .dirLangLiteral(let value, let language, let direction):
+            let tag: DatabaseRDFLanguageTag
+            do {
+                tag = try DatabaseRDFLanguageTag(language)
+            } catch {
+                throw SPARQLLiteralConversionError.invalidLexicalForm(
+                    value: value,
+                    datatype: DatabaseRDFIRI.rdfDirectionalLanguageString
+                        .rawValue
+                )
+            }
+            guard let baseDirection = DatabaseRDFDirection(
+                rawValue: direction
+            ) else {
+                throw SPARQLLiteralConversionError.invalidLexicalForm(
+                    value: value,
+                    datatype: DatabaseRDFIRI.rdfDirectionalLanguageString
+                        .rawValue
+                )
+            }
+            return .rdfTerm(
+                .literal(
+                    DatabaseRDFLiteral(
+                        lexicalForm: value,
+                        language: tag,
+                        direction: baseDirection
+                    )
+                )
+            )
+        case .rdfTerm(let term):
+            return .rdfTerm(term)
         }
     }
 
-    private static func convertTypedLiteral(value: String, datatype: String) -> FieldValue {
-        switch XSDDatatype(rawValue: datatype) {
-        case .integer:
-            if let v = Int64(value) { return .int64(v) }
-            return .string(value)
-        case .decimal, .double, .float:
-            if let v = Double(value) { return .double(v) }
-            return .string(value)
-        case .boolean:
-            return .bool(value == "true" || value == "1")
-        case .base64Binary:
-            if let data = Data(base64Encoded: value) { return .data(data) }
-            return .string(value)
-        case .string, .anyURI, .date, .dateTime, .time, .duration, .hexBinary, nil:
-            return .string(value)
+    private static func rdfLiteral(
+        _ lexicalForm: String,
+        datatype: String
+    ) throws -> FieldValue {
+        do {
+            let literal = try DatabaseRDFLiteral(
+                lexicalForm: lexicalForm,
+                datatype: datatype
+            )
+            guard isValidKnownLexicalForm(literal) else {
+                throw SPARQLLiteralConversionError.invalidLexicalForm(
+                    value: lexicalForm,
+                    datatype: datatype
+                )
+            }
+            return .rdfTerm(.literal(literal))
+        } catch let error as SPARQLLiteralConversionError {
+            throw error
+        } catch {
+            throw SPARQLLiteralConversionError.invalidLexicalForm(
+                value: lexicalForm,
+                datatype: datatype
+            )
         }
+    }
+
+    private static func isValidKnownLexicalForm(
+        _ literal: DatabaseRDFLiteral
+    ) -> Bool {
+        let namespace = "http://www.w3.org/2001/XMLSchema#"
+        switch literal.datatype {
+        case namespace + "boolean":
+            return literal.lexicalForm == "true"
+                || literal.lexicalForm == "false"
+                || literal.lexicalForm == "1"
+                || literal.lexicalForm == "0"
+        case namespace + "integer",
+             namespace + "nonPositiveInteger",
+             namespace + "negativeInteger",
+             namespace + "long",
+             namespace + "int",
+             namespace + "short",
+             namespace + "byte",
+             namespace + "nonNegativeInteger",
+             namespace + "positiveInteger",
+             namespace + "unsignedLong",
+             namespace + "unsignedInt",
+             namespace + "unsignedShort",
+             namespace + "unsignedByte",
+             namespace + "decimal",
+             namespace + "float",
+             namespace + "double":
+            return SPARQLNumericValue(.rdfTerm(.literal(literal))) != nil
+        case namespace + "date":
+            return DatabaseXSDDateTimeCodec.parseDate(literal.lexicalForm) != nil
+        case namespace + "dateTime":
+            return DatabaseXSDDateTimeCodec.parseTimestamp(literal.lexicalForm) != nil
+        default:
+            return true
+        }
+    }
+
+    private static func xsdDoubleLexicalForm(_ value: Double) -> String {
+        if value.isNaN { return "NaN" }
+        if value == .infinity { return "INF" }
+        if value == -.infinity { return "-INF" }
+        return String(value)
     }
 }

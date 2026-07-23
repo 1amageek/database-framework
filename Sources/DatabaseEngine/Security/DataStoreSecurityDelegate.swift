@@ -1,7 +1,11 @@
 // DataStoreSecurityDelegate.swift
 // DatabaseEngine - Security delegate protocol for DataStore
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Security delegate protocol for DataStore
@@ -123,13 +127,10 @@ public enum AuthContextKey {
     @TaskLocal public static var current: (any AuthContext)?
 }
 
-// MARK: - Default Security Delegate
+// MARK: - Security Policy Delegate
 
-/// Default security delegate implementation
-///
-/// Uses TaskLocal to obtain auth context and evaluates security
-/// based on SecurityPolicy protocol conformance.
-public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable {
+/// Evaluates configured security policies using the request's authentication context.
+public final class RequestSecurityPolicyDelegate: DataStoreSecurityDelegate, Sendable {
 
     /// Security configuration
     private let configuration: SecurityConfiguration

@@ -1,7 +1,11 @@
 // FusionStage.swift
 // DatabaseEngine - Execution stages for fusion queries
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Protocol for execution stages in a fusion pipeline
@@ -17,7 +21,7 @@ public protocol FusionStage<Item>: Sendable {
     ///
     /// - Parameter candidates: Optional candidate IDs from previous stages
     /// - Returns: Array of result arrays (one per query in the stage)
-    func execute(candidates: Set<String>?) async throws -> [[ScoredResult<Item>]]
+    func execute(candidates: Set<Item.ID>?) async throws -> [[ScoredResult<Item>]]
 }
 
 // MARK: - SingleStage
@@ -34,7 +38,7 @@ public struct SingleStage<T: Persistable>: FusionStage {
         self.query = query
     }
 
-    public func execute(candidates: Set<String>?) async throws -> [[ScoredResult<T>]] {
+    public func execute(candidates: Set<T.ID>?) async throws -> [[ScoredResult<T>]] {
         let results = try await query.execute(candidates: candidates)
         return [results]
     }
@@ -78,7 +82,7 @@ public struct Parallel<T: Persistable>: FusionStage {
         self.queries = queries
     }
 
-    public func execute(candidates: Set<String>?) async throws -> [[ScoredResult<T>]] {
+    public func execute(candidates: Set<T.ID>?) async throws -> [[ScoredResult<T>]] {
         guard !queries.isEmpty else { return [] }
 
         return try await withThrowingTaskGroup(of: (Int, [ScoredResult<T>]).self) { group in

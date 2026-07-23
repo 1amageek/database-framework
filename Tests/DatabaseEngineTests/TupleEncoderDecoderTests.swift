@@ -86,13 +86,11 @@ struct TupleEncoderTests {
         #expect((result as? Int64) == Int64.max)
     }
 
-    @Test("throws on UInt64 overflow")
-    func testUInt64OverflowThrows() throws {
+    @Test("encodes UInt64 above Int64 max without loss")
+    func testUInt64FullWidthEncoding() throws {
         let value: UInt64 = UInt64(Int64.max) + 1
-
-        #expect(throws: TupleEncodingError.self) {
-            _ = try TupleEncoder.encode(value)
-        }
+        let result = try TupleEncoder.encode(value)
+        #expect((result as? UInt64) == value)
     }
 
     @Test("encodes UInt32 to Int64")
@@ -172,18 +170,18 @@ struct TupleEncoderTests {
 
     // MARK: - Data/Bytes Encoding
 
-    @Test("encodes Data to [UInt8]")
+    @Test("encodes Data to Bytes")
     func testDataEncoding() throws {
         let data = Data([0x01, 0x02, 0x03])
         let result = try TupleEncoder.encode(data)
-        #expect((result as? [UInt8]) == [0x01, 0x02, 0x03])
+        #expect((result as? Bytes) == Bytes([0x01, 0x02, 0x03]))
     }
 
-    @Test("encodes [UInt8] directly")
+    @Test("encodes [UInt8] to Bytes")
     func testBytesEncoding() throws {
         let bytes: [UInt8] = [0xFF, 0x00, 0xAB]
         let result = try TupleEncoder.encode(bytes)
-        #expect((result as? [UInt8]) == bytes)
+        #expect((result as? Bytes) == Bytes(bytes))
     }
 
     // MARK: - Tuple Encoding
@@ -301,21 +299,6 @@ struct TupleEncoderTests {
         #expect((result[0] as? String) == "hello")
         #expect((result[1] as? Int64) == 42)
         #expect((result[2] as? Double) == 3.14)
-    }
-
-    // MARK: - encodeOrNil Tests
-
-    @Test("encodeOrNil returns nil on unsupported type")
-    func testEncodeOrNilReturnsNil() throws {
-        struct CustomType {}
-        let result = TupleEncoder.encodeOrNil(CustomType())
-        #expect(result == nil)
-    }
-
-    @Test("encodeOrNil returns element on supported type")
-    func testEncodeOrNilReturnsElement() throws {
-        let result = TupleEncoder.encodeOrNil(42)
-        #expect((result as? Int64) == 42)
     }
 
     // MARK: - Tuple Packing Consistency
@@ -502,18 +485,18 @@ struct TupleDecoderTests {
 
     // MARK: - Data Decoding
 
-    @Test("decodes Data from [UInt8]")
+    @Test("decodes Data from Bytes")
     func testDecodeData() throws {
-        let element: any TupleElement = [UInt8]([0x01, 0x02, 0x03])
+        let element: any TupleElement = Bytes([0x01, 0x02, 0x03])
         let result = try TupleDecoder.decodeData(element)
         #expect(result == Data([0x01, 0x02, 0x03]))
     }
 
-    @Test("decodes [UInt8] from [UInt8]")
+    @Test("decodes Bytes from Bytes")
     func testDecodeBytes() throws {
-        let element: any TupleElement = [UInt8]([0xFF, 0x00, 0xAB])
+        let element: any TupleElement = Bytes([0xFF, 0x00, 0xAB])
         let result = try TupleDecoder.decodeBytes(element)
-        #expect(result == [0xFF, 0x00, 0xAB])
+        #expect(result == Bytes([0xFF, 0x00, 0xAB]))
     }
 
     // MARK: - UUID Decoding
@@ -592,21 +575,6 @@ struct TupleDecoderTests {
         }
     }
 
-    // MARK: - decodeOrNil Tests
-
-    @Test("decodeOrNil returns nil on type mismatch")
-    func testDecodeOrNilReturnsNil() throws {
-        let element: any TupleElement = "hello"
-        let result = TupleDecoder.decodeOrNil(element, as: Int64.self)
-        #expect(result == nil)
-    }
-
-    @Test("decodeOrNil returns value on match")
-    func testDecodeOrNilReturnsValue() throws {
-        let element: any TupleElement = Int64(42)
-        let result = TupleDecoder.decodeOrNil(element, as: Int64.self)
-        #expect(result == 42)
-    }
 }
 
 // MARK: - Round-Trip Tests

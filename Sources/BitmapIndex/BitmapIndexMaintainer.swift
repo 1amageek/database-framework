@@ -4,7 +4,11 @@
 // Provides efficient set operations on low-cardinality fields using Roaring Bitmaps.
 // Reference: Lemire et al., "Roaring Bitmaps", 2016
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -50,6 +54,9 @@ import StorageKit
 /// Key: [I]/User_bitmap_status/["pks"]/["user-abc"] = 0
 /// ```
 public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+    enum StorageError: Error, Sendable, Equatable {
+        case invalidSequentialID(Int64)
+    }
     internal enum ValueTransition: Equatable {
         case unchanged
         case add
@@ -264,30 +271,36 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         // Check if already exists
         let pkKey = pksSubspace.pack(pk)
         if let existing = try await transaction.getValue(for: pkKey) {
-            return UInt32(ByteConversion.bytesToInt64(existing))
+            let value = try ByteConversion.bytesToInt64(existing)
+            guard let sequentialID = UInt32(exactly: value) else {
+                throw StorageError.invalidSequentialID(value)
+            }
+            return sequentialID
         }
 
         // Allocate new ID
         let nextId: Int64
         if let currentBytes = try await transaction.getValue(for: nextIdKey) {
-            nextId = ByteConversion.bytesToInt64(currentBytes)
+            nextId = try ByteConversion.bytesToInt64(currentBytes)
         } else {
             nextId = 0
         }
 
         // Store mappings
-        let seqId = UInt32(nextId & 0xFFFFFFFF)
+        guard let seqId = UInt32(exactly: nextId) else {
+            throw StorageError.invalidSequentialID(nextId)
+        }
         let seqIdBytes = ByteConversion.int64ToBytes(Int64(seqId))
 
         // pk -> seqId
-        transaction.setValue(seqIdBytes, for: pkKey)
+        try transaction.setValue(seqIdBytes, for: pkKey)
 
         // seqId -> pk
         let idKey = idsSubspace.pack(Tuple(Int(seqId)))
-        transaction.setValue(pk.pack(), for: idKey)
+        try transaction.setValue(pk.pack(), for: idKey)
 
         // Update next ID
-        transaction.setValue(ByteConversion.int64ToBytes(nextId + 1), for: nextIdKey)
+        try transaction.setValue(ByteConversion.int64ToBytes(nextId + 1), for: nextIdKey)
 
         return seqId
     }
@@ -301,7 +314,11 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         guard let bytes = try await transaction.getValue(for: pkKey) else {
             return nil
         }
-        return UInt32(ByteConversion.bytesToInt64(bytes))
+        let value = try ByteConversion.bytesToInt64(bytes)
+        guard let sequentialID = UInt32(exactly: value) else {
+            throw StorageError.invalidSequentialID(value)
+        }
+        return sequentialID
     }
 
     /// Remove sequential ID mappings
@@ -312,8 +329,8 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     ) async throws {
         let pkKey = pksSubspace.pack(pk)
         let idKey = idsSubspace.pack(Tuple(Int(seqId)))
-        transaction.clear(key: pkKey)
-        transaction.clear(key: idKey)
+        try transaction.clear(key: pkKey)
+        try transaction.clear(key: idKey)
     }
 
     /// Add a sequential ID to a bitmap for given field values
@@ -333,7 +350,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
 
         bitmap.add(UInt32(sequentialId))
         let data = try bitmap.serialize()
-        transaction.setValue(Array(data), for: key)
+        try transaction.setValue(Bytes(data), for: key)
     }
 
     /// Remove a sequential ID from a bitmap
@@ -352,10 +369,10 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         bitmap.remove(UInt32(sequentialId))
 
         if bitmap.isEmpty {
-            transaction.clear(key: key)
+            try transaction.clear(key: key)
         } else {
             let data = try bitmap.serialize()
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(Bytes(data), for: key)
         }
     }
 
@@ -488,8 +505,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
             guard dataSubspace.contains(key) else { break }
 
             let keyTuple = try dataSubspace.unpack(key)
-            // Avoid pack/unpack cycle: convert Tuple to array directly
-            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
+            let elements = try keyTuple.elements()
             results.append(elements)
         }
 

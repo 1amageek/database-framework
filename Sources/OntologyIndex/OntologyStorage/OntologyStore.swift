@@ -5,7 +5,11 @@
 //
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Graph
 
@@ -78,16 +82,16 @@ public struct OntologyStore: Sendable {
     ) async throws {
         let key = subspace.metadata(metadata.iri).pack(Tuple())
         let data = try JSONEncoder().encode(metadata)
-        transaction.setValue(Array(data), for: key)
+        try transaction.setValue(Bytes(data), for: key)
     }
 
     /// Delete ontology metadata
     public func deleteMetadata(
         ontologyIRI: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         let key = subspace.metadata(ontologyIRI).pack(Tuple())
-        transaction.clear(key: key)
+        try transaction.clear(key: key)
     }
 
     /// List all ontology IRIs
@@ -142,7 +146,7 @@ public struct OntologyStore: Sendable {
     ) async throws {
         let key = subspace.classKey(ontologyIRI, classIRI: classDef.iri)
         let data = try classDef.encode()
-        transaction.setValue(Array(data), for: key)
+        try transaction.setValue(Bytes(data), for: key)
     }
 
     /// Delete class definition
@@ -150,9 +154,9 @@ public struct OntologyStore: Sendable {
         _ classIRI: String,
         ontologyIRI: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         let key = subspace.classKey(ontologyIRI, classIRI: classIRI)
-        transaction.clear(key: key)
+        try transaction.clear(key: key)
     }
 
     /// List all classes in an ontology
@@ -200,7 +204,7 @@ public struct OntologyStore: Sendable {
     ) async throws {
         let key = subspace.propertyKey(ontologyIRI, propertyIRI: propDef.iri)
         let data = try propDef.encode()
-        transaction.setValue(Array(data), for: key)
+        try transaction.setValue(Bytes(data), for: key)
     }
 
     /// Delete property definition
@@ -208,9 +212,9 @@ public struct OntologyStore: Sendable {
         _ propertyIRI: String,
         ontologyIRI: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         let key = subspace.propertyKey(ontologyIRI, propertyIRI: propertyIRI)
-        transaction.clear(key: key)
+        try transaction.clear(key: key)
     }
 
     /// List all properties in an ontology
@@ -251,7 +255,7 @@ public struct OntologyStore: Sendable {
         for (index, axiom) in axioms.enumerated() {
             let key = subspace.axiomKey(ontologyIRI, axiomID: String(index))
             let data = try encoder.encode(axiom)
-            transaction.setValue(Array(data), for: key)
+            try transaction.setValue(Bytes(data), for: key)
         }
     }
 
@@ -290,14 +294,14 @@ public struct OntologyStore: Sendable {
         superClass: String,
         ontologyIRI: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         // superOf direction
         let superKey = subspace.classSuperOfKey(ontologyIRI, subClass: subClass, superClass: superClass)
-        transaction.setValue([], for: superKey)
+        try transaction.setValue([], for: superKey)
 
         // subOf direction
         let subKey = subspace.classSubOfKey(ontologyIRI, superClass: superClass, subClass: subClass)
-        transaction.setValue([], for: subKey)
+        try transaction.setValue([], for: subKey)
     }
 
     /// Remove class hierarchy entry
@@ -306,12 +310,12 @@ public struct OntologyStore: Sendable {
         superClass: String,
         ontologyIRI: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         let superKey = subspace.classSuperOfKey(ontologyIRI, subClass: subClass, superClass: superClass)
-        transaction.clear(key: superKey)
+        try transaction.clear(key: superKey)
 
         let subKey = subspace.classSubOfKey(ontologyIRI, superClass: superClass, subClass: subClass)
-        transaction.clear(key: subKey)
+        try transaction.clear(key: subKey)
     }
 
     /// Get all superclasses of a class (from materialized hierarchy)
@@ -372,12 +376,12 @@ public struct OntologyStore: Sendable {
         superProperty: String,
         ontologyIRI: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         let superKey = subspace.propertySuperOfKey(ontologyIRI, subProp: subProperty, superProp: superProperty)
-        transaction.setValue([], for: superKey)
+        try transaction.setValue([], for: superKey)
 
         let subKey = subspace.propertySubOfKey(ontologyIRI, superProp: superProperty, subProp: subProperty)
-        transaction.setValue([], for: subKey)
+        try transaction.setValue([], for: subKey)
     }
 
     /// Get all superproperties
@@ -438,13 +442,13 @@ public struct OntologyStore: Sendable {
         inverseProperty: String,
         ontologyIRI: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         // Bidirectional mapping
         let key1 = subspace.inverseKey(ontologyIRI, property: property)
-        transaction.setValue(Array(inverseProperty.utf8), for: key1)
+        try transaction.setValue(Bytes(inverseProperty.utf8), for: key1)
 
         let key2 = subspace.inverseKey(ontologyIRI, property: inverseProperty)
-        transaction.setValue(Array(property.utf8), for: key2)
+        try transaction.setValue(Bytes(property.utf8), for: key2)
     }
 
     /// Get inverse property
@@ -467,9 +471,9 @@ public struct OntologyStore: Sendable {
         property: String,
         ontologyIRI: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         let key = subspace.transitiveKey(ontologyIRI, property: property)
-        transaction.setValue([], for: key)
+        try transaction.setValue([], for: key)
     }
 
     /// Check if property is transitive
@@ -539,7 +543,7 @@ public struct OntologyStore: Sendable {
         let chainID = maxID + 1
         let key = subspace.chainKey(ontologyIRI, targetProperty: targetProperty, chainID: chainID)
         let data = try JSONEncoder().encode(chain)
-        transaction.setValue(Array(data), for: key)
+        try transaction.setValue(Bytes(data), for: key)
     }
 
     /// Get property chains for a target property
@@ -605,7 +609,7 @@ public struct OntologyStore: Sendable {
         // Clear existing data for this ontology to ensure idempotency.
         // Without this, sequential-index data (axioms, chains) and additive
         // hierarchy entries would accumulate stale values on reload.
-        deleteOntology(ontology.iri, transaction: transaction)
+        try deleteOntology(ontology.iri, transaction: transaction)
 
         // Save metadata
         let metadata = OntologyMetadata(
@@ -639,12 +643,21 @@ public struct OntologyStore: Sendable {
 
             // Mark transitive
             if owlProp.isTransitive {
-                markTransitive(property: owlProp.iri, ontologyIRI: ontology.iri, transaction: transaction)
+                try markTransitive(
+                    property: owlProp.iri,
+                    ontologyIRI: ontology.iri,
+                    transaction: transaction
+                )
             }
 
             // Set inverse
             if let inverse = owlProp.inverseOf {
-                setInverse(property: owlProp.iri, inverseProperty: inverse, ontologyIRI: ontology.iri, transaction: transaction)
+                try setInverse(
+                    property: owlProp.iri,
+                    inverseProperty: inverse,
+                    ontologyIRI: ontology.iri,
+                    transaction: transaction
+                )
             }
 
             // Add property chains
@@ -705,7 +718,7 @@ public struct OntologyStore: Sendable {
         for classIRI in directSupers.keys {
             let closure = computeTransitiveClosure(from: classIRI, adjacency: directSupers)
             for superClass in closure {
-                addClassHierarchyEntry(
+                try addClassHierarchyEntry(
                     subClass: classIRI,
                     superClass: superClass,
                     ontologyIRI: ontology.iri,
@@ -769,7 +782,7 @@ public struct OntologyStore: Sendable {
         for propIRI in directSupers.keys {
             let closure = computeTransitiveClosure(from: propIRI, adjacency: directSupers)
             for superProp in closure {
-                addPropertyHierarchyEntry(
+                try addPropertyHierarchyEntry(
                     subProperty: propIRI,
                     superProperty: superProp,
                     ontologyIRI: ontology.iri,
@@ -815,9 +828,9 @@ public struct OntologyStore: Sendable {
     public func deleteOntology(
         _ ontologyIRI: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         let (beginKey, endKey) = subspace.ontology(ontologyIRI).range()
-        transaction.clearRange(beginKey: beginKey, endKey: endKey)
+        try transaction.clearRange(beginKey: beginKey, endKey: endKey)
     }
 
     // MARK: - Additional Query Operations (for OWL2 RL Materialization)
@@ -989,7 +1002,7 @@ public struct OntologyStore: Sendable {
 
     /// Create an OntologyStore with the standard subspace prefix
     public static func `default`() -> OntologyStore {
-        let baseSubspace = Subspace(prefix: Array("O".utf8))
+        let baseSubspace = Subspace(prefix: Bytes("O".utf8))
         return OntologyStore(subspace: OntologySubspace(base: baseSubspace))
     }
 }

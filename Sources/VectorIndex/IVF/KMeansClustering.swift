@@ -4,7 +4,12 @@
 // Reference: Lloyd's algorithm with K-means++ initialization
 // Arthur & Vassilvitskii, "k-means++: The Advantages of Careful Seeding", 2007
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseMath
 
 /// K-means clustering for IVF centroid training
 ///
@@ -216,7 +221,9 @@ public struct KMeansClustering: Sendable {
         var maxMovement: Double = 0
 
         for (old, new) in zip(oldCentroids, newCentroids) {
-            let movement = sqrt(VectorConversion.euclideanDistanceSquared(old, new))
+            let movement = DatabaseMath.squareRoot(
+                VectorConversion.euclideanDistanceSquared(old, new)
+            )
             maxMovement = max(maxMovement, movement)
         }
 

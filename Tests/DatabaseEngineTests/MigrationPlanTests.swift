@@ -5,6 +5,7 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import Core
+import DatabaseValue
 @testable import DatabaseEngine
 @testable import Core
 @testable import DatabaseEngine
@@ -65,24 +66,24 @@ struct MigrationPlanTests {
     // MARK: - Test Schema Versions
 
     /// Schema V1: Basic user with email index
-    enum TestSchemaV1: VersionedSchema {
+    enum MigrationSchemaV1: VersionedSchema {
         static let versionIdentifier = Schema.Version(1, 0, 0)
         static let models: [any Persistable.Type] = [UserV1.self]
     }
 
     /// Schema V2: User with additional age field and index
-    enum TestSchemaV2: VersionedSchema {
+    enum MigrationSchemaV2: VersionedSchema {
         static let versionIdentifier = Schema.Version(2, 0, 0)
         static let models: [any Persistable.Type] = [UserV2.self]
     }
 
     /// Schema V3: User with removed age index, added createdAt
-    enum TestSchemaV3: VersionedSchema {
+    enum MigrationSchemaV3: VersionedSchema {
         static let versionIdentifier = Schema.Version(3, 0, 0)
         static let models: [any Persistable.Type] = [UserV3.self]
     }
 
-    enum TestSchemaV2Reordered: VersionedSchema {
+    enum MigrationSchemaV2Reordered: VersionedSchema {
         static let versionIdentifier = Schema.Version(2, 1, 0)
         static let models: [any Persistable.Type] = [UserV2Reordered.self]
     }
@@ -92,7 +93,7 @@ struct MigrationPlanTests {
     /// Simple migration plan V1 -> V2
     enum SimpleMigrationPlan: SchemaMigrationPlan {
         static var schemas: [any VersionedSchema.Type] {
-            [TestSchemaV1.self, TestSchemaV2.self]
+            [MigrationSchemaV1.self, MigrationSchemaV2.self]
         }
 
         static var stages: [MigrationStage] {
@@ -100,15 +101,15 @@ struct MigrationPlanTests {
         }
 
         static let migrateV1toV2 = MigrationStage.lightweight(
-            fromVersion: TestSchemaV1.self,
-            toVersion: TestSchemaV2.self
+            fromVersion: MigrationSchemaV1.self,
+            toVersion: MigrationSchemaV2.self
         )
     }
 
     /// Complex migration plan V1 -> V2 -> V3
     enum ComplexMigrationPlan: SchemaMigrationPlan {
         static var schemas: [any VersionedSchema.Type] {
-            [TestSchemaV1.self, TestSchemaV2.self, TestSchemaV3.self]
+            [MigrationSchemaV1.self, MigrationSchemaV2.self, MigrationSchemaV3.self]
         }
 
         static var stages: [MigrationStage] {
@@ -116,13 +117,13 @@ struct MigrationPlanTests {
         }
 
         static let migrateV1toV2 = MigrationStage.lightweight(
-            fromVersion: TestSchemaV1.self,
-            toVersion: TestSchemaV2.self
+            fromVersion: MigrationSchemaV1.self,
+            toVersion: MigrationSchemaV2.self
         )
 
         static let migrateV2toV3 = MigrationStage.custom(
-            fromVersion: TestSchemaV2.self,
-            toVersion: TestSchemaV3.self,
+            fromVersion: MigrationSchemaV2.self,
+            toVersion: MigrationSchemaV3.self,
             willMigrate: nil,
             didMigrate: nil
         )
@@ -131,7 +132,7 @@ struct MigrationPlanTests {
     /// Single schema (no migration needed)
     enum SingleSchemaPlan: SchemaMigrationPlan {
         static var schemas: [any VersionedSchema.Type] {
-            [TestSchemaV1.self]
+            [MigrationSchemaV1.self]
         }
 
         static var stages: [MigrationStage] {
@@ -144,7 +145,7 @@ struct MigrationPlanTests {
     /// Test: VersionedSchema creates Schema correctly
     @Test("VersionedSchema creates Schema correctly")
     func versionedSchemaCreatesSchema() {
-        let schema = TestSchemaV1.makeSchema()
+        let schema = MigrationSchemaV1.makeSchema()
 
         #expect(schema.version == Schema.Version(1, 0, 0))
         #expect(schema.entities.count == 1)
@@ -154,7 +155,7 @@ struct MigrationPlanTests {
     /// Test: VersionedSchema collects all index descriptors
     @Test("VersionedSchema collects all index descriptors")
     func versionedSchemaCollectsIndexDescriptors() {
-        let descriptors = TestSchemaV2.allIndexDescriptors
+        let descriptors = MigrationSchemaV2.allIndexDescriptors
 
         #expect(descriptors.count == 2)
         #expect(descriptors.contains(where: { $0.name == "TestUser_email" }))
@@ -164,7 +165,7 @@ struct MigrationPlanTests {
     /// Test: VersionedSchema detects index changes
     @Test("VersionedSchema detects index changes")
     func versionedSchemaDetectsIndexChanges() {
-        let changes = TestSchemaV2.indexChanges(from: TestSchemaV1.self)
+        let changes = MigrationSchemaV2.indexChanges(from: MigrationSchemaV1.self)
 
         #expect(changes.added == Set(["TestUser_age"]))
         #expect(changes.removed.isEmpty)
@@ -174,10 +175,10 @@ struct MigrationPlanTests {
     @Test("VersionedSchema detects lightweight migration possibility")
     func versionedSchemaDetectsLightweightMigration() {
         // V1 -> V2: Adding field and index (lightweight)
-        #expect(TestSchemaV2.canLightweightMigrate(from: TestSchemaV1.self))
+        #expect(MigrationSchemaV2.canLightweightMigrate(from: MigrationSchemaV1.self))
 
         // V2 -> V3: Adding field and index, removing index (lightweight)
-        #expect(TestSchemaV3.canLightweightMigrate(from: TestSchemaV2.self))
+        #expect(MigrationSchemaV3.canLightweightMigrate(from: MigrationSchemaV2.self))
     }
 
     // MARK: - SchemaMigrationPlan Tests
@@ -251,8 +252,8 @@ struct MigrationPlanTests {
     @Test("MigrationStage.lightweight properties")
     func lightweightStageProperties() {
         let stage = MigrationStage.lightweight(
-            fromVersion: TestSchemaV1.self,
-            toVersion: TestSchemaV2.self
+            fromVersion: MigrationSchemaV1.self,
+            toVersion: MigrationSchemaV2.self
         )
 
         #expect(stage.isLightweight)
@@ -266,8 +267,8 @@ struct MigrationPlanTests {
     @Test("MigrationStage.custom properties")
     func customStageProperties() {
         let stage = MigrationStage.custom(
-            fromVersion: TestSchemaV1.self,
-            toVersion: TestSchemaV2.self,
+            fromVersion: MigrationSchemaV1.self,
+            toVersion: MigrationSchemaV2.self,
             willMigrate: { _ in /* pre-migration */ },
             didMigrate: { _ in /* post-migration */ }
         )
@@ -283,8 +284,8 @@ struct MigrationPlanTests {
     @Test("MigrationStage detects index changes")
     func stageDetectsIndexChanges() {
         let stage = MigrationStage.lightweight(
-            fromVersion: TestSchemaV1.self,
-            toVersion: TestSchemaV2.self
+            fromVersion: MigrationSchemaV1.self,
+            toVersion: MigrationSchemaV2.self
         )
 
         let changes = stage.indexChanges
@@ -300,8 +301,8 @@ struct MigrationPlanTests {
     @Test("MigrationStage detects index removal")
     func stageDetectsIndexRemoval() {
         let stage = MigrationStage.lightweight(
-            fromVersion: TestSchemaV2.self,
-            toVersion: TestSchemaV3.self
+            fromVersion: MigrationSchemaV2.self,
+            toVersion: MigrationSchemaV3.self
         )
 
         let changes = stage.indexChanges
@@ -313,8 +314,8 @@ struct MigrationPlanTests {
     @Test("MigrationStage.automatic selects lightweight when possible")
     func automaticSelectsLightweight() {
         let stage = MigrationStage.automatic(
-            from: TestSchemaV1.self,
-            to: TestSchemaV2.self
+            from: MigrationSchemaV1.self,
+            to: MigrationSchemaV2.self
         )
 
         #expect(stage.isLightweight)
@@ -324,8 +325,8 @@ struct MigrationPlanTests {
     @Test("MigrationStage.automatic selects custom when hooks provided")
     func automaticSelectsCustomWithHooks() {
         let stage = MigrationStage.automatic(
-            from: TestSchemaV1.self,
-            to: TestSchemaV2.self,
+            from: MigrationSchemaV1.self,
+            to: MigrationSchemaV2.self,
             willMigrate: { _ in }
         )
 
@@ -334,11 +335,11 @@ struct MigrationPlanTests {
 
     @Test("Unsafe field reordering is not lightweight")
     func unsafeFieldReorderingIsNotLightweight() {
-        #expect(!TestSchemaV2Reordered.canLightweightMigrate(from: TestSchemaV1.self))
+        #expect(!MigrationSchemaV2Reordered.canLightweightMigrate(from: MigrationSchemaV1.self))
 
         let stage = MigrationStage.automatic(
-            from: TestSchemaV1.self,
-            to: TestSchemaV2Reordered.self
+            from: MigrationSchemaV1.self,
+            to: MigrationSchemaV2Reordered.self
         )
 
         #expect(!stage.isLightweight)
@@ -359,10 +360,10 @@ struct MigrationPlanTests {
     /// Invalid plan with wrong stage count
     enum InvalidStageCoun: SchemaMigrationPlan {
         static var schemas: [any VersionedSchema.Type] {
-            [TestSchemaV1.self, TestSchemaV2.self, TestSchemaV3.self]
+            [MigrationSchemaV1.self, MigrationSchemaV2.self, MigrationSchemaV3.self]
         }
         static var stages: [MigrationStage] {
-            [MigrationStage.lightweight(fromVersion: TestSchemaV1.self, toVersion: TestSchemaV2.self)]
+            [MigrationStage.lightweight(fromVersion: MigrationSchemaV1.self, toVersion: MigrationSchemaV2.self)]
             // Missing V2 -> V3 stage
         }
     }
@@ -388,19 +389,19 @@ struct MigrationPlanTests {
     /// Invalid plan with out-of-order versions
     enum OutOfOrderPlan: SchemaMigrationPlan {
         static var schemas: [any VersionedSchema.Type] {
-            [TestSchemaV2.self, TestSchemaV1.self]  // Wrong order
+            [MigrationSchemaV2.self, MigrationSchemaV1.self]  // Wrong order
         }
         static var stages: [MigrationStage] {
-            [MigrationStage.lightweight(fromVersion: TestSchemaV2.self, toVersion: TestSchemaV1.self)]
+            [MigrationStage.lightweight(fromVersion: MigrationSchemaV2.self, toVersion: MigrationSchemaV1.self)]
         }
     }
 
     enum InvalidLightweightPlan: SchemaMigrationPlan {
         static var schemas: [any VersionedSchema.Type] {
-            [TestSchemaV1.self, TestSchemaV2Reordered.self]
+            [MigrationSchemaV1.self, MigrationSchemaV2Reordered.self]
         }
         static var stages: [MigrationStage] {
-            [MigrationStage.lightweight(fromVersion: TestSchemaV1.self, toVersion: TestSchemaV2Reordered.self)]
+            [MigrationStage.lightweight(fromVersion: MigrationSchemaV1.self, toVersion: MigrationSchemaV2Reordered.self)]
         }
     }
 

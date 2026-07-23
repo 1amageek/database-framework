@@ -1,421 +1,254 @@
 #if FOUNDATION_DB
-// NamedGraphSPARQLTests.swift
-// SPARQL integration tests for Named Graph (Quad) support
-//
-// Layer 3: End-to-end SPARQL execution with graph field (FDB required)
-// Uses executeSPARQLPattern with ExecutionPattern.withGraph() to verify
-// graph filtering and variable binding at the query execution level.
-
-import Testing
-import Foundation
-import StorageKit
-import FDBStorage
 import Core
+import DatabaseRuntime
+import DatabaseValue
+import DatabaseValueCodable
+import FDBStorage
+import Foundation
 import Graph
+import StorageKit
 import TestSupport
+import Testing
 @testable import DatabaseEngine
 @testable import GraphIndex
 
-// MARK: - Test Model (Quad Statement)
-
 @Persistable
-struct SPARQLQuadStatement {
+private struct SPARQLQuadStatement {
     #Directory<SPARQLQuadStatement>("named_graph_sparql_tests")
+    #Index(
+        RDFQuadIndexKind<SPARQLQuadStatement>(
+            subject: \.subject,
+            predicate: \.predicate,
+            object: \.object,
+            graph: \.graph
+        ),
+        name: "rdf_quad"
+    )
 
     var id: String = ULID().ulidString
-    var subject: String = ""
-    var predicate: String = ""
-    var object: String = ""
-    var graph: String = ""
-
-    #Index(GraphIndexKind<SPARQLQuadStatement>(
-        from: \.subject,
-        edge: \.predicate,
-        to: \.object,
-        graph: \.graph,
-        strategy: .hexastore
-    ))
+    var subject: DatabaseRDFTerm = .iri("https://example.com/resource")
+    var predicate: DatabaseRDFTerm = .iri("https://example.com/predicate")
+    var object: DatabaseRDFTerm = .iri("https://example.com/object")
+    var graph: DatabaseRDFTerm? = nil
 }
 
-// MARK: - Test Suite
-
-@Suite("NamedGraph SPARQL Integration Tests", .serialized, .heartbeat)
+@Suite("Canonical Named Graph SPARQL Integration", .serialized, .heartbeat)
 struct NamedGraphSPARQLTests {
+    private let alice = "https://example.com/person/alice"
+    private let bob = "https://example.com/person/bob"
+    private let carol = "https://example.com/person/carol"
+    private let acme = "https://example.com/organization/acme"
+    private let beta = "https://example.com/organization/beta"
+    private let knows = "https://example.com/vocabulary/knows"
+    private let worksAt = "https://example.com/vocabulary/worksAt"
+    private let socialGraph = "https://example.com/graph/social"
+    private let workGraph = "https://example.com/graph/work"
 
-    // MARK: - Setup Helpers
-
-    private func setupContainer() async throws -> DBContainer {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([SPARQLQuadStatement.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(
-            testing: schema,
-            configuration: .init(backend: .custom(database)),
-            security: .disabled,
-        )
-    }
-
-    private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.directoryService.exists(path: ["named_graph_sparql_tests"]) {
-            try await container.engine.directoryService.remove(path: ["named_graph_sparql_tests"])
-        }
-        try await container.ensureIndexesReady()
-    }
-
-    private func makeQuad(
-        subject: String,
-        predicate: String,
-        object: String,
-        graph: String
-    ) -> SPARQLQuadStatement {
-        var stmt = SPARQLQuadStatement()
-        stmt.subject = subject
-        stmt.predicate = predicate
-        stmt.object = object
-        stmt.graph = graph
-        return stmt
-    }
-
-    /// Standard test data:
-    /// g1 (Social): Alice knows Bob, Alice knows Carol, Bob knows Carol
-    /// g2 (Work): Alice worksAt Acme, Bob worksAt Beta
-    private func insertTestData(context: FDBContext) async throws {
-        let quads = [
-            makeQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1"),
-            makeQuad(subject: "Alice", predicate: "knows", object: "Carol", graph: "g1"),
-            makeQuad(subject: "Bob", predicate: "knows", object: "Carol", graph: "g1"),
-            makeQuad(subject: "Alice", predicate: "worksAt", object: "Acme", graph: "g2"),
-            makeQuad(subject: "Bob", predicate: "worksAt", object: "Beta", graph: "g2"),
-        ]
-        for quad in quads {
-            context.insert(quad)
-        }
-        try await context.save()
-    }
-
-    // MARK: - Basic Named Graph Query Tests
-
-    @Test("Query without graph returns all graphs")
-    func testQueryWithoutGraphReturnsAllGraphs() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-
-        let context = container.newContext()
-        try await insertTestData(context: context)
-
-        // No graph constraint: should return all 5 triples
-        let results = try await context.sparql(SPARQLQuadStatement.self)
-            .defaultIndex()
-            .where("?s", "?p", "?o")
-            .select("?s", "?p", "?o")
-            .execute()
-
-        #expect(results.count == 5)
-
-        try await cleanup(container: container)
-    }
-
-    @Test("Query with graph value filters single graph")
-    func testQueryWithGraphValueFiltersSingleGraph() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-
-        let context = container.newContext()
-        try await insertTestData(context: context)
-
-        // Build pattern with graph constraint: only g1
+    @Test("Default graph excludes named graph quads")
+    func defaultGraphExcludesNamedGraphQuads() async throws {
+        let context = try await seededContext()
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
-                subject: .variable("?s"),
-                predicate: .variable("?p"),
-                object: .variable("?o"),
-                graph: .value(.string("g1"))
+                subject: .variable("?subject"),
+                predicate: .variable("?predicate"),
+                object: .variable("?object")
             )
         ])
 
-        let results = try await context.executeSPARQLPattern(
+        let result = try await context.executeSPARQLPattern(
             pattern,
             on: SPARQLQuadStatement.self,
-            projection: ["?s", "?p", "?o"]
+            projection: ["?subject", "?predicate", "?object"]
         )
 
-        // g1 has 3 triples (Alice knows Bob, Alice knows Carol, Bob knows Carol)
-        #expect(results.count == 3)
-        let predicates = Set(results.bindings.compactMap { $0["?p"]?.stringValue })
-        #expect(predicates == Set(["knows"]))
-
-        try await cleanup(container: container)
+        #expect(result.count == 1)
+        #expect(result.first?["?subject"] == .rdfTerm(.iri(carol)))
     }
 
-    @Test("Query with graph variable binds graph name")
-    func testQueryWithGraphVariableBindsGraphName() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-
-        let context = container.newContext()
-        try await insertTestData(context: context)
-
-        // Pattern with graph variable: bind graph names
-        let pattern = ExecutionPattern.basic([
+    @Test("Named graph selector isolates one active graph")
+    func namedGraphSelectorIsolatesOneActiveGraph() async throws {
+        let context = try await seededContext()
+        let basic = ExecutionPattern.basic([
             ExecutionTriple(
-                subject: .variable("?s"),
-                predicate: .variable("?p"),
-                object: .variable("?o"),
-                graph: .variable("?g")
+                subject: .variable("?subject"),
+                predicate: .value(.rdfTerm(.iri(knows))),
+                object: .variable("?object")
             )
         ])
-
-        let results = try await context.executeSPARQLPattern(
-            pattern,
-            on: SPARQLQuadStatement.self,
-            projection: ["?s", "?p", "?o", "?g"]
+        let pattern = ExecutionPattern.graph(
+            .named(try RDFGraphName(iri: socialGraph)),
+            basic
         )
 
-        #expect(results.count == 5)
+        let result = try await context.executeSPARQLPattern(
+            pattern,
+            on: SPARQLQuadStatement.self,
+            projection: ["?subject", "?object"]
+        )
 
-        // Every binding should have ?g set
-        for binding in results.bindings {
-            #expect(binding["?g"] != nil, "Each binding should have ?g")
-        }
-
-        // Distinct graph values
-        let graphs = Set(results.bindings.compactMap { $0["?g"]?.stringValue })
-        #expect(graphs == Set(["g1", "g2"]))
-
-        try await cleanup(container: container)
+        #expect(result.count == 3)
+        #expect(
+            Set(result.bindings.compactMap { iri($0["?object"]) })
+                == Set([bob, carol])
+        )
     }
 
-    @Test("Query non-existent graph returns empty")
-    func testQueryNonExistentGraphReturnsEmpty() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-
-        let context = container.newContext()
-        try await insertTestData(context: context)
-
-        let pattern = ExecutionPattern.basic([
+    @Test("Graph variable binds only named graphs")
+    func graphVariableBindsOnlyNamedGraphs() async throws {
+        let context = try await seededContext()
+        let basic = ExecutionPattern.basic([
             ExecutionTriple(
-                subject: .variable("?s"),
-                predicate: .variable("?p"),
-                object: .variable("?o"),
-                graph: .value(.string("nonexistent"))
+                subject: .variable("?subject"),
+                predicate: .variable("?predicate"),
+                object: .variable("?object")
             )
         ])
+        let pattern = ExecutionPattern.graph(.variable("?graph"), basic)
 
-        let results = try await context.executeSPARQLPattern(
+        let result = try await context.executeSPARQLPattern(
             pattern,
             on: SPARQLQuadStatement.self,
-            projection: ["?s", "?p", "?o"]
+            projection: ["?graph"]
         )
 
-        #expect(results.count == 0)
-
-        try await cleanup(container: container)
+        #expect(result.count == 5)
+        #expect(
+            Set(result.bindings.compactMap { iri($0["?graph"]) })
+                == Set([socialGraph, workGraph])
+        )
     }
 
-    // MARK: - Join Tests
-
-    @Test("Join within same graph")
-    func testJoinWithinSameGraph() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-
-        let context = container.newContext()
-        try await insertTestData(context: context)
-
-        // Find friends-of-friends within g1:
-        // ?s knows ?mid AND ?mid knows ?o, both in g1
-        let graphTerm: ExecutionTerm = .value(.string("g1"))
+    @Test("Join evaluates both triples in one named active graph")
+    func joinEvaluatesBothTriplesInOneNamedActiveGraph() async throws {
+        let context = try await seededContext()
         let left = ExecutionPattern.basic([
             ExecutionTriple(
-                subject: .value(.string("Alice")),
-                predicate: .value(.string("knows")),
-                object: .variable("?mid"),
-                graph: graphTerm
+                subject: .value(.rdfTerm(.iri(alice))),
+                predicate: .value(.rdfTerm(.iri(knows))),
+                object: .variable("?middle")
             )
         ])
         let right = ExecutionPattern.basic([
             ExecutionTriple(
-                subject: .variable("?mid"),
-                predicate: .value(.string("knows")),
-                object: .variable("?fof"),
-                graph: graphTerm
+                subject: .variable("?middle"),
+                predicate: .value(.rdfTerm(.iri(knows))),
+                object: .variable("?friend")
             )
         ])
-        let pattern = ExecutionPattern.join(left, right)
-
-        let results = try await context.executeSPARQLPattern(
-            pattern,
-            on: SPARQLQuadStatement.self,
-            projection: ["?mid", "?fof"]
+        let pattern = ExecutionPattern.graph(
+            .named(try RDFGraphName(iri: socialGraph)),
+            .join(left, right)
         )
 
-        // Alice knows Bob and Carol. Bob knows Carol. Carol knows nobody.
-        // So: mid=Bob, fof=Carol
-        #expect(results.count == 1)
-        #expect(results.bindings[0]["?mid"]?.stringValue == "Bob")
-        #expect(results.bindings[0]["?fof"]?.stringValue == "Carol")
+        let result = try await context.executeSPARQLPattern(
+            pattern,
+            on: SPARQLQuadStatement.self,
+            projection: ["?middle", "?friend"]
+        )
 
-        try await cleanup(container: container)
+        #expect(result.count == 1)
+        #expect(result.first?["?middle"] == .rdfTerm(.iri(bob)))
+        #expect(result.first?["?friend"] == .rdfTerm(.iri(carol)))
     }
 
-    @Test("Join with graph-bound substitution keeps graph-specific results")
-    func testJoinGraphBoundSubstitutionRespectsGraphConstraint() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
+    @Test("Optional joins across explicit named graph scopes")
+    func optionalJoinsAcrossExplicitNamedGraphScopes() async throws {
+        let context = try await seededContext()
+        let social = ExecutionPattern.graph(
+            .named(try RDFGraphName(iri: socialGraph)),
+            .basic([
+                ExecutionTriple(
+                    subject: .variable("?subject"),
+                    predicate: .value(.rdfTerm(.iri(knows))),
+                    object: .variable("?friend")
+                )
+            ])
+        )
+        let work = ExecutionPattern.graph(
+            .named(try RDFGraphName(iri: workGraph)),
+            .basic([
+                ExecutionTriple(
+                    subject: .variable("?subject"),
+                    predicate: .value(.rdfTerm(.iri(worksAt))),
+                    object: .variable("?company")
+                )
+            ])
+        )
 
+        let result = try await context.executeSPARQLPattern(
+            .optional(social, work),
+            on: SPARQLQuadStatement.self,
+            projection: ["?subject", "?friend", "?company"]
+        )
+
+        #expect(result.count == 3)
+        let aliceRows = result.bindings.filter {
+            $0["?subject"] == .rdfTerm(.iri(alice))
+        }
+        #expect(aliceRows.allSatisfy { $0["?company"] == .rdfTerm(.iri(acme)) })
+        let bobRows = result.bindings.filter {
+            $0["?subject"] == .rdfTerm(.iri(bob))
+        }
+        #expect(bobRows.allSatisfy { $0["?company"] == .rdfTerm(.iri(beta)) })
+    }
+
+    private func seededContext() async throws -> FDBContext {
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        if try await database.directoryExists(
+            path: ["named_graph_sparql_tests"]
+        ) {
+            try await database.removeDirectory(
+                path: ["named_graph_sparql_tests"]
+            )
+        }
+        let schema = Schema(
+            [SPARQLQuadStatement.self],
+            version: Schema.Version(1, 0, 0)
+        )
+        let container = try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            security: .disabled
+        )
+        try await container.ensureIndexesReady()
         let context = container.newContext()
 
         let quads = [
-            makeQuad(subject: "Alice", predicate: "marker", object: "yes", graph: "g1"),
-            makeQuad(subject: "Alice", predicate: "marker", object: "yes", graph: "g2"),
-            makeQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1"),
-            makeQuad(subject: "Alice", predicate: "knows", object: "Carol", graph: "g2"),
-            makeQuad(subject: "Alice", predicate: "knows", object: "Mallory", graph: "g3"),
+            statement(alice, knows, bob, graph: socialGraph),
+            statement(alice, knows, carol, graph: socialGraph),
+            statement(bob, knows, carol, graph: socialGraph),
+            statement(alice, worksAt, acme, graph: workGraph),
+            statement(bob, worksAt, beta, graph: workGraph),
+            statement(carol, worksAt, acme, graph: nil),
         ]
         for quad in quads {
             context.insert(quad)
         }
         try await context.save()
-
-        // Left pattern binds ?g, right pattern is evaluated with substituted graph.
-        // Different graph values share the same (subject, predicate) prefix and must
-        // not share cached scan results.
-        let pattern = ExecutionPattern.basic([
-            ExecutionTriple(
-                subject: .value(.string("Alice")),
-                predicate: .value(.string("marker")),
-                object: .value(.string("yes")),
-                graph: .variable("?g")
-            ),
-            ExecutionTriple(
-                subject: .value(.string("Alice")),
-                predicate: .value(.string("knows")),
-                object: .variable("?friend"),
-                graph: .variable("?g")
-            )
-        ])
-
-        let results = try await context.executeSPARQLPattern(
-            pattern,
-            on: SPARQLQuadStatement.self,
-            projection: ["?g", "?friend"]
-        )
-
-        #expect(results.count == 2)
-        let pairs: Set<String> = Set(results.bindings.compactMap { binding in
-            guard let graph = binding["?g"]?.stringValue,
-                  let friend = binding["?friend"]?.stringValue else {
-                return nil
-            }
-            return "\(graph)|\(friend)"
-        })
-        #expect(pairs == Set(["g1|Bob", "g2|Carol"]))
-
-        try await cleanup(container: container)
+        return context
     }
 
-    // MARK: - OPTIONAL Test
-
-    @Test("OPTIONAL with graph constraint")
-    func testOptionalWithGraphConstraint() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-
-        let context = container.newContext()
-        try await insertTestData(context: context)
-
-        // All subjects in g1, optionally their workplace in g2
-        let mandatory = ExecutionPattern.basic([
-            ExecutionTriple(
-                subject: .variable("?s"),
-                predicate: .value(.string("knows")),
-                object: .variable("?o"),
-                graph: .value(.string("g1"))
-            )
-        ])
-        let optional = ExecutionPattern.basic([
-            ExecutionTriple(
-                subject: .variable("?s"),
-                predicate: .value(.string("worksAt")),
-                object: .variable("?company"),
-                graph: .value(.string("g2"))
-            )
-        ])
-        let pattern = ExecutionPattern.optional(mandatory, optional)
-
-        let results = try await context.executeSPARQLPattern(
-            pattern,
-            on: SPARQLQuadStatement.self,
-            projection: ["?s", "?o", "?company"]
-        )
-
-        // 3 knows triples in g1, each optionally joined with worksAt in g2
-        #expect(results.count == 3)
-
-        // Alice has a company (Acme), Bob has a company (Beta)
-        let aliceBindings = results.bindings.filter { $0["?s"]?.stringValue == "Alice" }
-        #expect(aliceBindings.allSatisfy { $0["?company"]?.stringValue == "Acme" })
-
-        let bobBindings = results.bindings.filter { $0["?s"]?.stringValue == "Bob" }
-        #expect(bobBindings.allSatisfy { $0["?company"]?.stringValue == "Beta" })
-
-        try await cleanup(container: container)
+    private func statement(
+        _ subject: String,
+        _ predicate: String,
+        _ object: String,
+        graph: String?
+    ) -> SPARQLQuadStatement {
+        var statement = SPARQLQuadStatement()
+        statement.subject = .iri(subject)
+        statement.predicate = .iri(predicate)
+        statement.object = .iri(object)
+        statement.graph = graph.map(DatabaseRDFTerm.iri)
+        return statement
     }
 
-    // MARK: - Backward Compatibility Test
-
-    @Test("Triple model without graph field still works")
-    func testTripleModelWithoutGraphStillWorks() async throws {
-        let container: DBContainer
-        do {
-            try await FDBTestSetup.shared.initialize()
-            let database = try await FDBTestSetup.shared.makeEngine()
-            let schema = Schema(
-                [SPARQLTestStatement.self],
-                version: Schema.Version(1, 0, 0)
-            )
-            container = try await DBContainer(
-                testing: schema,
-                configuration: .init(backend: .custom(database)),
-                security: .disabled,
-            )
+    private func iri(_ value: FieldValue?) -> String? {
+        guard case .rdfTerm(.iri(let iri)) = value else {
+            return nil
         }
-
-        
-        try? await container.engine.directoryService.remove(path: ["test", "sparql", "statements"])
-        try await container.ensureIndexesReady()
-
-        let subspace = try await container.resolveDirectory(for: SPARQLTestStatement.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-        for descriptor in SPARQLTestStatement.indexDescriptors {
-            let state = try await indexStateManager.state(of: descriptor.name)
-            if state == .disabled {
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-            } else if state == .writeOnly {
-                try await indexStateManager.makeReadable(descriptor.name)
-            }
-        }
-
-        let context = container.newContext()
-        var stmt = SPARQLTestStatement()
-        stmt.subject = "Alice"
-        stmt.predicate = "knows"
-        stmt.object = "Bob"
-        context.insert(stmt)
-        try await context.save()
-
-        let results = try await context.sparql(SPARQLTestStatement.self)
-            .defaultIndex()
-            .where("Alice", "knows", "?friend")
-            .select("?friend")
-            .execute()
-
-        #expect(results.count == 1)
-        #expect(results.bindings[0]["?friend"]?.stringValue == "Bob")
-
-        try? await container.engine.directoryService.remove(path: ["test", "sparql", "statements"])
+        return iri
     }
 }
 #endif

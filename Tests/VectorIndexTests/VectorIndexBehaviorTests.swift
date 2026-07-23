@@ -6,13 +6,14 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import Core
+import DatabaseValue
 import Vector
 @testable import DatabaseEngine
 @testable import VectorIndex
 
 // MARK: - Test Model
 
-struct TestDocument: Persistable {
+struct VectorDocument: Persistable {
     typealias ID = String
 
     var id: String
@@ -25,7 +26,7 @@ struct TestDocument: Persistable {
         self.embedding = embedding
     }
 
-    static var persistableType: String { "TestDocument" }
+    static var persistableType: String { "VectorDocument" }
     static var allFields: [String] { ["id", "title", "embedding"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -41,49 +42,49 @@ struct TestDocument: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestDocument, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<VectorDocument, Value>) -> String {
         switch keyPath {
-        case \TestDocument.id: return "id"
-        case \TestDocument.title: return "title"
-        case \TestDocument.embedding: return "embedding"
+        case \VectorDocument.id: return "id"
+        case \VectorDocument.title: return "title"
+        case \VectorDocument.embedding: return "embedding"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestDocument>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<VectorDocument>) -> String {
         switch keyPath {
-        case \TestDocument.id: return "id"
-        case \TestDocument.title: return "title"
-        case \TestDocument.embedding: return "embedding"
+        case \VectorDocument.id: return "id"
+        case \VectorDocument.title: return "title"
+        case \VectorDocument.embedding: return "embedding"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestDocument> {
+        if let partial = keyPath as? PartialKeyPath<VectorDocument> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Vector Index Context
 
-private struct TestContext {
+private struct VectorIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: FlatVectorIndexMaintainer<TestDocument>
+    let maintainer: FlatVectorIndexMaintainer<VectorDocument>
     let dimensions: Int
 
-    init(dimensions: Int = 4, metric: VectorMetric = .cosine, indexName: String = "TestDocument_embedding") async throws {
+    init(dimensions: Int = 4, metric: VectorMetric = .cosine, indexName: String = "VectorDocument_embedding") async throws {
         self.database = InMemoryEngine()
         self.dimensions = dimensions
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "vector", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let kind = VectorIndexKind<TestDocument>(
+        let kind = VectorIndexKind<VectorDocument>(
             embedding: \.embedding,
             dimensions: dimensions,
             metric: metric
@@ -94,10 +95,10 @@ private struct TestContext {
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
             subspaceKey: indexName,
-            itemTypes: Set(["TestDocument"])
+            itemTypes: Set(["VectorDocument"])
         )
 
-        self.maintainer = FlatVectorIndexMaintainer<TestDocument>(
+        self.maintainer = FlatVectorIndexMaintainer<VectorDocument>(
             index: index,
             dimensions: dimensions,
             metric: metric,
@@ -109,7 +110,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -140,9 +141,9 @@ struct VectorIndexBehaviorTests {
 
     @Test("Insert stores vector")
     func testInsertStoresVector() async throws {
-        let ctx = try await TestContext(dimensions: 4)
+        let ctx = try await VectorIndexContext(dimensions: 4)
 
-        let doc = TestDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
+        let doc = VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -160,12 +161,12 @@ struct VectorIndexBehaviorTests {
 
     @Test("Insert multiple vectors")
     func testInsertMultipleVectors() async throws {
-        let ctx = try await TestContext(dimensions: 4)
+        let ctx = try await VectorIndexContext(dimensions: 4)
 
         let docs = [
-            TestDocument(id: "doc1", title: "First", embedding: [1.0, 0.0, 0.0, 0.0]),
-            TestDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0]),
-            TestDocument(id: "doc3", title: "Third", embedding: [0.0, 0.0, 1.0, 0.0])
+            VectorDocument(id: "doc1", title: "First", embedding: [1.0, 0.0, 0.0, 0.0]),
+            VectorDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0]),
+            VectorDocument(id: "doc3", title: "Third", embedding: [0.0, 0.0, 1.0, 0.0])
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -188,9 +189,9 @@ struct VectorIndexBehaviorTests {
 
     @Test("Delete removes vector")
     func testDeleteRemovesVector() async throws {
-        let ctx = try await TestContext(dimensions: 4)
+        let ctx = try await VectorIndexContext(dimensions: 4)
 
-        let doc = TestDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
+        let doc = VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -223,9 +224,9 @@ struct VectorIndexBehaviorTests {
 
     @Test("Update replaces vector")
     func testUpdateReplacesVector() async throws {
-        let ctx = try await TestContext(dimensions: 4)
+        let ctx = try await VectorIndexContext(dimensions: 4)
 
-        let doc = TestDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
+        let doc = VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -237,7 +238,7 @@ struct VectorIndexBehaviorTests {
         }
 
         // Update with different embedding
-        let updatedDoc = TestDocument(id: "doc1", title: "Test Updated", embedding: [0.0, 1.0, 0.0, 0.0])
+        let updatedDoc = VectorDocument(id: "doc1", title: "Test Updated", embedding: [0.0, 1.0, 0.0, 0.0])
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: doc,
@@ -261,14 +262,14 @@ struct VectorIndexBehaviorTests {
 
     @Test("Cosine similarity search returns correct order")
     func testCosineSimilaritySearch() async throws {
-        let ctx = try await TestContext(dimensions: 4, metric: .cosine)
+        let ctx = try await VectorIndexContext(dimensions: 4, metric: .cosine)
 
         // Create vectors at different angles
         let docs = [
-            TestDocument(id: "exact", title: "Exact", embedding: [1.0, 0.0, 0.0, 0.0]),
-            TestDocument(id: "similar", title: "Similar", embedding: [0.9, 0.1, 0.0, 0.0]),
-            TestDocument(id: "different", title: "Different", embedding: [0.0, 1.0, 0.0, 0.0]),
-            TestDocument(id: "opposite", title: "Opposite", embedding: [-1.0, 0.0, 0.0, 0.0])
+            VectorDocument(id: "exact", title: "Exact", embedding: [1.0, 0.0, 0.0, 0.0]),
+            VectorDocument(id: "similar", title: "Similar", embedding: [0.9, 0.1, 0.0, 0.0]),
+            VectorDocument(id: "different", title: "Different", embedding: [0.0, 1.0, 0.0, 0.0]),
+            VectorDocument(id: "opposite", title: "Opposite", embedding: [-1.0, 0.0, 0.0, 0.0])
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -306,13 +307,13 @@ struct VectorIndexBehaviorTests {
 
     @Test("Euclidean distance search returns correct order")
     func testEuclideanDistanceSearch() async throws {
-        let ctx = try await TestContext(dimensions: 3, metric: .euclidean)
+        let ctx = try await VectorIndexContext(dimensions: 3, metric: .euclidean)
 
         // Create points at known distances from origin
         let docs = [
-            TestDocument(id: "close", title: "Close", embedding: [1.0, 0.0, 0.0]),
-            TestDocument(id: "medium", title: "Medium", embedding: [2.0, 0.0, 0.0]),
-            TestDocument(id: "far", title: "Far", embedding: [5.0, 0.0, 0.0])
+            VectorDocument(id: "close", title: "Close", embedding: [1.0, 0.0, 0.0]),
+            VectorDocument(id: "medium", title: "Medium", embedding: [2.0, 0.0, 0.0]),
+            VectorDocument(id: "far", title: "Far", embedding: [5.0, 0.0, 0.0])
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -351,11 +352,11 @@ struct VectorIndexBehaviorTests {
 
     @Test("Top-K returns correct number of results")
     func testTopKReturnsCorrectCount() async throws {
-        let ctx = try await TestContext(dimensions: 4)
+        let ctx = try await VectorIndexContext(dimensions: 4)
 
         // Insert 10 documents
         let docs = (0..<10).map { i in
-            TestDocument(id: "doc\(i)", title: "Doc \(i)", embedding: [Float(i), 0.0, 0.0, 0.0])
+            VectorDocument(id: "doc\(i)", title: "Doc \(i)", embedding: [Float(i), 0.0, 0.0, 0.0])
         }
 
         try await ctx.database.withTransaction { transaction in
@@ -383,9 +384,9 @@ struct VectorIndexBehaviorTests {
 
     @Test("Dimension mismatch throws error")
     func testDimensionMismatchThrowsError() async throws {
-        let ctx = try await TestContext(dimensions: 4)
+        let ctx = try await VectorIndexContext(dimensions: 4)
 
-        let doc = TestDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
+        let doc = VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -405,7 +406,7 @@ struct VectorIndexBehaviorTests {
 
     @Test("Invalid k throws error")
     func testInvalidKThrowsError() async throws {
-        let ctx = try await TestContext(dimensions: 4)
+        let ctx = try await VectorIndexContext(dimensions: 4)
 
         await #expect(throws: VectorIndexError.self) {
             _ = try await ctx.search(query: [1.0, 0.0, 0.0, 0.0], k: 0)
@@ -422,11 +423,11 @@ struct VectorIndexBehaviorTests {
 
     @Test("ScanItem stores vector")
     func testScanItemStoresVector() async throws {
-        let ctx = try await TestContext(dimensions: 4)
+        let ctx = try await VectorIndexContext(dimensions: 4)
 
         let docs = [
-            TestDocument(id: "doc1", title: "First", embedding: [1.0, 0.0, 0.0, 0.0]),
-            TestDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0])
+            VectorDocument(id: "doc1", title: "First", embedding: [1.0, 0.0, 0.0, 0.0]),
+            VectorDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0])
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -449,7 +450,7 @@ struct VectorIndexBehaviorTests {
 
     @Test("Search on empty index returns empty results")
     func testSearchEmptyIndexReturnsEmpty() async throws {
-        let ctx = try await TestContext(dimensions: 4)
+        let ctx = try await VectorIndexContext(dimensions: 4)
 
         let results = try await ctx.search(query: [1.0, 0.0, 0.0, 0.0], k: 10)
         #expect(results.isEmpty, "Search on empty index should return empty results")

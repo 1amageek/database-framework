@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import FullText
 import TestSupport
 @testable import DatabaseEngine
@@ -14,7 +15,7 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct BM25TestArticle: Persistable {
+struct BM25Article: Persistable {
     typealias ID = String
 
     var id: String
@@ -27,7 +28,7 @@ struct BM25TestArticle: Persistable {
         self.content = content
     }
 
-    static var persistableType: String { "BM25TestArticle" }
+    static var persistableType: String { "BM25Article" }
     static var allFields: [String] { ["id", "title", "content"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -43,48 +44,48 @@ struct BM25TestArticle: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<BM25TestArticle, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<BM25Article, Value>) -> String {
         switch keyPath {
-        case \BM25TestArticle.id: return "id"
-        case \BM25TestArticle.title: return "title"
-        case \BM25TestArticle.content: return "content"
+        case \BM25Article.id: return "id"
+        case \BM25Article.title: return "title"
+        case \BM25Article.content: return "content"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<BM25TestArticle>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<BM25Article>) -> String {
         switch keyPath {
-        case \BM25TestArticle.id: return "id"
-        case \BM25TestArticle.title: return "title"
-        case \BM25TestArticle.content: return "content"
+        case \BM25Article.id: return "id"
+        case \BM25Article.title: return "title"
+        case \BM25Article.content: return "content"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BM25TestArticle> {
+        if let partial = keyPath as? PartialKeyPath<BM25Article> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - BM25 Scoring Context
 
-private struct BM25TestContext {
+private struct BM25ScoringContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: FullTextIndexMaintainer<BM25TestArticle>
-    let kind: FullTextIndexKind<BM25TestArticle>
+    let maintainer: FullTextIndexMaintainer<BM25Article>
+    let kind: FullTextIndexKind<BM25Article>
 
-    init(indexName: String = "BM25TestArticle_content") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(indexName: String = "BM25Article_content") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "bm25", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = FullTextIndexKind<BM25TestArticle>(
+        self.kind = FullTextIndexKind<BM25Article>(
             fields: [\.content],
             tokenizer: .simple,
             storePositions: false
@@ -95,10 +96,10 @@ private struct BM25TestContext {
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "content"),
             subspaceKey: indexName,
-            itemTypes: Set(["BM25TestArticle"])
+            itemTypes: Set(["BM25Article"])
         )
 
-        self.maintainer = FullTextIndexMaintainer<BM25TestArticle>(
+        self.maintainer = FullTextIndexMaintainer<BM25Article>(
             index: index,
             tokenizer: .simple,
             storePositions: false,
@@ -112,11 +113,11 @@ private struct BM25TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
-    func indexArticle(_ article: BM25TestArticle) async throws {
+    func indexArticle(_ article: BM25Article) async throws {
         try await database.withTransaction { transaction in
             try await maintainer.updateIndex(
                 oldItem: nil,
@@ -126,7 +127,7 @@ private struct BM25TestContext {
         }
     }
 
-    func indexArticles(_ articles: [BM25TestArticle]) async throws {
+    func indexArticles(_ articles: [BM25Article]) async throws {
         try await database.withTransaction { transaction in
             for article in articles {
                 try await maintainer.updateIndex(
@@ -258,14 +259,14 @@ struct BM25IntegrationTests {
 
     @Test("BM25 statistics are maintained")
     func testBM25StatisticsAreMaintained() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await BM25TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BM25ScoringContext()
 
         // Index some articles
         let articles = [
-            BM25TestArticle(id: "a1", title: "Swift", content: "Swift programming language is modern"),
-            BM25TestArticle(id: "a2", title: "Python", content: "Python is also a programming language"),
-            BM25TestArticle(id: "a3", title: "Rust", content: "Rust programming is safe")
+            BM25Article(id: "a1", title: "Swift", content: "Swift programming language is modern"),
+            BM25Article(id: "a2", title: "Python", content: "Python is also a programming language"),
+            BM25Article(id: "a3", title: "Rust", content: "Rust programming is safe")
         ]
 
         try await ctx.indexArticles(articles)
@@ -281,10 +282,10 @@ struct BM25IntegrationTests {
 
     @Test("BM25 statistics update on delete")
     func testBM25StatisticsUpdateOnDelete() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await BM25TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BM25ScoringContext()
 
-        let article = BM25TestArticle(id: "a1", title: "Test", content: "Swift programming language")
+        let article = BM25Article(id: "a1", title: "Test", content: "Swift programming language")
         try await ctx.indexArticle(article)
 
         let statsBefore = try await ctx.getBM25Statistics()
@@ -307,25 +308,25 @@ struct BM25IntegrationTests {
 
     @Test("BM25 scored search returns ranked results")
     func testBM25ScoredSearchReturnsRankedResults() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await BM25TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BM25ScoringContext()
 
         // Create articles with varying relevance to "swift programming"
         // Note: BM25 IDF is positive only when df < N/2
         // So we need enough non-matching documents to make query terms "rare"
         let articles = [
             // Most relevant: has both terms multiple times
-            BM25TestArticle(id: "a1", title: "Swift Guide", content: "Swift programming Swift programming Swift"),
+            BM25Article(id: "a1", title: "Swift Guide", content: "Swift programming Swift programming Swift"),
             // Somewhat relevant: has both terms once
-            BM25TestArticle(id: "a2", title: "Languages", content: "Swift programming and other languages"),
+            BM25Article(id: "a2", title: "Languages", content: "Swift programming and other languages"),
             // Less relevant: only has one term
-            BM25TestArticle(id: "a3", title: "Python", content: "Python development is fun"),
+            BM25Article(id: "a3", title: "Python", content: "Python development is fun"),
             // Non-matching documents to make query terms rarer (positive IDF)
-            BM25TestArticle(id: "a4", title: "Other", content: "Something completely different"),
-            BM25TestArticle(id: "a5", title: "Database", content: "Database systems and storage engines"),
-            BM25TestArticle(id: "a6", title: "Networks", content: "Network protocols and communication"),
-            BM25TestArticle(id: "a7", title: "Security", content: "Encryption and authentication methods"),
-            BM25TestArticle(id: "a8", title: "Cloud", content: "Cloud computing and infrastructure"),
+            BM25Article(id: "a4", title: "Other", content: "Something completely different"),
+            BM25Article(id: "a5", title: "Database", content: "Database systems and storage engines"),
+            BM25Article(id: "a6", title: "Networks", content: "Network protocols and communication"),
+            BM25Article(id: "a7", title: "Security", content: "Encryption and authentication methods"),
+            BM25Article(id: "a8", title: "Cloud", content: "Cloud computing and infrastructure"),
         ]
 
         try await ctx.indexArticles(articles)
@@ -354,26 +355,26 @@ struct BM25IntegrationTests {
 
     @Test("BM25 length normalization affects ranking")
     func testBM25LengthNormalizationAffectsRanking() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await BM25TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BM25ScoringContext()
 
         // Two documents with same TF but different lengths
         // Plus non-matching documents to ensure positive IDF for "swift"
         // (BM25 IDF is negative when term appears in majority of docs)
         let articles = [
             // Short document with "swift"
-            BM25TestArticle(id: "short", title: "Short", content: "Swift is fast"),
+            BM25Article(id: "short", title: "Short", content: "Swift is fast"),
             // Long document with "swift" (same TF=1, but much longer)
-            BM25TestArticle(
+            BM25Article(
                 id: "long",
                 title: "Long",
                 content: "Swift is a wonderful language that was created by Apple and is used for iOS development and macOS development and many other things in the software industry"
             ),
             // Non-matching documents to make "swift" rare (positive IDF)
-            BM25TestArticle(id: "d1", title: "Python", content: "Python is great for data science"),
-            BM25TestArticle(id: "d2", title: "Java", content: "Java runs on billions of devices"),
-            BM25TestArticle(id: "d3", title: "Rust", content: "Rust provides memory safety guarantees"),
-            BM25TestArticle(id: "d4", title: "Go", content: "Go excels at concurrent programming"),
+            BM25Article(id: "d1", title: "Python", content: "Python is great for data science"),
+            BM25Article(id: "d2", title: "Java", content: "Java runs on billions of devices"),
+            BM25Article(id: "d3", title: "Rust", content: "Rust provides memory safety guarantees"),
+            BM25Article(id: "d4", title: "Go", content: "Go excels at concurrent programming"),
         ]
 
         try await ctx.indexArticles(articles)
@@ -393,12 +394,12 @@ struct BM25IntegrationTests {
 
     @Test("BM25 custom parameters work")
     func testBM25CustomParametersWork() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await BM25TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BM25ScoringContext()
 
         let articles = [
-            BM25TestArticle(id: "short", title: "Short", content: "Swift is great"),
-            BM25TestArticle(
+            BM25Article(id: "short", title: "Short", content: "Swift is great"),
+            BM25Article(
                 id: "long",
                 title: "Long",
                 content: "Swift is a wonderful language with many features and capabilities for modern development"
@@ -438,16 +439,16 @@ struct BM25IntegrationTests {
 
     @Test("BM25 rare terms score higher than common terms")
     func testBM25RareTermsScoreHigher() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await BM25TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await BM25ScoringContext()
 
         // Create corpus where "programming" is common but "swift" is rare
         let articles = [
-            BM25TestArticle(id: "a1", title: "Swift", content: "Swift programming"),
-            BM25TestArticle(id: "a2", title: "Python", content: "Python programming"),
-            BM25TestArticle(id: "a3", title: "Java", content: "Java programming"),
-            BM25TestArticle(id: "a4", title: "Rust", content: "Rust programming"),
-            BM25TestArticle(id: "a5", title: "Go", content: "Go programming")
+            BM25Article(id: "a1", title: "Swift", content: "Swift programming"),
+            BM25Article(id: "a2", title: "Python", content: "Python programming"),
+            BM25Article(id: "a3", title: "Java", content: "Java programming"),
+            BM25Article(id: "a4", title: "Rust", content: "Rust programming"),
+            BM25Article(id: "a5", title: "Go", content: "Go programming")
         ]
 
         try await ctx.indexArticles(articles)

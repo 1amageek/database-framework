@@ -30,15 +30,18 @@ struct SPARQLParserRDFStarTests {
             Issue.record("Expected graphPattern source")
             return
         }
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected basic pattern, got: \(pattern)")
             return
         }
-        #expect(triples.count == 1)
-        let triple = triples[0]
+        #expect(basicGraphPattern.count == 1)
+        guard case .triple(let triple) = basicGraphPattern.elements[0] else {
+            Issue.record("Expected triple pattern")
+            return
+        }
         // Subject should be a quoted triple
-        guard case .quotedTriple(let s, let p, let o) = triple.subject else {
-            Issue.record("Expected quotedTriple subject, got: \(triple.subject)")
+        guard case .tripleTerm(let s, let p, let o) = triple.subject else {
+            Issue.record("Expected tripleTerm subject, got: \(triple.subject)")
             return
         }
         #expect(s == .iri("http://example.org/s"))
@@ -63,15 +66,19 @@ struct SPARQLParserRDFStarTests {
             Issue.record("Expected graphPattern source")
             return
         }
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected basic pattern")
             return
         }
-        #expect(triples.count == 1)
-        if case .quotedTriple = triples[0].object {
+        #expect(basicGraphPattern.count == 1)
+        guard case .triple(let triple) = basicGraphPattern.elements[0] else {
+            Issue.record("Expected triple pattern")
+            return
+        }
+        if case .tripleTerm = triple.object {
             // OK: object is a quoted triple
         } else {
-            Issue.record("Expected quotedTriple object, got: \(triples[0].object)")
+            Issue.record("Expected tripleTerm object, got: \(triple.object)")
         }
     }
 
@@ -92,13 +99,14 @@ struct SPARQLParserRDFStarTests {
             Issue.record("Expected graphPattern source")
             return
         }
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected basic pattern")
             return
         }
-        #expect(triples.count == 1)
-        guard case .quotedTriple(let s, let p, let o) = triples[0].subject else {
-            Issue.record("Expected quotedTriple subject with variables")
+        #expect(basicGraphPattern.count == 1)
+        guard case .triple(let triple) = basicGraphPattern.elements[0],
+              case .tripleTerm(let s, let p, let o) = triple.subject else {
+            Issue.record("Expected tripleTerm subject with variables")
             return
         }
         #expect(s == .variable("s"))
@@ -123,20 +131,21 @@ struct SPARQLParserRDFStarTests {
             Issue.record("Expected graphPattern source")
             return
         }
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected basic pattern")
             return
         }
-        #expect(triples.count == 1)
-        guard case .quotedTriple(let s, _, _) = triples[0].subject else {
-            Issue.record("Expected quotedTriple subject")
+        #expect(basicGraphPattern.count == 1)
+        guard case .triple(let triple) = basicGraphPattern.elements[0],
+              case .tripleTerm(let s, _, _) = triple.subject else {
+            Issue.record("Expected tripleTerm subject")
             return
         }
         // Inner subject should also be a quoted triple
-        if case .quotedTriple = s {
+        if case .tripleTerm = s {
             // OK: nested quoted triple
         } else {
-            Issue.record("Expected nested quotedTriple, got: \(s)")
+            Issue.record("Expected nested tripleTerm, got: \(s)")
         }
     }
 
@@ -318,33 +327,19 @@ struct SPARQLParserRDFStarTests {
             Issue.record("Expected graphPattern source")
             return
         }
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected basic pattern")
             return
         }
-        #expect(triples.count == 1)
-        guard case .quotedTriple(let s, let p, let o) = triples[0].subject else {
-            Issue.record("Expected quotedTriple subject")
+        #expect(basicGraphPattern.count == 1)
+        guard case .triple(let triple) = basicGraphPattern.elements[0],
+              case .tripleTerm(let s, let p, let o) = triple.subject else {
+            Issue.record("Expected tripleTerm subject")
             return
         }
-        if case .prefixedName(let prefix, let local) = s {
-            #expect(prefix == "ex")
-            #expect(local == "Toyota")
-        } else {
-            Issue.record("Expected prefixedName subject, got: \(s)")
-        }
-        if case .prefixedName(let prefix, let local) = p {
-            #expect(prefix == "ex")
-            #expect(local == "type")
-        } else {
-            Issue.record("Expected prefixedName predicate, got: \(p)")
-        }
-        if case .prefixedName(let prefix, let local) = o {
-            #expect(prefix == "ex")
-            #expect(local == "Company")
-        } else {
-            Issue.record("Expected prefixedName object, got: \(o)")
-        }
+        #expect(s == .iri("http://example.org/Toyota"))
+        #expect(p == .iri("http://example.org/type"))
+        #expect(o == .iri("http://example.org/Company"))
     }
 
     // MARK: - Helpers

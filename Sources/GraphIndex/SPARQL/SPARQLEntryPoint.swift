@@ -3,9 +3,15 @@
 //
 // Provides the FDBContext extension and entry point for SPARQL queries.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseValue
 import DatabaseEngine
+import DatabaseWire
 import Graph
 
 // MARK: - SPARQL Entry Point
@@ -44,48 +50,38 @@ public struct SPARQLEntryPoint<T: Persistable>: Sendable {
     ///   - edge: KeyPath to the edge/predicate field
     ///   - to: KeyPath to the target/object field
     /// - Returns: SPARQL query builder
-    public func index<V1, V2, V3>(
-        _ from: KeyPath<T, V1>,
-        _ edge: KeyPath<T, V2>,
-        _ to: KeyPath<T, V3>
-    ) -> SPARQLQueryBuilder<T> {
-        let fromField = T.fieldName(for: from)
-        let edgeField = T.fieldName(for: edge)
-        let toField = T.fieldName(for: to)
+    public func index(
+        _ subject: KeyPath<T, DatabaseRDFTerm>,
+        _ predicate: KeyPath<T, DatabaseRDFTerm>,
+        _ object: KeyPath<T, DatabaseRDFTerm>
+    ) throws -> SPARQLQueryBuilder<T> {
+        let subjectField = T.fieldName(for: subject)
+        let predicateField = T.fieldName(for: predicate)
+        let objectField = T.fieldName(for: object)
+        let matches = try T.indexDescriptors.compactMap {
+            try RDFDatasetIndexSelection(descriptor: $0)
+        }
+            .filter {
+                $0.metadata.subjectFieldName == subjectField
+                    && $0.metadata.predicateFieldName == predicateField
+                    && $0.metadata.objectFieldName == objectField
+            }
         return SPARQLQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: fromField,
-            edgeFieldName: edgeField,
-            toFieldName: toField
+            selection: matches.count == 1 ? matches[0] : nil
         )
     }
 
-    /// Use the default graph index (first GraphIndexKind found)
+    /// Use the only RDF dataset index declared by this record type.
     ///
     /// - Returns: SPARQL query builder configured with the default index
-    public func defaultIndex() -> SPARQLQueryBuilder<T> {
-        // Find the first GraphIndexKind for this type
-        let descriptor = T.indexDescriptors.first { desc in
-            desc.kindIdentifier == GraphIndexKind<T>.identifier
+    public func defaultIndex() throws -> SPARQLQueryBuilder<T> {
+        let candidates = try T.indexDescriptors.compactMap {
+            try RDFDatasetIndexSelection(descriptor: $0)
         }
-
-        guard let desc = descriptor,
-              let kind = desc.kind as? GraphIndexKind<T> else {
-            // Return a builder that will fail on execute
-            return SPARQLQueryBuilder(
-                queryContext: queryContext,
-                fromFieldName: "",
-                edgeFieldName: "",
-                toFieldName: ""
-            )
-        }
-
         return SPARQLQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: kind.fromField,
-            edgeFieldName: kind.edgeField,
-            toFieldName: kind.toField,
-            graphFieldName: kind.graphField
+            selection: candidates.count == 1 ? candidates[0] : nil
         )
     }
 }
@@ -132,29 +128,34 @@ extension FDBContext {
         SPARQLEntryPoint(queryContext: indexQueryContext)
     }
 
-    /// Start a graph-scoped SPARQL query that unions all triple-producing
-    /// indexes bound to the named graph.
+    /// Start a graph-scoped SPARQL query that unions all canonical RDF indexes
+    /// bound to a validated named graph.
     ///
     /// Prefer this API over `sparql(T.self)` when the query is graph-scoped
-    /// rather than type-scoped — e.g., memory recall over a knowledge graph
-    /// that spans multiple entity types. Both `OWLTripleIndexKind` subspaces
-    /// whose descriptor graph matches and `GraphIndexKind` tables with a
-    /// graph column participate in the union.
+    /// rather than type-scoped. OWL class projections whose fixed graph
+    /// matches and RDF quad indexes with a graph field participate in the
+    /// union.
     ///
     /// **Usage**:
     /// ```swift
-    /// let result = try await context.sparql(graph: "memory:default")
-    ///     .where("?entity", "rdfs:label", "?label")
-    ///     .filter("?label", contains: keyword)
+    /// let graph = try RDFGraphName(iri: "https://example.com/graphs/memory")
+    /// let result = try await context.sparql(namedGraph: graph)
+    ///     .where(
+    ///         .variable("?entity"),
+    ///         .value(.rdfTerm(.iri("http://www.w3.org/2000/01/rdf-schema#label"))),
+    ///         .variable("?label")
+    ///     )
     ///     .select("?entity")
     ///     .execute()
     /// ```
     ///
-    /// - Parameter graph: Named-graph IRI to scope the query to. Defaults to
-    ///   `"default"` to match `OWLTripleIndexKind`'s default graph value.
+    /// - Parameter namedGraph: Validated RDF graph name used to scope the query.
     /// - Returns: A `FederatedSPARQLBuilder` ready to accept patterns.
-    public func sparql(graph: String = "default") -> FederatedSPARQLBuilder {
-        FederatedSPARQLBuilder(queryContext: indexQueryContext, graph: graph)
+    public func sparql(namedGraph: RDFGraphName) -> FederatedSPARQLBuilder {
+        FederatedSPARQLBuilder(
+            queryContext: indexQueryContext,
+            namedGraph: namedGraph
+        )
     }
 
     /// Execute a pre-built ExecutionPattern directly
@@ -185,31 +186,35 @@ extension FDBContext {
         distinct: Bool = false,
         limit: Int? = nil,
         offset: Int = 0,
-        orderBy: [BindingSortKey] = []
+        orderBy: [BindingSortKey] = [],
+        datasetScope: SPARQLDatasetExecutionScope = .implicit,
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
     ) async throws -> SPARQLResult {
-        guard let descriptor = T.indexDescriptors.first(where: {
-            $0.kindIdentifier == GraphIndexKind<T>.identifier
-        }), let kind = descriptor.kind as? GraphIndexKind<T> else {
+        guard offset >= 0, limit.map({ $0 >= 0 }) ?? true else {
+            throw SPARQLQueryError.invalidPagination
+        }
+        let candidates = try T.indexDescriptors.compactMap {
+            try RDFDatasetIndexSelection(descriptor: $0)
+        }
+        guard candidates.count == 1 else {
             throw SPARQLQueryError.indexNotConfigured
         }
-
-        if pattern.isEmpty {
-            throw SPARQLQueryError.noPatterns
-        }
+        let selection = candidates[0]
 
         let typeSubspace = try await indexQueryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(descriptor.name)
+        let indexSubspace = typeSubspace.subspace(selection.indexName)
+        let source = try RDFDatasetSource(
+            entityName: T.persistableType,
+            selection: selection,
+            indexSubspace: indexSubspace
+        )
 
         let executor = SPARQLQueryExecutor(
             database: container.engine,
-            indexSubspace: indexSubspace,
-            strategy: kind.strategy,
-            fromFieldName: kind.fromField,
-            edgeFieldName: kind.edgeField,
-            toFieldName: kind.toField,
-            graphFieldName: kind.graphField,
-            storedFieldNames: descriptor.storedFieldNames
+            sources: [source],
+            datasetScope: datasetScope
         )
+        let workMeter = DatabaseWorkMeter(budget: budget)
 
         // Determine projected variables
         let projectedVars: [String]
@@ -218,8 +223,8 @@ extension FDBContext {
             projectedVars = projection
         } else {
             // No projection: include pattern variables + property variables (SELECT * equivalent)
-            var allVariables = pattern.variables
-            for fieldName in descriptor.storedFieldNames {
+            var allVariables = pattern.outputVariables
+            for fieldName in selection.storedFieldNames {
                 allVariables.insert("?\(fieldName)")
             }
             projectedVars = Array(allVariables).sorted()
@@ -233,22 +238,33 @@ extension FDBContext {
         var (bindings, stats) = try await executor.execute(
             pattern: pattern,
             limit: needsAllResults ? nil : limit,
-            offset: needsAllResults ? 0 : offset
+            offset: needsAllResults ? 0 : offset,
+            workMeter: workMeter
         )
 
         // Step 2: ORDER BY (before projection, per W3C Section 15)
         if hasOrderBy {
-            bindings = BindingSorter.sort(bindings, by: orderBy)
+            bindings = try BindingSorter.sort(
+                bindings,
+                by: orderBy,
+                workMeter: workMeter
+            )
         }
 
         // Step 3: Projection (SELECT)
         let projectionSet = Set(projectedVars)
-        var projected = bindings.map { $0.project(projectionSet) }
+        var projected = try bindings.map { binding in
+            try workMeter.consume(at: .projection)
+            return binding.project(projectionSet)
+        }
 
         // Step 4: DISTINCT
         if distinct {
             var seen = Set<VariableBinding>()
-            projected = projected.filter { seen.insert($0).inserted }
+            projected = try projected.filter { binding in
+                try workMeter.consume(at: .deduplication)
+                return seen.insert(binding).inserted
+            }
         }
 
         // Step 5: OFFSET / LIMIT (Slice)
@@ -265,8 +281,19 @@ extension FDBContext {
         stats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
         let resultCount = projected.count
-        let isComplete = limit == nil || resultCount < limit!
-        let limitReason: SPARQLLimitReason? = (limit != nil && resultCount >= limit!) ? .explicitLimit : nil
+        let reachedLimit = limit.map { resultCount >= $0 } ?? false
+        let isComplete = !reachedLimit
+        let limitReason: SPARQLLimitReason? = reachedLimit ? .explicitLimit : nil
+
+        guard let outputRows = UInt32(exactly: resultCount) else {
+            throw DatabaseWorkLimitError.maximumRows(
+                stage: .resultMaterialization,
+                consumed: workMeter.consumedRows,
+                requested: UInt32.max,
+                maximum: budget.maximumRows
+            )
+        }
+        try workMeter.recordOutputRows(outputRows)
 
         return SPARQLResult(
             bindings: projected,
@@ -274,6 +301,61 @@ extension FDBContext {
             isComplete: isComplete,
             limitReason: limitReason,
             statistics: stats
+        )
+    }
+
+    public func executeSPARQLSelectPlan<T: Persistable>(
+        _ plan: SPARQLSelectExecutionPlan,
+        on type: T.Type,
+        datasetScope: SPARQLDatasetExecutionScope = .implicit,
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+    ) async throws -> SPARQLResult {
+        let candidates = try T.indexDescriptors.compactMap {
+            try RDFDatasetIndexSelection(descriptor: $0)
+        }
+        guard candidates.count == 1 else {
+            throw SPARQLQueryError.indexNotConfigured
+        }
+        let selection = candidates[0]
+        let typeSubspace = try await indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(selection.indexName)
+        let source = try RDFDatasetSource(
+            entityName: T.persistableType,
+            selection: selection,
+            indexSubspace: indexSubspace
+        )
+        let executor = SPARQLQueryExecutor(
+            database: container.engine,
+            sources: [source],
+            datasetScope: datasetScope
+        )
+        let workMeter = DatabaseWorkMeter(budget: budget)
+        let startTime = MonotonicClock.now()
+        var (bindings, statistics) = try await executor.execute(
+            selectPlan: plan,
+            workMeter: workMeter
+        )
+        statistics.durationNs = MonotonicClock.now().uptimeNanoseconds
+            - startTime.uptimeNanoseconds
+
+        guard let outputRows = UInt32(exactly: bindings.count) else {
+            throw DatabaseWorkLimitError.maximumRows(
+                stage: .resultMaterialization,
+                consumed: workMeter.consumedRows,
+                requested: UInt32.max,
+                maximum: budget.maximumRows
+            )
+        }
+        try workMeter.recordOutputRows(outputRows)
+        let reachedLimit = plan.slice.limit.map {
+            bindings.count >= $0
+        } ?? false
+        return SPARQLResult(
+            bindings: consume bindings,
+            projectedVariables: plan.projectionVariables,
+            isComplete: !reachedLimit,
+            limitReason: reachedLimit ? .explicitLimit : nil,
+            statistics: statistics
         )
     }
 }
@@ -303,6 +385,40 @@ public enum SPARQLQueryError: Error, CustomStringConvertible {
     /// Invalid GROUP BY
     case invalidGroupBy(String)
 
+    /// A runtime-builder variable does not use canonical SPARQL syntax.
+    case invalidVariable(String)
+
+    /// OFFSET and LIMIT must be non-negative.
+    case invalidPagination
+
+    /// An aggregate result cannot be represented by its canonical value type.
+    case aggregateResultOutOfRange
+
+    /// A bound SPARQL term is not represented by a canonical RDF term.
+    case invalidRDFTerm(String)
+
+    /// A GRAPH variable is bound to a value that cannot name an RDF graph.
+    case invalidGraphBinding(String)
+
+    /// Ontology data exposed a predicate that is not an absolute RDF IRI.
+    case invalidOntologyPredicateIRI(String)
+
+    /// Property-path expression nesting exceeded the configured limit.
+    case propertyPathExpressionDepthLimitExceeded(maximum: Int)
+
+    /// Recursive property-path traversal exceeded the configured graph depth.
+    case propertyPathTraversalDepthLimitExceeded(maximum: Int)
+
+    /// Property-path evaluation exceeded the configured result budget.
+    case propertyPathResultLimitExceeded(maximum: Int)
+
+    /// Property-path execution limits must be non-negative.
+    case invalidPropertyPathConfiguration(
+        maximumExpressionDepth: Int,
+        maximumTraversalDepth: Int,
+        maximumResults: Int
+    )
+
     public var description: String {
         switch self {
         case .indexNotConfigured:
@@ -319,6 +435,30 @@ public enum SPARQLQueryError: Error, CustomStringConvertible {
             return "No patterns specified in query"
         case .invalidGroupBy(let reason):
             return "Invalid GROUP BY: \(reason)"
+        case .invalidVariable(let variable):
+            return "Invalid SPARQL variable: \(variable)"
+        case .invalidPagination:
+            return "SPARQL OFFSET and LIMIT must be non-negative"
+        case .aggregateResultOutOfRange:
+            return "SPARQL aggregate result is outside the canonical value range"
+        case .invalidRDFTerm(let value):
+            return "Expected a canonical RDF term, got: \(value)"
+        case .invalidGraphBinding(let variable):
+            return "GRAPH variable is not bound to a valid graph name: \(variable)"
+        case .invalidOntologyPredicateIRI(let value):
+            return "Ontology predicate is not an absolute RDF IRI: \(value)"
+        case .propertyPathExpressionDepthLimitExceeded(let maximum):
+            return "Property path expression depth limit exceeded: \(maximum)"
+        case .propertyPathTraversalDepthLimitExceeded(let maximum):
+            return "Property path traversal depth limit exceeded: \(maximum)"
+        case .propertyPathResultLimitExceeded(let maximum):
+            return "Property path result limit exceeded: \(maximum)"
+        case .invalidPropertyPathConfiguration(
+            let expressionDepth,
+            let traversalDepth,
+            let results
+        ):
+            return "Invalid property path configuration: maximumExpressionDepth=\(expressionDepth), maximumTraversalDepth=\(traversalDepth), maximumResults=\(results)"
         }
     }
 }

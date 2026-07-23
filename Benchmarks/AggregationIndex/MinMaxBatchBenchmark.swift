@@ -2,7 +2,9 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import DatabaseEngine
+import DatabaseRuntime
 import AggregationIndex
 import BenchmarkFramework
 import StorageKit
@@ -26,12 +28,12 @@ struct MinMaxBatchBenchmark {
     private let database: any StorageEngine
 
     init() async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
     }
 
     private func makeContext() async throws -> FDBContext {
         do {
-            try await database.directoryService.remove(path: ["benchmarks", "sales"])
+            try await database.removeDirectory(path: ["benchmarks", "sales"])
         } catch {
             // Ignore missing benchmark directories so each benchmark starts clean.
         }
@@ -40,6 +42,7 @@ struct MinMaxBatchBenchmark {
         let container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         try await container.ensureIndexesReady()
@@ -101,15 +104,45 @@ struct MinMaxBatchBenchmark {
             },
             verify: { baseline, optimized in
                 #expect(baseline.count == optimized.count)
-                // Verify that both produce same results
-                for (b, o) in zip(baseline, optimized) {
-                    if let bMin = b.aggregates["minAmount"] as? Double,
-                       let oMin = o.aggregates["minAmount"] as? Double,
-                       let bMax = b.aggregates["maxAmount"] as? Double,
-                       let oMax = o.aggregates["maxAmount"] as? Double {
-                        #expect(abs(bMin - oMin) < 0.001)
-                        #expect(abs(bMax - oMax) < 0.001)
+                var baselineByRegion: [String: AggregateResult<Sale>] = [:]
+                var optimizedByRegion: [String: AggregateResult<Sale>] = [:]
+                for result in baseline {
+                    guard let region = result.groupKeyString("region"),
+                          baselineByRegion.updateValue(
+                              result,
+                              forKey: region
+                          ) == nil else {
+                        Issue.record("Baseline contains an invalid region group")
+                        return
                     }
+                }
+                for result in optimized {
+                    guard let region = result.groupKeyString("region"),
+                          optimizedByRegion.updateValue(
+                              result,
+                              forKey: region
+                          ) == nil else {
+                        Issue.record("Optimized result contains an invalid region group")
+                        return
+                    }
+                }
+                #expect(
+                    Set(baselineByRegion.keys)
+                        == Set(optimizedByRegion.keys)
+                )
+                for (region, baselineResult) in baselineByRegion {
+                    guard let optimizedResult = optimizedByRegion[region] else {
+                        Issue.record("Optimized result is missing region \(region)")
+                        return
+                    }
+                    #expect(
+                        baselineResult.aggregates["minAmount"]
+                            == optimizedResult.aggregates["minAmount"]
+                    )
+                    #expect(
+                        baselineResult.aggregates["maxAmount"]
+                            == optimizedResult.aggregates["maxAmount"]
+                    )
                 }
             }
         )
@@ -118,7 +151,7 @@ struct MinMaxBatchBenchmark {
         // Print console report
         ConsoleReporter.print(result)
 
-        Swift.print("\n📝 Note: Index-backed aggregation provides O(1) lookup.")
+        Swift.print("\n📝 Note: Index-backed batch aggregation performs a bounded O(G) scan.")
         Swift.print("Full scan aggregation requires O(n) where n = records per group.")
         Swift.print("Expected improvement: 10-50x depending on group size\n")
     }

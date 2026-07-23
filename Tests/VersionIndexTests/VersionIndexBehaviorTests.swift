@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import VersionIndex
 
 // MARK: - Test Model
 
-struct TestDocument: Persistable {
+struct VersionedDocument: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ struct TestDocument: Persistable {
         self.version = version
     }
 
-    static var persistableType: String { "TestDocument" }
+    static var persistableType: String { "VersionedDocument" }
     static var allFields: [String] { ["id", "title", "content", "version"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,60 +46,60 @@ struct TestDocument: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestDocument, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<VersionedDocument, Value>) -> String {
         switch keyPath {
-        case \TestDocument.id: return "id"
-        case \TestDocument.title: return "title"
-        case \TestDocument.content: return "content"
-        case \TestDocument.version: return "version"
+        case \VersionedDocument.id: return "id"
+        case \VersionedDocument.title: return "title"
+        case \VersionedDocument.content: return "content"
+        case \VersionedDocument.version: return "version"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestDocument>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<VersionedDocument>) -> String {
         switch keyPath {
-        case \TestDocument.id: return "id"
-        case \TestDocument.title: return "title"
-        case \TestDocument.content: return "content"
-        case \TestDocument.version: return "version"
+        case \VersionedDocument.id: return "id"
+        case \VersionedDocument.title: return "title"
+        case \VersionedDocument.content: return "content"
+        case \VersionedDocument.version: return "version"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestDocument> {
+        if let partial = keyPath as? PartialKeyPath<VersionedDocument> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Version Index Context
 
-private struct TestContext {
+private struct VersionIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: VersionIndexMaintainer<TestDocument>
-    let kind: VersionIndexKind<TestDocument>
+    let maintainer: VersionIndexMaintainer<VersionedDocument>
+    let kind: VersionIndexKind<VersionedDocument>
 
-    init(strategy: VersionHistoryStrategy = .keepAll, indexName: String = "TestDocument_version") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(strategy: VersionHistoryStrategy = .keepAll, indexName: String = "VersionedDocument_version") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "version", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = VersionIndexKind<TestDocument>(field: \.id, strategy: strategy)
+        self.kind = VersionIndexKind<VersionedDocument>(field: \.id, strategy: strategy)
 
         let index = Index(
             name: indexName,
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "id"),
             subspaceKey: indexName,
-            itemTypes: Set(["TestDocument"])
+            itemTypes: Set(["VersionedDocument"])
         )
 
-        self.maintainer = VersionIndexMaintainer<TestDocument>(
+        self.maintainer = VersionIndexMaintainer<VersionedDocument>(
             index: index,
             strategy: kind.strategy,
             subspace: indexSubspace,
@@ -109,7 +110,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -124,7 +125,7 @@ private struct TestContext {
         }
     }
 
-    func getVersionHistory(primaryKey: [any TupleElement], limit: Int? = nil) async throws -> [(version: Version, data: [UInt8])] {
+    func getVersionHistory(primaryKey: [any TupleElement], limit: Int? = nil) async throws -> [(version: Version, data: Bytes)] {
         try await database.withTransaction { transaction in
             try await maintainer.getVersionHistory(
                 primaryKey: primaryKey,
@@ -134,7 +135,7 @@ private struct TestContext {
         }
     }
 
-    func getLatestVersion(primaryKey: [any TupleElement]) async throws -> [UInt8]? {
+    func getLatestVersion(primaryKey: [any TupleElement]) async throws -> Bytes? {
         try await database.withTransaction { transaction in
             try await maintainer.getLatestVersion(
                 primaryKey: primaryKey,
@@ -153,10 +154,10 @@ struct VersionIndexBehaviorTests {
 
     @Test("Insert creates version entry")
     func testInsertCreatesVersionEntry() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexContext()
 
-        let doc = TestDocument(id: "doc1", title: "Test", content: "Hello", version: 1)
+        let doc = VersionedDocument(id: "doc1", title: "Test", content: "Hello", version: 1)
 
         // Insert document
         try await ctx.database.withTransaction { transaction in
@@ -176,12 +177,12 @@ struct VersionIndexBehaviorTests {
 
     @Test("Multiple updates create multiple versions")
     func testMultipleUpdatesCreateVersions() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexContext()
 
-        let doc1 = TestDocument(id: "doc1", title: "v1", content: "Version 1", version: 1)
-        let doc2 = TestDocument(id: "doc1", title: "v2", content: "Version 2", version: 2)
-        let doc3 = TestDocument(id: "doc1", title: "v3", content: "Version 3", version: 3)
+        let doc1 = VersionedDocument(id: "doc1", title: "v1", content: "Version 1", version: 1)
+        let doc2 = VersionedDocument(id: "doc1", title: "v2", content: "Version 2", version: 2)
+        let doc3 = VersionedDocument(id: "doc1", title: "v3", content: "Version 3", version: 3)
 
         // Insert version 1
         try await ctx.database.withTransaction { transaction in
@@ -220,11 +221,11 @@ struct VersionIndexBehaviorTests {
 
     @Test("getVersionHistory returns all versions")
     func testGetVersionHistoryReturnsAllVersions() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexContext()
 
-        let doc1 = TestDocument(id: "doc1", title: "v1", content: "Version 1", version: 1)
-        let doc2 = TestDocument(id: "doc1", title: "v2", content: "Version 2", version: 2)
+        let doc1 = VersionedDocument(id: "doc1", title: "v1", content: "Version 1", version: 1)
+        let doc2 = VersionedDocument(id: "doc1", title: "v2", content: "Version 2", version: 2)
 
         // Insert version 1
         try await ctx.database.withTransaction { transaction in
@@ -252,15 +253,15 @@ struct VersionIndexBehaviorTests {
 
     @Test("getVersionHistory with limit returns limited versions")
     func testGetVersionHistoryWithLimit() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexContext()
 
         // Create multiple versions
         for i in 1...5 {
-            let doc = TestDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: i)
+            let doc = VersionedDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: i)
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: i > 1 ? TestDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: i-1) : nil,
+                    oldItem: i > 1 ? VersionedDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: i-1) : nil,
                     newItem: doc,
                     transaction: transaction
                 )
@@ -275,11 +276,11 @@ struct VersionIndexBehaviorTests {
 
     @Test("getLatestVersion returns most recent data")
     func testGetLatestVersionReturnsMostRecent() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexContext()
 
-        let doc1 = TestDocument(id: "doc1", title: "v1", content: "Version 1", version: 1)
-        let doc2 = TestDocument(id: "doc1", title: "v2", content: "Latest Version", version: 2)
+        let doc1 = VersionedDocument(id: "doc1", title: "v1", content: "Version 1", version: 1)
+        let doc2 = VersionedDocument(id: "doc1", title: "v2", content: "Latest Version", version: 2)
 
         // Insert version 1
         try await ctx.database.withTransaction { transaction in
@@ -309,10 +310,10 @@ struct VersionIndexBehaviorTests {
 
     @Test("Delete creates deletion marker")
     func testDeleteCreatesDeletionMarker() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexContext()
 
-        let doc = TestDocument(id: "doc1", title: "Test", content: "Hello", version: 1)
+        let doc = VersionedDocument(id: "doc1", title: "Test", content: "Hello", version: 1)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -343,15 +344,15 @@ struct VersionIndexBehaviorTests {
 
     @Test("keepLast strategy limits versions")
     func testKeepLastStrategyLimitsVersions() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepLast(3))
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexContext(strategy: .keepLast(3))
 
         // Create 5 versions
         for i in 1...5 {
-            let doc = TestDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: i)
+            let doc = VersionedDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: i)
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: i > 1 ? TestDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: i-1) : nil,
+                    oldItem: i > 1 ? VersionedDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: i-1) : nil,
                     newItem: doc,
                     transaction: transaction
                 )
@@ -368,10 +369,10 @@ struct VersionIndexBehaviorTests {
 
     @Test("ScanItem creates version entry")
     func testScanItemCreatesVersionEntry() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexContext()
 
-        let doc = TestDocument(id: "doc1", title: "Scanned", content: "Content", version: 1)
+        let doc = VersionedDocument(id: "doc1", title: "Scanned", content: "Content", version: 1)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.scanItem(
@@ -391,12 +392,12 @@ struct VersionIndexBehaviorTests {
 
     @Test("Different documents have separate histories")
     func testDifferentDocumentsHaveSeparateHistories() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexContext()
 
-        let doc1v1 = TestDocument(id: "doc1", title: "Doc1 v1", content: "Content", version: 1)
-        let doc1v2 = TestDocument(id: "doc1", title: "Doc1 v2", content: "Updated", version: 2)
-        let doc2v1 = TestDocument(id: "doc2", title: "Doc2 v1", content: "Other", version: 1)
+        let doc1v1 = VersionedDocument(id: "doc1", title: "Doc1 v1", content: "Content", version: 1)
+        let doc1v2 = VersionedDocument(id: "doc1", title: "Doc1 v2", content: "Updated", version: 2)
+        let doc2v1 = VersionedDocument(id: "doc2", title: "Doc2 v1", content: "Other", version: 1)
 
         // Insert doc1 version 1
         try await ctx.database.withTransaction { transaction in
@@ -427,15 +428,15 @@ struct VersionIndexBehaviorTests {
 
     @Test("Versions are ordered by versionstamp")
     func testVersionsAreOrderedByVersionstamp() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexContext()
 
         // Create versions with delays to ensure different versionstamps
         for i in 1...3 {
-            let doc = TestDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: i)
+            let doc = VersionedDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: i)
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: i > 1 ? TestDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: i-1) : nil,
+                    oldItem: i > 1 ? VersionedDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: i-1) : nil,
                     newItem: doc,
                     transaction: transaction
                 )

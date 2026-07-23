@@ -4,8 +4,13 @@
 // Reference: FDB Record Layer RecordQueryPlannerConfiguration.java
 // Prevents resource exhaustion from over-complex query plans.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseValue
 
 // MARK: - QueryPlannerConfiguration
 
@@ -241,7 +246,7 @@ public struct PlanComplexityCalculator<T: Persistable>: Sendable {
             return leafCost
 
         // Specialized index operators (slightly higher cost)
-        case .fullTextScan, .vectorSearch, .spatialScan, .aggregation:
+        case .fullTextScan, .vectorSearch, .spatialScan:
             return specializedIndexCost
 
         // Transform operators (add 1 to input complexity)
@@ -343,10 +348,6 @@ public struct PlanComplexityCalculator<T: Persistable>: Sendable {
             breakdown.spatialScanCount += 1
             breakdown.totalComplexity += specializedIndexCost
 
-        case .aggregation:
-            breakdown.aggregationCount += 1
-            breakdown.totalComplexity += specializedIndexCost
-
         case .filter(let op):
             breakdown.filterCount += 1
             breakdown.totalComplexity += 1
@@ -420,8 +421,6 @@ public struct PlanComplexityCalculator<T: Persistable>: Sendable {
             return "VectorSearch(\(op.index.name), k=\(op.k))"
         case .spatialScan(let op):
             return "SpatialScan(\(op.index.name))"
-        case .aggregation(let op):
-            return "Aggregation(\(op.index.name))"
         case .inUnion(let op):
             return "InUnion(\(op.index.name), \(op.valueCount) values)"
         case .inJoin(let op):
@@ -476,15 +475,12 @@ public struct ComplexityBreakdown: Sendable {
     /// Count of spatial scan operators
     public var spatialScanCount: Int = 0
 
-    /// Count of aggregation operators
-    public var aggregationCount: Int = 0
-
     /// Total number of operators
     public var totalOperators: Int {
         tableScanCount + indexScanCount + indexSeekCount + indexOnlyScanCount +
         filterCount + sortCount + limitCount + projectCount +
         unionCount + intersectionCount +
-        fullTextScanCount + vectorSearchCount + spatialScanCount + aggregationCount
+        fullTextScanCount + vectorSearchCount + spatialScanCount
     }
 }
 
@@ -509,11 +505,11 @@ public struct PlanComplexityExceededError: Error, CustomStringConvertible, Senda
             suggestions.append("Consider breaking the query into smaller parts")
         }
 
-        if planDescription.contains("Union") {
+        if DatabaseText.contains("Union", in: planDescription) {
             suggestions.append("Reduce the number of OR conditions")
         }
 
-        if planDescription.contains("Intersection") {
+        if DatabaseText.contains("Intersection", in: planDescription) {
             suggestions.append("Reduce the number of AND conditions using different indexes")
         }
 
@@ -630,7 +626,7 @@ public enum PlanningLimitExceededError: Error, CustomStringConvertible, Sendable
             return "Rule applications (\(count)) exceeded limit (\(limit)). Consider simplifying the query or increasing maxRuleApplications."
 
         case .timeoutExceeded(let elapsed, let limit):
-            return String(format: "Planning timeout (%.2fs) exceeded limit (%.2fs). Consider simplifying the query or increasing timeoutSeconds.", elapsed, limit)
+            return "Planning timeout (\(DatabaseTextFormatting.fixedDecimal(elapsed, fractionDigits: 2))s) exceeded limit (\(DatabaseTextFormatting.fixedDecimal(limit, fractionDigits: 2))s). Consider simplifying the query or increasing timeoutSeconds."
         }
     }
 }

@@ -7,6 +7,7 @@ import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 
 /// Tests for DBContainer.resolveDirectory functionality
 ///
@@ -49,8 +50,8 @@ struct ResolveDirectoryTests {
     // MARK: - Helper Methods
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([
@@ -62,19 +63,20 @@ struct ResolveDirectoryTests {
         return try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
             )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "resolve"])
+        try? await container.engine.removeDirectory(path: ["test", "resolve"])
     }
 
     // MARK: - Basic Resolution Tests
 
     @Test("resolveDirectory returns valid subspace for Persistable type")
     func resolveDirectoryReturnsValidSubspace() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
@@ -88,7 +90,7 @@ struct ResolveDirectoryTests {
 
     @Test("resolveDirectory returns same subspace for same type")
     func resolveDirectorySameTypeReturnsSameSubspace() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
@@ -103,7 +105,7 @@ struct ResolveDirectoryTests {
 
     @Test("resolveDirectory returns different subspaces for different types")
     func resolveDirectoryDifferentTypesReturnsDifferentSubspaces() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
@@ -118,7 +120,7 @@ struct ResolveDirectoryTests {
 
     @Test("resolveDirectory handles nested directory paths")
     func resolveDirectoryHandlesNestedPaths() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
@@ -134,7 +136,7 @@ struct ResolveDirectoryTests {
 
     @Test("resolveDirectory works with type-erased Persistable type")
     func resolveDirectoryTypeErased() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
@@ -149,7 +151,7 @@ struct ResolveDirectoryTests {
 
     @Test("Type-erased resolution returns same subspace as generic resolution")
     func typeErasedResolutionMatchesGeneric() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
@@ -167,7 +169,7 @@ struct ResolveDirectoryTests {
 
     @Test("Directory resolution is cached")
     func directoryResolutionIsCached() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
@@ -187,7 +189,7 @@ struct ResolveDirectoryTests {
 
     @Test("Resolved subspace can be used for data storage")
     func resolvedSubspaceCanStoreData() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
@@ -196,10 +198,10 @@ struct ResolveDirectoryTests {
 
             // Write test data
             let testKey = subspace.pack(Tuple("test", "key"))
-            let testValue: [UInt8] = [1, 2, 3, 4, 5]
+            let testValue: Bytes = [1, 2, 3, 4, 5]
 
             try await container.engine.withTransaction { transaction in
-                transaction.setValue(testValue, for: testKey)
+                try transaction.setValue(testValue, for: testKey)
             }
 
             // Read back in a new transaction
@@ -211,25 +213,25 @@ struct ResolveDirectoryTests {
 
             // Cleanup
             try await container.engine.withTransaction { transaction in
-                transaction.clear(key: testKey)
+                try transaction.clear(key: testKey)
             }
         }
     }
 
     @Test("Multiple containers share same directory for same type")
     func multipleContainersShareDirectory() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            try await FDBTestEnvironment.shared.ensureInitialized()
-            let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+            let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             // Clean up first
             
-            try? await database.directoryService.remove(path: ["test", "resolve"])
+            try? await database.removeDirectory(path: ["test", "resolve"])
 
             let schema = Schema([DirectoryUser.self], version: Schema.Version(1, 0, 0))
 
-            let container1 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-            let container2 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container1 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container2 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
 
             let subspace1 = try await container1.resolveDirectory(for: DirectoryUser.self)
             let subspace2 = try await container2.resolveDirectory(for: DirectoryUser.self)
@@ -238,7 +240,7 @@ struct ResolveDirectoryTests {
             #expect(subspace1.prefix == subspace2.prefix)
 
             // Cleanup
-            try? await database.directoryService.remove(path: ["test", "resolve"])
+            try? await database.removeDirectory(path: ["test", "resolve"])
         }
     }
 
@@ -246,7 +248,7 @@ struct ResolveDirectoryTests {
 
     @Test("store(for:) returns DataStore with correct subspace")
     func storeForReturnsCorrectDataStore() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)

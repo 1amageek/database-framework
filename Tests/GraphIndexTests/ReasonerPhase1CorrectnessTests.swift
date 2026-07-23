@@ -274,41 +274,6 @@ struct SignatureRestorationTests {
     }
 }
 
-// MARK: - B-6: Materializer Depth Limit Tests
-
-@Suite("B-6: OWL2RLMaterializer Depth Limit", .heartbeat)
-struct MaterializerDepthLimitTests {
-
-    @Test("Configuration maxInferenceDepth default value")
-    func defaultMaxInferenceDepth() {
-        let config = OWL2RLMaterializer.Configuration()
-        #expect(config.maxInferenceDepth == 10)
-    }
-
-    @Test("Configuration maxInferenceDepth custom value")
-    func customMaxInferenceDepth() {
-        let config = OWL2RLMaterializer.Configuration(maxInferenceDepth: 3)
-        #expect(config.maxInferenceDepth == 3)
-    }
-
-    @Test("InferenceStatistics has depthLimitReached field")
-    func statisticsHasDepthLimitField() {
-        var stats = InferenceStatistics()
-        #expect(stats.depthLimitReached == false)
-        stats.depthLimitReached = true
-        #expect(stats.depthLimitReached == true)
-    }
-
-    @Test("Zero depth limit materializer can be created")
-    func zeroDepthMaterializerCreation() {
-        let subspace = OntologySubspace(base: Subspace(prefix: Array("T".utf8)))
-        let store = OntologyStore(subspace: subspace)
-        let config = OWL2RLMaterializer.Configuration(maxInferenceDepth: 0)
-        let materializer = OWL2RLMaterializer(ontologyStore: store, configuration: config)
-        _ = materializer
-    }
-}
-
 // MARK: - B-9: Property Chain Tests
 
 @Suite("B-9: reachableIndividuals Property Chain Support", .heartbeat)

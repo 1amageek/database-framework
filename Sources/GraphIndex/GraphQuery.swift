@@ -3,7 +3,11 @@
 //
 // Provides FDBContext extension and query builder following the standard pattern.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import Graph
 import DatabaseEngine
@@ -63,15 +67,31 @@ public struct GraphEntryPoint<T: Persistable>: Sendable {
         _ from: KeyPath<T, V1>,
         _ edge: KeyPath<T, V2>,
         _ to: KeyPath<T, V3>
-    ) -> GraphQueryBuilder<T> {
-        let fromField = T.fieldName(for: from)
-        let edgeField = T.fieldName(for: edge)
-        let toField = T.fieldName(for: to)
+    ) throws -> GraphQueryBuilder<T> {
         return GraphQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: fromField,
-            edgeFieldName: edgeField,
-            toFieldName: toField,
+            index: try PropertyGraphIndexResolver.exact(
+                signature: PropertyGraphIndexSignature(
+                    sourceFieldName: T.fieldName(for: from),
+                    labelFieldName: T.fieldName(for: edge),
+                    targetFieldName: T.fieldName(for: to)
+                ),
+                for: T.self,
+                in: queryContext
+            ),
+            ontologyContext: ontologyContext
+        )
+    }
+
+    /// Select an entity-owned graph index by its exact declared name.
+    public func index(named indexName: String) throws -> GraphQueryBuilder<T> {
+        GraphQueryBuilder(
+            queryContext: queryContext,
+            index: try PropertyGraphIndexResolver.exact(
+                named: indexName,
+                for: T.self,
+                in: queryContext
+            ),
             ontologyContext: ontologyContext
         )
     }
@@ -79,29 +99,13 @@ public struct GraphEntryPoint<T: Persistable>: Sendable {
     /// Use the default graph index (first GraphIndexKind found)
     ///
     /// - Returns: Graph query builder configured with the default index
-    public func defaultIndex() -> GraphQueryBuilder<T> {
-        // Find the first GraphIndexKind for this type
-        let descriptor = T.indexDescriptors.first { desc in
-            desc.kindIdentifier == GraphIndexKind<T>.identifier
-        }
-
-        guard let desc = descriptor,
-              let kind = desc.kind as? GraphIndexKind<T> else {
-            // Return a builder that will fail on execute
-            return GraphQueryBuilder(
-                queryContext: queryContext,
-                fromFieldName: "",
-                edgeFieldName: "",
-                toFieldName: ""
-            )
-        }
-
+    public func defaultIndex() throws -> GraphQueryBuilder<T> {
         return GraphQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: kind.fromField,
-            edgeFieldName: kind.edgeField,
-            toFieldName: kind.toField,
-            explicitIndexName: desc.name,
+            index: try PropertyGraphIndexResolver.unique(
+                for: T.self,
+                in: queryContext
+            ),
             ontologyContext: ontologyContext
         )
     }
@@ -263,37 +267,13 @@ public struct GraphQueryExecutor: Sendable {
 
     /// Select optimal index ordering based on query pattern
     private func selectOptimalOrdering(strategy: GraphIndexStrategy) -> GraphIndexOrdering {
-        let fromBound = isBound(fromPattern)
-        let edgeBound = isBound(edgePattern)
-        let toBound = isBound(toPattern)
-        let graphFirst = strategy == .namedGraphStore
-
-        switch (fromBound, edgeBound, toBound) {
-        case (true, true, true):
-            if graphFirst { return .gspo }
-            return strategy == .adjacency ? .out : .spo
-        case (true, true, false):
-            if graphFirst { return .gspo }
-            return strategy == .adjacency ? .out : .spo
-        case (true, false, true):
-            if graphFirst { return .gosp }
-            return strategy == .hexastore ? .sop : .osp
-        case (false, true, true):
-            if graphFirst { return .gpos }
-            return strategy == .adjacency ? .in : .pos
-        case (true, false, false):
-            if graphFirst { return .gspo }
-            return strategy == .adjacency ? .out : .spo
-        case (false, true, false):
-            if graphFirst { return .gpos }
-            return strategy == .hexastore ? .pso : .pos
-        case (false, false, true):
-            if graphFirst { return .gosp }
-            return strategy == .adjacency ? .in : .osp
-        case (false, false, false):
-            if graphFirst { return .gspo }
-            return strategy == .adjacency ? .out : .spo
-        }
+        GraphIndexScanPlanner.ordering(
+            strategy: strategy,
+            subjectBound: isBound(fromPattern),
+            predicateBound: isBound(edgePattern),
+            objectBound: isBound(toPattern),
+            graphBound: false
+        )
     }
 
     private func isBound(_ pattern: Pattern) -> Bool {
@@ -481,10 +461,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     // MARK: - Properties
 
     private let queryContext: IndexQueryContext
-    private let fromFieldName: String
-    private let edgeFieldName: String
-    private let toFieldName: String
-    private let explicitIndexName: String?  // explicit index name from defaultIndex()
+    private let index: DeclaredPropertyGraphIndex
     private let ontologyContext: OntologyContext?  // F-6: ontology context
 
     private var fromPattern: Pattern = .any
@@ -497,17 +474,11 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
 
     internal init(
         queryContext: IndexQueryContext,
-        fromFieldName: String,
-        edgeFieldName: String,
-        toFieldName: String,
-        explicitIndexName: String? = nil,
+        index: DeclaredPropertyGraphIndex,
         ontologyContext: OntologyContext? = nil
     ) {
         self.queryContext = queryContext
-        self.fromFieldName = fromFieldName
-        self.edgeFieldName = edgeFieldName
-        self.toFieldName = toFieldName
-        self.explicitIndexName = explicitIndexName
+        self.index = index
         self.ontologyContext = ontologyContext
     }
 
@@ -564,12 +535,15 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         _ keyPath: KeyPath<T, Value>,
         _ op: ComparisonOperator,
         _ value: Value
-    ) -> Self {
+    ) throws -> Self {
         let fieldName = T.fieldName(for: keyPath)
+        guard let fieldValue = FieldValue(value) else {
+            throw GraphQueryError.unsupportedFilterValue(fieldName)
+        }
         let filter = PropertyFilter(
             fieldName: fieldName,
             op: op,
-            value: FieldValue(value) ?? .null
+            value: fieldValue
         )
 
         var copy = self
@@ -588,11 +562,14 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         fieldName: String,
         _ op: ComparisonOperator,
         _ value: any Sendable
-    ) -> Self {
+    ) throws -> Self {
+        guard let fieldValue = FieldValue(value) else {
+            throw GraphQueryError.unsupportedFilterValue(fieldName)
+        }
         let filter = PropertyFilter(
             fieldName: fieldName,
             op: op,
-            value: FieldValue(value) ?? .null
+            value: fieldValue
         )
 
         var copy = self
@@ -608,31 +585,14 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of matching graph edges
     public func execute() async throws -> [GraphEdge] {
-        guard !fromFieldName.isEmpty else {
-            throw GraphQueryError.indexNotConfigured
+        if let limitCount, limitCount <= 0 {
+            throw GraphQueryError.invalidLimit(limitCount)
         }
 
-        // Use explicit index name if provided (from defaultIndex()), otherwise generate
-        let indexName: String
-        if let explicit = explicitIndexName {
-            indexName = explicit
-        } else {
-            indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
-        }
-
-        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
-              let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
-            throw GraphQueryError.indexNotFound(indexName)
-        }
-
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
-        // Create GraphPropertyScanner
-        let scanner = GraphPropertyScanner(
-            indexSubspace: indexSubspace,
-            strategy: kind.strategy,
-            storedFieldNames: indexDescriptor.storedFieldNames
+        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
+            index,
+            for: T.self,
+            in: queryContext
         )
 
         // Extract exact values from patterns
@@ -641,12 +601,19 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         let toValue = toPattern.exactValue
 
         // Execute scan with property filters
-        return try await queryContext.context.container.engine.withTransaction(configuration: .default) { transaction in
+        return try await queryContext.withTransaction { transaction in
+            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let scanner = GraphPropertyScanner(
+                indexSubspace: resolvedIndex.indexSubspace,
+                strategy: resolvedIndex.metadata.strategy,
+                storedFieldNames: resolvedIndex.storedFieldNames,
+                snapshot: snapshot
+            )
             let stream = scanner.scanEdges(
-                from: fromValue,
-                edge: edgeValue,
-                to: toValue,
-                graph: nil,
+                from: fromValue.map(GraphIdentity.identifier),
+                edge: edgeValue.map(GraphIdentity.identifier),
+                to: toValue.map(GraphIdentity.identifier),
+                scope: .all,
                 propertyFilters: propertyFilters.isEmpty ? nil : propertyFilters,
                 transaction: transaction
             )
@@ -655,9 +622,9 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
             var count = 0
             for try await edgeWithProps in stream {
                 results.append(GraphEdge(
-                    from: edgeWithProps.source,
-                    edge: edgeWithProps.edgeLabel,
-                    to: edgeWithProps.target
+                    from: try edgeWithProps.source.requirePropertyGraphIdentifier(),
+                    edge: try edgeWithProps.edgeLabel.requirePropertyGraphIdentifier(),
+                    to: try edgeWithProps.target.requirePropertyGraphIdentifier()
                 ))
                 count += 1
                 if let limit = limitCount, count >= limit {
@@ -680,6 +647,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     public func executeItems() async throws -> [T] {
         throw GraphQueryError.executeItemsNotSupported
     }
+
 }
 
 // MARK: - FDBContext Extension
@@ -716,12 +684,9 @@ extension FDBContext {
 // MARK: - Graph Query Error
 
 /// Errors for graph query operations
-public enum GraphQueryError: Error, CustomStringConvertible {
-    /// Index not configured
-    case indexNotConfigured
-
-    /// Index not found
-    case indexNotFound(String)
+public enum GraphQueryError: Error, Sendable, CustomStringConvertible {
+    case unsupportedFilterValue(String)
+    case invalidLimit(Int)
 
     /// executeItems() is not supported for graph indexes
     ///
@@ -732,10 +697,10 @@ public enum GraphQueryError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case .indexNotConfigured:
-            return "Graph index not configured. Use .index() to specify fields or .defaultIndex()."
-        case .indexNotFound(let name):
-            return "Graph index not found: \(name)"
+        case .unsupportedFilterValue(let field):
+            return "Graph property filter has an unsupported value for field \(field)"
+        case .invalidLimit(let limit):
+            return "Graph query result limit must be positive: \(limit)"
         case .executeItemsNotSupported:
             return "executeItems() is not supported for graph indexes. Graph indexes store edges without item IDs. Use execute() to get edges, or query by field values to fetch items."
         }

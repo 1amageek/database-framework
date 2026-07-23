@@ -158,7 +158,7 @@ struct AdaptiveThrottlerTests {
         )
         let throttler = AdaptiveThrottler(configuration: config)
 
-        throttler.recordFailure(error: ThrottlerTestError.generic)
+        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
 
         #expect(throttler.currentBatchSize == 50)
 
@@ -173,7 +173,7 @@ struct AdaptiveThrottlerTests {
         )
         let throttler = AdaptiveThrottler(configuration: config)
 
-        throttler.recordFailure(error: ThrottlerTestError.generic)
+        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
 
         // Should be clamped to minBatchSize (15 * 0.5 = 7.5 -> 10)
         #expect(throttler.currentBatchSize == 10)
@@ -187,7 +187,7 @@ struct AdaptiveThrottlerTests {
 
         #expect(throttler.statistics.consecutiveSuccesses == 2)
 
-        throttler.recordFailure(error: ThrottlerTestError.generic)
+        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
 
         #expect(throttler.statistics.consecutiveSuccesses == 0)
         #expect(throttler.statistics.consecutiveFailures == 1)
@@ -196,8 +196,8 @@ struct AdaptiveThrottlerTests {
     @Test func successResetsConsecutiveFailures() {
         let throttler = AdaptiveThrottler()
 
-        throttler.recordFailure(error: ThrottlerTestError.generic)
-        throttler.recordFailure(error: ThrottlerTestError.generic)
+        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
+        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
 
         #expect(throttler.statistics.consecutiveFailures == 2)
 
@@ -215,7 +215,7 @@ struct AdaptiveThrottlerTests {
         )
         let throttler = AdaptiveThrottler(configuration: config)
 
-        throttler.recordFailure(error: ThrottlerTestError.generic)
+        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
 
         #expect(throttler.currentDelayMs == 20)
     }
@@ -237,8 +237,8 @@ struct AdaptiveThrottlerTests {
         let throttler = AdaptiveThrottler()
 
         // Generic non-FDB errors are not retryable
-        #expect(!throttler.isRetryable(ThrottlerTestError.generic))
-        #expect(!throttler.isRetryable(ThrottlerTestError.permanent))
+        #expect(!throttler.isRetryable(ThrottlerInjectedFailure.generic))
+        #expect(!throttler.isRetryable(ThrottlerInjectedFailure.permanent))
     }
 
     // MARK: - Reset Tests
@@ -249,7 +249,7 @@ struct AdaptiveThrottlerTests {
 
         // Modify state
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
-        throttler.recordFailure(error: ThrottlerTestError.generic)
+        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
 
         // Reset
         throttler.reset()
@@ -269,7 +269,7 @@ struct AdaptiveThrottlerTests {
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
-        throttler.recordFailure(error: ThrottlerTestError.generic)
+        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
 
         let stats = throttler.statistics
         #expect(stats.successRate == 0.75)
@@ -309,7 +309,7 @@ struct AdaptiveThrottlerTests {
 
 // MARK: - Test Errors
 
-private enum ThrottlerTestError: Error, CustomStringConvertible {
+private enum ThrottlerInjectedFailure: Error, CustomStringConvertible {
     case generic
     case permanent
 

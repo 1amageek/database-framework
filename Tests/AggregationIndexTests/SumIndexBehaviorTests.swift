@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
 // MARK: - Test Model
 
-struct SumTestSale: Persistable {
+struct RegionalSale: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ struct SumTestSale: Persistable {
         self.amount = amount
     }
 
-    static var persistableType: String { "SumTestSale" }
+    static var persistableType: String { "RegionalSale" }
     static var allFields: [String] { ["id", "category", "region", "amount"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,44 +46,44 @@ struct SumTestSale: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<SumTestSale, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<RegionalSale, Value>) -> String {
         switch keyPath {
-        case \SumTestSale.id: return "id"
-        case \SumTestSale.category: return "category"
-        case \SumTestSale.region: return "region"
-        case \SumTestSale.amount: return "amount"
+        case \RegionalSale.id: return "id"
+        case \RegionalSale.category: return "category"
+        case \RegionalSale.region: return "region"
+        case \RegionalSale.amount: return "amount"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<SumTestSale>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<RegionalSale>) -> String {
         switch keyPath {
-        case \SumTestSale.id: return "id"
-        case \SumTestSale.category: return "category"
-        case \SumTestSale.region: return "region"
-        case \SumTestSale.amount: return "amount"
+        case \RegionalSale.id: return "id"
+        case \RegionalSale.category: return "category"
+        case \RegionalSale.region: return "region"
+        case \RegionalSale.amount: return "amount"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<SumTestSale> {
+        if let partial = keyPath as? PartialKeyPath<RegionalSale> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Sum Index Context
 
-private struct TestContext {
+private struct SumIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: SumIndexMaintainer<SumTestSale, Double>
+    let maintainer: SumIndexMaintainer<RegionalSale, Double>
 
-    init(indexName: String = "SumTestSale_category_amount") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(indexName: String = "RegionalSale_category_amount") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "sum", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -90,16 +91,16 @@ private struct TestContext {
         // Expression: category + amount (grouping + sum value)
         let index = Index(
             name: indexName,
-            kind: SumIndexKind<SumTestSale, Double>(groupBy: [\.category], value: \.amount),
+            kind: SumIndexKind<RegionalSale, Double>(groupBy: [\.category], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "category"),
                 FieldKeyExpression(fieldName: "amount")
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["SumTestSale"])
+            itemTypes: Set(["RegionalSale"])
         )
 
-        self.maintainer = SumIndexMaintainer<SumTestSale, Double>(
+        self.maintainer = SumIndexMaintainer<RegionalSale, Double>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -109,13 +110,20 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
     func getSum(for category: String) async throws -> Double {
+        guard let sum = try await getOptionalSum(for: category) else {
+            throw IndexError.noData("No SUM value for category")
+        }
+        return sum
+    }
+
+    func getOptionalSum(for category: String) async throws -> Double? {
         try await database.withTransaction { transaction in
-            try await maintainer.getSum(
+            try await maintainer.getSumAsDouble(
                 groupingValues: [category],
                 transaction: transaction
             )
@@ -124,7 +132,7 @@ private struct TestContext {
 
     func getAllSums() async throws -> [(grouping: [any TupleElement], sum: Double)] {
         try await database.withTransaction { transaction in
-            try await maintainer.getAllSums(transaction: transaction)
+            try await maintainer.getAllSumsAsDouble(transaction: transaction)
         }
     }
 }
@@ -138,14 +146,14 @@ struct SumIndexBehaviorTests {
 
     @Test("Insert adds value to sum")
     func testInsertAddsValue() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
-        let sale = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
+        let sale = RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as SumTestSale?,
+                oldItem: nil as RegionalSale?,
                 newItem: sale,
                 transaction: transaction
             )
@@ -159,19 +167,19 @@ struct SumIndexBehaviorTests {
 
     @Test("Multiple inserts to same group accumulate")
     func testMultipleInsertsAccumulate() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
         let sales = [
-            SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
-            SumTestSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 1500.0),
-            SumTestSale(id: "sale3", category: "Electronics", region: "Kyoto", amount: 500.0)
+            RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
+            RegionalSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 1500.0),
+            RegionalSale(id: "sale3", category: "Electronics", region: "Kyoto", amount: 500.0)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for sale in sales {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as SumTestSale?,
+                    oldItem: nil as RegionalSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -186,19 +194,19 @@ struct SumIndexBehaviorTests {
 
     @Test("Inserts to different groups are independent")
     func testDifferentGroupsIndependent() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
         let sales = [
-            SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
-            SumTestSale(id: "sale2", category: "Clothing", region: "Tokyo", amount: 500.0),
-            SumTestSale(id: "sale3", category: "Electronics", region: "Osaka", amount: 1500.0)
+            RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
+            RegionalSale(id: "sale2", category: "Clothing", region: "Tokyo", amount: 500.0),
+            RegionalSale(id: "sale3", category: "Electronics", region: "Osaka", amount: 1500.0)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for sale in sales {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as SumTestSale?,
+                    oldItem: nil as RegionalSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -218,15 +226,15 @@ struct SumIndexBehaviorTests {
 
     @Test("Delete subtracts value from sum")
     func testDeleteSubtractsValue() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
-        let sale = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
+        let sale = RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as SumTestSale?,
+                oldItem: nil as RegionalSale?,
                 newItem: sale,
                 transaction: transaction
             )
@@ -239,29 +247,29 @@ struct SumIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: sale,
-                newItem: nil as SumTestSale?,
+                newItem: nil as RegionalSale?,
                 transaction: transaction
             )
         }
 
-        let sumAfter = try await ctx.getSum(for: "Electronics")
-        #expect(abs(sumAfter) < 0.01, "Sum should be 0.0 after delete")
+        let sumAfter = try await ctx.getOptionalSum(for: "Electronics")
+        #expect(sumAfter == nil, "SUM over an empty group must be nil")
 
         try await ctx.cleanup()
     }
 
     @Test("Delete partial from group")
     func testDeletePartialFromGroup() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
-        let sale1 = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
-        let sale2 = SumTestSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 1500.0)
+        let sale1 = RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
+        let sale2 = RegionalSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 1500.0)
 
         // Insert both
         try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.updateIndex(oldItem: nil as SumTestSale?, newItem: sale1, transaction: transaction)
-            try await ctx.maintainer.updateIndex(oldItem: nil as SumTestSale?, newItem: sale2, transaction: transaction)
+            try await ctx.maintainer.updateIndex(oldItem: nil as RegionalSale?, newItem: sale1, transaction: transaction)
+            try await ctx.maintainer.updateIndex(oldItem: nil as RegionalSale?, newItem: sale2, transaction: transaction)
         }
 
         let sumBefore = try await ctx.getSum(for: "Electronics")
@@ -271,7 +279,7 @@ struct SumIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: sale1,
-                newItem: nil as SumTestSale?,
+                newItem: nil as RegionalSale?,
                 transaction: transaction
             )
         }
@@ -286,22 +294,22 @@ struct SumIndexBehaviorTests {
 
     @Test("Update same group adjusts sum")
     func testUpdateSameGroupAdjustsSum() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
-        let sale = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
+        let sale = RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as SumTestSale?,
+                oldItem: nil as RegionalSale?,
                 newItem: sale,
                 transaction: transaction
             )
         }
 
         // Update amount (same category)
-        let updatedSale = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1500.0)
+        let updatedSale = RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1500.0)
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: sale,
@@ -318,27 +326,27 @@ struct SumIndexBehaviorTests {
 
     @Test("Update different group moves sum")
     func testUpdateDifferentGroupMovesSum() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
-        let sale = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
+        let sale = RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as SumTestSale?,
+                oldItem: nil as RegionalSale?,
                 newItem: sale,
                 transaction: transaction
             )
         }
 
         let electronicsBefore = try await ctx.getSum(for: "Electronics")
-        let clothingBefore = try await ctx.getSum(for: "Clothing")
+        let clothingBefore = try await ctx.getOptionalSum(for: "Clothing")
         #expect(abs(electronicsBefore - 1000.0) < 0.01)
-        #expect(abs(clothingBefore) < 0.01)
+        #expect(clothingBefore == nil)
 
         // Update category from Electronics to Clothing
-        let updatedSale = SumTestSale(id: "sale1", category: "Clothing", region: "Tokyo", amount: 1000.0)
+        let updatedSale = RegionalSale(id: "sale1", category: "Clothing", region: "Tokyo", amount: 1000.0)
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: sale,
@@ -347,9 +355,9 @@ struct SumIndexBehaviorTests {
             )
         }
 
-        let electronicsAfter = try await ctx.getSum(for: "Electronics")
+        let electronicsAfter = try await ctx.getOptionalSum(for: "Electronics")
         let clothingAfter = try await ctx.getSum(for: "Clothing")
-        #expect(abs(electronicsAfter) < 0.01, "Electronics sum should be 0.0")
+        #expect(electronicsAfter == nil, "Electronics sum should be absent")
         #expect(abs(clothingAfter - 1000.0) < 0.01, "Clothing sum should be 1000.0")
 
         try await ctx.cleanup()
@@ -359,19 +367,19 @@ struct SumIndexBehaviorTests {
 
     @Test("Decimal values are handled correctly")
     func testDecimalPrecision() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
         let sales = [
-            SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 99.99),
-            SumTestSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 149.50),
-            SumTestSale(id: "sale3", category: "Electronics", region: "Kyoto", amount: 0.01)
+            RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 99.99),
+            RegionalSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 149.50),
+            RegionalSale(id: "sale3", category: "Electronics", region: "Kyoto", amount: 0.01)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for sale in sales {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as SumTestSale?,
+                    oldItem: nil as RegionalSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -387,19 +395,19 @@ struct SumIndexBehaviorTests {
 
     @Test("Negative values are supported")
     func testNegativeValues() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
         let sales = [
-            SumTestSale(id: "sale1", category: "Returns", region: "Tokyo", amount: -500.0),
-            SumTestSale(id: "sale2", category: "Returns", region: "Osaka", amount: -300.0),
-            SumTestSale(id: "sale3", category: "Returns", region: "Kyoto", amount: 100.0)
+            RegionalSale(id: "sale1", category: "Returns", region: "Tokyo", amount: -500.0),
+            RegionalSale(id: "sale2", category: "Returns", region: "Osaka", amount: -300.0),
+            RegionalSale(id: "sale3", category: "Returns", region: "Kyoto", amount: 100.0)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for sale in sales {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as SumTestSale?,
+                    oldItem: nil as RegionalSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -417,19 +425,19 @@ struct SumIndexBehaviorTests {
 
     @Test("GetAllSums returns all groups")
     func testGetAllSumsReturnsAllGroups() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
         let sales = [
-            SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
-            SumTestSale(id: "sale2", category: "Clothing", region: "Osaka", amount: 500.0),
-            SumTestSale(id: "sale3", category: "Food", region: "Kyoto", amount: 200.0)
+            RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
+            RegionalSale(id: "sale2", category: "Clothing", region: "Osaka", amount: 500.0),
+            RegionalSale(id: "sale3", category: "Food", region: "Kyoto", amount: 200.0)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for sale in sales {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as SumTestSale?,
+                    oldItem: nil as RegionalSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -445,13 +453,18 @@ struct SumIndexBehaviorTests {
         try await ctx.cleanup()
     }
 
-    @Test("GetSum for non-existent group returns zero")
-    func testGetSumNonExistentReturnsZero() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+    @Test("GetSum for non-existent group returns nil")
+    func testGetSumNonExistentReturnsNil() async throws {
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
-        let sum = try await ctx.getSum(for: "NonExistentCategory")
-        #expect(abs(sum) < 0.01, "Sum for non-existent group should be 0.0")
+        let sum = try await ctx.database.withTransaction { transaction in
+            try await ctx.maintainer.getSum(
+                groupingValues: ["NonExistentCategory"],
+                transaction: transaction
+            )
+        }
+        #expect(sum == nil, "A non-existent SUM group has no value")
 
         try await ctx.cleanup()
     }
@@ -460,42 +473,42 @@ struct SumIndexBehaviorTests {
 
     @Test("Composite grouping with region and category")
     func testCompositeGrouping() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "sum", "composite", String(testId)).pack())
-        let indexSubspace = subspace.subspace("I").subspace("SumTestSale_region_category_amount")
+        let indexSubspace = subspace.subspace("I").subspace("RegionalSale_region_category_amount")
 
         // Expression: region + category + amount
         let index = Index(
-            name: "SumTestSale_region_category_amount",
-            kind: SumIndexKind<SumTestSale, Double>(groupBy: [\.region, \.category], value: \.amount),
+            name: "RegionalSale_region_category_amount",
+            kind: SumIndexKind<RegionalSale, Double>(groupBy: [\.region, \.category], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
                 FieldKeyExpression(fieldName: "amount")
             ]),
-            subspaceKey: "SumTestSale_region_category_amount",
-            itemTypes: Set(["SumTestSale"])
+            subspaceKey: "RegionalSale_region_category_amount",
+            itemTypes: Set(["RegionalSale"])
         )
 
-        let maintainer = SumIndexMaintainer<SumTestSale, Double>(
+        let maintainer = SumIndexMaintainer<RegionalSale, Double>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
 
         let sales = [
-            SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
-            SumTestSale(id: "sale2", category: "Electronics", region: "Tokyo", amount: 500.0),
-            SumTestSale(id: "sale3", category: "Clothing", region: "Tokyo", amount: 300.0),
-            SumTestSale(id: "sale4", category: "Electronics", region: "Osaka", amount: 800.0)
+            RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
+            RegionalSale(id: "sale2", category: "Electronics", region: "Tokyo", amount: 500.0),
+            RegionalSale(id: "sale3", category: "Clothing", region: "Tokyo", amount: 300.0),
+            RegionalSale(id: "sale4", category: "Electronics", region: "Osaka", amount: 800.0)
         ]
 
         try await database.withTransaction { transaction in
             for sale in sales {
                 try await maintainer.updateIndex(
-                    oldItem: nil as SumTestSale?,
+                    oldItem: nil as RegionalSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -504,7 +517,7 @@ struct SumIndexBehaviorTests {
 
         // Query Tokyo+Electronics
         let tokyoElectronics = try await database.withTransaction { transaction in
-            try await maintainer.getSum(
+            try await maintainer.getSumAsDouble(
                 groupingValues: ["Tokyo", "Electronics"],
                 transaction: transaction
             )
@@ -512,7 +525,7 @@ struct SumIndexBehaviorTests {
 
         // Query Tokyo+Clothing
         let tokyoClothing = try await database.withTransaction { transaction in
-            try await maintainer.getSum(
+            try await maintainer.getSumAsDouble(
                 groupingValues: ["Tokyo", "Clothing"],
                 transaction: transaction
             )
@@ -520,20 +533,20 @@ struct SumIndexBehaviorTests {
 
         // Query Osaka+Electronics
         let osakaElectronics = try await database.withTransaction { transaction in
-            try await maintainer.getSum(
+            try await maintainer.getSumAsDouble(
                 groupingValues: ["Osaka", "Electronics"],
                 transaction: transaction
             )
         }
 
-        #expect(abs(tokyoElectronics - 1500.0) < 0.01, "Tokyo+Electronics should be 1500.0")
-        #expect(abs(tokyoClothing - 300.0) < 0.01, "Tokyo+Clothing should be 300.0")
-        #expect(abs(osakaElectronics - 800.0) < 0.01, "Osaka+Electronics should be 800.0")
+        #expect(tokyoElectronics == 1500.0, "Tokyo+Electronics should be 1500.0")
+        #expect(tokyoClothing == 300.0, "Tokyo+Clothing should be 300.0")
+        #expect(osakaElectronics == 800.0, "Osaka+Electronics should be 800.0")
 
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -541,12 +554,12 @@ struct SumIndexBehaviorTests {
 
     @Test("ScanItem adds to sum")
     func testScanItemAddsToSum() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SumIndexContext()
 
         let sales = [
-            SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
-            SumTestSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 500.0)
+            RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
+            RegionalSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 500.0)
         ]
 
         try await ctx.database.withTransaction { transaction in

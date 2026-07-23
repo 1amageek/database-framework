@@ -3,7 +3,11 @@
 //
 // Design: Follows GraphIndex Query patterns with SpatialCellScanner integration.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import DatabaseEngine
 import Core
 import StorageKit
@@ -304,16 +308,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             throw SpatialQueryError.indexNotFound(buildIndexName())
         }
 
-        // Get index configuration from kind
-        let level: Int
-        let encoding: SpatialEncoding
-        if let kind = descriptor.kind as? SpatialIndexKind<T> {
-            level = kind.level
-            encoding = kind.encoding
-        } else {
-            level = 15 // Default S2 level
-            encoding = .s2
-        }
+        let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)
+        let level = kind.level
+        let encoding = kind.encoding
 
         let indexName = descriptor.name
 
@@ -419,10 +416,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             guard descriptor.kindIdentifier == SpatialIndexKind<T>.identifier else {
                 return false
             }
-            guard let kind = descriptor.kind as? SpatialIndexKind<T> else {
-                return false
-            }
-            return kind.fieldNames.contains(fieldName)
+            return descriptor.fieldNames.contains(fieldName)
         }
     }
 
@@ -716,16 +710,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             throw SpatialQueryError.indexNotFound(buildIndexName())
         }
 
-        // Get index configuration from kind
-        let level: Int
-        let encoding: SpatialEncoding
-        if let kind = descriptor.kind as? SpatialIndexKind<T> {
-            level = kind.level
-            encoding = kind.encoding
-        } else {
-            level = 15
-            encoding = .s2
-        }
+        let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)
+        let level = kind.level
+        let encoding = kind.encoding
 
         let indexName = descriptor.name
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
@@ -908,16 +895,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             throw SpatialQueryError.indexNotFound(buildIndexName())
         }
 
-        // Get index configuration from kind
-        let level: Int
-        let encoding: SpatialEncoding
-        if let kind = descriptor.kind as? SpatialIndexKind<T> {
-            level = kind.level
-            encoding = kind.encoding
-        } else {
-            level = 15
-            encoding = .s2
-        }
+        let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)
+        let level = kind.level
+        let encoding = kind.encoding
 
         let indexName = descriptor.name
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)

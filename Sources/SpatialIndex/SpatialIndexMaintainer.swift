@@ -3,9 +3,14 @@
 //
 // Maintains spatial indexes using S2 or Morton encoding.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
+import Geospatial
 import StorageKit
 
 /// Spatial index maintainer
@@ -59,14 +64,14 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     ) async throws {
         if let oldItem = oldItem {
             if let oldKey = try buildIndexKey(for: oldItem) {
-                transaction.clear(key: oldKey)
+                try transaction.clear(key: oldKey)
             }
         }
 
         if let newItem = newItem {
             if let newKey = try buildIndexKey(for: newItem) {
-                let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
-                transaction.setValue(value, for: newKey)
+                let value = try CoveringValueBuilder.build(for: newItem, index: index)
+                try transaction.setValue(value, for: newKey)
             }
         }
     }
@@ -77,8 +82,8 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         transaction: any Transaction
     ) async throws {
         if let indexKey = try buildIndexKey(for: item, id: id) {
-            let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
-            transaction.setValue(value, for: indexKey)
+            let value = try CoveringValueBuilder.build(for: item, index: index)
+            try transaction.setValue(value, for: indexKey)
         }
     }
 
@@ -191,14 +196,13 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
-    private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> [UInt8]? {
+    private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> Bytes? {
         // Use optimized DataAccess method - KeyPath when available, falls back to KeyExpression
         // Sparse index: if coordinate field is nil, return nil (no index entry)
         let fieldValues: [any TupleElement]
         do {
-            fieldValues = try DataAccess.evaluateIndexFields(
-                from: item,
-                keyPaths: index.keyPaths,
+            fieldValues = try DataAccess.evaluate(
+                item: item,
                 expression: index.rootExpression
             )
         } catch DataAccessError.nilValueCannotBeIndexed {

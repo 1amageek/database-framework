@@ -4,7 +4,11 @@
 // This file is part of BitmapIndex module, not DatabaseEngine.
 // DatabaseEngine does not know about BitmapIndexKind.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -140,16 +144,13 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
             guard descriptor.kindIdentifier == Core.BitmapIndexKind<T>.identifier else {
                 return false
             }
-            guard let kind = descriptor.kind as? Core.BitmapIndexKind<T> else {
-                return false
-            }
-            return kind.fieldNames.contains(fieldName)
+            return descriptor.fieldNames.contains(fieldName)
         }
     }
 
     // MARK: - FusionQuery
 
-    public func execute(candidates: Set<String>?) async throws -> [ScoredResult<T>] {
+    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
         guard let descriptor = findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
                 type: T.persistableType,
@@ -203,8 +204,8 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
         var results = try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
 
         // Filter to candidates if provided
-        if let candidateIds = candidates {
-            results = results.filter { candidateIds.contains("\($0.id)") }
+        if let candidateIDs = candidates {
+            results = results.filter { candidateIDs.contains($0.id) }
         }
 
         // All matching items get score 1.0 (pass/fail filter)

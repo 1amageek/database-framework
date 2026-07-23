@@ -1,7 +1,11 @@
 // IndexQueryContext+Rank.swift
 // RankIndex - Factory method for Rank query
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 

@@ -5,6 +5,7 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import StorageKit
 import FDBStorage
 import Geospatial
@@ -74,7 +75,7 @@ struct BenchmarkLocation: Persistable {
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Spatial Benchmark Context
 
 private struct BenchmarkContext {
     let database: any StorageEngine
@@ -84,7 +85,7 @@ private struct BenchmarkContext {
     let level: Int
 
     init(encoding: SpatialEncoding = .s2, level: Int = 12, indexName: String = "BenchmarkLocation_location") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("benchmark", "spatial", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -120,7 +121,7 @@ private struct BenchmarkContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -201,7 +202,7 @@ struct SpatialIndexPerformanceTests {
 
     @Test("Bulk insert performance - 100 locations")
     func testBulkInsert100Locations() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(level: 12)
 
         let locationCount = 100
@@ -236,7 +237,7 @@ struct SpatialIndexPerformanceTests {
 
     @Test("Bulk insert performance - varying count")
     func testBulkInsertVaryingCount() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
 
         for count in [50, 100, 200] {
             let ctx = try await BenchmarkContext(level: 12)
@@ -271,7 +272,7 @@ struct SpatialIndexPerformanceTests {
 
     @Test("Radius search performance - small radius")
     func testRadiusSearchSmallRadius() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         // Use coarse level to reduce cell count
         let ctx = try await BenchmarkContext(level: 8)
 
@@ -327,7 +328,7 @@ struct SpatialIndexPerformanceTests {
 
     @Test("Radius search performance - varying radius")
     func testRadiusSearchVaryingRadius() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(level: 8)
 
         // Setup: Insert locations
@@ -382,7 +383,7 @@ struct SpatialIndexPerformanceTests {
 
     @Test("Bounding box search performance")
     func testBoundingBoxSearchPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(level: 8)
 
         // Setup: Insert locations in Tokyo area
@@ -438,7 +439,7 @@ struct SpatialIndexPerformanceTests {
 
     @Test("S2 level comparison")
     func testS2LevelComparison() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
 
         let locationCount = 50
         let centerLat = 35.6812
@@ -492,7 +493,7 @@ struct SpatialIndexPerformanceTests {
 
     @Test("S2 vs Morton encoding comparison")
     func testEncodingComparison() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
 
         let locationCount = 50
 
@@ -528,7 +529,7 @@ struct SpatialIndexPerformanceTests {
 
     @Test("Update performance")
     func testUpdatePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(level: 10)
 
         // Setup: Insert initial locations
@@ -588,7 +589,7 @@ struct SpatialIndexPerformanceTests {
 
     @Test("Delete performance")
     func testDeletePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(level: 10)
 
         // Setup: Insert locations
@@ -638,7 +639,7 @@ struct SpatialIndexPerformanceTests {
 
     @Test("Search scalability - increasing location count")
     func testSearchScalability() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
 
         let centerLat = 35.6812
         let centerLon = 139.7671

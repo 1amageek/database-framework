@@ -4,7 +4,6 @@
 // Reference: FDB Record Layer mutual indexing strategy
 // Used for bidirectional relationships where each index helps build the other.
 
-import Foundation
 import StorageKit
 import Core
 import Metrics
@@ -36,7 +35,7 @@ import Synchronization
 ///     reverseIndex: followersIndex,
 ///     forwardMaintainer: followingMaintainer,
 ///     reverseMaintainer: followersMaintainer,
-///     stateManager: stateManager
+///     lifecycleStore: lifecycleStore
 /// )
 ///
 /// try await indexer.buildIndexes(clearFirst: true)
@@ -72,7 +71,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     private let reverseMaintainer: any IndexMaintainer<Item>
 
     /// Index state manager
-    private let stateManager: IndexStateManager
+    private let lifecycleStore: IndexLifecycleStore
 
     // Configuration
     private let batchSize: Int
@@ -104,7 +103,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     ///   - reverseIndex: Reverse direction index
     ///   - forwardMaintainer: Maintainer for forward index
     ///   - reverseMaintainer: Maintainer for reverse index
-    ///   - stateManager: Index state manager
+    ///   - lifecycleStore: Index state manager
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - throttleDelayMs: Delay between batches in ms (default: 0)
     public init(
@@ -117,7 +116,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         reverseIndex: Index,
         forwardMaintainer: any IndexMaintainer<Item>,
         reverseMaintainer: any IndexMaintainer<Item>,
-        stateManager: IndexStateManager,
+        lifecycleStore: IndexLifecycleStore,
         batchSize: Int = 100,
         throttleDelayMs: Int = 0
     ) {
@@ -130,7 +129,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         self.reverseIndex = reverseIndex
         self.forwardMaintainer = forwardMaintainer
         self.reverseMaintainer = reverseMaintainer
-        self.stateManager = stateManager
+        self.lifecycleStore = lifecycleStore
         self.batchSize = batchSize
         self.throttleDelayMs = throttleDelayMs
 
@@ -187,8 +186,8 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     ///   - verifyConsistency: If true, verifies both indexes are consistent
     public func buildIndexes(clearFirst: Bool = false, verifyConsistency: Bool = true) async throws {
         // Set both indexes to write-only state
-        try await stateManager.enable(forwardIndex.name)
-        try await stateManager.enable(reverseIndex.name)
+        try await lifecycleStore.enable(forwardIndex.name)
+        try await lifecycleStore.enable(reverseIndex.name)
 
         // Clear if requested
         if clearFirst {
@@ -205,8 +204,8 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         }
 
         // Transition both to readable
-        try await stateManager.makeReadable(forwardIndex.name)
-        try await stateManager.makeReadable(reverseIndex.name)
+        try await lifecycleStore.makeReadable(forwardIndex.name)
+        try await lifecycleStore.makeReadable(reverseIndex.name)
 
         // Clear progress
         try await clearProgress()
@@ -258,7 +257,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                     var lastProcessedKey: Bytes? = nil
 
                     // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
-                    let storage = ItemStorage(
+                    let storage = self.container.itemStorageFactory.make(
                         transaction: transaction,
                         blobsSubspace: self.blobsSubspace
                     )
@@ -280,7 +279,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
                         batchEntries.append((item: item, id: id))
 
-                        lastProcessedKey = Array(key)
+                        lastProcessedKey = key
                         itemsInBatch += 1
                         pairsInBatch += 1
                     }
@@ -338,7 +337,9 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
             // Throttle if configured
             if throttleDelayMs > 0 {
-                try await Task.sleep(nanoseconds: UInt64(throttleDelayMs) * 1_000_000)
+                try await container.engine.monotonicClock.sleep(
+                    for: .milliseconds(Int64(throttleDelayMs))
+                )
             }
         }
     }
@@ -411,21 +412,20 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
-            return try JSONDecoder().decode(RangeSet.self, from: Data(bytes))
+            return try RangeSetCodec.decode(bytes)
         }
     }
 
     private func saveProgress(_ rangeSet: RangeSet, key: Bytes, _ transaction: any Transaction) throws {
-        let data = try JSONEncoder().encode(rangeSet)
-        transaction.setValue(Array(data), for: key)
+        try transaction.setValue(try RangeSetCodec.encode(rangeSet), for: key)
     }
 
     private func clearProgress() async throws {
         let forwardKey = self.forwardProgressKey
         let reverseKey = self.reverseProgressKey
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.clear(key: forwardKey)
-            transaction.clear(key: reverseKey)
+            try transaction.clear(key: forwardKey)
+            try transaction.clear(key: reverseKey)
         }
     }
 
@@ -434,7 +434,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     private func clearIndexData(for index: Index) async throws {
         let indexRange = self.indexSubspace.subspace(index.name).range()
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
+            try transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }
     }
 }
@@ -517,7 +517,7 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         sourceId: String,
         targetId: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         // Canonicalize: always store smaller ID first
         let (first, second) = sourceId < targetId ? (sourceId, targetId) : (targetId, sourceId)
 
@@ -526,7 +526,7 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
             .pack(Tuple(first, second))
 
         // Store with empty value (existence is enough)
-        transaction.setValue([], for: key)
+        try transaction.setValue([], for: key)
     }
 
     /// Query relationships for an entity

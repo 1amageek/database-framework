@@ -7,13 +7,17 @@ import Synchronization
 /// This wrapper can:
 /// - Count `collectRange` calls
 /// - Fail if more than `maxCollectCalls` calls are performed
-public final class LimitingTransaction: Transaction, @unchecked Sendable {
+public final class LimitingTransaction: Transaction, Sendable {
+
+    public var capabilities: TransactionCapabilities {
+        underlying.capabilities
+    }
 
     // MARK: - Associated Type
 
     /// Delegates to the underlying transaction's RangeResult via type erasure.
     /// Since LimitingTransaction wraps `any Transaction`, we eagerly collect via collectRange.
-    public struct RangeResult: AsyncSequence, Sendable {
+    public struct RangeResult: TransactionRangeResult {
         public typealias Element = (Bytes, Bytes)
 
         private let underlying: (any Transaction)?
@@ -23,6 +27,7 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
         private let reverse: Bool
         private let snapshot: Bool
         private let streamingMode: StreamingMode
+        private let error: LimitingError?
 
         /// Create from pre-collected pairs (e.g., when exceeded max calls).
         init(pairs: [(Bytes, Bytes)]) {
@@ -34,6 +39,19 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
             self.snapshot = false
             self.streamingMode = .wantAll
             self._pairs = pairs
+            self.error = nil
+        }
+
+        init(error: LimitingError) {
+            self.underlying = nil
+            self.begin = KeySelector(key: [], orEqual: false, offset: 0)
+            self.end = KeySelector(key: [], orEqual: false, offset: 0)
+            self.limit = 0
+            self.reverse = false
+            self.snapshot = false
+            self.streamingMode = .wantAll
+            self._pairs = nil
+            self.error = error
         }
 
         /// Create from underlying transaction parameters (lazy collection).
@@ -51,6 +69,7 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
             self.snapshot = snapshot
             self.streamingMode = streamingMode
             self._pairs = nil
+            self.error = nil
         }
 
         private let _pairs: [(Bytes, Bytes)]?
@@ -61,11 +80,12 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
                 begin: begin, end: end,
                 limit: limit, reverse: reverse,
                 snapshot: snapshot, streamingMode: streamingMode,
-                preFetched: _pairs
+                preFetched: _pairs,
+                error: error
             )
         }
 
-        public struct AsyncIterator: AsyncIteratorProtocol {
+        public struct AsyncIterator: TransactionRangeIterator {
             private let underlying: (any Transaction)?
             private let begin: KeySelector
             private let end: KeySelector
@@ -75,13 +95,15 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
             private let streamingMode: StreamingMode
             private var pairs: [(Bytes, Bytes)]?
             private var index = 0
+            private let error: LimitingError?
 
             init(
                 underlying: (any Transaction)?,
                 begin: KeySelector, end: KeySelector,
                 limit: Int, reverse: Bool,
                 snapshot: Bool, streamingMode: StreamingMode,
-                preFetched: [(Bytes, Bytes)]?
+                preFetched: [(Bytes, Bytes)]?,
+                error: LimitingError?
             ) {
                 self.underlying = underlying
                 self.begin = begin
@@ -91,9 +113,13 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
                 self.snapshot = snapshot
                 self.streamingMode = streamingMode
                 self.pairs = preFetched
+                self.error = error
             }
 
             public mutating func next() async throws -> (Bytes, Bytes)? {
+                if let error {
+                    throw error
+                }
                 // Lazily collect on first call
                 if pairs == nil, let tx = underlying {
                     pairs = try await tx.collectRange(
@@ -106,6 +132,13 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
                 let pair = pairs[index]
                 index += 1
                 return pair
+            }
+
+            public mutating func finish(
+                isolation actor: isolated (any Actor)?
+            ) async throws {
+                pairs = nil
+                index = 0
             }
         }
     }
@@ -164,9 +197,10 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
             return value
         }
 
-        // We can't throw from a non-throwing function, so we return empty if exceeded.
         guard count <= maxCollectCalls else {
-            return RangeResult(pairs: [])
+            return RangeResult(
+                error: .exceededMaxCalls(max: maxCollectCalls)
+            )
         }
 
         // Eagerly collect from the underlying transaction.
@@ -182,22 +216,30 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
 
     // MARK: - Write
 
-    public func setValue(_ value: Bytes, for key: Bytes) {
-        underlying.setValue(value, for: key)
+    public func setValue(_ value: Bytes, for key: Bytes) throws {
+        try underlying.setValue(value, for: key)
     }
 
-    public func clear(key: Bytes) {
-        underlying.clear(key: key)
+    public func clear(key: Bytes) throws {
+        try underlying.clear(key: key)
     }
 
-    public func clearRange(beginKey: Bytes, endKey: Bytes) {
-        underlying.clearRange(beginKey: beginKey, endKey: endKey)
+    public func clearRange(beginKey: Bytes, endKey: Bytes) throws {
+        try underlying.clearRange(beginKey: beginKey, endKey: endKey)
     }
 
     // MARK: - Atomic
 
-    public func atomicOp(key: Bytes, param: Bytes, mutationType: MutationType) {
-        underlying.atomicOp(key: key, param: param, mutationType: mutationType)
+    public func atomicOp(
+        key: Bytes,
+        param: Bytes,
+        mutationType: MutationType
+    ) throws {
+        try underlying.atomicOp(
+            key: key,
+            param: param,
+            mutationType: mutationType
+        )
     }
 
     // MARK: - Transaction Control
@@ -206,14 +248,14 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
         try await underlying.commit()
     }
 
-    public func cancel() {
-        underlying.cancel()
+    public func cancel() async throws {
+        try await underlying.cancel()
     }
 
     // MARK: - Version
 
-    public func setReadVersion(_ version: Int64) {
-        underlying.setReadVersion(version)
+    public func setReadVersion(_ version: Int64) throws {
+        try underlying.setReadVersion(version)
     }
 
     public func getReadVersion() async throws -> Int64 {
@@ -250,7 +292,7 @@ public final class LimitingTransaction: Transaction, @unchecked Sendable {
         try await underlying.getEstimatedRangeSizeBytes(beginKey: beginKey, endKey: endKey)
     }
 
-    public func getRangeSplitPoints(beginKey: Bytes, endKey: Bytes, chunkSize: Int) async throws -> [[UInt8]] {
+    public func getRangeSplitPoints(beginKey: Bytes, endKey: Bytes, chunkSize: Int) async throws -> [Bytes] {
         try await underlying.getRangeSplitPoints(beginKey: beginKey, endKey: endKey, chunkSize: chunkSize)
     }
 

@@ -4,8 +4,13 @@
 // This file is part of FullTextIndex module, not DatabaseEngine.
 // DatabaseEngine does not know about FullTextIndexKind.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 import DatabaseEngine
 import StorageKit
 import FullText
@@ -159,16 +164,13 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 return false
             }
             // 2. Match by fieldName
-            guard let kind = descriptor.kind as? FullTextIndexKind<T> else {
-                return false
-            }
-            return kind.fieldNames.contains(fieldName)
+            return descriptor.fieldNames.contains(fieldName)
         }
     }
 
     // MARK: - FusionQuery
 
-    public func execute(candidates: Set<String>?) async throws -> [ScoredResult<T>] {
+    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
         guard !searchTerms.isEmpty else { return [] }
 
         // Find index descriptor
@@ -179,13 +181,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 kind: "fulltext"
             )
         }
-        guard let kind = descriptor.kind as? FullTextIndexKind<T> else {
-            throw FusionQueryError.indexNotFound(
-                type: T.persistableType,
-                field: fieldName,
-                kind: "fulltext"
-            )
-        }
+        let kind = try FullTextIndexKind<T>(canonical: descriptor.kind)
 
         let indexName = descriptor.name
 
@@ -208,8 +204,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         var items = try await queryContext.fetchItems(ids: scoredIds.map(\.id), type: T.self)
 
         // Filter to candidates if provided
-        if let candidateIds = candidates {
-            items = items.filter { candidateIds.contains("\($0.id)") }
+        if let candidateIDs = candidates {
+            items = items.filter { candidateIDs.contains($0.id) }
         }
 
         // Match items with scores
@@ -440,7 +436,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
             guard termSubspace.contains(key) else { break }
 
             let keyTuple = try termSubspace.unpack(key)
-            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
+            let elements = try keyTuple.elements()
             results.append(elements)
         }
 
@@ -459,20 +455,21 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         indexSubspace: Subspace,
         transaction: any Transaction
     ) async throws -> [[any TupleElement]] {
-        guard let descriptor = findIndexDescriptor(),
-              let kind = descriptor.kind as? FullTextIndexKind<T> else {
+        guard let descriptor = findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
                 type: T.persistableType,
                 field: fieldName,
                 kind: "fulltext"
             )
         }
+        let kind = try FullTextIndexKind<T>(canonical: descriptor.kind)
 
         let index = Index(
             name: descriptor.name,
-            kind: kind,
-            rootExpression: FieldKeyExpression(fieldName: self.fieldName),
-            keyPaths: descriptor.keyPaths
+            kind: descriptor.kind,
+            rootExpression: KeyExpressionFactory.from(keyPaths: descriptor.fieldNames),
+            isUnique: descriptor.isUnique,
+            storedFieldNames: descriptor.storedFieldNames
         )
 
         let maintainer = FullTextIndexMaintainer<T>(
@@ -509,8 +506,18 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         let nValue = try await transaction.getValue(for: nKey, snapshot: true)
         let lengthValue = try await transaction.getValue(for: lengthKey, snapshot: true)
 
-        let n: Int64 = nValue.map { bytesToInt64($0) } ?? 0
-        let totalLength: Int64 = lengthValue.map { bytesToInt64($0) } ?? 0
+        let n: Int64
+        if let nValue {
+            n = try bytesToInt64(nValue)
+        } else {
+            n = 0
+        }
+        let totalLength: Int64
+        if let lengthValue {
+            totalLength = try bytesToInt64(lengthValue)
+        } else {
+            totalLength = 0
+        }
 
         return BM25Stats(totalDocuments: n, totalLength: totalLength)
     }
@@ -522,7 +529,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     ) async throws -> Int64 {
         let dfKey = dfSubspace.pack(Tuple(term))
         let value = try await transaction.getValue(for: dfKey, snapshot: true)
-        return value.map { bytesToInt64($0) } ?? 0
+        guard let value else { return 0 }
+        return try bytesToInt64(value)
     }
 
     private func getDocumentMetadata(
@@ -563,7 +571,10 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
 
             // Standard BM25 IDF: log((N - df + 0.5) / (df + 0.5))
             // Reference: Robertson & Zaragoza (2009), "The Probabilistic Relevance Framework: BM25 and Beyond"
-            let idf = log((Double(stats.totalDocuments) - Double(df) + 0.5) / (Double(df) + 0.5))
+            let idf = DatabaseMath.naturalLogarithm(
+                (Double(stats.totalDocuments) - Double(df) + 0.5) /
+                    (Double(df) + 0.5)
+            )
 
             // TF component with length normalization
             let tfDouble = Double(tf)
@@ -613,7 +624,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         return result
     }
 
-    private func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
-        ByteConversion.bytesToInt64(bytes)
+    private func bytesToInt64(_ bytes: Bytes) throws -> Int64 {
+        try ByteConversion.bytesToInt64(bytes)
     }
 }

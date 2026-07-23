@@ -6,7 +6,11 @@
 // Reference: Horrocks, I., Patel-Schneider, P. F., & Van Harmelen, F. (2003).
 // "From SHIQ and RDF to OWL: The making of a web ontology language."
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Graph
 
 /// OWL DL Regularity Checker

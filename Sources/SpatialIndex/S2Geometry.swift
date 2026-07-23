@@ -3,7 +3,12 @@
 //
 // Simplified S2 implementation for spatial indexing.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseMath
 
 /// S2 Geometry encoding for geographic coordinates
 public enum S2Geometry {
@@ -17,9 +22,9 @@ public enum S2Geometry {
         let latRad = latitude * .pi / 180.0
         let lonRad = longitude * .pi / 180.0
 
-        let x = cos(latRad) * cos(lonRad)
-        let y = cos(latRad) * sin(lonRad)
-        let z = sin(latRad)
+        let x = DatabaseMath.cosine(latRad) * DatabaseMath.cosine(lonRad)
+        let y = DatabaseMath.cosine(latRad) * DatabaseMath.sine(lonRad)
+        let z = DatabaseMath.sine(latRad)
 
         let face = getFace(x: x, y: y, z: z)
         let (u, v) = faceXYZtoUV(face: face, x: x, y: y, z: z)
@@ -46,8 +51,11 @@ public enum S2Geometry {
 
         let (x, y, z) = faceUVtoXYZ(face: face, u: u, v: v)
 
-        let latitude = atan2(z, sqrt(x * x + y * y)) * 180.0 / .pi
-        let longitude = atan2(y, x) * 180.0 / .pi
+        let latitude = DatabaseMath.arcTangent(
+            y: z,
+            x: DatabaseMath.squareRoot(x * x + y * y)
+        ) * 180.0 / .pi
+        let longitude = DatabaseMath.arcTangent(y: y, x: x) * 180.0 / .pi
 
         return (latitude, longitude)
     }
@@ -98,9 +106,9 @@ public enum S2Geometry {
 
     private static func uvToST(_ u: Double) -> Double {
         if u >= 0 {
-            return 0.5 * sqrt(1 + 3 * u)
+            return 0.5 * DatabaseMath.squareRoot(1 + 3 * u)
         } else {
-            return 1 - 0.5 * sqrt(1 - 3 * u)
+            return 1 - 0.5 * DatabaseMath.squareRoot(1 - 3 * u)
         }
     }
 
@@ -168,7 +176,9 @@ public enum S2Geometry {
     ) -> [UInt64] {
         // Convert radius to degrees (approximate)
         let latDelta = radiusMeters / earthRadiusMeters * (180.0 / .pi)
-        let lonDelta = radiusMeters / (earthRadiusMeters * cos(latitude * .pi / 180.0)) * (180.0 / .pi)
+        let lonDelta = radiusMeters /
+            (earthRadiusMeters * DatabaseMath.cosine(latitude * .pi / 180.0)) *
+            (180.0 / .pi)
 
         // Calculate bounding box
         let minLat = max(-90, latitude - latDelta)

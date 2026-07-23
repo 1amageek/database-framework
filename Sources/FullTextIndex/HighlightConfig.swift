@@ -3,7 +3,11 @@
 //
 // Reference: Elasticsearch Highlighting, Lucene Highlighter
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 // MARK: - HighlightConfig
 

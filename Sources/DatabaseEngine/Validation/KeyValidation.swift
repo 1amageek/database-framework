@@ -1,32 +1,37 @@
 // KeyValidation.swift
-// FDBIndexing - Key and value size validation for FoundationDB limits
+// DatabaseEngine - Portable key and value size validation
 
 import StorageKit
 
-// MARK: - FDB Limits
+// MARK: - Portable Storage Limits
 
-/// FoundationDB key size limit (10KB)
-public let fdbMaxKeySize: Int = 10_000
+/// Canonical key limit chosen for portability across supported backends.
+public let databaseMaximumKeySize: Int = 10_000
 
-/// FoundationDB value size limit (100KB)
-public let fdbMaxValueSize: Int = 100_000
+/// Canonical value limit chosen for portability across supported backends.
+public let databaseMaximumValueSize: Int = 100_000
 
 // MARK: - Validation Errors
 
-/// Error thrown when FDB limits are violated
-public enum FDBLimitError: Error, CustomStringConvertible {
-    /// Key exceeds FDB's 10KB limit
+/// Error thrown when the canonical physical storage limits are violated.
+public enum DatabaseStorageLimitError:
+    Error,
+    Sendable,
+    Equatable,
+    CustomStringConvertible
+{
+    /// Key exceeds the portable 10KB limit.
     case keyTooLarge(size: Int, limit: Int)
 
-    /// Value exceeds FDB's 100KB limit
+    /// Value exceeds the portable 100KB limit.
     case valueTooLarge(size: Int, limit: Int)
 
     public var description: String {
         switch self {
         case .keyTooLarge(let size, let limit):
-            return "Key size \(size) bytes exceeds FDB limit of \(limit) bytes"
+            return "Key size \(size) bytes exceeds the portable storage limit of \(limit) bytes"
         case .valueTooLarge(let size, let limit):
-            return "Value size \(size) bytes exceeds FDB limit of \(limit) bytes"
+            return "Value size \(size) bytes exceeds the portable storage limit of \(limit) bytes"
         }
     }
 }
@@ -36,22 +41,28 @@ public enum FDBLimitError: Error, CustomStringConvertible {
 /// Validate that a key does not exceed FDB's size limit
 ///
 /// - Parameter key: The key bytes to validate
-/// - Throws: `FDBLimitError.keyTooLarge` if key exceeds 10KB
+/// - Throws: `DatabaseStorageLimitError.keyTooLarge` if key exceeds 10KB
 @inlinable
 public func validateKeySize(_ key: Bytes) throws {
-    if key.count > fdbMaxKeySize {
-        throw FDBLimitError.keyTooLarge(size: key.count, limit: fdbMaxKeySize)
+    if key.count > databaseMaximumKeySize {
+        throw DatabaseStorageLimitError.keyTooLarge(
+            size: key.count,
+            limit: databaseMaximumKeySize
+        )
     }
 }
 
 /// Validate that a value does not exceed FDB's size limit
 ///
 /// - Parameter value: The value bytes to validate
-/// - Throws: `FDBLimitError.valueTooLarge` if value exceeds 100KB
+/// - Throws: `DatabaseStorageLimitError.valueTooLarge` if value exceeds 100KB
 @inlinable
 public func validateValueSize(_ value: Bytes) throws {
-    if value.count > fdbMaxValueSize {
-        throw FDBLimitError.valueTooLarge(size: value.count, limit: fdbMaxValueSize)
+    if value.count > databaseMaximumValueSize {
+        throw DatabaseStorageLimitError.valueTooLarge(
+            size: value.count,
+            limit: databaseMaximumValueSize
+        )
     }
 }
 
@@ -59,7 +70,7 @@ public func validateValueSize(_ value: Bytes) throws {
 ///
 /// - Parameter key: The key bytes to validate
 /// - Returns: The validated key
-/// - Throws: `FDBLimitError.keyTooLarge` if key exceeds 10KB
+/// - Throws: `DatabaseStorageLimitError.keyTooLarge` if key exceeds 10KB
 @inlinable
 public func validatedKey(_ key: Bytes) throws -> Bytes {
     try validateKeySize(key)
@@ -70,7 +81,7 @@ public func validatedKey(_ key: Bytes) throws -> Bytes {
 ///
 /// - Parameter value: The value bytes to validate
 /// - Returns: The validated value
-/// - Throws: `FDBLimitError.valueTooLarge` if value exceeds 100KB
+/// - Throws: `DatabaseStorageLimitError.valueTooLarge` if value exceeds 100KB
 @inlinable
 public func validatedValue(_ value: Bytes) throws -> Bytes {
     try validateValueSize(value)

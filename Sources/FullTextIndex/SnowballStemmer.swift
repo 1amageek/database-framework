@@ -4,7 +4,11 @@
 // Reference: Snowball Porter2 stemmer
 // https://snowballstem.org/algorithms/english/stemmer.html
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 // MARK: - SnowballStemmer
 
@@ -91,10 +95,7 @@ public struct SnowballStemmer: TokenFilter, Sendable {
         // Step 5: Remove final e/l
         w = step5(w, r1Start: r1Start, r2Start: r2Start)
 
-        // Restore Y to y
-        w = w.replacingOccurrences(of: "Y", with: "y")
-
-        return w
+        return restoreConsonantY(in: w)
     }
 
     // MARK: - Helper Methods
@@ -109,6 +110,15 @@ public struct SnowballStemmer: TokenFilter, Sendable {
 
     private func isConsonant(_ c: Character) -> Bool {
         !vowels.contains(c)
+    }
+
+    /// Restore the internal consonant marker before returning the owned stem.
+    private func restoreConsonantY(in word: String) -> String {
+        // Producing the transformed owned String requires one output allocation.
+        // The lazy sequence avoids an additional intermediate character array.
+        String(word.lazy.map { character in
+            character == "Y" ? "y" : character
+        })
     }
 
     /// Replace Y with uppercase Y where it should be treated as consonant

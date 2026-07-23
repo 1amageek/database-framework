@@ -4,7 +4,11 @@
 // Reference: FDB Record Layer Remote Fetch optimization
 // Efficiently fetches multiple records by batching primary key lookups.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 import Synchronization
@@ -122,17 +126,22 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     /// Item type name
     private let itemType: String
 
+    /// Container-scoped canonical record storage policy
+    private let itemStorageFactory: ItemStorageFactory
+
     // MARK: - Initialization
 
     public init(
         itemSubspace: Subspace,
         blobsSubspace: Subspace,
         itemType: String,
+        itemStorageFactory: ItemStorageFactory,
         configuration: BatchFetchConfiguration = .default
     ) {
         self.itemSubspace = itemSubspace
         self.blobsSubspace = blobsSubspace
         self.itemType = itemType
+        self.itemStorageFactory = itemStorageFactory
         self.configuration = configuration
     }
 
@@ -154,7 +163,10 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
         guard !primaryKeys.isEmpty else { return [] }
 
         let itemTypeSubspace = itemSubspace.subspace(itemType)
-        let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+        let storage = itemStorageFactory.make(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
 
         // All reads are sequential within a single transaction
         // FDB transactions are NOT thread-safe for concurrent access
@@ -202,18 +214,21 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     /// - Parameters:
     ///   - primaryKeys: Async sequence of primary keys
     ///   - transaction: The transaction to use
-    /// - Returns: AsyncStream of fetched items
+    /// - Returns: A throwing stream of fetched items
     public func stream<S: AsyncSequence>(
         primaryKeys: S,
         transaction: any Transaction
-    ) -> AsyncStream<Item> where S.Element == Tuple, S: Sendable {
-        AsyncStream { continuation in
+    ) -> AsyncThrowingStream<Item, Error> where S.Element == Tuple, S: Sendable {
+        AsyncThrowingStream { continuation in
             Task {
                 var batch: [Tuple] = []
                 batch.reserveCapacity(configuration.batchSize)
 
                 let itemTypeSubspace = itemSubspace.subspace(itemType)
-                let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+                let storage = itemStorageFactory.make(
+                    transaction: transaction,
+                    blobsSubspace: blobsSubspace
+                )
 
                 do {
                     for try await pk in primaryKeys {
@@ -246,7 +261,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
 
                     continuation.finish()
                 } catch {
-                    continuation.finish()
+                    continuation.finish(throwing: error)
                 }
             }
         }
@@ -260,24 +275,31 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     ///   - indexEntries: Async sequence of (key, value) pairs from index
     ///   - indexSubspace: The index subspace for unpacking keys
     ///   - transaction: The transaction to use
-    /// - Returns: AsyncStream of fetched items
+    /// - Returns: A throwing stream of fetched items
     public func streamFromIndex<S: AsyncSequence>(
         indexEntries: S,
         indexSubspace: Subspace,
         transaction: any Transaction
-    ) -> AsyncStream<Item> where S.Element == (key: Bytes, value: Bytes), S: Sendable {
-        AsyncStream { continuation in
+    ) -> AsyncThrowingStream<Item, Error>
+    where S.Element == (key: Bytes, value: Bytes), S: Sendable {
+        AsyncThrowingStream { continuation in
             Task {
                 var batch: [Tuple] = []
                 batch.reserveCapacity(configuration.batchSize)
 
                 let itemTypeSubspace = itemSubspace.subspace(itemType)
-                let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+                let storage = itemStorageFactory.make(
+                    transaction: transaction,
+                    blobsSubspace: blobsSubspace
+                )
 
                 do {
                     for try await (key, _) in indexEntries {
                         // Extract primary key from index entry
-                        if let pk = try? extractPrimaryKey(from: key, indexSubspace: indexSubspace) {
+                        if let pk = try extractPrimaryKey(
+                            from: key,
+                            indexSubspace: indexSubspace
+                        ) {
                             batch.append(pk)
 
                             if batch.count >= configuration.batchSize {
@@ -308,7 +330,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
 
                     continuation.finish()
                 } catch {
-                    continuation.finish()
+                    continuation.finish(throwing: error)
                 }
             }
         }
@@ -375,7 +397,10 @@ extension BatchFetcher {
         }
 
         let itemTypeSubspace = itemSubspace.subspace(itemType)
-        let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+        let storage = itemStorageFactory.make(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
 
         var items: [Item] = []
         var notFound: [Tuple] = []
@@ -410,7 +435,7 @@ extension BatchFetcher {
 /// Batch fetcher with prefetching support
 ///
 /// Prefetches the next batch while the current batch is being processed.
-public final class PrefetchingBatchFetcher<Item: Persistable>: @unchecked Sendable {
+public final class PrefetchingBatchFetcher<Item: Persistable>: Sendable {
     private let baseFetcher: BatchFetcher<Item>
     private let container: DBContainer
 
@@ -433,6 +458,7 @@ public final class PrefetchingBatchFetcher<Item: Persistable>: @unchecked Sendab
             itemSubspace: itemSubspace,
             blobsSubspace: blobsSubspace,
             itemType: itemType,
+            itemStorageFactory: container.itemStorageFactory,
             configuration: configuration
         )
         self.state = Mutex(State())

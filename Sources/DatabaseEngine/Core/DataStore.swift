@@ -83,7 +83,7 @@ public protocol DataStore: AnyObject, Sendable {
     ///   - id: The model's identifier
     /// - Returns: The model if found and access is allowed, nil if not found
     /// - Throws: SecurityError if GET not allowed, or other errors on failure
-    func fetch<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws -> T?
+    func fetch<T: Persistable>(_ type: T.Type, id: T.ID) async throws -> T?
 
     /// Fetch all models of a type
     ///
@@ -171,9 +171,9 @@ public protocol DataStore: AnyObject, Sendable {
     ///   - transaction: The transaction to use
     /// - Returns: The model if found and access is allowed, nil if not found
     /// - Throws: SecurityError if GET not allowed, or other errors on failure
-    func fetchByIdInTransaction<T: Persistable>(
+    func fetchByIDInTransaction<T: Persistable>(
         _ type: T.Type,
-        id: any TupleElement,
+        id: T.ID,
         transaction: any Transaction
     ) async throws -> T?
 
@@ -276,12 +276,12 @@ extension DataStore {
 public struct SerializedModel: Sendable {
     /// The original model
     public let model: any Persistable
-    /// Serialized data (Protobuf)
-    public let data: [UInt8]
+    /// Serialized canonical compiled-record data
+    public let data: Bytes
     /// ID as Tuple
     public let idTuple: Tuple
 
-    public init(model: any Persistable, data: [UInt8], idTuple: Tuple) {
+    public init(model: any Persistable, data: Bytes, idTuple: Tuple) {
         self.model = model
         self.data = data
         self.idTuple = idTuple

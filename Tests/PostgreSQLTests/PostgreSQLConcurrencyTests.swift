@@ -38,7 +38,7 @@ private func collectRange(
     return result
 }
 
-@Suite("PostgreSQL Concurrency Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
+@Suite("PostgreSQL Concurrency Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
 struct PostgreSQLConcurrencyTests {
 
     private func uniqueID(_ prefix: String) -> String {
@@ -47,14 +47,14 @@ struct PostgreSQLConcurrencyTests {
 
     private func setupContainer() async throws -> DBContainer {
         let schema = Schema([PGCounter.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLTestSetup.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
     }
 
     // MARK: - Concurrent Write Isolation
 
     @Test("Concurrent writes to different keys succeed")
     func concurrentWritesDifferentKeys() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
 
             let id1 = uniqueID("conc-1")
@@ -100,7 +100,7 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("withTransaction retries on serialization failure")
     func withTransactionRetries() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -138,27 +138,27 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("Empty byte arrays round-trip correctly")
     func emptyByteArrayRoundTrip() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            let engine = try await PostgreSQLTestSetup.shared.engine
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
             let key: [UInt8] = [0x99, 0x01, 0x02]
 
             // Write empty value
             let tx1 = try engine.createTransaction()
-            tx1.setValue([], for: key)
+            try tx1.setValue([], for: key)
             try await tx1.commit()
 
             // Read back
             let tx2 = try engine.createTransaction()
             let value = try await tx2.getValue(for: key)
-            tx2.cancel()
+            try await tx2.cancel()
 
             #expect(value != nil)
             #expect(value == [])
 
             // Cleanup
             let tx3 = try engine.createTransaction()
-            tx3.clear(key: key)
+            try tx3.clear(key: key)
             try await tx3.commit()
         }
     }
@@ -167,8 +167,8 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("Range scan with PostgreSQLRangeResult works correctly")
     func rangeScanLazyEvaluation() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            let engine = try await PostgreSQLTestSetup.shared.engine
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
             let prefix: [UInt8] = [0xAA]
             let endPrefix: [UInt8] = [0xAB]
@@ -176,28 +176,28 @@ struct PostgreSQLConcurrencyTests {
             // Insert multiple keys with same prefix
             let tx1 = try engine.createTransaction()
             for i: UInt8 in 0..<10 {
-                tx1.setValue([i], for: prefix + [i])
+                try tx1.setValue([i], for: prefix + [i])
             }
             try await tx1.commit()
 
             // Range scan
             let tx2 = try engine.createTransaction()
             let results = try await collectRange(tx2, begin: prefix + [0x00], end: endPrefix)
-            tx2.cancel()
+            try await tx2.cancel()
 
             #expect(results.count == 10)
 
             // Cleanup
             let tx3 = try engine.createTransaction()
-            tx3.clearRange(beginKey: prefix, endKey: endPrefix)
+            try tx3.clearRange(beginKey: prefix, endKey: endPrefix)
             try await tx3.commit()
         }
     }
 
     @Test("Reverse range scan returns items in reverse order")
     func reverseRangeScan() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            let engine = try await PostgreSQLTestSetup.shared.engine
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
             let prefix: [UInt8] = [0xBB]
             let endPrefix: [UInt8] = [0xBC]
@@ -205,14 +205,14 @@ struct PostgreSQLConcurrencyTests {
             // Insert ordered keys
             let tx1 = try engine.createTransaction()
             for i: UInt8 in 0..<5 {
-                tx1.setValue([i], for: prefix + [i])
+                try tx1.setValue([i], for: prefix + [i])
             }
             try await tx1.commit()
 
             // Reverse range scan
             let tx2 = try engine.createTransaction()
             let results = try await collectRange(tx2, begin: prefix + [0x00], end: endPrefix, reverse: true)
-            tx2.cancel()
+            try await tx2.cancel()
 
             #expect(results.count == 5)
             // Verify reverse order
@@ -222,15 +222,15 @@ struct PostgreSQLConcurrencyTests {
 
             // Cleanup
             let tx3 = try engine.createTransaction()
-            tx3.clearRange(beginKey: prefix, endKey: endPrefix)
+            try tx3.clearRange(beginKey: prefix, endKey: endPrefix)
             try await tx3.commit()
         }
     }
 
     @Test("Range scan with limit returns correct count")
     func rangeScanWithLimit() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            let engine = try await PostgreSQLTestSetup.shared.engine
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
             let prefix: [UInt8] = [0xCC]
             let endPrefix: [UInt8] = [0xCD]
@@ -238,20 +238,20 @@ struct PostgreSQLConcurrencyTests {
             // Insert 10 keys
             let tx1 = try engine.createTransaction()
             for i: UInt8 in 0..<10 {
-                tx1.setValue([i], for: prefix + [i])
+                try tx1.setValue([i], for: prefix + [i])
             }
             try await tx1.commit()
 
             // Scan with limit 3
             let tx2 = try engine.createTransaction()
             let results = try await collectRange(tx2, begin: prefix + [0x00], end: endPrefix, limit: 3)
-            tx2.cancel()
+            try await tx2.cancel()
 
             #expect(results.count == 3)
 
             // Cleanup
             let tx3 = try engine.createTransaction()
-            tx3.clearRange(beginKey: prefix, endKey: endPrefix)
+            try tx3.clearRange(beginKey: prefix, endKey: endPrefix)
             try await tx3.commit()
         }
     }
@@ -260,7 +260,7 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("SchemaRegistry persists and loads on PostgreSQL")
     func schemaRegistryPersistence() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
 
             // SchemaRegistry is automatically initialized by DBContainer.
@@ -274,7 +274,7 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("Nested withTransaction reuses parent connection")
     func nestedTransactionReuse() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 

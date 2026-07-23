@@ -8,8 +8,10 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 
 // MARK: - Test Model with Index
 
@@ -82,13 +84,13 @@ struct IndexedUser: Persistable {
 // MARK: - Test Helper
 
 /// Test context for FDB integration tests
-private struct TestContext {
+private struct IndexStateContext {
     let database: any StorageEngine
     let subspace: Subspace
     let container: DBContainer
 
     init() async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "indexstate", String(testId)).pack())
 
@@ -100,6 +102,7 @@ private struct TestContext {
         self.container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
             )
     }
@@ -108,7 +111,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -135,14 +138,14 @@ struct IndexStateBehaviorTests {
 
     @Test("Disabled index should not be maintained on insert")
     func testDisabledIndexNotMaintainedOnInsert() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await IndexStateContext()
 
-            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
+            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Ensure index is disabled (default state)
-            let initialState = try await indexStateManager.state(of: indexName)
+            let initialState = try await indexLifecycleStore.state(of: indexName)
             #expect(initialState == .disabled)
 
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
@@ -162,14 +165,14 @@ struct IndexStateBehaviorTests {
 
     @Test("Disabled index should not enforce unique constraint")
     func testDisabledIndexNoUniqueConstraint() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await IndexStateContext()
 
-            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
+            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Ensure index is disabled
-            let state = try await indexStateManager.state(of: indexName)
+            let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .disabled)
 
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
@@ -197,15 +200,15 @@ struct IndexStateBehaviorTests {
 
     @Test("WriteOnly index should be maintained on insert")
     func testWriteOnlyIndexMaintainedOnInsert() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await IndexStateContext()
 
-            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
+            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Enable index (disabled -> writeOnly)
-            try await indexStateManager.enable(indexName)
-            let state = try await indexStateManager.state(of: indexName)
+            try await indexLifecycleStore.enable(indexName)
+            let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .writeOnly)
 
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
@@ -225,14 +228,14 @@ struct IndexStateBehaviorTests {
 
     @Test("WriteOnly index should track unique constraint violations (not throw)")
     func testWriteOnlyIndexTracksUniqueConstraintViolations() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await IndexStateContext()
 
-            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
+            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Enable index (puts it in writeOnly state)
-            try await indexStateManager.enable(indexName)
+            try await indexLifecycleStore.enable(indexName)
 
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
@@ -256,15 +259,15 @@ struct IndexStateBehaviorTests {
 
     @Test("Readable index should enforce unique constraint by throwing")
     func testReadableIndexEnforcesUniqueConstraint() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await IndexStateContext()
 
-            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
+            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Enable and make readable
-            try await indexStateManager.enable(indexName)
-            try await indexStateManager.makeReadable(indexName)
+            try await indexLifecycleStore.enable(indexName)
+            try await indexLifecycleStore.makeReadable(indexName)
 
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
@@ -288,16 +291,16 @@ struct IndexStateBehaviorTests {
 
     @Test("Readable index should be maintained on insert")
     func testReadableIndexMaintainedOnInsert() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await IndexStateContext()
 
-            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
+            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Enable and make readable (disabled -> writeOnly -> readable)
-            try await indexStateManager.enable(indexName)
-            try await indexStateManager.makeReadable(indexName)
-            let state = try await indexStateManager.state(of: indexName)
+            try await indexLifecycleStore.enable(indexName)
+            try await indexLifecycleStore.makeReadable(indexName)
+            let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .readable)
 
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
@@ -319,17 +322,17 @@ struct IndexStateBehaviorTests {
 
     @Test("Disabled index should not be updated on delete")
     func testDisabledIndexNotUpdatedOnDelete() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await IndexStateContext()
 
-            // Create FDBDataStore first, then use its internal indexStateManager
+            // Create FDBDataStore first, then use its internal indexLifecycleStore
             // This ensures cache consistency between state changes and delete operations
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
-            // Start with readable index (using dataStore's indexStateManager)
-            try await dataStore.indexStateManager.enable(indexName)
-            try await dataStore.indexStateManager.makeReadable(indexName)
+            // Start with readable index (using dataStore's indexLifecycleStore)
+            try await dataStore.indexLifecycleStore.enable(indexName)
+            try await dataStore.indexLifecycleStore.makeReadable(indexName)
 
             // Insert user (index entry created)
             let user = IndexedUser(id: "deletetest", email: "delete@example.com", name: "Delete Test")
@@ -339,8 +342,8 @@ struct IndexStateBehaviorTests {
             let countBefore = try await ctx.countIndexEntries(indexName: indexName)
             #expect(countBefore == 1)
 
-            // Disable the index (using the same indexStateManager to ensure cache is invalidated)
-            try await dataStore.indexStateManager.disable(indexName)
+            // Disable the index (using the same indexLifecycleStore to ensure cache is invalidated)
+            try await dataStore.indexLifecycleStore.disable(indexName)
 
             // Delete user - index entry should remain because index is now disabled
             try await dataStore.delete([user])
@@ -358,29 +361,29 @@ struct IndexStateBehaviorTests {
 
     @Test("Index state transitions follow correct sequence")
     func testStateTransitions() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await IndexStateContext()
 
-            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
+            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "test_index"
 
             // Initial state is disabled
-            let state1 = try await indexStateManager.state(of: indexName)
+            let state1 = try await indexLifecycleStore.state(of: indexName)
             #expect(state1 == .disabled)
 
             // disabled -> writeOnly
-            try await indexStateManager.enable(indexName)
-            let state2 = try await indexStateManager.state(of: indexName)
+            try await indexLifecycleStore.enable(indexName)
+            let state2 = try await indexLifecycleStore.state(of: indexName)
             #expect(state2 == .writeOnly)
 
             // writeOnly -> readable
-            try await indexStateManager.makeReadable(indexName)
-            let state3 = try await indexStateManager.state(of: indexName)
+            try await indexLifecycleStore.makeReadable(indexName)
+            let state3 = try await indexLifecycleStore.state(of: indexName)
             #expect(state3 == .readable)
 
             // readable -> disabled
-            try await indexStateManager.disable(indexName)
-            let state4 = try await indexStateManager.state(of: indexName)
+            try await indexLifecycleStore.disable(indexName)
+            let state4 = try await indexLifecycleStore.state(of: indexName)
             #expect(state4 == .disabled)
 
             // Cleanup
@@ -390,22 +393,22 @@ struct IndexStateBehaviorTests {
 
     @Test("Invalid state transitions should fail")
     func testInvalidStateTransitions() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await IndexStateContext()
 
-            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
+            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "test_invalid"
 
             // Cannot enable from writeOnly
-            try await indexStateManager.enable(indexName)
+            try await indexLifecycleStore.enable(indexName)
             await #expect(throws: IndexStateError.self) {
-                try await indexStateManager.enable(indexName)
+                try await indexLifecycleStore.enable(indexName)
             }
 
             // Cannot makeReadable from disabled
-            try await indexStateManager.disable(indexName)
+            try await indexLifecycleStore.disable(indexName)
             await #expect(throws: IndexStateError.self) {
-                try await indexStateManager.makeReadable(indexName)
+                try await indexLifecycleStore.makeReadable(indexName)
             }
 
             // Cleanup
@@ -417,14 +420,14 @@ struct IndexStateBehaviorTests {
 
     @Test("Batch operations respect index state")
     func testBatchOperationsRespectIndexState() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await IndexStateContext()
 
-            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
+            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Ensure index is disabled
-            let state = try await indexStateManager.state(of: indexName)
+            let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .disabled)
 
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)

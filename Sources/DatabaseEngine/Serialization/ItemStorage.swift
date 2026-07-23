@@ -1,290 +1,115 @@
-// ItemStorage.swift
-// DatabaseEngine - Unified item storage abstraction
-//
-// Handles compression, large value splitting, and snapshot semantics.
-// All item I/O should go through this layer.
-
-import Foundation
 import StorageKit
-import Core
 
-// MARK: - ItemStorage
-
-/// Unified item storage abstraction
+/// Canonical record storage bound to one transaction and one blob subspace.
 ///
-/// **Key Design Principles**:
-/// 1. One item = one key in items subspace (no split keys mixing in scans)
-/// 2. Large values stored in separate blobs subspace
-/// 3. Snapshot parameter propagated to all reads
-/// 4. Compression applied before splitting decision
-/// 5. Overwrite always cleans up old blobs first
-///
-/// **Data Layout**:
-/// ```
-/// [items]/[type]/[id]                     → ItemEnvelope (inline or external ref)
-/// [blobs]/[Tuple([itemKeyBytes])]/[chunkIndex] → Chunk data (only for external refs)
-/// ```
-///
-/// **Usage**:
-/// ```swift
-/// let storage = ItemStorage(
-///     transaction: tx,
-///     blobsSubspace: blobsSub
-/// )
-///
-/// // Write (auto-decides inline vs external)
-/// try await storage.write(data, for: key)  // Note: async for overwrite cleanup
-///
-/// // Read with snapshot semantics
-/// let data = try await storage.read(for: key, snapshot: true)
-///
-/// // Scan items (handles external refs transparently)
-/// for try await (key, data) in storage.scan(range: range, snapshot: true) {
-///     // data is always complete, regardless of storage type
-/// }
-/// ```
+/// v1 stores identity-encoded payloads. Inline reads remain views into the
+/// backend-owned envelope buffer. External writes pass constant-time payload
+/// slices to the transaction and external reads allocate exactly one final
+/// assembly buffer.
 public struct ItemStorage: Sendable {
-    private static let defaultTransformer = TransformingSerializer(configuration: .default)
-
-    // MARK: - Properties
-
-    /// Underlying FDB transaction
     private let transaction: any Transaction
-
-    /// Blobs subspace for large value chunks
     private let blobsSubspace: Subspace
+    public let configuration: ItemStorageConfiguration
 
-    /// Transformer for compression
-    private let transformer: TransformingSerializer
-
-    /// Maximum inline size (before splitting)
-    private let maxInlineSize: Int
-
-    /// Chunk size for external storage
-    private let chunkSize: Int
-
-    // MARK: - Initialization
-
-    /// Initialize ItemStorage
-    ///
-    /// - Parameters:
-    ///   - transaction: FDB transaction to use
-    ///   - blobsSubspace: Subspace for storing blob chunks
-    ///   - maxInlineSize: Maximum size for inline storage (default: 90KB)
-    ///   - chunkSize: Size of each chunk for external storage (default: 90KB)
     public init(
         transaction: any Transaction,
         blobsSubspace: Subspace,
-        maxInlineSize: Int = ItemEnvelope.maxInlineSize,
-        chunkSize: Int = ItemEnvelope.maxInlineSize
+        configuration: ItemStorageConfiguration
     ) {
         self.transaction = transaction
         self.blobsSubspace = blobsSubspace
-        self.transformer = TransformingSerializer(configuration: .default)
-        self.maxInlineSize = maxInlineSize
-        self.chunkSize = chunkSize
+        self.configuration = configuration
     }
 
-    // MARK: - Blob Key Helpers
-
-    /// Get blob prefix for an item key
-    /// Uses key bytes as single Tuple element for clearRange compatibility
-    private func blobPrefix(for key: Bytes) -> Subspace {
-        // Store the raw key bytes as a single Tuple element (byte string)
-        blobsSubspace.subspace(Tuple([key]))
-    }
-
-    // MARK: - Write Operations
-
-    /// Write an item with automatic compression and external storage
+    /// Writes one complete record using the canonical v1 physical format.
     ///
-    /// Pipeline: cleanup old blobs → compress → inline or external → FDB
-    ///
-    /// - Parameters:
-    ///   - data: The raw data to write
-    ///   - key: The item key (in items subspace)
-    ///   - isNewRecord: When true, skips clearing old blobs (optimization for known new inserts)
-    public func write(_ data: Bytes, for key: Bytes, isNewRecord: Bool = false) async throws {
-        // Step 1: Clear existing blobs only when overwriting (skip for known new records)
-        if !isNewRecord {
-            clearAllBlobs(for: key)
+    /// All fallible validation and envelope construction happens before old
+    /// blob mutations are cleared. The enclosing transaction remains the
+    /// atomicity boundary for chunks, envelope, indexes, and relationships.
+    public func write(_ data: Bytes, for key: Bytes) async throws {
+        try validatePlainByteCount(data.count)
+
+        let payload: Bytes
+        switch configuration.encoding {
+        case .identity:
+            payload = data
         }
+        try validateStoredByteCount(payload.count)
 
-        // Step 2: Compress
-        let compressed = try compress(data)
+        let checksum = ItemChecksum.crc32c(data)
+        let plainByteCount = UInt64(data.count)
+        let storedByteCount = UInt64(payload.count)
 
-        // Step 3: Decide inline vs external
-        if compressed.count <= maxInlineSize {
-            // Inline: store directly with envelope
-            let envelope = ItemEnvelope.inline(data: compressed)
-            transaction.setValue(envelope.serialize(), for: key)
-        } else {
-            // External: store chunks in blobs subspace
-            let chunkCount = (compressed.count + chunkSize - 1) / chunkSize
-
-            guard chunkCount <= Int32.max else {
-                throw ItemStorageError.valueTooLarge(size: compressed.count)
-            }
-
-            // Write chunks to blobs subspace
-            // Key: [blobs]/[Data(itemKey)]/[chunkIndex]
-            let blobBase = blobPrefix(for: key)
-
-            var offset = 0
-            for i in 0..<chunkCount {
-                let chunkStart = offset
-                let chunkEnd = min(offset + chunkSize, compressed.count)
-                let chunk = Array(compressed[chunkStart..<chunkEnd])
-
-                let chunkKey = blobBase.pack(Tuple([Int32(i)]))
-                transaction.setValue(chunk, for: chunkKey)
-                offset = chunkEnd
-            }
-
-            // Write envelope with external reference
-            let ref = ItemEnvelope.ExternalRef(
-                totalSize: Int64(compressed.count),
-                chunkCount: Int32(chunkCount),
-                chunkSize: Int32(chunkSize)
+        let envelope: ItemEnvelope
+        if payload.count <= configuration.maximumInlineByteCount {
+            envelope = try ItemEnvelope.inline(
+                payload: payload,
+                encoding: configuration.encoding,
+                plainByteCount: plainByteCount,
+                checksum: checksum
             )
-            let envelope = ItemEnvelope.external(ref: ref)
-            transaction.setValue(envelope.serialize(), for: key)
+        } else {
+            let chunkCount = try externalChunkCount(
+                storedByteCount: payload.count
+            )
+            let reference = try ItemEnvelope.ExternalRef(
+                chunkCount: chunkCount,
+                chunkByteCount: UInt32(configuration.chunkByteCount),
+                storedByteCount: storedByteCount
+            )
+            envelope = try ItemEnvelope.external(
+                reference: reference,
+                encoding: configuration.encoding,
+                plainByteCount: plainByteCount,
+                storedByteCount: storedByteCount,
+                checksum: checksum
+            )
         }
+        let envelopeBytes = envelope.serialize()
+
+        try clearAllBlobs(for: key)
+        if case .external(let reference) = envelope.content {
+            try writeChunks(
+                payload,
+                for: key,
+                chunkCount: Int(reference.chunkCount)
+            )
+        }
+        try transaction.setValue(envelopeBytes, for: key)
     }
 
-    /// Clear all blob chunks for a key (efficient clearRange, no iteration).
-    ///
-    /// This is used for:
-    /// - Overwrite (external → inline, external → external, etc.)
-    /// - Delete
-    /// - Cleanup even if the existing item value is corrupted/non-envelope
-    private func clearAllBlobs(for key: Bytes) {
-        let blobBase = blobPrefix(for: key)
-        let (begin, end) = blobBase.range()
-        transaction.clearRange(beginKey: begin, endKey: end)
-    }
-
-    // MARK: - Read Operations
-
-    /// Read an item with snapshot semantics
-    ///
-    /// Pipeline: FDB → join if external → decompress → raw data
-    ///
-    /// - Parameters:
-    ///   - key: The item key to read
-    ///   - snapshot: If true, perform snapshot read (no conflict tracking)
-    /// - Returns: The decompressed data, or nil if not found
-    public func read(for key: Bytes, snapshot: Bool = false) async throws -> Bytes? {
-        // Read envelope
-        guard let envelopeBytes = try await transaction.getValue(for: key, snapshot: snapshot) else {
-            return nil
-        }
-
-        // All data must be in envelope format
-        guard ItemEnvelope.isEnvelope(envelopeBytes) else {
-            throw ItemStorageError.notEnvelopeFormat
-        }
-
-        // Parse envelope
-        let envelope = try ItemEnvelope.deserialize(envelopeBytes)
-
-        // Get compressed data
-        let compressed: Bytes
-        switch envelope.content {
-        case .inline(let data):
-            compressed = data
-
-        case .external(let ref):
-            compressed = try await loadChunks(for: key, ref: ref, snapshot: snapshot)
-        }
-
-        // Decompress
-        return try decompress(compressed)
-    }
-
-    /// Direct point-read helper that avoids building a temporary ItemStorage instance.
-    ///
-    /// Used by single-item fetch paths where the storage configuration is the default one.
-    static func read(
-        transaction: any Transaction,
-        blobsSubspace: Subspace,
+    /// Reads, structurally validates, and checksum-verifies one record.
+    public func read(
         for key: Bytes,
         snapshot: Bool = false
     ) async throws -> Bytes? {
-        guard let envelopeBytes = try await transaction.getValue(for: key, snapshot: snapshot) else {
+        guard let envelopeBytes = try await transaction.getValue(
+            for: key,
+            snapshot: snapshot
+        ) else {
             return nil
         }
-
-        guard ItemEnvelope.isEnvelope(envelopeBytes) else {
-            throw ItemStorageError.notEnvelopeFormat
-        }
-
-        let compressed: Bytes
-        switch envelopeBytes[5] {
-        case ItemEnvelope.Flags.inline.rawValue:
-            compressed = Array(envelopeBytes.dropFirst(ItemEnvelope.headerSize))
-        case ItemEnvelope.Flags.external.rawValue:
-            let payloadBytes = Array(envelopeBytes.dropFirst(ItemEnvelope.headerSize))
-            let ref = try ItemEnvelope.ExternalRef.deserialize(payloadBytes)
-            compressed = try await loadChunks(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace,
-                for: key,
-                ref: ref,
-                snapshot: snapshot
-            )
-        default:
-            throw ItemEnvelopeError.invalidFlags(envelopeBytes[5])
-        }
-
-        return try decompress(compressed, transformer: defaultTransformer)
+        return try await decodeStoredValue(
+            envelopeBytes,
+            for: key,
+            snapshot: snapshot
+        )
     }
 
-    /// Check if an item exists (without loading full data)
-    ///
-    /// - Parameters:
-    ///   - key: The item key
-    ///   - snapshot: If true, perform snapshot read
-    /// - Returns: True if item exists
-    public func exists(for key: Bytes, snapshot: Bool = false) async throws -> Bool {
-        return try await transaction.getValue(for: key, snapshot: snapshot) != nil
+    public func exists(
+        for key: Bytes,
+        snapshot: Bool = false
+    ) async throws -> Bool {
+        try await transaction.getValue(for: key, snapshot: snapshot) != nil
     }
 
-    // MARK: - Delete Operations
-
-    /// Delete an item (handles external chunks with clearRange)
-    ///
-    /// - Parameter key: The item key to delete
-    /// Delete an item and its associated blob chunks
-    ///
-    /// - Parameters:
-    ///   - key: The item key
-    ///   - skipBlobCleanup: When true, skips clearing blob chunks.
-    ///     Safe when the item is known to use inline storage (< 90KB) and
-    ///     no external blob chunks exist.
-    public func delete(for key: Bytes, skipBlobCleanup: Bool = false) async throws {
-        // Clear blob range only when needed (handles external storage)
-        if !skipBlobCleanup {
-            clearAllBlobs(for: key)
-        }
-
-        // Clear the item key
-        transaction.clear(key: key)
+    /// Deletes both the item envelope and every possible external chunk.
+    public func delete(for key: Bytes) async throws {
+        try clearAllBlobs(for: key)
+        try transaction.clear(key: key)
     }
 
-    // MARK: - Scan Operations
-
-    /// Scan items in a range with snapshot semantics
-    ///
-    /// Automatically handles external references, returning complete data for each item.
-    ///
-    /// - Parameters:
-    ///   - begin: Start key (inclusive)
-    ///   - end: End key (exclusive)
-    ///   - snapshot: If true, perform snapshot reads
-    ///   - limit: Maximum number of items (0 = unlimited)
-    ///   - reverse: If true, scan in reverse order
-    /// - Returns: AsyncSequence of (key, decompressed data) pairs
+    /// Opens a lazy scan over canonical item envelopes.
     public func scan(
         begin: Bytes,
         end: Bytes,
@@ -292,99 +117,232 @@ public struct ItemStorage: Sendable {
         limit: Int = 0,
         reverse: Bool = false
     ) -> ItemScanSequence {
-        ItemScanSequence(
+        let validationError: ItemStorageError? = limit < 0
+            ? .invalidScanLimit(limit)
+            : nil
+        return ItemScanSequence(
             storage: self,
             begin: begin,
             end: end,
             snapshot: snapshot,
             limit: limit,
-            reverse: reverse
+            reverse: reverse,
+            validationError: validationError
         )
     }
 
-    // MARK: - Internal: Chunk Operations
-
-    /// Load chunks for an external reference
-    func loadChunks(
-        for key: Bytes,
-        ref: ItemEnvelope.ExternalRef,
-        snapshot: Bool
-    ) async throws -> Bytes {
-        try await Self.loadChunks(
-            transaction: transaction,
-            blobsSubspace: blobsSubspace,
-            for: key,
-            ref: ref,
-            snapshot: snapshot
-        )
-    }
-
-    // MARK: - Internal: Compression
-
-    private func compress(_ value: Bytes) throws -> Bytes {
-        try transformer.serializeSyncBytes(value)
-    }
-
-    func decompress(_ value: Bytes) throws -> Bytes {
-        try Self.decompress(value, transformer: transformer)
-    }
-
-    // MARK: - Direct Transaction Access
-
-    /// Access the underlying transaction for non-item operations
+    /// Direct transaction access for non-item keys in the same atomic unit.
     public var underlying: any Transaction {
         transaction
     }
 
-    private static func blobPrefix(
-        blobsSubspace: Subspace,
-        for key: Bytes
-    ) -> Subspace {
-        blobsSubspace.subspace(Tuple([key]))
+    private func validatePlainByteCount(_ count: Int) throws {
+        guard count <= configuration.maximumPlainByteCount else {
+            throw ItemStorageError.plainValueTooLarge(
+                size: UInt64(count),
+                maximum: UInt64(configuration.maximumPlainByteCount)
+            )
+        }
     }
 
-    private static func loadChunks(
-        transaction: any Transaction,
-        blobsSubspace: Subspace,
-        for key: Bytes,
-        ref: ItemEnvelope.ExternalRef,
-        snapshot: Bool
-    ) async throws -> Bytes {
-        let blobBase = blobPrefix(blobsSubspace: blobsSubspace, for: key)
-
-        var result: [UInt8] = []
-        result.reserveCapacity(Int(ref.totalSize))
-
-        for i in 0..<ref.chunkCount {
-            let chunkKey = blobBase.pack(Tuple([Int32(i)]))
-            guard let chunk = try await transaction.getValue(for: chunkKey, snapshot: snapshot) else {
-                throw ItemEnvelopeError.chunkMissing(index: Int(i))
-            }
-            result.append(contentsOf: chunk)
+    private func validateStoredByteCount(_ count: Int) throws {
+        guard count <= configuration.maximumStoredByteCount else {
+            throw ItemStorageError.storedValueTooLarge(
+                size: UInt64(count),
+                maximum: UInt64(configuration.maximumStoredByteCount)
+            )
         }
+    }
 
-        guard result.count == Int(ref.totalSize) else {
-            throw ItemEnvelopeError.sizeMismatch(
-                expected: Int(ref.totalSize),
-                actual: result.count
+    private func validate(_ envelope: ItemEnvelope) throws {
+        guard envelope.encoding == configuration.encoding else {
+            throw ItemStorageError.encodingMismatch(
+                expected: configuration.encoding,
+                actual: envelope.encoding
+            )
+        }
+        guard envelope.plainByteCount
+                <= UInt64(configuration.maximumPlainByteCount) else {
+            throw ItemStorageError.plainValueTooLarge(
+                size: envelope.plainByteCount,
+                maximum: UInt64(configuration.maximumPlainByteCount)
+            )
+        }
+        guard envelope.storedByteCount
+                <= UInt64(configuration.maximumStoredByteCount) else {
+            throw ItemStorageError.storedValueTooLarge(
+                size: envelope.storedByteCount,
+                maximum: UInt64(configuration.maximumStoredByteCount)
             )
         }
 
-        return result
+        switch envelope.content {
+        case .inline:
+            guard envelope.storedByteCount
+                    <= UInt64(configuration.maximumInlineByteCount) else {
+                throw ItemStorageError.nonCanonicalStorageKind
+            }
+        case .external(let reference):
+            guard envelope.storedByteCount
+                    > UInt64(configuration.maximumInlineByteCount),
+                  reference.chunkByteCount
+                    == UInt32(configuration.chunkByteCount) else {
+                throw ItemStorageError.nonCanonicalStorageKind
+            }
+        }
     }
 
-    private static func decompress(
-        _ value: Bytes,
-        transformer: TransformingSerializer
-    ) throws -> Bytes {
-        guard !value.isEmpty else { return value }
-        return try transformer.deserializeSyncBytes(value)
+    private func externalChunkCount(
+        storedByteCount: Int
+    ) throws -> UInt32 {
+        let (roundedSize, overflow) = storedByteCount.addingReportingOverflow(
+            configuration.chunkByteCount - 1
+        )
+        guard !overflow,
+              let count = UInt32(
+                exactly: roundedSize / configuration.chunkByteCount
+              ),
+              count > 0 else {
+            throw ItemStorageError.invalidChunkLayout
+        }
+        return count
+    }
+
+    private func blobPrefix(for key: Bytes) -> Subspace {
+        blobsSubspace.subspace(Tuple([key]))
+    }
+
+    private func clearAllBlobs(for key: Bytes) throws {
+        let (begin, end) = blobPrefix(for: key).range()
+        try transaction.clearRange(beginKey: begin, endKey: end)
+    }
+
+    private func writeChunks(
+        _ payload: Bytes,
+        for key: Bytes,
+        chunkCount: Int
+    ) throws {
+        let blobBase = blobPrefix(for: key)
+        var offset = 0
+        for index in 0..<chunkCount {
+            let end = Swift.min(
+                offset + configuration.chunkByteCount,
+                payload.count
+            )
+            guard let encodedIndex = Int32(exactly: index) else {
+                throw ItemStorageError.invalidChunkLayout
+            }
+            let chunkKey = blobBase.pack(Tuple([encodedIndex]))
+            // Bytes slicing is a constant-time view. The transaction owns any
+            // copy required by its backend lifetime after this synchronous call.
+            try transaction.setValue(payload[offset..<end], for: chunkKey)
+            offset = end
+        }
+        guard offset == payload.count else {
+            throw ItemStorageError.invalidChunkLayout
+        }
+    }
+
+    fileprivate func decodeStoredValue(
+        _ envelopeBytes: Bytes,
+        for key: Bytes,
+        snapshot: Bool
+    ) async throws -> Bytes {
+        guard ItemEnvelope.isEnvelope(envelopeBytes) else {
+            throw ItemStorageError.notEnvelopeFormat
+        }
+        let envelope = try ItemEnvelope.deserialize(envelopeBytes)
+        try validate(envelope)
+
+        let storedPayload: Bytes
+        switch envelope.content {
+        case .inline(let payload):
+            storedPayload = payload
+        case .external(let reference):
+            storedPayload = try await loadChunks(
+                for: key,
+                envelope: envelope,
+                reference: reference,
+                snapshot: snapshot
+            )
+        }
+
+        let plainPayload: Bytes
+        switch envelope.encoding {
+        case .identity:
+            plainPayload = storedPayload
+        }
+        let actualChecksum = ItemChecksum.crc32c(plainPayload)
+        guard actualChecksum == envelope.checksum else {
+            throw ItemEnvelopeError.checksumMismatch(
+                expected: envelope.checksum,
+                actual: actualChecksum
+            )
+        }
+        return plainPayload
+    }
+
+    private func loadChunks(
+        for key: Bytes,
+        envelope: ItemEnvelope,
+        reference: ItemEnvelope.ExternalRef,
+        snapshot: Bool
+    ) async throws -> Bytes {
+        guard let totalSize = Int(exactly: envelope.storedByteCount),
+              let chunkCount = Int(exactly: reference.chunkCount),
+              let chunkSize = Int(exactly: reference.chunkByteCount) else {
+            throw ItemStorageError.invalidChunkLayout
+        }
+
+        // External payloads require one final assembly allocation because
+        // StorageKit point reads own independent backend buffers per chunk.
+        var output = [UInt8](repeating: 0, count: totalSize)
+        var loadedByteCount = 0
+        let blobBase = blobPrefix(for: key)
+        for index in 0..<chunkCount {
+            guard let encodedIndex = Int32(exactly: index) else {
+                throw ItemStorageError.invalidChunkLayout
+            }
+            let chunkKey = blobBase.pack(Tuple([encodedIndex]))
+            guard let chunk = try await transaction.getValue(
+                for: chunkKey,
+                snapshot: snapshot
+            ) else {
+                throw ItemEnvelopeError.chunkMissing(index: index)
+            }
+            let expectedByteCount = Swift.min(
+                chunkSize,
+                totalSize - loadedByteCount
+            )
+            guard chunk.count == expectedByteCount else {
+                throw ItemEnvelopeError.chunkSizeMismatch(
+                    index: index,
+                    expected: expectedByteCount,
+                    actual: chunk.count
+                )
+            }
+            output.withUnsafeMutableBytes { destination in
+                chunk.withUnsafeBytes { source in
+                    UnsafeMutableRawBufferPointer(
+                        rebasing: destination[
+                            loadedByteCount..<(loadedByteCount + source.count)
+                        ]
+                    ).copyMemory(from: source)
+                }
+            }
+            loadedByteCount += expectedByteCount
+        }
+        guard loadedByteCount == totalSize else {
+            throw ItemEnvelopeError.payloadSizeMismatch(
+                expected: envelope.storedByteCount,
+                actual: UInt64(loadedByteCount)
+            )
+        }
+        return Bytes(owningExact: output)
     }
 }
 
-// MARK: - ItemScanSequence
-
-/// AsyncSequence for scanning items
+/// Lazy record scan that preserves backend-native key/value ownership.
 public struct ItemScanSequence: AsyncSequence, Sendable {
     public typealias Element = (key: Bytes, data: Bytes)
 
@@ -394,6 +352,7 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
     private let snapshot: Bool
     private let limit: Int
     private let reverse: Bool
+    private let validationError: ItemStorageError?
 
     init(
         storage: ItemStorage,
@@ -401,7 +360,8 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         end: Bytes,
         snapshot: Bool,
         limit: Int,
-        reverse: Bool
+        reverse: Bool,
+        validationError: ItemStorageError?
     ) {
         self.storage = storage
         self.begin = begin
@@ -409,102 +369,116 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         self.snapshot = snapshot
         self.limit = limit
         self.reverse = reverse
+        self.validationError = validationError
     }
 
     public func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(
+        guard validationError == nil else {
+            return AsyncIterator(
+                storage: nil,
+                cursor: nil,
+                snapshot: snapshot,
+                pendingError: validationError
+            )
+        }
+        return AsyncIterator(
             storage: storage,
-            begin: begin,
-            end: end,
+            cursor: storage.underlying.rangeCursor(
+                from: .firstGreaterOrEqual(begin),
+                to: .firstGreaterOrEqual(end),
+                limit: limit,
+                reverse: reverse,
+                snapshot: snapshot,
+                streamingMode: limit > 0 ? .small : .wantAll
+            ),
             snapshot: snapshot,
-            limit: limit,
-            reverse: reverse
+            pendingError: nil
         )
     }
 
     public struct AsyncIterator: AsyncIteratorProtocol {
-        private let storage: ItemStorage
+        private var storage: ItemStorage?
+        private var cursor: KeyValueCursor?
         private let snapshot: Bool
-        private let begin: Bytes
-        private let end: Bytes
-        private let reverse: Bool
-        private let limit: Int
-        private var count: Int = 0
-        private var collected: [(Bytes, Bytes)]?
-        private var index: Int = 0
+        private var pendingError: ItemStorageError?
 
-        init(
-            storage: ItemStorage,
-            begin: Bytes,
-            end: Bytes,
+        fileprivate init(
+            storage: ItemStorage?,
+            cursor: KeyValueCursor?,
             snapshot: Bool,
-            limit: Int,
-            reverse: Bool
+            pendingError: ItemStorageError?
         ) {
             self.storage = storage
+            self.cursor = cursor
             self.snapshot = snapshot
-            self.limit = limit
-            self.begin = begin
-            self.end = end
-            self.reverse = reverse
+            self.pendingError = pendingError
         }
 
         public mutating func next() async throws -> Element? {
-            // Lazily collect all KV pairs on first access
-            if collected == nil {
-                collected = try await storage.underlying.collectRange(
-                    from: KeySelector.firstGreaterOrEqual(begin),
-                    to: KeySelector.firstGreaterOrEqual(end),
-                    limit: limit,
-                    reverse: reverse,
-                    snapshot: snapshot,
-                    streamingMode: limit > 0 ? .small : .wantAll
-                )
+            if let pendingError {
+                finish()
+                throw pendingError
             }
-
-            guard let items = collected, index < items.count else {
+            guard let storage, var activeCursor = cursor else {
+                finish()
                 return nil
             }
-
-            let (key, envelopeBytes) = items[index]
-            index += 1
-
-            // All data must be in envelope format
-            guard ItemEnvelope.isEnvelope(envelopeBytes) else {
-                throw ItemStorageError.notEnvelopeFormat
+            cursor = nil
+            do {
+                guard let (key, envelopeBytes) = try await activeCursor.next()
+                else {
+                    finish()
+                    return nil
+                }
+                cursor = activeCursor
+                let data = try await storage.decodeStoredValue(
+                    envelopeBytes,
+                    for: key,
+                    snapshot: snapshot
+                )
+                return (key, data)
+            } catch {
+                finish()
+                throw error
             }
+        }
 
-            // Parse envelope and load data
-            let envelope = try ItemEnvelope.deserialize(envelopeBytes)
-
-            let compressed: Bytes
-            switch envelope.content {
-            case .inline(let data):
-                compressed = data
-
-            case .external(let ref):
-                compressed = try await storage.loadChunks(for: key, ref: ref, snapshot: snapshot)
-            }
-
-            let data = try storage.decompress(compressed)
-            return (key, data)
+        private mutating func finish() {
+            storage = nil
+            cursor = nil
+            pendingError = nil
         }
     }
 }
 
-// MARK: - ItemStorageError
-
-/// Errors from ItemStorage operations
-public enum ItemStorageError: Error, CustomStringConvertible, Sendable {
-    case valueTooLarge(size: Int)
+public enum ItemStorageError: Error, CustomStringConvertible, Sendable, Equatable {
+    case plainValueTooLarge(size: UInt64, maximum: UInt64)
+    case storedValueTooLarge(size: UInt64, maximum: UInt64)
+    case encodingMismatch(
+        expected: ItemPayloadEncoding,
+        actual: ItemPayloadEncoding
+    )
+    case nonCanonicalStorageKind
+    case invalidChunkLayout
+    case invalidScanLimit(Int)
     case notEnvelopeFormat
 
     public var description: String {
         switch self {
-        case .valueTooLarge(let size):
-            return "Value too large for storage: \(size) bytes"
+        case .plainValueTooLarge(let size, let maximum):
+            return "Plain item size \(size) exceeds maximum \(maximum)"
+        case .storedValueTooLarge(let size, let maximum):
+            return "Stored item size \(size) exceeds maximum \(maximum)"
+        case .encodingMismatch(let expected, let actual):
+            return "Item encoding mismatch: expected \(expected), got \(actual)"
+        case .nonCanonicalStorageKind:
+            return "Item uses a non-canonical inline or external layout"
+        case .invalidChunkLayout:
+            return "Item has an invalid external chunk layout"
+        case .invalidScanLimit(let limit):
+            return "Item scan limit must be nonnegative: \(limit)"
         case .notEnvelopeFormat:
-            return "Data is not in ItemEnvelope format - all items must use ItemStorage.write()"
+            return "Stored item is not a canonical ItemEnvelope"
         }
     }
 }

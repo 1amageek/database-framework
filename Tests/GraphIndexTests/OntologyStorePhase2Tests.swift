@@ -13,6 +13,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseRuntime
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -44,12 +45,13 @@ struct OntologyStorePhase2Tests {
     // MARK: - Helpers
 
     private func setupContext() async throws -> FDBContext {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([OntologyPhase2Dummy.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
         return container.newContext()

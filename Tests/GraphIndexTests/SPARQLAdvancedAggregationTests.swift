@@ -9,6 +9,8 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -17,15 +19,15 @@ import TestSupport
 // MARK: - Test Model
 
 @Persistable
-struct AdvAggTestEdge {
-    #Directory<AdvAggTestEdge>("sparql_advanced_aggregation_tests")
+struct AggregationEdge {
+    #Directory<AggregationEdge>("sparql_advanced_aggregation_tests")
     var id: String = UUID().uuidString
     var from: String = ""
     var relationship: String = ""
     var to: String = ""
     var metadata: String = ""
 
-    #Index(GraphIndexKind<AdvAggTestEdge>(
+    #Index(GraphIndexKind<AggregationEdge>(
         from: \.from,
         edge: \.relationship,
         to: \.to,
@@ -39,7 +41,7 @@ struct AdvAggTestEdge {
 struct SPARQLAdvancedAggregationTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Helpers
@@ -49,24 +51,25 @@ struct SPARQLAdvancedAggregationTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([AdvAggTestEdge.self], version: Schema.Version(1, 0, 0))
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([AggregationEdge.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
 
-    private func insertEdges(_ edges: [AdvAggTestEdge], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [AggregationEdge], context: FDBContext) async throws {
         for edge in edges {
             context.insert(edge)
         }
         try await context.save()
     }
 
-    private func makeEdge(from: String, relationship: String, to: String, metadata: String = "") -> AdvAggTestEdge {
-        var edge = AdvAggTestEdge()
+    private func makeEdge(from: String, relationship: String, to: String, metadata: String = "") -> AggregationEdge {
+        var edge = AggregationEdge()
         edge.from = from
         edge.relationship = relationship
         edge.to = to
@@ -117,7 +120,7 @@ struct SPARQLAdvancedAggregationTests {
         try await insertEdges(edges, context: context)
 
         // Test multi-column GROUP BY via joined patterns
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?item", pred1, "?category")
             .groupBy("?category")
@@ -167,7 +170,7 @@ struct SPARQLAdvancedAggregationTests {
         try await insertEdges(edges, context: context)
 
         // Group by department and count
-        let deptResult = try await context.sparql(AdvAggTestEdge.self)
+        let deptResult = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?emp", predDept, "?dept")
             .groupBy("?dept")
@@ -203,7 +206,7 @@ struct SPARQLAdvancedAggregationTests {
         let auth2 = "ModerateAuthor"
         let auth3 = "SmallAuthor"
 
-        var edges: [AdvAggTestEdge] = []
+        var edges: [AggregationEdge] = []
 
         // Prolific Author: 10 books, 2000 pages total
         for i in 0..<10 {
@@ -227,7 +230,7 @@ struct SPARQLAdvancedAggregationTests {
         try await insertEdges(edges, context: context)
 
         // Test HAVING with count > threshold
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?book", predAuthor, "?author")
             .groupBy("?author")
@@ -256,7 +259,7 @@ struct SPARQLAdvancedAggregationTests {
         let g2 = uniqueID("G2")
         let g3 = uniqueID("G3")
 
-        var edges: [AdvAggTestEdge] = []
+        var edges: [AggregationEdge] = []
 
         // G1: 3 items
         for i in 0..<3 {
@@ -276,7 +279,7 @@ struct SPARQLAdvancedAggregationTests {
         try await insertEdges(edges, context: context)
 
         // HAVING count == 3
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?group", pred, "?item")
             .groupBy("?group")
@@ -300,7 +303,7 @@ struct SPARQLAdvancedAggregationTests {
         let p2 = uniqueID("P2")  // 3 children
         let p3 = uniqueID("P3")  // 5 children
 
-        var edges: [AdvAggTestEdge] = []
+        var edges: [AggregationEdge] = []
 
         edges.append(makeEdge(from: p1, relationship: pred, to: uniqueID("C")))
 
@@ -315,7 +318,7 @@ struct SPARQLAdvancedAggregationTests {
         try await insertEdges(edges, context: context)
 
         // HAVING count < 4
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?parent", pred, "?child")
             .groupBy("?parent")
@@ -360,7 +363,7 @@ struct SPARQLAdvancedAggregationTests {
         try await insertEdges(edges, context: context)
 
         // Multiple aggregates
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?employee", pred, "?dept")
             .groupBy("?dept")
@@ -390,7 +393,7 @@ struct SPARQLAdvancedAggregationTests {
         // Create scores: 10, 20, 30, 40, 50
         // Count: 5, Sum: 150, Avg: 30, Min: 10, Max: 50
         let scores = ["10", "20", "30", "40", "50"]
-        var edges: [AdvAggTestEdge] = []
+        var edges: [AggregationEdge] = []
 
         for score in scores {
             edges.append(makeEdge(from: team, relationship: predScore, to: score))
@@ -398,7 +401,7 @@ struct SPARQLAdvancedAggregationTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?team", predScore, "?score")
             .groupBy("?team")
@@ -442,7 +445,7 @@ struct SPARQLAdvancedAggregationTests {
 
         // Create 3 departments with different sizes: 2, 4, 6 employees
         // Avg dept size = 4
-        var edges: [AdvAggTestEdge] = []
+        var edges: [AggregationEdge] = []
 
         for i in 0..<2 {
             edges.append(makeEdge(from: uniqueID("Emp\(i)"), relationship: pred, to: "DeptA"))
@@ -459,7 +462,7 @@ struct SPARQLAdvancedAggregationTests {
         try await insertEdges(edges, context: context)
 
         // First, get per-department counts
-        let deptCounts = try await context.sparql(AdvAggTestEdge.self)
+        let deptCounts = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?emp", pred, "?dept")
             .groupBy("?dept")
@@ -492,7 +495,7 @@ struct SPARQLAdvancedAggregationTests {
         let context = container.newContext()
 
         // Query with no matching data
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where(uniqueID("nonexistent"), uniqueID("nonexistent"), "?val")
             .groupBy("?val")
@@ -520,7 +523,7 @@ struct SPARQLAdvancedAggregationTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?item", pred, "?group")
             .groupBy("?group")
@@ -542,7 +545,7 @@ struct SPARQLAdvancedAggregationTests {
         let basePrefix = uniqueID("G")
 
         // Create 100 groups with 2 items each
-        var edges: [AdvAggTestEdge] = []
+        var edges: [AggregationEdge] = []
         for i in 0..<100 {
             let groupName = "\(basePrefix)-\(i)"
             edges.append(makeEdge(from: uniqueID("Item1"), relationship: pred, to: groupName))
@@ -551,7 +554,7 @@ struct SPARQLAdvancedAggregationTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?item", pred, "?group")
             .groupBy("?group")
@@ -575,7 +578,7 @@ struct SPARQLAdvancedAggregationTests {
         let pred = uniqueID("hasMember")
 
         // Create groups with different member counts
-        var edges: [AdvAggTestEdge] = []
+        var edges: [AggregationEdge] = []
         for i in 0..<3 {
             edges.append(makeEdge(from: "GroupA", relationship: pred, to: uniqueID("M\(i)")))
         }
@@ -588,7 +591,7 @@ struct SPARQLAdvancedAggregationTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?group", pred, "?member")
             .groupBy("?group")
@@ -613,7 +616,7 @@ struct SPARQLAdvancedAggregationTests {
         let pred = uniqueID("inCategory")
 
         // Create 10 categories with 1 item each
-        var edges: [AdvAggTestEdge] = []
+        var edges: [AggregationEdge] = []
         for i in 0..<10 {
             edges.append(makeEdge(from: uniqueID("Item"), relationship: pred, to: "Cat\(String(format: "%02d", i))"))
         }
@@ -621,7 +624,7 @@ struct SPARQLAdvancedAggregationTests {
         try await insertEdges(edges, context: context)
 
         // Get groups with limit
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?item", pred, "?cat")
             .groupBy("?cat")
@@ -643,7 +646,7 @@ struct SPARQLAdvancedAggregationTests {
         let pred = uniqueID("hasItem")
 
         // Create groups with 1-3 items
-        var edges: [AdvAggTestEdge] = []
+        var edges: [AggregationEdge] = []
         edges.append(makeEdge(from: "G1", relationship: pred, to: uniqueID("I")))
         edges.append(makeEdge(from: "G2", relationship: pred, to: uniqueID("I1")))
         edges.append(makeEdge(from: "G2", relationship: pred, to: uniqueID("I2")))
@@ -654,7 +657,7 @@ struct SPARQLAdvancedAggregationTests {
         try await insertEdges(edges, context: context)
 
         // HAVING count > 100 should filter all
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?group", pred, "?item")
             .groupBy("?group")
@@ -674,7 +677,7 @@ struct SPARQLAdvancedAggregationTests {
         let pred = uniqueID("hasValue")
 
         // Create groups all with count >= 2
-        var edges: [AdvAggTestEdge] = []
+        var edges: [AggregationEdge] = []
         for _ in 0..<2 {
             edges.append(makeEdge(from: "G1", relationship: pred, to: uniqueID("V")))
         }
@@ -685,7 +688,7 @@ struct SPARQLAdvancedAggregationTests {
         try await insertEdges(edges, context: context)
 
         // HAVING count > 0 should keep all
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?group", pred, "?val")
             .groupBy("?group")
@@ -715,7 +718,7 @@ struct SPARQLAdvancedAggregationTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?acc", pred, "?amount")
             .groupBy("?acc")
@@ -742,7 +745,7 @@ struct SPARQLAdvancedAggregationTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(AdvAggTestEdge.self)
+        let result = try await context.sparql(AggregationEdge.self)
             .defaultIndex()
             .where("?student", pred, "?score")
             .groupBy("?student")

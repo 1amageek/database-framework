@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 // Re-export public types for protocol
@@ -7,10 +11,7 @@ public typealias QueryExecutionStatsPublic = Core.QueryExecutionStats
 public typealias CollectionStatisticsPublic = Core.CollectionStatistics
 public typealias IndexStatisticsPublic = Core.IndexStatistics
 
-/// 管理操作の統合インターフェース
-///
-/// データベース管理機能（統計情報取得、クエリ分析、監視など）を
-/// 統一されたAPIで提供するプロトコル。
+/// Administrative statistics, query analysis, and index operations.
 ///
 /// **Usage**:
 /// ```swift
@@ -23,15 +24,6 @@ public typealias IndexStatisticsPublic = Core.IndexStatistics
 /// // クエリ実行計画の取得
 /// let plan = try await admin.explain(Query<User>().where(\.age > 18))
 /// print("Plan type: \(plan.planType)")
-///
-/// // キー変更の監視
-/// for await event in admin.watch(User.self, id: userId) {
-///     switch event {
-///     case .changed(let user): print("Changed: \(user)")
-///     case .deleted(let id): print("Deleted: \(id)")
-///     case .error(let error): print("Error: \(error)")
-///     }
-/// }
 /// ```
 public protocol AdminContextProtocol: Sendable {
     // MARK: - Collection Statistics
@@ -96,16 +88,6 @@ public protocol AdminContextProtocol: Sendable {
     func updateStatistics<T: Persistable>(for type: T.Type) async throws
 
     // MARK: - FDB-Specific Features
-
-    /// キーの変更を監視
-    ///
-    /// FoundationDB固有の機能。指定したIDのドキュメントの変更を監視する。
-    ///
-    /// - Parameters:
-    ///   - type: 監視対象の型
-    ///   - id: 監視対象のID
-    /// - Returns: 変更イベントのAsyncStream
-    func watch<T: Persistable>(_ type: T.Type, id: T.ID) -> AsyncStream<WatchEvent<T>>
 
     /// 現在のReadVersionを取得
     ///

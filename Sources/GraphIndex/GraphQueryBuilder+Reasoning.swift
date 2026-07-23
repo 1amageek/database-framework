@@ -13,7 +13,11 @@
 //
 // Reference: Horrocks & Sattler (2007), Section 3 — role hierarchy semantics
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import Graph
 import DatabaseEngine

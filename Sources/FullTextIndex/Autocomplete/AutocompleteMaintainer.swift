@@ -4,7 +4,6 @@
 // Reference: Trie data structure for prefix matching
 // Knuth, "The Art of Computer Programming", Vol. 3
 
-import Foundation
 import Core
 import DatabaseEngine
 import StorageKit
@@ -146,7 +145,7 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
                 prefix: normalizedPrefix
             )
 
-            let score = ByteConversion.bytesToInt64(value)
+            let score = try ByteConversion.bytesToInt64(value)
             if score > 0 {
                 suggestions.append((term: term, score: score))
             }
@@ -187,7 +186,7 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
                 field: field
             )
 
-            let score = ByteConversion.bytesToInt64(value)
+            let score = try ByteConversion.bytesToInt64(value)
             if score > 0 {
                 terms.append((term: term, score: score))
             }
@@ -213,13 +212,13 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
             for term in terms {
                 // Increment term count
                 let termKey = termsSubspace.subspace(field).pack(Tuple(term))
-                transaction.atomicOp(key: termKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
+                try transaction.atomicOp(key: termKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
 
                 // Add all prefixes
                 let prefixes = generatePrefixes(for: term)
                 for prefix in prefixes {
                     let suggestionKey = suggestionsSubspace.subspace(field).subspace(prefix).pack(Tuple(term))
-                    transaction.atomicOp(key: suggestionKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
+                    try transaction.atomicOp(key: suggestionKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
                 }
             }
         }
@@ -236,13 +235,13 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
             for term in terms {
                 // Decrement term count
                 let termKey = termsSubspace.subspace(field).pack(Tuple(term))
-                transaction.atomicOp(key: termKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
+                try transaction.atomicOp(key: termKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
 
                 // Remove all prefixes
                 let prefixes = generatePrefixes(for: term)
                 for prefix in prefixes {
                     let suggestionKey = suggestionsSubspace.subspace(field).subspace(prefix).pack(Tuple(term))
-                    transaction.atomicOp(key: suggestionKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
+                    try transaction.atomicOp(key: suggestionKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
                 }
             }
         }
@@ -274,14 +273,19 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
     /// individual words as separate suggestions.
     private func tokenize(_ text: String) -> [String] {
         let normalized = normalizeText(text)
-        let words = normalized.components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count >= minPrefixLength }
-        return words
+        let slices = FullTextTextUtilities.tokenSlices(in: normalized)
+        var terms: [String] = []
+        terms.reserveCapacity(slices.count)
+        for slice in slices where slice.count >= minPrefixLength {
+            terms.append(String(slice))
+        }
+        return terms
     }
 
     /// Normalize text for consistent matching
     private func normalizeText(_ text: String) -> String {
-        return text.lowercased().trimmingCharacters(in: .whitespaces)
+        let lowered = text.lowercased()
+        return String(FullTextTextUtilities.trimmingWhitespace(lowered))
     }
 
     /// Generate all prefixes for a term
@@ -289,15 +293,15 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
     /// For term "laptop", generates: ["l", "la", "lap", "lapt", "lapto", "laptop"]
     /// (respecting minPrefixLength and maxPrefixLength)
     private func generatePrefixes(for term: String) -> [String] {
-        let characters = Array(term)
         var prefixes: [String] = []
-
-        let start = minPrefixLength
-        let end = min(maxPrefixLength, characters.count)
-
-        for length in start...end {
-            let prefix = String(characters.prefix(length))
-            prefixes.append(prefix)
+        var length = 0
+        var end = term.startIndex
+        while end < term.endIndex, length < maxPrefixLength {
+            end = term.index(after: end)
+            length += 1
+            if length >= minPrefixLength {
+                prefixes.append(String(term[..<end]))
+            }
         }
 
         return prefixes

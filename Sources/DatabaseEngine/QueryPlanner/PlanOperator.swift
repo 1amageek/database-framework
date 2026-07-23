@@ -1,8 +1,13 @@
 // PlanOperator.swift
 // QueryPlanner - Execution plan operators
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 import StorageKit
 
 /// Operators that make up a query plan
@@ -54,9 +59,6 @@ public indirect enum PlanOperator<T: Persistable>: @unchecked Sendable {
 
     /// Spatial region scan
     case spatialScan(SpatialScanOperator<T>)
-
-    /// Aggregation from index
-    case aggregation(AggregationOperator<T>)
 
     // === IN Optimization Operators ===
 
@@ -383,41 +385,6 @@ public struct SpatialScanOperator<T: Persistable>: @unchecked Sendable {
     }
 }
 
-// MARK: - Aggregation Operator
-
-/// Aggregation operator
-public struct AggregationOperator<T: Persistable>: @unchecked Sendable {
-    /// The aggregation index to use
-    public let index: IndexDescriptor
-
-    /// Type of aggregation
-    public let aggregationType: AggregationType
-
-    /// Group by fields (if any)
-    public let groupByFields: [String]
-
-    public init(
-        index: IndexDescriptor,
-        aggregationType: AggregationType,
-        groupByFields: [String] = []
-    ) {
-        self.index = index
-        self.aggregationType = aggregationType
-        self.groupByFields = groupByFields
-    }
-}
-
-/// Types of aggregations
-public enum AggregationType: Sendable, Hashable {
-    case count
-    case sum(field: String)
-    case min(field: String)
-    case max(field: String)
-    case avg(field: String)
-    case distinct(field: String)
-    case percentile(field: String, percentile: Double)
-}
-
 // MARK: - IN Operator Protocol
 
 /// Protocol for IN operators that can be executed
@@ -692,10 +659,11 @@ public struct InJoinBloomFilter<Element: Hashable>: Sendable {
         let n = Double(max(1, expectedElements))
         let p = max(0.0001, min(0.5, falsePositiveRate))
 
-        let m = Int(ceil(-n * log(p) / (log(2) * log(2))))
+        let logOfTwo = DatabaseMath.naturalLogarithm(2)
+        let m = Int(DatabaseMath.ceiling(-n * DatabaseMath.naturalLogarithm(p) / (logOfTwo * logOfTwo)))
         self.bitCount = max(64, m)
 
-        let k = max(1, Int(round(Double(bitCount) / n * log(2))))
+        let k = max(1, Int(DatabaseMath.rounded(Double(bitCount) / n * logOfTwo)))
         self.hashCount = min(k, 10)
 
         let wordCount = (bitCount + 63) / 64

@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import LeaderboardIndex
 
 // MARK: - Test Model
 
-struct TestGameScore: Persistable {
+struct GameScore: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ struct TestGameScore: Persistable {
         self.region = region
     }
 
-    static var persistableType: String { "TestGameScore" }
+    static var persistableType: String { "GameScore" }
     static var allFields: [String] { ["id", "playerId", "score", "region"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,54 +46,54 @@ struct TestGameScore: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestGameScore, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<GameScore, Value>) -> String {
         switch keyPath {
-        case \TestGameScore.id: return "id"
-        case \TestGameScore.playerId: return "playerId"
-        case \TestGameScore.score: return "score"
-        case \TestGameScore.region: return "region"
+        case \GameScore.id: return "id"
+        case \GameScore.playerId: return "playerId"
+        case \GameScore.score: return "score"
+        case \GameScore.region: return "region"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestGameScore>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<GameScore>) -> String {
         switch keyPath {
-        case \TestGameScore.id: return "id"
-        case \TestGameScore.playerId: return "playerId"
-        case \TestGameScore.score: return "score"
-        case \TestGameScore.region: return "region"
+        case \GameScore.id: return "id"
+        case \GameScore.playerId: return "playerId"
+        case \GameScore.score: return "score"
+        case \GameScore.region: return "region"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestGameScore> {
+        if let partial = keyPath as? PartialKeyPath<GameScore> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Leaderboard Index Context
 
-private struct TestContext {
+private struct LeaderboardIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: TimeWindowLeaderboardIndexMaintainer<TestGameScore, Int64>
-    let kind: TimeWindowLeaderboardIndexKind<TestGameScore, Int64>
+    let maintainer: TimeWindowLeaderboardIndexMaintainer<GameScore>
+    let kind: TimeWindowLeaderboardIndexKind<GameScore>
 
     init(
-        indexName: String = "TestGameScore_leaderboard_score",
+        indexName: String = "GameScore_leaderboard_score",
         window: LeaderboardWindowType = .daily,
         windowCount: Int = 7
     ) async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "leaderboard", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = TimeWindowLeaderboardIndexKind<TestGameScore, Int64>(
+        self.kind = TimeWindowLeaderboardIndexKind<GameScore>(
             scoreField: \.score,
             groupBy: [],
             window: window,
@@ -106,12 +107,11 @@ private struct TestContext {
             name: indexName,
             kind: kind,
             rootExpression: rootExpression,
-            keyPaths: [\TestGameScore.score],  // Required for extractScore()
             subspaceKey: indexName,
-            itemTypes: Set(["TestGameScore"])
+            itemTypes: Set(["GameScore"])
         )
 
-        self.maintainer = TimeWindowLeaderboardIndexMaintainer<TestGameScore, Int64>(
+        self.maintainer = TimeWindowLeaderboardIndexMaintainer<GameScore>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
@@ -123,7 +123,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -153,14 +153,14 @@ struct LeaderboardIndexInsertTests {
 
     @Test("Insert adds to leaderboard")
     func testInsertAddsToLeaderboard() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
-            let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
+            let score = GameScore(id: "g1", playerId: "player1", score: 1000)
 
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestGameScore?,
+                    oldItem: nil as GameScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -176,20 +176,20 @@ struct LeaderboardIndexInsertTests {
 
     @Test("Multiple inserts create leaderboard order")
     func testMultipleInsertsCreateOrder() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             let scores = [
-                TestGameScore(id: "g1", playerId: "player1", score: 500),
-                TestGameScore(id: "g2", playerId: "player2", score: 1500),
-                TestGameScore(id: "g3", playerId: "player3", score: 1000),
-                TestGameScore(id: "g4", playerId: "player4", score: 2000)
+                GameScore(id: "g1", playerId: "player1", score: 500),
+                GameScore(id: "g2", playerId: "player2", score: 1500),
+                GameScore(id: "g3", playerId: "player3", score: 1000),
+                GameScore(id: "g4", playerId: "player4", score: 2000)
             ]
 
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -217,15 +217,15 @@ struct LeaderboardIndexDeleteTests {
 
     @Test("Delete removes from leaderboard")
     func testDeleteRemovesFromLeaderboard() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
-            let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
+            let score = GameScore(id: "g1", playerId: "player1", score: 1000)
 
             // Insert
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestGameScore?,
+                    oldItem: nil as GameScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -238,7 +238,7 @@ struct LeaderboardIndexDeleteTests {
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
                     oldItem: score,
-                    newItem: nil as TestGameScore?,
+                    newItem: nil as GameScore?,
                     transaction: transaction
                 )
             }
@@ -252,20 +252,20 @@ struct LeaderboardIndexDeleteTests {
 
     @Test("Delete one maintains others")
     func testDeleteOneMaintainsOthers() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             let scores = [
-                TestGameScore(id: "g1", playerId: "player1", score: 1000),
-                TestGameScore(id: "g2", playerId: "player2", score: 2000),
-                TestGameScore(id: "g3", playerId: "player3", score: 3000)
+                GameScore(id: "g1", playerId: "player1", score: 1000),
+                GameScore(id: "g2", playerId: "player2", score: 2000),
+                GameScore(id: "g3", playerId: "player3", score: 3000)
             ]
 
             // Insert all
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -276,7 +276,7 @@ struct LeaderboardIndexDeleteTests {
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
                     oldItem: scores[1],  // 2000
-                    newItem: nil as TestGameScore?,
+                    newItem: nil as GameScore?,
                     transaction: transaction
                 )
             }
@@ -298,20 +298,20 @@ struct LeaderboardIndexUpdateTests {
 
     @Test("Update score changes rank")
     func testUpdateScoreChangesRank() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             let scores = [
-                TestGameScore(id: "g1", playerId: "player1", score: 1000),
-                TestGameScore(id: "g2", playerId: "player2", score: 2000),
-                TestGameScore(id: "g3", playerId: "player3", score: 3000)
+                GameScore(id: "g1", playerId: "player1", score: 1000),
+                GameScore(id: "g2", playerId: "player2", score: 2000),
+                GameScore(id: "g3", playerId: "player3", score: 3000)
             ]
 
             // Insert all
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -319,7 +319,7 @@ struct LeaderboardIndexUpdateTests {
             }
 
             // Update player1 score from 1000 to 5000 (should become #1)
-            let updatedScore = TestGameScore(id: "g1", playerId: "player1", score: 5000)
+            let updatedScore = GameScore(id: "g1", playerId: "player1", score: 5000)
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
                     oldItem: scores[0],
@@ -344,22 +344,22 @@ struct LeaderboardIndexUpdateTests {
 
     @Test("Update non-score field keeps position")
     func testUpdateNonScoreFieldKeepsPosition() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
-            let oldScore = TestGameScore(id: "g1", playerId: "player1", score: 1000, region: "us")
+            let oldScore = GameScore(id: "g1", playerId: "player1", score: 1000, region: "us")
 
             // Insert
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestGameScore?,
+                    oldItem: nil as GameScore?,
                     newItem: oldScore,
                     transaction: transaction
                 )
             }
 
             // Update region (non-indexed field)
-            let newScore = TestGameScore(id: "g1", playerId: "player1", score: 1000, region: "eu")
+            let newScore = GameScore(id: "g1", playerId: "player1", score: 1000, region: "eu")
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
                     oldItem: oldScore,
@@ -384,15 +384,15 @@ struct LeaderboardIndexTopKTests {
 
     @Test("getTopK returns correct count")
     func testGetTopKReturnsCorrectCount() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             // Insert 10 scores
             try await ctx.database.withTransaction { transaction in
                 for i in 1...10 {
-                    let score = TestGameScore(id: "g\(i)", playerId: "player\(i)", score: Int64(i * 100))
+                    let score = GameScore(id: "g\(i)", playerId: "player\(i)", score: Int64(i * 100))
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -416,15 +416,15 @@ struct LeaderboardIndexTopKTests {
 
     @Test("getTopK returns all when k > count")
     func testGetTopKReturnsAllWhenKGreaterThanCount() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             // Insert 3 scores
             try await ctx.database.withTransaction { transaction in
                 for i in 1...3 {
-                    let score = TestGameScore(id: "g\(i)", playerId: "player\(i)", score: Int64(i * 100))
+                    let score = GameScore(id: "g\(i)", playerId: "player\(i)", score: Int64(i * 100))
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -441,8 +441,8 @@ struct LeaderboardIndexTopKTests {
 
     @Test("getTopK empty when no entries")
     func testGetTopKEmptyWhenNoEntries() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             let top = try await ctx.getTopK(k: 10)
             #expect(top.isEmpty, "Should be empty")
@@ -459,19 +459,19 @@ struct LeaderboardIndexRankTests {
 
     @Test("getRank returns correct position")
     func testGetRankReturnsCorrectPosition() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             let scores = [
-                TestGameScore(id: "g1", playerId: "player1", score: 100),
-                TestGameScore(id: "g2", playerId: "player2", score: 500),
-                TestGameScore(id: "g3", playerId: "player3", score: 1000)
+                GameScore(id: "g1", playerId: "player1", score: 100),
+                GameScore(id: "g2", playerId: "player2", score: 500),
+                GameScore(id: "g3", playerId: "player3", score: 1000)
             ]
 
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -493,14 +493,14 @@ struct LeaderboardIndexRankTests {
 
     @Test("getRank returns nil for non-existent")
     func testGetRankReturnsNilForNonExistent() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
-            let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
+            let score = GameScore(id: "g1", playerId: "player1", score: 1000)
 
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestGameScore?,
+                    oldItem: nil as GameScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -521,21 +521,21 @@ struct LeaderboardIndexTiesTests {
 
     @Test("Ties are handled correctly")
     func testTiesHandled() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             // Multiple players with same score
             let scores = [
-                TestGameScore(id: "g1", playerId: "player1", score: 1000),
-                TestGameScore(id: "g2", playerId: "player2", score: 1000),
-                TestGameScore(id: "g3", playerId: "player3", score: 1000),
-                TestGameScore(id: "g4", playerId: "player4", score: 500)
+                GameScore(id: "g1", playerId: "player1", score: 1000),
+                GameScore(id: "g2", playerId: "player2", score: 1000),
+                GameScore(id: "g3", playerId: "player3", score: 1000),
+                GameScore(id: "g4", playerId: "player4", score: 500)
             ]
 
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -566,14 +566,14 @@ struct LeaderboardIndexWindowTests {
 
     @Test("Available windows are tracked")
     func testAvailableWindowsTracked() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
-            let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
+            let score = GameScore(id: "g1", playerId: "player1", score: 1000)
 
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestGameScore?,
+                    oldItem: nil as GameScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -588,15 +588,15 @@ struct LeaderboardIndexWindowTests {
 
     @Test("Window uses correct duration")
     func testWindowUsesCorrectDuration() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             // Test hourly window
-            let hourlyCtx = try await TestContext(indexName: "hourly_test", window: .hourly)
+            let hourlyCtx = try await LeaderboardIndexContext(indexName: "hourly_test", window: .hourly)
 
-            let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
+            let score = GameScore(id: "g1", playerId: "player1", score: 1000)
 
             try await hourlyCtx.database.withTransaction { transaction in
                 try await hourlyCtx.maintainer.updateIndex(
-                    oldItem: nil as TestGameScore?,
+                    oldItem: nil as GameScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -621,12 +621,12 @@ struct LeaderboardIndexScanItemTests {
 
     @Test("scanItem adds to leaderboard")
     func testScanItemAddsToLeaderboard() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             let scores = [
-                TestGameScore(id: "g1", playerId: "player1", score: 1000),
-                TestGameScore(id: "g2", playerId: "player2", score: 2000)
+                GameScore(id: "g1", playerId: "player1", score: 1000),
+                GameScore(id: "g2", playerId: "player2", score: 2000)
             ]
 
             try await ctx.database.withTransaction { transaction in
@@ -656,19 +656,19 @@ struct LeaderboardIndexEdgeCasesTests {
 
     @Test("Large scores work correctly")
     func testLargeScores() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             let scores = [
-                TestGameScore(id: "g1", playerId: "player1", score: Int64.max - 100),
-                TestGameScore(id: "g2", playerId: "player2", score: Int64.max - 200),
-                TestGameScore(id: "g3", playerId: "player3", score: Int64.max - 50)
+                GameScore(id: "g1", playerId: "player1", score: Int64.max - 100),
+                GameScore(id: "g2", playerId: "player2", score: Int64.max - 200),
+                GameScore(id: "g3", playerId: "player3", score: Int64.max - 50)
             ]
 
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -685,19 +685,19 @@ struct LeaderboardIndexEdgeCasesTests {
 
     @Test("Zero scores work correctly")
     func testZeroScores() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             let scores = [
-                TestGameScore(id: "g1", playerId: "player1", score: 0),
-                TestGameScore(id: "g2", playerId: "player2", score: 100),
-                TestGameScore(id: "g3", playerId: "player3", score: 0)
+                GameScore(id: "g1", playerId: "player1", score: 0),
+                GameScore(id: "g2", playerId: "player2", score: 100),
+                GameScore(id: "g3", playerId: "player3", score: 0)
             ]
 
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -716,19 +716,19 @@ struct LeaderboardIndexEdgeCasesTests {
 
     @Test("Negative scores work correctly")
     func testNegativeScores() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             let scores = [
-                TestGameScore(id: "g1", playerId: "player1", score: -100),
-                TestGameScore(id: "g2", playerId: "player2", score: 100),
-                TestGameScore(id: "g3", playerId: "player3", score: -50)
+                GameScore(id: "g1", playerId: "player1", score: -100),
+                GameScore(id: "g2", playerId: "player2", score: 100),
+                GameScore(id: "g3", playerId: "player3", score: -50)
             ]
 
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -747,15 +747,15 @@ struct LeaderboardIndexEdgeCasesTests {
 
     @Test("Large number of entries")
     func testLargeNumberOfEntries() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
             // Insert 100 scores
             try await ctx.database.withTransaction { transaction in
                 for i in 1...100 {
-                    let score = TestGameScore(id: "g\(i)", playerId: "player\(i)", score: Int64(i * 10))
+                    let score = GameScore(id: "g\(i)", playerId: "player\(i)", score: Int64(i * 10))
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as TestGameScore?,
+                        oldItem: nil as GameScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -778,10 +778,10 @@ struct LeaderboardIndexEdgeCasesTests {
 
     @Test("computeIndexKeys returns expected keys")
     func testComputeIndexKeys() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardIndexContext()
 
-            let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
+            let score = GameScore(id: "g1", playerId: "player1", score: 1000)
             let keys = try await ctx.maintainer.computeIndexKeys(for: score, id: Tuple("g1"))
 
             #expect(!keys.isEmpty, "Should have at least one index key")

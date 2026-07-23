@@ -4,7 +4,6 @@
 /// Stores entity metadata under `(_schema, entityName)`.
 /// Enables CLI and dynamic tools to discover and decode data without compiled types.
 
-import Foundation
 import StorageKit
 import Core
 
@@ -33,24 +32,67 @@ public struct SchemaRegistry: Sendable {
         _ schema: Schema,
         mode: SchemaRegistryPersistMode = .strict
     ) async throws {
-        let entities = schema.entities
-        try await validateCompatibility(of: entities, mode: mode)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-
         try await database.withTransaction(configuration: .default) { transaction in
-            // Persist entity metadata
-            for entity in entities {
-                let key = Self.key(for: entity.name)
-                let data = try encoder.encode(entity)
-                let value = Array(data)
-                transaction.setValue(value, for: key)
-            }
-
+            try await persist(schema, mode: mode, transaction: transaction)
         }
 
         // Invalidate cache after schema changes
         cache.clear()
+    }
+
+    /// Atomically replaces the active schema catalog in a caller-owned transaction.
+    ///
+    /// Removed entities are cleared in the same transaction as updated entities so
+    /// the persisted catalog is an exact projection of the compiled schema.
+    func persist(
+        _ schema: Schema,
+        mode: SchemaRegistryPersistMode = .strict,
+        transaction: any Transaction
+    ) async throws {
+        let entities = schema.entities
+        try await validateCompatibility(
+            of: entities,
+            mode: mode,
+            transaction: transaction
+        )
+
+        let targetNames = Set(entities.map(\.name))
+        let catalogRange = Subspace(prefix: Tuple([Self.catalogPrefix]).pack())
+            .range()
+        let existingRows = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(catalogRange.begin),
+            to: .firstGreaterOrEqual(catalogRange.end),
+            snapshot: false
+        )
+        for (key, value) in existingRows {
+            let existing = try SchemaEntityRecordCodec.decode(value)
+            if !targetNames.contains(existing.name) {
+                try transaction.clear(key: key)
+            }
+        }
+        for entity in entities {
+            try transaction.setValue(
+                try SchemaEntityRecordCodec.encode(entity),
+                for: Self.key(for: entity.name)
+            )
+        }
+        cache.clear()
+    }
+
+    /// Writes the initial compiled schema into an existing bootstrap transaction.
+    ///
+    /// Compatibility validation is intentionally owned by the versioned bootstrap
+    /// caller, which holds the schema-version conflict key in the same transaction.
+    func persistInitialSchema(
+        _ schema: Schema,
+        transaction: any Transaction
+    ) throws {
+        for entity in schema.entities {
+            try transaction.setValue(
+                try SchemaEntityRecordCodec.encode(entity),
+                for: Self.key(for: entity.name)
+            )
+        }
     }
 
     // MARK: - Read
@@ -81,8 +123,7 @@ public struct SchemaRegistry: Sendable {
             guard let value = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            let data = Data(value)
-            return try JSONDecoder().decode(Schema.Entity.self, from: data)
+            return try SchemaEntityRecordCodec.decode(value)
         }
     }
 
@@ -97,14 +138,11 @@ public struct SchemaRegistry: Sendable {
         mode: SchemaRegistryPersistMode = .strict
     ) async throws {
         try await validateCompatibility(of: [entity], mode: mode)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
 
         try await database.withTransaction(configuration: .default) { transaction in
             let key = Self.key(for: entity.name)
-            let data = try encoder.encode(entity)
-            let value = Array(data)
-            transaction.setValue(value, for: key)
+            let value = try SchemaEntityRecordCodec.encode(entity)
+            try transaction.setValue(value, for: key)
         }
 
         // Invalidate cache after schema change
@@ -118,7 +156,7 @@ public struct SchemaRegistry: Sendable {
     public func delete(typeName: String) async throws {
         let key = Self.key(for: typeName)
         try await database.withTransaction(configuration: .default) { transaction in
-            transaction.clear(key: key)
+            try transaction.clear(key: key)
         }
 
         // Invalidate cache after schema deletion
@@ -139,7 +177,6 @@ public struct SchemaRegistry: Sendable {
 
         return try await database.withTransaction(configuration: .default) { transaction in
             var entities: [Schema.Entity] = []
-            let decoder = JSONDecoder()
 
             let sequence = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(begin),
@@ -147,8 +184,7 @@ public struct SchemaRegistry: Sendable {
                 snapshot: true
             )
             for (_, value) in sequence {
-                let data = Data(value)
-                let entity = try decoder.decode(Schema.Entity.self, from: data)
+                let entity = try SchemaEntityRecordCodec.decode(value)
                 entities.append(entity)
             }
             return entities
@@ -159,21 +195,32 @@ public struct SchemaRegistry: Sendable {
         of entities: [Schema.Entity],
         mode: SchemaRegistryPersistMode
     ) async throws {
-        let names = Array(Set(entities.map(\.name)))
-        let existingByName: [String: Schema.Entity] = try await database.withTransaction(configuration: .default) { transaction in
-            var existing: [String: Schema.Entity] = [:]
-            let decoder = JSONDecoder()
+        try await database.withTransaction(configuration: .default) { transaction in
+            try await validateCompatibility(
+                of: entities,
+                mode: mode,
+                transaction: transaction
+            )
+        }
+    }
 
-            for name in names {
-                let key = Self.key(for: name)
-                guard let value = try await transaction.getValue(for: key, snapshot: true) else {
-                    continue
-                }
-                let entity = try decoder.decode(Schema.Entity.self, from: Data(value))
-                existing[name] = entity
+    private func validateCompatibility(
+        of entities: [Schema.Entity],
+        mode: SchemaRegistryPersistMode,
+        transaction: any Transaction
+    ) async throws {
+        let names = Set(entities.map(\.name))
+        var existingByName: [String: Schema.Entity] = [:]
+        existingByName.reserveCapacity(names.count)
+        for name in names {
+            let key = Self.key(for: name)
+            guard let value = try await transaction.getValue(
+                for: key,
+                snapshot: false
+            ) else {
+                continue
             }
-
-            return existing
+            existingByName[name] = try SchemaEntityRecordCodec.decode(value)
         }
 
         for entity in entities {

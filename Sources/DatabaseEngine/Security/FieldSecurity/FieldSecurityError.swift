@@ -1,7 +1,11 @@
 // FieldSecurityError.swift
 // DatabaseEngine - Field-level security errors
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Error thrown when field-level security check fails
 ///

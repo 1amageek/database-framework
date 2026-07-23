@@ -4,7 +4,11 @@
 // Reference: FDB documentation on streaming modes
 // https://apple.github.io/foundationdb/api-general.html#streaming-mode
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 
 // MARK: - StreamingMode Selection

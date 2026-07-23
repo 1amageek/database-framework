@@ -3,7 +3,11 @@
 //
 // Represents a single solution (row) in a SPARQL result set.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// A single binding row: variable name → typed value
@@ -30,16 +34,23 @@ public struct VariableBinding: Sendable, Hashable {
     /// The bound values for each variable
     private var bindings: [String: FieldValue]
 
+    /// Query-local identity for expression functions whose semantics are scoped
+    /// to one solution occurrence. It is deliberately excluded from RDF
+    /// solution equality and hashing.
+    private var expressionScope: UInt64?
+
     // MARK: - Initialization
 
     /// Create an empty binding
     public init() {
         self.bindings = [:]
+        self.expressionScope = nil
     }
 
     /// Create a binding with initial values
     public init(_ bindings: [String: FieldValue]) {
         self.bindings = bindings
+        self.expressionScope = nil
     }
 
     // MARK: - Access
@@ -74,6 +85,24 @@ public struct VariableBinding: Sendable, Hashable {
     /// Get all bindings as a dictionary
     public var asDictionary: [String: FieldValue] {
         bindings
+    }
+
+    /// Provides scoped read access to the owned binding storage.
+    func withBindings<Result>(
+        _ body: ([String: FieldValue]) throws -> Result
+    ) rethrows -> Result {
+        try body(bindings)
+    }
+
+    var expressionScopeIdentifier: UInt64? {
+        expressionScope
+    }
+
+    func assigningExpressionScope(_ identifier: UInt64) -> VariableBinding {
+        guard expressionScope == nil else { return self }
+        var copy = self
+        copy.expressionScope = identifier
+        return copy
     }
 
     // MARK: - Type Extraction
@@ -173,6 +202,58 @@ public struct VariableBinding: Sendable, Hashable {
         return copy
     }
 
+    /// Merge one value into this solution without materializing a second row.
+    ///
+    /// Returns `false` when the variable is already bound to a different value.
+    /// Existing expression-scope identity remains attached to the solution.
+    package mutating func merge(
+        variable: String,
+        value: FieldValue
+    ) -> Bool {
+        if let existing = bindings[variable] {
+            return existing == value
+        }
+        bindings[variable] = value
+        return true
+    }
+
+    /// Matches one execution term while mutating the uniquely owned binding
+    /// Dictionary in place. Callers that retain the result must admit its
+    /// prospective footprint before invoking this method.
+    package mutating func match(
+        _ term: ExecutionTerm,
+        against value: FieldValue
+    ) -> Bool {
+        switch term {
+        case .variable(let name):
+            return merge(variable: name, value: value)
+        case .value(let expected):
+            return expected == value
+        case .wildcard:
+            return true
+        case .tripleTerm(let subject, let predicate, let object):
+            guard case .rdfTerm(
+                .tripleTerm(
+                    let storedSubject,
+                    let storedPredicate,
+                    let storedObject
+                )
+            ) = value else {
+                return false
+            }
+            return match(
+                subject,
+                against: .rdfTerm(storedSubject)
+            ) && match(
+                predicate,
+                against: .rdfTerm(storedPredicate)
+            ) && match(
+                object,
+                against: .rdfTerm(storedObject)
+            )
+        }
+    }
+
     // MARK: - Merging (for joins)
 
     /// Merge two bindings (for joins)
@@ -194,6 +275,8 @@ public struct VariableBinding: Sendable, Hashable {
                 result[key] = value
             }
         }
+        // Join constructs a new solution occurrence. Its expression scope is
+        // assigned lazily if a later expression requires one.
         return VariableBinding(result)
     }
 
@@ -215,6 +298,23 @@ public struct VariableBinding: Sendable, Hashable {
         return true
     }
 
+    /// Returns whether MINUS must exclude this left solution for `other`.
+    /// The check is allocation-free: it detects a non-empty shared domain and
+    /// verifies equality for every shared variable in one Dictionary scan.
+    package func isMinusCompatible(
+        with other: borrowing VariableBinding
+    ) -> Bool {
+        var hasSharedVariable = false
+        for (variable, value) in bindings {
+            guard let otherValue = other.bindings[variable] else {
+                continue
+            }
+            hasSharedVariable = true
+            guard value == otherValue else { return false }
+        }
+        return hasSharedVariable
+    }
+
     // MARK: - Projection
 
     /// Project to only the specified variables
@@ -225,18 +325,38 @@ public struct VariableBinding: Sendable, Hashable {
     /// - Parameter variables: Variables to keep
     /// - Returns: New binding with only the specified variables
     public func project(_ variables: Set<String>) -> VariableBinding {
+        var projectedEntryCount = 0
+        for variable in variables where bindings[variable] != nil {
+            projectedEntryCount += 1
+        }
         var projected: [String: FieldValue] = [:]
+        projected.reserveCapacity(projectedEntryCount)
         for variable in variables {
             if let value = bindings[variable] {
                 projected[variable] = value
             }
         }
-        return VariableBinding(projected)
+        var result = VariableBinding(projected)
+        result.expressionScope = expressionScope
+        return result
     }
 
     /// Project to only the specified variables (array version)
     public func project(_ variables: [String]) -> VariableBinding {
-        project(Set(variables))
+        var projectedEntryCount = 0
+        for variable in variables where bindings[variable] != nil {
+            projectedEntryCount += 1
+        }
+        var projected: [String: FieldValue] = [:]
+        projected.reserveCapacity(projectedEntryCount)
+        for variable in variables {
+            if let value = bindings[variable] {
+                projected[variable] = value
+            }
+        }
+        var result = VariableBinding(projected)
+        result.expressionScope = expressionScope
+        return result
     }
 }
 
@@ -269,6 +389,17 @@ extension VariableBinding: ExpressibleByDictionaryLiteral {
             bindings[key] = value
         }
         self.bindings = bindings
+        self.expressionScope = nil
+    }
+}
+
+extension VariableBinding {
+    public static func == (lhs: VariableBinding, rhs: VariableBinding) -> Bool {
+        lhs.bindings == rhs.bindings
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(bindings)
     }
 }
 
@@ -283,8 +414,16 @@ extension FieldValue {
         switch self {
         case .string(let s): return s
         case .int64(let i): return String(i)
+        case .uint64(let i): return String(i)
         case .double(let d): return String(d)
         case .bool(let b): return String(b)
+        case .rdfTerm(let term):
+            switch term {
+            case .iri(let iri): return iri
+            case .blankNode(let identifier): return "_:\(identifier)"
+            case .literal(let literal): return literal.lexicalForm
+            case .tripleTerm: return term.description
+            }
         case .null: return nil
         case .data, .array: return nil
         }

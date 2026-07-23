@@ -3,10 +3,12 @@
 //
 // Provides efficient weighted shortest path finding using priority queues.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
-import Core
+#endif
 import DatabaseEngine
-import StorageKit
 import Graph
 
 // MARK: - WeightedShortestPathConfiguration
@@ -31,17 +33,17 @@ public struct WeightedShortestPathConfiguration: Sendable {
         batchSize: Int = 100
     ) {
         self.maxWeight = maxWeight
-        self.maxNodes = maxNodes
-        self.batchSize = batchSize
+        self.maxNodes = Swift.max(1, maxNodes)
+        self.batchSize = Swift.max(1, batchSize)
     }
 }
 
 // MARK: - WeightedPathResult
 
 /// Result of weighted shortest path computation
-public struct WeightedPathResult<Edge: Persistable>: Sendable {
+public struct WeightedPathResult: Sendable {
     /// The path if one exists (nil if no path found)
-    public let path: GraphPath<Edge>?
+    public let path: GraphPath?
 
     /// Total weight of the path (Double.infinity if no path)
     public let totalWeight: Double
@@ -55,36 +57,49 @@ public struct WeightedPathResult<Edge: Persistable>: Sendable {
     /// Execution time in nanoseconds
     public let durationNs: UInt64
 
+    /// Whether the search exhausted its valid search space.
+    public let isComplete: Bool
+
+    /// Limit that stopped the search, when incomplete.
+    public let limitReason: LimitReason?
+
     /// Whether a path was found
     public var found: Bool { path != nil }
 
     public init(
-        path: GraphPath<Edge>?,
+        path: GraphPath?,
         totalWeight: Double,
         nodesExplored: Int,
         edgesRelaxed: Int,
-        durationNs: UInt64
+        durationNs: UInt64,
+        isComplete: Bool = true,
+        limitReason: LimitReason? = nil
     ) {
         self.path = path
         self.totalWeight = totalWeight
         self.nodesExplored = nodesExplored
         self.edgesRelaxed = edgesRelaxed
         self.durationNs = durationNs
+        self.isComplete = isComplete
+        self.limitReason = limitReason
     }
 }
 
 // MARK: - SingleSourceResult
 
 /// Result of single-source shortest paths computation
-public struct SingleSourceResult<Edge: Persistable>: Sendable {
+public struct SingleSourceResult: Sendable {
+    /// Source node used for this computation.
+    public let source: GraphIdentity
+
     /// Distances to all reachable nodes
-    public let distances: [String: Double]
+    public let distances: [GraphIdentity: Double]
 
     /// Parent pointers for path reconstruction
-    public let parents: [String: String]
+    public let parents: [GraphIdentity: GraphIdentity]
 
     /// Edge labels used in shortest paths
-    public let edgeLabels: [String: String]
+    public let edgeLabels: [GraphIdentity: GraphIdentity]
 
     /// Number of nodes explored
     public let nodesExplored: Int
@@ -92,67 +107,128 @@ public struct SingleSourceResult<Edge: Persistable>: Sendable {
     /// Execution time in nanoseconds
     public let durationNs: UInt64
 
+    /// Whether every reachable path within the configured graph was evaluated.
+    public let isComplete: Bool
+
+    /// Limit that stopped the search, when incomplete.
+    public let limitReason: LimitReason?
+
     /// Get the shortest path to a target node
-    public func pathTo(_ target: String) -> GraphPath<Edge>? {
+    public func pathTo(_ target: GraphIdentity) throws -> GraphPath? {
         guard distances[target] != nil else { return nil }
 
-        var nodeIDs: [String] = [target]
+        var reversedNodeIDs: [GraphIdentity] = [target]
+        var reversedEdgeLabels: [GraphIdentity] = []
+        var reversedWeights: [Double] = []
         var current = target
+        var visited: Set<GraphIdentity> = [target]
 
         while let parent = parents[current] {
-            nodeIDs.insert(parent, at: 0)
+            guard let edgeLabel = edgeLabels[current] else {
+                throw WeightedShortestPathError.missingPathEdgeLabel(node: current)
+            }
+            guard let currentDistance = distances[current] else {
+                throw WeightedShortestPathError.missingPathDistance(node: current)
+            }
+            guard let parentDistance = distances[parent] else {
+                throw WeightedShortestPathError.missingPathDistance(node: parent)
+            }
+            guard visited.insert(parent).inserted else {
+                throw WeightedShortestPathError.pathParentCycle(node: parent)
+            }
+            reversedNodeIDs.append(parent)
+            reversedEdgeLabels.append(edgeLabel)
+            reversedWeights.append(currentDistance - parentDistance)
             current = parent
         }
+        guard current == source else {
+            throw WeightedShortestPathError.pathDoesNotReachSource(
+                expected: source,
+                actual: current
+            )
+        }
 
-        return GraphPath(
-            nodeIDs: nodeIDs,
-            edgeLabels: nodeIDs.dropFirst().compactMap { edgeLabels[$0] },
-            weights: computeWeights(for: nodeIDs)
+        return try GraphPath(
+            nodeIDs: Array(reversedNodeIDs.reversed()),
+            edgeLabels: Array(reversedEdgeLabels.reversed()),
+            weights: Array(reversedWeights.reversed())
         )
     }
 
-    private func computeWeights(for nodeIDs: [String]) -> [Double] {
-        guard nodeIDs.count > 1 else { return [] }
-
-        var weights: [Double] = []
-        for i in 1..<nodeIDs.count {
-            let current = nodeIDs[i]
-            let parent = nodeIDs[i - 1]
-            let currentDist = distances[current] ?? 0
-            let parentDist = distances[parent] ?? 0
-            weights.append(currentDist - parentDist)
-        }
-        return weights
-    }
-
     public init(
-        distances: [String: Double],
-        parents: [String: String],
-        edgeLabels: [String: String],
+        source: GraphIdentity,
+        distances: [GraphIdentity: Double],
+        parents: [GraphIdentity: GraphIdentity],
+        edgeLabels: [GraphIdentity: GraphIdentity],
         nodesExplored: Int,
-        durationNs: UInt64
+        durationNs: UInt64,
+        isComplete: Bool = true,
+        limitReason: LimitReason? = nil
     ) {
+        self.source = source
         self.distances = distances
         self.parents = parents
         self.edgeLabels = edgeLabels
         self.nodesExplored = nodesExplored
         self.durationNs = durationNs
+        self.isComplete = isComplete
+        self.limitReason = limitReason
     }
 }
 
 public enum WeightedShortestPathError: Error, Sendable, CustomStringConvertible {
-    case negativeWeight(source: String, target: String, edgeLabel: String?, weight: Double)
+    case invalidMaximumWeight(Double)
+    case negativeWeight(source: GraphIdentity, target: GraphIdentity, edgeLabel: GraphIdentity?, weight: Double)
+    case nonFiniteWeight(source: GraphIdentity, target: GraphIdentity, edgeLabel: GraphIdentity?, weight: Double)
+    case weightOverflow(source: GraphIdentity, target: GraphIdentity, edgeLabel: GraphIdentity?)
+    case missingPathEdgeLabel(node: GraphIdentity)
+    case missingPathDistance(node: GraphIdentity)
+    case pathParentCycle(node: GraphIdentity)
+    case pathDoesNotReachSource(expected: GraphIdentity, actual: GraphIdentity)
 
     public var description: String {
         switch self {
+        case .invalidMaximumWeight(let weight):
+            return "Maximum path weight must be non-negative and not NaN: \(weight)"
         case .negativeWeight(let source, let target, let edgeLabel, let weight):
             let label = edgeLabel ?? "<none>"
             return "Dijkstra shortest path does not support negative weights: \(source) -> \(target), label=\(label), weight=\(weight)"
+        case .nonFiniteWeight(let source, let target, let edgeLabel, let weight):
+            let label = edgeLabel ?? "<none>"
+            return "Dijkstra shortest path requires finite edge weights: \(source) -> \(target), label=\(label), weight=\(weight)"
+        case .weightOverflow(let source, let target, let edgeLabel):
+            let label = edgeLabel ?? "<none>"
+            return "Dijkstra path weight overflowed: \(source) -> \(target), label=\(label)"
+        case .missingPathEdgeLabel(let node):
+            return "Dijkstra path is missing the edge label for node \(node)"
+        case .missingPathDistance(let node):
+            return "Dijkstra path is missing the distance for node \(node)"
+        case .pathParentCycle(let node):
+            return "Dijkstra parent pointers contain a cycle at node \(node)"
+        case .pathDoesNotReachSource(let expected, let actual):
+            return "Dijkstra path ended at \(actual) instead of source \(expected)"
         }
     }
 }
 
 // MARK: - WeightedShortestPathFinder
+
+public struct WeightedGraphNeighbor: Sendable {
+    public let edge: EdgeInfo
+    public let weight: Double
+
+    public init(edge: EdgeInfo, weight: Double) {
+        self.edge = edge
+        self.weight = weight
+    }
+}
+
+public protocol WeightedGraphNeighborSource: Sendable {
+    func neighbors(
+        from source: GraphIdentity,
+        edgeLabel: GraphIdentity?
+    ) async throws -> [WeightedGraphNeighbor]
+}
 
 /// Dijkstra's algorithm for weighted shortest path
 ///
@@ -199,16 +275,11 @@ public enum WeightedShortestPathError: Error, Sendable, CustomStringConvertible 
 ///     print("Path: \(path.nodeIDs.joined(separator: " -> "))")
 /// }
 /// ```
-public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
-
-    // MARK: - Types
-
-    /// Weight extraction closure type
-    public typealias WeightExtractor = @Sendable (Edge) -> Double
+public final class WeightedShortestPathFinder: Sendable {
 
     /// Internal priority queue node
     private struct PriorityNode: Comparable, Sendable {
-        let nodeID: String
+        let nodeID: GraphIdentity
         let distance: Double
 
         static func < (lhs: PriorityNode, rhs: PriorityNode) -> Bool {
@@ -222,37 +293,30 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
 
     // MARK: - Properties
 
-    /// Database connection (internally thread-safe)
-    private let database: any StorageEngine
-
-    /// Index subspace
-    private let subspace: Subspace
-
-    /// Edge scanner for neighbor lookups
-    private let scanner: GraphEdgeScanner
+    /// Indexed neighbor source bound to one storage snapshot.
+    private let neighborSource: any WeightedGraphNeighborSource
 
     /// Configuration
     private let configuration: WeightedShortestPathConfiguration
+
+    /// Shared request work budget.
+    private let workBudget: GraphAlgorithmWorkBudget?
 
     // MARK: - Initialization
 
     /// Initialize weighted shortest path finder
     ///
     /// - Parameters:
-    ///   - database: FDB database connection
-    ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
-    ///   - strategy: Graph index storage strategy (default: .adjacency)
+    ///   - neighborSource: Weighted neighbor source for one stable snapshot
     ///   - configuration: Algorithm configuration
     public init(
-        database: any StorageEngine,
-        subspace: Subspace,
-        strategy: GraphIndexStrategy = .adjacency,
-        configuration: WeightedShortestPathConfiguration = .default
+        neighborSource: any WeightedGraphNeighborSource,
+        configuration: WeightedShortestPathConfiguration = .default,
+        workBudget: GraphAlgorithmWorkBudget? = nil
     ) {
-        self.database = database
-        self.subspace = subspace
+        self.neighborSource = neighborSource
         self.configuration = configuration
-        self.scanner = GraphEdgeScanner(indexSubspace: subspace, strategy: strategy)
+        self.workBudget = workBudget
     }
 
     // MARK: - Public API
@@ -263,24 +327,23 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
     ///   - source: Source node ID
     ///   - target: Target node ID
     ///   - edgeLabel: Optional edge label filter
-    ///   - weightExtractor: Closure to extract weight from edge
-    ///   - edgeLoader: Closure to load edge data by (source, target, label)
     ///   - maxWeight: Maximum weight to explore (overrides config)
     /// - Returns: WeightedPathResult with path and total weight
     public func findShortestPath(
-        from source: String,
-        to target: String,
-        edgeLabel: String? = nil,
-        weightExtractor: @escaping WeightExtractor,
-        edgeLoader: @escaping @Sendable (String, String, String?) async throws -> Edge?,
+        from source: GraphIdentity,
+        to target: GraphIdentity,
+        edgeLabel: GraphIdentity? = nil,
         maxWeight: Double? = nil
-    ) async throws -> WeightedPathResult<Edge> {
+    ) async throws -> WeightedPathResult {
         let startTime = MonotonicClock.now()
         let effectiveMaxWeight = maxWeight ?? configuration.maxWeight
+        guard !effectiveMaxWeight.isNaN, effectiveMaxWeight >= 0 else {
+            throw WeightedShortestPathError.invalidMaximumWeight(effectiveMaxWeight)
+        }
 
         // Early termination: source == target
         if source == target {
-            let path = GraphPath<Edge>(singleNode: source)
+            let path = GraphPath(singleNode: source)
             return WeightedPathResult(
                 path: path,
                 totalWeight: 0,
@@ -291,18 +354,19 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
         }
 
         // Initialize Dijkstra state
-        var distances: [String: Double] = [source: 0]
-        var parents: [String: String] = [:]
-        var edgeLabels: [String: String] = [:]
-        var visited: Set<String> = []
+        var distances: [GraphIdentity: Double] = [source: 0]
+        var parents: [GraphIdentity: GraphIdentity] = [:]
+        var edgeLabels: [GraphIdentity: GraphIdentity] = [:]
+        var visited: Set<GraphIdentity> = []
         var priorityQueue = MinHeap<PriorityNode>()
         priorityQueue.insert(PriorityNode(nodeID: source, distance: 0))
 
         var nodesExplored = 0
         var edgesRelaxed = 0
+        var limitReason: LimitReason?
 
         // Main Dijkstra loop
-        while let current = priorityQueue.extractMin() {
+        search: while let current = priorityQueue.extractMin() {
             let currentNode = current.nodeID
             let currentDist = current.distance
 
@@ -311,17 +375,20 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
                 continue
             }
 
+            guard nodesExplored < configuration.maxNodes else {
+                limitReason = .maxNodesReached(
+                    explored: nodesExplored,
+                    limit: configuration.maxNodes
+                )
+                break
+            }
+
             visited.insert(currentNode)
             nodesExplored += 1
 
-            // Check max weight bound before accepting a target path.
-            if currentDist > effectiveMaxWeight {
-                continue
-            }
-
             // Early termination: reached target
             if currentNode == target {
-                let path = reconstructPath(
+                let path = try reconstructPath(
                     from: source,
                     to: target,
                     parents: parents,
@@ -337,36 +404,43 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
                 )
             }
 
-            // Check max nodes limit
-            if nodesExplored >= configuration.maxNodes {
+            // Get neighbors and relax edges using GraphEdgeScanner
+            guard try consumeWork() else {
+                limitReason = workBudget?.limitReason
+                break
+            }
+            let neighbors = try await neighborSource.neighbors(
+                from: currentNode,
+                edgeLabel: edgeLabel
+            )
+            if let workLimitReason = workBudget?.limitReason {
+                limitReason = workLimitReason
                 break
             }
 
-            // Get neighbors and relax edges using GraphEdgeScanner
-            let neighbors = try await database.withTransaction(configuration: .default) { transaction in
-                var results: [EdgeInfo] = []
-                for try await edgeInfo in self.scanner.scanOutgoing(
-                    from: currentNode,
-                    edgeLabel: edgeLabel,
-                    transaction: transaction
-                ) {
-                    results.append(edgeInfo)
+            for weightedNeighbor in neighbors {
+                guard try consumeWork() else {
+                    limitReason = workBudget?.limitReason
+                    break search
                 }
-                return results
-            }
-
-            for neighbor in neighbors {
+                let neighbor = weightedNeighbor.edge
                 if visited.contains(neighbor.target) {
                     continue
                 }
-
-                // Load edge to get weight
-                guard let edge = try await edgeLoader(neighbor.source, neighbor.target, neighbor.edgeLabel) else {
-                    continue
+                let weight = weightedNeighbor.weight
+                if let workLimitReason = workBudget?.limitReason {
+                    limitReason = workLimitReason
+                    break search
                 }
 
-                let weight = weightExtractor(edge)
-
+                guard weight.isFinite else {
+                    throw WeightedShortestPathError.nonFiniteWeight(
+                        source: neighbor.source,
+                        target: neighbor.target,
+                        edgeLabel: neighbor.edgeLabel,
+                        weight: weight
+                    )
+                }
                 guard weight >= 0 else {
                     throw WeightedShortestPathError.negativeWeight(
                         source: neighbor.source,
@@ -377,8 +451,21 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
                 }
 
                 let newDist = currentDist + weight
+                guard newDist.isFinite else {
+                    throw WeightedShortestPathError.weightOverflow(
+                        source: neighbor.source,
+                        target: neighbor.target,
+                        edgeLabel: neighbor.edgeLabel
+                    )
+                }
                 edgesRelaxed += 1
                 guard newDist <= effectiveMaxWeight else {
+                    if case .none = limitReason {
+                        limitReason = .maxWeightReached(
+                            weight: newDist,
+                            limit: effectiveMaxWeight
+                        )
+                    }
                     continue
                 }
 
@@ -399,7 +486,9 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
             totalWeight: .infinity,
             nodesExplored: nodesExplored,
             edgesRelaxed: edgesRelaxed,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            isComplete: limitReason == nil,
+            limitReason: limitReason
         )
     }
 
@@ -408,32 +497,32 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
     /// - Parameters:
     ///   - source: Source node ID
     ///   - edgeLabel: Optional edge label filter
-    ///   - weightExtractor: Closure to extract weight from edge
-    ///   - edgeLoader: Closure to load edge data
     ///   - maxWeight: Maximum weight to explore
     /// - Returns: SingleSourceResult with distances to all reachable nodes
     public func findShortestPaths(
-        from source: String,
-        edgeLabel: String? = nil,
-        weightExtractor: @escaping WeightExtractor,
-        edgeLoader: @escaping @Sendable (String, String, String?) async throws -> Edge?,
+        from source: GraphIdentity,
+        edgeLabel: GraphIdentity? = nil,
         maxWeight: Double? = nil
-    ) async throws -> SingleSourceResult<Edge> {
+    ) async throws -> SingleSourceResult {
         let startTime = MonotonicClock.now()
         let effectiveMaxWeight = maxWeight ?? configuration.maxWeight
+        guard !effectiveMaxWeight.isNaN, effectiveMaxWeight >= 0 else {
+            throw WeightedShortestPathError.invalidMaximumWeight(effectiveMaxWeight)
+        }
 
         // Initialize Dijkstra state
-        var distances: [String: Double] = [source: 0]
-        var parents: [String: String] = [:]
-        var edgeLabels: [String: String] = [:]
-        var visited: Set<String> = []
+        var distances: [GraphIdentity: Double] = [source: 0]
+        var parents: [GraphIdentity: GraphIdentity] = [:]
+        var edgeLabels: [GraphIdentity: GraphIdentity] = [:]
+        var visited: Set<GraphIdentity> = []
         var priorityQueue = MinHeap<PriorityNode>()
         priorityQueue.insert(PriorityNode(nodeID: source, distance: 0))
 
         var nodesExplored = 0
+        var limitReason: LimitReason?
 
         // Main Dijkstra loop
-        while let current = priorityQueue.extractMin() {
+        search: while let current = priorityQueue.extractMin() {
             let currentNode = current.nodeID
             let currentDist = current.distance
 
@@ -442,42 +531,53 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
                 continue
             }
 
-            visited.insert(currentNode)
-            nodesExplored += 1
-
-            // Check bounds
-            if currentDist > effectiveMaxWeight {
-                continue
-            }
-
-            if nodesExplored >= configuration.maxNodes {
+            guard nodesExplored < configuration.maxNodes else {
+                limitReason = .maxNodesReached(
+                    explored: nodesExplored,
+                    limit: configuration.maxNodes
+                )
                 break
             }
 
+            visited.insert(currentNode)
+            nodesExplored += 1
+
             // Get neighbors and relax edges using GraphEdgeScanner
-            let neighbors = try await database.withTransaction(configuration: .default) { transaction in
-                var results: [EdgeInfo] = []
-                for try await edgeInfo in self.scanner.scanOutgoing(
-                    from: currentNode,
-                    edgeLabel: edgeLabel,
-                    transaction: transaction
-                ) {
-                    results.append(edgeInfo)
-                }
-                return results
+            guard try consumeWork() else {
+                limitReason = workBudget?.limitReason
+                break
+            }
+            let neighbors = try await neighborSource.neighbors(
+                from: currentNode,
+                edgeLabel: edgeLabel
+            )
+            if let workLimitReason = workBudget?.limitReason {
+                limitReason = workLimitReason
+                break
             }
 
-            for neighbor in neighbors {
+            for weightedNeighbor in neighbors {
+                guard try consumeWork() else {
+                    limitReason = workBudget?.limitReason
+                    break search
+                }
+                let neighbor = weightedNeighbor.edge
                 if visited.contains(neighbor.target) {
                     continue
                 }
-
-                // Load edge to get weight
-                guard let edge = try await edgeLoader(neighbor.source, neighbor.target, neighbor.edgeLabel) else {
-                    continue
+                let weight = weightedNeighbor.weight
+                if let workLimitReason = workBudget?.limitReason {
+                    limitReason = workLimitReason
+                    break search
                 }
-
-                let weight = weightExtractor(edge)
+                guard weight.isFinite else {
+                    throw WeightedShortestPathError.nonFiniteWeight(
+                        source: neighbor.source,
+                        target: neighbor.target,
+                        edgeLabel: neighbor.edgeLabel,
+                        weight: weight
+                    )
+                }
                 guard weight >= 0 else {
                     throw WeightedShortestPathError.negativeWeight(
                         source: neighbor.source,
@@ -488,7 +588,20 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
                 }
 
                 let newDist = currentDist + weight
+                guard newDist.isFinite else {
+                    throw WeightedShortestPathError.weightOverflow(
+                        source: neighbor.source,
+                        target: neighbor.target,
+                        edgeLabel: neighbor.edgeLabel
+                    )
+                }
                 guard newDist <= effectiveMaxWeight else {
+                    if case .none = limitReason {
+                        limitReason = .maxWeightReached(
+                            weight: newDist,
+                            limit: effectiveMaxWeight
+                        )
+                    }
                     continue
                 }
 
@@ -503,55 +616,66 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
         }
 
         return SingleSourceResult(
+            source: source,
             distances: distances,
             parents: parents,
             edgeLabels: edgeLabels,
             nodesExplored: nodesExplored,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            isComplete: limitReason == nil,
+            limitReason: limitReason
         )
     }
 
     // MARK: - Private Methods
 
+    private func consumeWork(_ units: UInt64 = 1) throws -> Bool {
+        try workBudget?.consume(units) ?? true
+    }
+
     /// Reconstruct path from parent pointers
     private func reconstructPath(
-        from source: String,
-        to target: String,
-        parents: [String: String],
-        edgeLabels: [String: String],
-        distances: [String: Double]
-    ) -> GraphPath<Edge> {
-        var nodeIDs: [String] = [target]
+        from source: GraphIdentity,
+        to target: GraphIdentity,
+        parents: [GraphIdentity: GraphIdentity],
+        edgeLabels: [GraphIdentity: GraphIdentity],
+        distances: [GraphIdentity: Double]
+    ) throws -> GraphPath {
+        var reversedNodeIDs: [GraphIdentity] = [target]
+        var reversedEdgeLabels: [GraphIdentity] = []
+        var reversedWeights: [Double] = []
         var current = target
+        var visited: Set<GraphIdentity> = [target]
 
         while let parent = parents[current] {
-            nodeIDs.insert(parent, at: 0)
+            guard let edgeLabel = edgeLabels[current] else {
+                throw WeightedShortestPathError.missingPathEdgeLabel(node: current)
+            }
+            guard let currentDistance = distances[current] else {
+                throw WeightedShortestPathError.missingPathDistance(node: current)
+            }
+            guard let parentDistance = distances[parent] else {
+                throw WeightedShortestPathError.missingPathDistance(node: parent)
+            }
+            guard visited.insert(parent).inserted else {
+                throw WeightedShortestPathError.pathParentCycle(node: parent)
+            }
+            reversedNodeIDs.append(parent)
+            reversedEdgeLabels.append(edgeLabel)
+            reversedWeights.append(currentDistance - parentDistance)
             current = parent
         }
-
-        // Compute edge labels and weights for the path
-        var labels: [String] = []
-        var weights: [Double] = []
-
-        for i in 0..<(nodeIDs.count - 1) {
-            let from = nodeIDs[i]
-            let to = nodeIDs[i + 1]
-            let label = edgeLabels[to]
-
-            if let label = label {
-                labels.append(label)
-            }
-
-            // Calculate weight from distances
-            let fromDist = distances[from] ?? 0
-            let toDist = distances[to] ?? 0
-            weights.append(toDist - fromDist)
+        guard current == source else {
+            throw WeightedShortestPathError.pathDoesNotReachSource(
+                expected: source,
+                actual: current
+            )
         }
 
-        return GraphPath(
-            nodeIDs: nodeIDs,
-            edgeLabels: labels,
-            weights: weights
+        return try GraphPath(
+            nodeIDs: Array(reversedNodeIDs.reversed()),
+            edgeLabels: Array(reversedEdgeLabels.reversed()),
+            weights: Array(reversedWeights.reversed())
         )
     }
 }

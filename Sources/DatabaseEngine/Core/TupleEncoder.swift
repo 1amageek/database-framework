@@ -3,8 +3,14 @@
 //
 // Single responsibility: Convert Swift types to TupleElement for index operations.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
+import Core
+import DatabaseValue
 
 // MARK: - TupleEncoder
 
@@ -18,7 +24,7 @@ import StorageKit
 /// |------------|--------------|-------|
 /// | String | String | Direct |
 /// | Int, Int8-64 | Int64 | Widened |
-/// | UInt, UInt8-64 | Int64 | Overflow check |
+/// | UInt, UInt8-64 | Int64 or UInt64 | Canonical positive integer encoding |
 /// | Double | Double | IEEE 754 (FDB preserves order) |
 /// | Float | Double | Widened |
 /// | Bool | Bool | Direct |
@@ -60,6 +66,10 @@ public struct TupleEncoder: Sendable {
 
         // Handle common types
         switch value {
+        case let fieldValue as FieldValue:
+            return try fieldValue.toTupleElement()
+        case let rdfTerm as DatabaseRDFTerm:
+            return try FieldValue.rdfTerm(rdfTerm).toTupleElement()
         case let stringValue as String:
             return stringValue
 
@@ -75,17 +85,19 @@ public struct TupleEncoder: Sendable {
         case let int8Value as Int8:
             return Int64(int8Value)
 
-        // Unsigned integers -> Int64 with overflow check
+        // Unsigned integers use the canonical positive integer tuple encoding.
+        // Values through Int64.max retain the historical Int64 representation;
+        // larger values use UInt64's positiveInt9-capable representation.
         case let uintValue as UInt:
-            guard uintValue <= UInt(Int64.max) else {
-                throw TupleEncodingError.integerOverflow(value: UInt64(uintValue))
+            if UInt64(uintValue) <= UInt64(Int64.max) {
+                return Int64(uintValue)
             }
-            return Int64(uintValue)
+            return UInt64(uintValue)
         case let uint64Value as UInt64:
-            guard uint64Value <= UInt64(Int64.max) else {
-                throw TupleEncodingError.integerOverflow(value: uint64Value)
+            if uint64Value <= UInt64(Int64.max) {
+                return Int64(uint64Value)
             }
-            return Int64(uint64Value)
+            return uint64Value
         case let uint32Value as UInt32:
             return Int64(uint32Value)
         case let uint16Value as UInt16:
@@ -108,10 +120,16 @@ public struct TupleEncoder: Sendable {
             return dateValue
         case let uuidValue as UUID:
             return uuidValue
+        case let databaseBytes as DatabaseBytes:
+            return Bytes(retaining: databaseBytes)
+        case let storageBytes as Bytes:
+            return storageBytes
         case let dataValue as Data:
-            return Array(dataValue)
+            return Bytes(
+                retaining: DatabaseBytes(retaining: dataValue)
+            )
         case let bytesValue as [UInt8]:
-            return bytesValue
+            return Bytes(bytesValue)
         case let tupleValue as Tuple:
             return tupleValue
 
@@ -171,13 +189,6 @@ public struct TupleEncoder: Sendable {
         try values.map { try encode($0) }
     }
 
-    /// Encode a value, returning nil for unsupported types instead of throwing
-    ///
-    /// - Parameter value: The value to encode
-    /// - Returns: TupleElement or nil if encoding fails
-    public static func encodeOrNil(_ value: Any) -> (any TupleElement)? {
-        try? encode(value)
-    }
 }
 
 // MARK: - TupleEncodingError
@@ -187,9 +198,6 @@ public enum TupleEncodingError: Error, Sendable, CustomStringConvertible {
     /// Nil/Optional.none values cannot be encoded to TupleElement
     case nilValueCannotBeEncoded
 
-    /// Integer value exceeds Int64 range
-    case integerOverflow(value: UInt64)
-
     /// Type is not supported for TupleElement encoding
     case unsupportedType(actualType: String)
 
@@ -197,8 +205,6 @@ public enum TupleEncodingError: Error, Sendable, CustomStringConvertible {
         switch self {
         case .nilValueCannotBeEncoded:
             return "Nil value cannot be encoded to TupleElement"
-        case .integerOverflow(let value):
-            return "Integer overflow: \(value) exceeds Int64.max"
         case .unsupportedType(let actualType):
             return "Unsupported type for TupleElement encoding: \(actualType)"
         }

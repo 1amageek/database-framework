@@ -4,7 +4,11 @@
 // Reference: FoundationDB transaction options
 // https://apple.github.io/foundationdb/api-general.html#transaction-options
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 
 // MARK: - TransactionPriority
@@ -72,7 +76,7 @@ public enum ReadPriority: String, Sendable, Hashable, Codable {
 /// // Custom configuration
 /// let config = TransactionConfiguration(
 ///     timeout: 5000,
-///     retryLimit: 5,
+///     maximumAttempts: 5,
 ///     priority: .default
 /// )
 ///
@@ -96,22 +100,24 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// **Reference**: FDB `timeout` option (code 500)
     public let timeout: Int?
 
-    /// Maximum number of retry attempts
+    /// Maximum total number of transaction attempts, including the first.
     ///
-    /// After this many retries, the transaction will fail with an error.
-    /// Values ≤ 0 are treated as 1 (minimum one attempt).
+    /// Values less than one are rejected before a transaction is created.
     ///
-    /// Default: `DatabaseConfiguration.shared.transactionRetryLimit` (5)
+    /// Default: 5
     ///
     /// **Note**: Unlimited retries are not supported to prevent runaway transactions.
-    public let retryLimit: Int
+    public let maximumAttempts: Int
 
     /// Maximum delay between retries in milliseconds
     ///
     /// Caps the exponential backoff delay.
     ///
-    /// Default: `DatabaseConfiguration.shared.transactionMaxRetryDelay` (250ms)
+    /// Default: 250ms
     public let maxRetryDelay: Int
+
+    /// Initial delay before the first retry, in milliseconds.
+    public let initialRetryDelay: Int
 
     /// Transaction priority
     ///
@@ -144,43 +150,46 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// Tracing and logging configuration
     public let tracing: Tracing
 
+    /// Maximum portable logical mutation bytes accepted in one transaction
+    /// attempt. `nil` leaves accounting disabled for trusted internal work.
+    public let maximumMutationAggregateBytes: Int?
+
     // MARK: - Initialization
 
     /// Create a custom transaction configuration
     ///
-    /// Default values are sourced from `DatabaseConfiguration.shared`, which can be
-    /// configured via environment variables:
-    /// - `DATABASE_TRANSACTION_RETRY_LIMIT`
-    /// - `DATABASE_TRANSACTION_MAX_RETRY_DELAY`
-    /// - `DATABASE_TRANSACTION_TIMEOUT`
-    ///
     /// - Parameters:
-    ///   - timeout: Timeout in milliseconds (default: from DatabaseConfiguration)
-    ///   - retryLimit: Max retry attempts (default: from DatabaseConfiguration)
-    ///   - maxRetryDelay: Max delay between retries in ms (default: from DatabaseConfiguration)
+    ///   - timeout: Timeout in milliseconds
+    ///   - maximumAttempts: Maximum total attempts, including the first
+    ///   - maxRetryDelay: Maximum delay between retries in milliseconds
+    ///   - initialRetryDelay: Initial retry delay in milliseconds
     ///   - priority: Transaction priority (default: .default)
     ///   - readPriority: Read operation priority (default: .normal)
     ///   - disableReadCache: Whether to disable server-side read caching (default: false)
     ///   - cachePolicy: Cache policy for read operations (default: .server = strict consistency)
     ///   - tracing: Tracing and logging configuration (default: .disabled)
     public init(
-        timeout: Int? = DatabaseConfiguration.shared.transactionTimeout,
-        retryLimit: Int = DatabaseConfiguration.shared.transactionRetryLimit,
-        maxRetryDelay: Int = DatabaseConfiguration.shared.transactionMaxRetryDelay,
+        timeout: Int? = nil,
+        maximumAttempts: Int = 5,
+        maxRetryDelay: Int = 250,
+        initialRetryDelay: Int = 10,
         priority: TransactionPriority = .default,
         readPriority: ReadPriority = .normal,
         disableReadCache: Bool = false,
         cachePolicy: CachePolicy = .server,
-        tracing: Tracing = .disabled
+        tracing: Tracing = .disabled,
+        maximumMutationAggregateBytes: Int? = nil
     ) {
         self.timeout = timeout
-        self.retryLimit = retryLimit
+        self.maximumAttempts = maximumAttempts
         self.maxRetryDelay = maxRetryDelay
+        self.initialRetryDelay = initialRetryDelay
         self.priority = priority
         self.readPriority = readPriority
         self.disableReadCache = disableReadCache
         self.cachePolicy = cachePolicy
         self.tracing = tracing
+        self.maximumMutationAggregateBytes = maximumMutationAggregateBytes
     }
 
     // MARK: - Presets
@@ -205,7 +214,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// Use `.longRunning` if you need relaxed consistency for read-heavy workloads.
     public static let batch = TransactionConfiguration(
         timeout: 30_000,
-        retryLimit: 20,
+        maximumAttempts: 20,
         maxRetryDelay: 2000,
         priority: .batch,
         readPriority: .low,
@@ -222,7 +231,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// - High read priority
     public static let system = TransactionConfiguration(
         timeout: 2_000,
-        retryLimit: 5,
+        maximumAttempts: 5,
         priority: .system,
         readPriority: .high
     )
@@ -235,7 +244,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// - Default priority
     public static let interactive = TransactionConfiguration(
         timeout: 1_000,
-        retryLimit: 3
+        maximumAttempts: 3
     )
 
     /// Long-running operation configuration
@@ -247,7 +256,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// - Cache policy: .stale(60) (up to 60 second staleness)
     public static let longRunning = TransactionConfiguration(
         timeout: 60_000,
-        retryLimit: 50,
+        maximumAttempts: 50,
         maxRetryDelay: 5000,
         priority: .batch,
         readPriority: .low,
@@ -266,14 +275,86 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// where slightly stale data is acceptable.
     public static let readOnly = TransactionConfiguration(
         timeout: 2_000,
-        retryLimit: 3,
+        maximumAttempts: 3,
         cachePolicy: .cached
     )
+
+    /// Returns the same transaction policy with a different total timeout.
+    /// The timeout covers all retry attempts; once commit is dispatched the
+    /// backend's authoritative commit outcome still takes precedence.
+    public func replacing(timeout: Int?) -> TransactionConfiguration {
+        TransactionConfiguration(
+            timeout: timeout,
+            maximumAttempts: maximumAttempts,
+            maxRetryDelay: maxRetryDelay,
+            initialRetryDelay: initialRetryDelay,
+            priority: priority,
+            readPriority: readPriority,
+            disableReadCache: disableReadCache,
+            cachePolicy: cachePolicy,
+            tracing: tracing,
+            maximumMutationAggregateBytes: maximumMutationAggregateBytes
+        )
+    }
+
+    /// Returns the same transaction policy with a portable aggregate mutation
+    /// payload limit. The runner creates a fresh meter for every retry attempt.
+    public func limitingMutationAggregateBytes(
+        to maximumBytes: Int
+    ) -> TransactionConfiguration {
+        TransactionConfiguration(
+            timeout: timeout,
+            maximumAttempts: maximumAttempts,
+            maxRetryDelay: maxRetryDelay,
+            initialRetryDelay: initialRetryDelay,
+            priority: priority,
+            readPriority: readPriority,
+            disableReadCache: disableReadCache,
+            cachePolicy: cachePolicy,
+            tracing: tracing,
+            maximumMutationAggregateBytes: maximumBytes
+        )
+    }
+}
+
+// MARK: - Validation
+
+extension TransactionConfiguration {
+    /// Validate the portable execution policy before creating a transaction.
+    public func validate() throws {
+        if let timeout, timeout < 0 {
+            throw StorageError.invalidOperation(
+                "Transaction timeout must be non-negative"
+            )
+        }
+        guard maximumAttempts > 0 else {
+            throw StorageError.invalidOperation(
+                "Transaction maximumAttempts must be greater than zero"
+            )
+        }
+        guard maxRetryDelay >= 0 else {
+            throw StorageError.invalidOperation(
+                "Transaction maxRetryDelay must be non-negative"
+            )
+        }
+        guard initialRetryDelay >= 0 else {
+            throw StorageError.invalidOperation(
+                "Transaction initialRetryDelay must be non-negative"
+            )
+        }
+        if let maximumMutationAggregateBytes,
+           maximumMutationAggregateBytes <= 0 {
+            throw StorageError.invalidOperation(
+                "Transaction mutation aggregate byte limit must be positive"
+            )
+        }
+    }
 }
 
 // MARK: - Tracing Configuration
 
 extension TransactionConfiguration {
+
     /// Tracing and logging configuration for transactions
     ///
     /// Groups observability-related settings for cleaner API.
@@ -403,18 +484,34 @@ extension TransactionConfiguration {
     /// ```
     ///
     /// - Parameter transaction: The transaction to configure
-    /// - Throws: FDBError if option setting fails
+    /// - Returns: The exact native and portable policy resolution.
+    /// - Throws: A typed storage error when a requested native option fails.
     ///
-    /// **Note**: `retryLimit` is NOT applied to the FDB transaction here because
-    /// TransactionRunner manages retries at a higher level. Applying retryLimit
+    /// **Note**: `maximumAttempts` is NOT applied to the FDB transaction here because
+    /// TransactionRunner manages retries at a higher level. Applying maximumAttempts
     /// to both would cause double retry control and unexpected behavior.
-    public func apply(to transaction: any Transaction) throws {
+    public func apply(
+        to transaction: any Transaction
+    ) throws -> TransactionConfigurationResolution {
+        try validate()
+
+        let capabilities = transaction.capabilities
+        var unsupportedHints: [TransactionConfigurationResolution.UnsupportedHint] = []
+
         // Transaction priority
         switch priority {
         case .batch:
-            try transaction.setOption(forOption: .priorityBatch)
+            if capabilities.schedulingPriority {
+                try transaction.setOption(forOption: .priorityBatch)
+            } else {
+                unsupportedHints.append(.schedulingPriority)
+            }
         case .system:
-            try transaction.setOption(forOption: .prioritySystemImmediate)
+            if capabilities.schedulingPriority {
+                try transaction.setOption(forOption: .prioritySystemImmediate)
+            } else {
+                unsupportedHints.append(.schedulingPriority)
+            }
         case .default:
             break
         }
@@ -422,25 +519,51 @@ extension TransactionConfiguration {
         // Read priority
         switch readPriority {
         case .low:
-            try transaction.setOption(forOption: .readPriorityLow)
+            if capabilities.readPriority {
+                try transaction.setOption(forOption: .readPriorityLow)
+            } else {
+                unsupportedHints.append(.readPriority)
+            }
         case .high:
-            try transaction.setOption(forOption: .readPriorityHigh)
+            if capabilities.readPriority {
+                try transaction.setOption(forOption: .readPriorityHigh)
+            } else {
+                unsupportedHints.append(.readPriority)
+            }
         case .normal:
             break
         }
 
         // Timeout
-        if let timeout = timeout {
+        let backendTimeoutApplied: Bool
+        if let timeout, capabilities.transactionTimeout {
             try transaction.setOption(to: timeout, forOption: .timeout(milliseconds: timeout))
+            backendTimeoutApplied = true
+        } else {
+            backendTimeoutApplied = false
         }
 
-        // Note: retryLimit and maxRetryDelay are NOT applied to FDB transaction.
+        // Note: maximumAttempts and maxRetryDelay are NOT applied to FDB transaction.
         // TransactionRunner manages retries with its own exponential backoff.
 
         // Disable server-side read cache
         if disableReadCache {
-            try transaction.setOption(forOption: .readServerSideCacheDisable)
+            if capabilities.readCacheControl {
+                try transaction.setOption(forOption: .readServerSideCacheDisable)
+            } else {
+                unsupportedHints.append(.readCacheControl)
+            }
         }
+
+        try transaction.configureMutationByteLimit(
+            maximumBytes: maximumMutationAggregateBytes
+        )
+
+        return TransactionConfigurationResolution(
+            backendTimeoutApplied: backendTimeoutApplied,
+            executionTimeoutMilliseconds: timeout.flatMap { $0 == 0 ? nil : $0 },
+            unsupportedHints: unsupportedHints
+        )
     }
 }
 
@@ -453,8 +576,8 @@ extension TransactionConfiguration: CustomStringConvertible {
         if let timeout = timeout {
             parts.append("timeout: \(timeout)ms")
         }
-        if retryLimit != 5 {
-            parts.append("retryLimit: \(retryLimit)")
+        if maximumAttempts != 5 {
+            parts.append("maximumAttempts: \(maximumAttempts)")
         }
         if maxRetryDelay != 250 {
             parts.append("maxRetryDelay: \(maxRetryDelay)ms")

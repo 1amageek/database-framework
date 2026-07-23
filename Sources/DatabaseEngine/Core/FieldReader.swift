@@ -1,8 +1,8 @@
 // FieldReader.swift
 // DatabaseEngine - Non-throwing field access utility
 
-import Foundation
 import Core
+import DatabaseValue
 
 /// Non-throwing field reader for Persistable models
 ///
@@ -50,7 +50,7 @@ public struct FieldReader: Sendable {
         from model: T, fieldName: String
     ) -> Any? {
         // Fast path: no nested fields (common case) — avoids split/map allocation
-        guard fieldName.contains(".") else {
+        guard DatabaseText.contains(".", in: fieldName) else {
             return model[dynamicMember: fieldName]
         }
         // Nested field path: first level via dynamicMember, rest via Mirror

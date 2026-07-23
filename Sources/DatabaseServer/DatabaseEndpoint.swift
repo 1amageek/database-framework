@@ -1,146 +1,219 @@
-import Foundation
-import Core
 import DatabaseEngine
-import DatabaseClientProtocol
+import DatabaseValue
+import DatabaseWire
 
-/// Server endpoint that processes client requests via ServiceEnvelope
-///
-/// Provides a framework-agnostic request handler that can be integrated
-/// into any WebSocket server (Vapor, Hummingbird, NIO, etc.).
-///
-/// **Embedded mode** (integrate into existing server):
-/// ```swift
-/// let container = try await DBContainer(for: schema)
-/// let endpoint = DatabaseEndpoint(container: container)
-///
-/// // Vapor example
-/// app.webSocket("db") { req, ws in
-///     ws.onBinary { ws, buffer in
-///         let data = Data(buffer: buffer)
-///         let response = try await endpoint.handleRequest(data)
-///         try await ws.send(response)
-///     }
-/// }
-/// ```
-///
-/// **Middleware** (authentication, rate limiting, etc.):
-/// ```swift
-/// let endpoint = DatabaseEndpoint(container: container)
-///     .middleware(AuthMiddleware(verifier: jwtVerifier))
-///     .middleware(RateLimitMiddleware(maxRequests: 100))
-/// ```
 public final class DatabaseEndpoint: Sendable {
+    private let container: DBContainer
+    private let registry: DatabaseOperationRegistry
+    private let middlewares: [AnyDatabaseRequestMiddleware]
+    private let limits: DatabaseWireLimits
+    private let errorMapper: AnyDatabaseErrorMapper
 
-    private let router: OperationRouter
-    private let middlewares: [any ServerMiddleware]
-
-    /// Create an endpoint backed by an DBContainer
-    ///
-    /// Automatically registers handlers for all entity types in the schema.
-    /// Creates a new FDBContext per request for stateless processing.
-    ///
-    /// - Parameter container: The DBContainer managing database resources
     public init(
         container: DBContainer,
-        operationRegistry: OperationRegistry = OperationRegistry(),
-        commandRegistry: CommandRegistry? = nil
+        registry: DatabaseOperationRegistry,
+        middlewares: [AnyDatabaseRequestMiddleware] = [],
+        limits: DatabaseWireLimits = .default
     ) {
-        if let commandRegistry {
-            operationRegistry.register(CommandOperationHandler(commandRegistry: commandRegistry))
-        }
-        self.router = OperationRouter(
-            container: container,
-            operationRegistry: operationRegistry
-        )
-        self.middlewares = []
-    }
-
-    private init(router: OperationRouter, middlewares: [any ServerMiddleware]) {
-        self.router = router
+        self.container = container
+        self.registry = registry
         self.middlewares = middlewares
+        self.limits = limits
+        self.errorMapper = AnyDatabaseErrorMapper(CanonicalDatabaseErrorMapper())
     }
 
-    /// Add a middleware to the processing pipeline
-    ///
-    /// Middlewares are executed in the order they are added.
-    /// Each middleware can inspect, modify, or reject requests.
-    ///
-    /// - Parameter middleware: The middleware to add
-    /// - Returns: A new endpoint with the middleware added
-    public func middleware(_ middleware: any ServerMiddleware) -> DatabaseEndpoint {
-        var newMiddlewares = self.middlewares
-        newMiddlewares.append(middleware)
-        return DatabaseEndpoint(router: router, middlewares: newMiddlewares)
+    public init<Mapper: DatabaseErrorMapper>(
+        container: DBContainer,
+        registry: DatabaseOperationRegistry,
+        middlewares: [AnyDatabaseRequestMiddleware] = [],
+        limits: DatabaseWireLimits = .default,
+        errorMapper: Mapper
+    ) {
+        self.container = container
+        self.registry = registry
+        self.middlewares = middlewares
+        self.limits = limits
+        self.errorMapper = AnyDatabaseErrorMapper(errorMapper)
     }
 
-    /// Process a single request (JSON-encoded ServiceEnvelope)
-    ///
-    /// This is the main entry point for integrating with any transport.
-    /// Decodes the request, runs it through the middleware pipeline,
-    /// routes to the appropriate handler, and returns the response.
-    ///
-    /// - Parameter data: JSON-encoded ServiceEnvelope
-    /// - Returns: JSON-encoded response ServiceEnvelope
-    public func handleRequest(_ data: Data) async -> Data {
-        let decoder = JSONDecoder()
-        let encoder = JSONEncoder()
-
-        // Decode the request envelope
-        let envelope: ServiceEnvelope
+    public func execute(_ bytes: DatabaseBytes) async throws -> DatabaseBytes {
+        let request: DatabaseWireRequestEnvelope
         do {
-            envelope = try decoder.decode(ServiceEnvelope.self, from: data)
+            request = try DatabaseEnvelopeCodec.decodeRequest(bytes, limits: limits)
         } catch {
-            let errorResponse = ServiceEnvelope(
-                responseTo: "unknown",
-                operationID: "error",
-                errorCode: "INVALID_REQUEST",
-                errorMessage: "Failed to decode request: \(error.localizedDescription)"
-            )
-            return (try? encoder.encode(errorResponse)) ?? Data()
+            throw DatabaseEndpointError.invalidRequestFrame(error)
         }
 
-        // Build the handler chain (middlewares → router)
-        let handler = buildHandlerChain(for: envelope)
-
+        let context = DatabaseOperationContext(
+            container: container,
+            requestID: request.requestID,
+            metadata: request.metadata,
+            requestPayload: request.payload
+        )
+        let result: DatabaseOperationResult
         do {
-            let response = try await handler(envelope)
-            return try encoder.encode(response)
-        } catch let error as ServiceError {
-            let errorResponse = ServiceEnvelope(
-                responseTo: envelope.requestID,
-                operationID: envelope.operationID,
-                errorCode: error.code,
-                errorMessage: error.message
-            )
-            return (try? encoder.encode(errorResponse)) ?? Data()
+            result = try await handlerChain()(request, context)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            let errorResponse = ServiceEnvelope(
-                responseTo: envelope.requestID,
-                operationID: envelope.operationID,
-                errorCode: "INTERNAL_ERROR",
-                errorMessage: error.localizedDescription
+            return try encodeFailureResponse(
+                for: request,
+                error: errorMapper.remoteError(
+                    for: error,
+                    context: context,
+                    limits: limits
+                )
             )
-            return (try? encoder.encode(errorResponse)) ?? Data()
+        }
+
+        guard result.operation == request.operation else {
+            throw DatabaseEndpointError.responseOperationMismatch(
+                expected: request.operation,
+                actual: result.operation
+            )
+        }
+        do {
+            return try result.encodeResponse(
+                requestID: request.requestID,
+                limits: limits
+            )
+        } catch let wireError as DatabaseWireError {
+            return try encodeFailureResponse(
+                for: request,
+                error: errorMapper.remoteError(
+                    for: DatabaseResponsePreparationError(
+                        wireError: wireError
+                    ),
+                    context: context,
+                    limits: limits
+                )
+            )
+        } catch {
+            return try encodeFailureResponse(
+                for: request,
+                error: errorMapper.remoteError(
+                    for: error,
+                    context: context,
+                    limits: limits
+                )
+            )
         }
     }
 
-    /// Build the middleware chain ending with the router
-    private func buildHandlerChain(
-        for envelope: ServiceEnvelope
-    ) -> @Sendable (ServiceEnvelope) async throws -> ServiceEnvelope {
-        // Start with the router as the innermost handler
-        var handler: @Sendable (ServiceEnvelope) async throws -> ServiceEnvelope = { [router] envelope in
-            try await router.handle(envelope)
+    private func handlerChain() -> DatabaseRequestHandler {
+        var handler: DatabaseRequestHandler = { [registry, limits] request, context in
+            guard let operationHandler = registry.resolve(request.operation) else {
+                throw DatabaseEndpointError.missingHandler(request.operation)
+            }
+            return try await operationHandler.invoke(
+                payload: request.payload,
+                context: context,
+                limits: limits
+            )
         }
-
-        // Wrap with middlewares in reverse order (so first-added middleware runs first)
         for middleware in middlewares.reversed() {
             let next = handler
-            handler = { envelope in
-                try await middleware.handle(request: envelope, next: next)
+            handler = { request, context in
+                try await middleware.handle(
+                    request: request,
+                    context: context,
+                    next: next
+                )
             }
         }
-
         return handler
+    }
+
+    private func encodeFailureResponse(
+        for request: DatabaseWireRequestEnvelope,
+        error remoteError: DatabaseRemoteError
+    ) throws -> DatabaseBytes {
+        do {
+            return try encodeFailureEnvelope(
+                for: request,
+                error: remoteError
+            )
+        } catch {
+            let reduced = DatabaseRemoteError(
+                category: remoteError.category,
+                code: Self.stringPrefix(
+                    remoteError.code,
+                    maximumBytes: limits.maximumStringBytes
+                ),
+                message: Self.stringPrefix(
+                    remoteError.message,
+                    maximumBytes: limits.maximumStringBytes
+                ),
+                retryability: remoteError.retryability
+            )
+            do {
+                return try encodeFailureEnvelope(
+                    for: request,
+                    error: reduced
+                )
+            } catch {
+                let fallback = DatabaseRemoteError(
+                    category: .internalFailure,
+                    code: Self.stringPrefix(
+                        "FAILURE_RESPONSE_ENCODING_FAILED",
+                        maximumBytes: limits.maximumStringBytes
+                    ),
+                    message: Self.stringPrefix(
+                        "Failure response exceeded configured wire limits",
+                        maximumBytes: limits.maximumStringBytes
+                    ),
+                    retryability: .never
+                )
+                do {
+                    return try encodeFailureEnvelope(
+                        for: request,
+                        error: fallback
+                    )
+                } catch let wireError {
+                    throw DatabaseEndpointError.responseEncodingFailed(
+                        wireError
+                    )
+                }
+            }
+        }
+    }
+
+    private func encodeFailureEnvelope(
+        for request: DatabaseWireRequestEnvelope,
+        error: DatabaseRemoteError
+    ) throws(DatabaseWireError) -> DatabaseBytes {
+        try DatabaseEnvelopeCodec.encode(
+            response: DatabaseWireResponseEnvelope(
+                requestID: request.requestID,
+                operation: request.operation,
+                payload: .failure(error)
+            ),
+            limits: limits
+        )
+    }
+
+    private static func stringPrefix(
+        _ string: String,
+        maximumBytes: Int
+    ) -> String {
+        guard maximumBytes > 0 else { return "" }
+        guard string.utf8.count > maximumBytes else { return string }
+
+        // A new String is required at the wire ownership boundary. Iterating
+        // scalars avoids an intermediate UTF-8 array and never splits a scalar.
+        var result = ""
+        result.reserveCapacity(maximumBytes)
+        var byteCount = 0
+        for scalar in string.unicodeScalars {
+            let scalarByteCount = scalar.utf8.count
+            let addition = byteCount.addingReportingOverflow(scalarByteCount)
+            guard !addition.overflow,
+                  addition.partialValue <= maximumBytes else {
+                break
+            }
+            result.unicodeScalars.append(scalar)
+            byteCount = addition.partialValue
+        }
+        return result
     }
 }

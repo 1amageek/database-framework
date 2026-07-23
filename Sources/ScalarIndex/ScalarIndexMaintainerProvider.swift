@@ -1,0 +1,50 @@
+import Core
+import DatabaseEngine
+import StorageKit
+
+/// Canonical runtime provider for scalar indexes.
+public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
+    public let kindIdentifier = "scalar"
+
+    public var physicalEntryCapabilities: IndexPhysicalEntryCapabilities? {
+        IndexPhysicalEntryCapabilities(
+            decoder: ScalarIndexPhysicalEntryDecoder(),
+            supportsItemReferenceValidation: true,
+            supportsIndependentEntryRepair: true
+        )
+    }
+
+    public init() {}
+
+    public func makeIndexMaintainer<Item: Persistable>(
+        index: Index,
+        subspace: Subspace,
+        idExpression: KeyExpression,
+        configurations: [any IndexConfiguration]
+    ) throws -> any IndexMaintainer<Item> {
+        guard index.kind.identifier == kindIdentifier else {
+            throw IndexMaintainerProviderError.kindMismatch(
+                registered: kindIdentifier,
+                actual: index.kind.identifier
+            )
+        }
+        guard !index.kind.fieldNames.isEmpty else {
+            throw IndexMaintainerProviderError.invalidMetadata(
+                kindIdentifier: kindIdentifier,
+                key: "fieldNames"
+            )
+        }
+        guard index.kind.metadata.isEmpty else {
+            throw IndexMaintainerProviderError.invalidMetadata(
+                kindIdentifier: kindIdentifier,
+                key: "metadata"
+            )
+        }
+
+        return ScalarIndexMaintainer<Item>(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression
+        )
+    }
+}

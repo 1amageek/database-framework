@@ -6,6 +6,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import Core
 
 /// Tests for Uniqueness Enforcement
@@ -23,9 +24,9 @@ struct UniquenessEnforcementTests {
 
     /// Test model with unique index
     @Persistable
-    struct UniqueTestUser {
-        #Directory<UniqueTestUser>("test", "uniqueness", "users")
-        #Index(ScalarIndexKind<UniqueTestUser>(fields: [\.email]), unique: true, name: "UniqueTestUser_email")
+    struct UniquenessConstrainedUser {
+        #Directory<UniquenessConstrainedUser>("test", "uniqueness", "users")
+        #Index(ScalarIndexKind<UniquenessConstrainedUser>(fields: [\.email]), unique: true, name: "UniqueTestUser_email")
 
         var id: String = ULID().ulidString
         var email: String
@@ -34,9 +35,9 @@ struct UniquenessEnforcementTests {
 
     /// Test model without unique constraint
     @Persistable
-    struct NonUniqueTestProduct {
-        #Directory<NonUniqueTestProduct>("test", "uniqueness", "products")
-        #Index(ScalarIndexKind<NonUniqueTestProduct>(fields: [\.category]), name: "NonUniqueTestProduct_category")
+    struct UnconstrainedProduct {
+        #Directory<UnconstrainedProduct>("test", "uniqueness", "products")
+        #Index(ScalarIndexKind<UnconstrainedProduct>(fields: [\.category]), name: "NonUniqueTestProduct_category")
 
         var id: String = ULID().ulidString
         var category: String
@@ -46,25 +47,26 @@ struct UniquenessEnforcementTests {
     // MARK: - Helper Methods
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema(
-            [UniqueTestUser.self, NonUniqueTestProduct.self],
+            [UniquenessConstrainedUser.self, UnconstrainedProduct.self],
             version: Schema.Version(1, 0, 0)
         )
 
         return try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
             )
     }
 
     private func cleanup(container: DBContainer) async throws {
         let context = container.newContext()
-        try await context.deleteAll(UniqueTestUser.self)
-        try await context.deleteAll(NonUniqueTestProduct.self)
+        try await context.deleteAll(UniquenessConstrainedUser.self)
+        try await context.deleteAll(UnconstrainedProduct.self)
         try await context.save()
     }
 
@@ -72,29 +74,29 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolation creation and properties")
     func violationCreation() {
-        let valueKey: [UInt8] = Tuple("test@example.com").pack()
-        let pk1: [UInt8] = Tuple("user1").pack()
-        let pk2: [UInt8] = Tuple("user2").pack()
+        let valueKey: Bytes = Tuple("test@example.com").pack()
+        let pk1: Bytes = Tuple("user1").pack()
+        let pk2: Bytes = Tuple("user2").pack()
 
         let violation = UniquenessViolation(
             indexName: "UniqueTestUser_email",
-            persistableType: "UniqueTestUser",
+            persistableType: "UniquenessConstrainedUser",
             valueKey: valueKey,
             primaryKeys: [pk1, pk2],
             detectedAt: Date()
         )
 
         #expect(violation.indexName == "UniqueTestUser_email")
-        #expect(violation.persistableType == "UniqueTestUser")
+        #expect(violation.persistableType == "UniquenessConstrainedUser")
         #expect(violation.valueKey == valueKey)
         #expect(violation.primaryKeys.count == 2)
     }
 
     @Test("UniquenessViolation unpacking")
-    func violationUnpacking() {
-        let valueKey: [UInt8] = Tuple("test@example.com").pack()
-        let pk1: [UInt8] = Tuple("user1").pack()
-        let pk2: [UInt8] = Tuple("user2").pack()
+    func violationUnpacking() throws {
+        let valueKey: Bytes = Tuple("test@example.com").pack()
+        let pk1: Bytes = Tuple("user1").pack()
+        let pk2: Bytes = Tuple("user2").pack()
 
         let violation = UniquenessViolation(
             indexName: "test_idx",
@@ -103,17 +105,17 @@ struct UniquenessEnforcementTests {
             primaryKeys: [pk1, pk2]
         )
 
-        let unpackedValue = violation.unpackedValue()
+        let unpackedValue = try violation.unpackedValue()
         #expect(unpackedValue.count == 1)
         #expect(unpackedValue[0] == "test@example.com")
 
-        let unpackedPKs = violation.unpackedPrimaryKeys()
+        let unpackedPKs = try violation.unpackedPrimaryKeys()
         #expect(unpackedPKs.count == 2)
     }
 
     @Test("UniquenessViolation valueDescription")
     func violationValueDescription() {
-        let valueKey: [UInt8] = Tuple("hello", 123).pack()
+        let valueKey: Bytes = Tuple("hello", 123).pack()
 
         let violation = UniquenessViolation(
             indexName: "test_idx",
@@ -127,10 +129,10 @@ struct UniquenessEnforcementTests {
         #expect(description.contains("123"))
     }
 
-    @Test("UniquenessViolation Codable")
-    func violationCodable() throws {
-        let valueKey: [UInt8] = Tuple("test").pack()
-        let pk: [UInt8] = Tuple("id1").pack()
+    @Test("UniquenessViolation storage encoding round-trips")
+    func uniquenessViolationStorageEncodingRoundTrips() throws {
+        let valueKey: Bytes = Tuple("test").pack()
+        let pk: Bytes = Tuple("id1").pack()
 
         let violation = UniquenessViolation(
             indexName: "idx",
@@ -140,11 +142,8 @@ struct UniquenessEnforcementTests {
             detectedAt: Date()
         )
 
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(violation)
-
-        let decoder = JSONDecoder()
-        let decoded = try decoder.decode(UniquenessViolation.self, from: data)
+        let data = try UniquenessViolationCodec.encode(violation)
+        let decoded = try UniquenessViolationCodec.decode(data)
 
         #expect(decoded.indexName == violation.indexName)
         #expect(decoded.persistableType == violation.persistableType)
@@ -154,8 +153,8 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolation CustomStringConvertible")
     func violationDescription() {
-        let valueKey: [UInt8] = Tuple("email@test.com").pack()
-        let pk: [UInt8] = Tuple("user1").pack()
+        let valueKey: Bytes = Tuple("email@test.com").pack()
+        let pk: Bytes = Tuple("user1").pack()
 
         let violation = UniquenessViolation(
             indexName: "email_idx",
@@ -282,11 +281,11 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolationTracker record and scan violations")
     func trackerRecordAndScan() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let store = try await container.store(for: UniqueTestUser.self)
+            let store = try await container.store(for: UniquenessConstrainedUser.self)
             guard let fdbStore = store as? FDBDataStore else {
                 Issue.record("Store is not FDBDataStore")
                 return
@@ -319,11 +318,11 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolationTracker hasViolations")
     func trackerHasViolations() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let store = try await container.store(for: UniqueTestUser.self)
+            let store = try await container.store(for: UniquenessConstrainedUser.self)
             guard let fdbStore = store as? FDBDataStore else {
                 Issue.record("Store is not FDBDataStore")
                 return
@@ -359,11 +358,11 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolationTracker countViolations")
     func trackerCountViolations() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let store = try await container.store(for: UniqueTestUser.self)
+            let store = try await container.store(for: UniquenessConstrainedUser.self)
             guard let fdbStore = store as? FDBDataStore else {
                 Issue.record("Store is not FDBDataStore")
                 return
@@ -396,11 +395,11 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolationTracker clearViolation")
     func trackerClearViolation() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let store = try await container.store(for: UniqueTestUser.self)
+            let store = try await container.store(for: UniquenessConstrainedUser.self)
             guard let fdbStore = store as? FDBDataStore else {
                 Issue.record("Store is not FDBDataStore")
                 return
@@ -437,11 +436,11 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolationTracker violationSummary")
     func trackerViolationSummary() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let store = try await container.store(for: UniqueTestUser.self)
+            let store = try await container.store(for: UniquenessConstrainedUser.self)
             guard let fdbStore = store as? FDBDataStore else {
                 Issue.record("Store is not FDBDataStore")
                 return
@@ -488,7 +487,7 @@ struct UniquenessEnforcementTests {
 
     @Test("FDBContext scanUniquenessViolations")
     func contextScanViolations() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -496,7 +495,7 @@ struct UniquenessEnforcementTests {
             let indexName = "test_context_scan_idx"
 
             // Add a violation directly to tracker
-            let store = try await container.store(for: UniqueTestUser.self)
+            let store = try await container.store(for: UniquenessConstrainedUser.self)
             guard let fdbStore = store as? FDBDataStore else {
                 Issue.record("Store is not FDBDataStore")
                 return
@@ -505,7 +504,7 @@ struct UniquenessEnforcementTests {
             try await container.engine.withTransaction { transaction in
                 try await fdbStore.violationTracker.recordViolation(
                     indexName: indexName,
-                    persistableType: "UniqueTestUser",
+                    persistableType: "UniquenessConstrainedUser",
                     valueKey: Tuple("context@test.com").pack(),
                     existingPrimaryKey: Tuple("pk1"),
                     newPrimaryKey: Tuple("pk2"),
@@ -515,14 +514,14 @@ struct UniquenessEnforcementTests {
 
             // Use context API to scan
             let violations = try await context.scanUniquenessViolations(
-                for: UniqueTestUser.self,
+                for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
             #expect(violations.count == 1)
 
             // Cleanup
             try await context.clearAllUniquenessViolations(
-                for: UniqueTestUser.self,
+                for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
         }
@@ -530,7 +529,7 @@ struct UniquenessEnforcementTests {
 
     @Test("FDBContext hasUniquenessViolations")
     func contextHasViolations() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -539,13 +538,13 @@ struct UniquenessEnforcementTests {
 
             // Check no violations initially
             let hasBefore = try await context.hasUniquenessViolations(
-                for: UniqueTestUser.self,
+                for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
             #expect(hasBefore == false)
 
             // Add a violation
-            let store = try await container.store(for: UniqueTestUser.self)
+            let store = try await container.store(for: UniquenessConstrainedUser.self)
             guard let fdbStore = store as? FDBDataStore else {
                 Issue.record("Store is not FDBDataStore")
                 return
@@ -554,7 +553,7 @@ struct UniquenessEnforcementTests {
             try await container.engine.withTransaction { transaction in
                 try await fdbStore.violationTracker.recordViolation(
                     indexName: indexName,
-                    persistableType: "UniqueTestUser",
+                    persistableType: "UniquenessConstrainedUser",
                     valueKey: Tuple("test").pack(),
                     existingPrimaryKey: Tuple("pk1"),
                     newPrimaryKey: Tuple("pk2"),
@@ -564,14 +563,14 @@ struct UniquenessEnforcementTests {
 
             // Check violations exist
             let hasAfter = try await context.hasUniquenessViolations(
-                for: UniqueTestUser.self,
+                for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
             #expect(hasAfter == true)
 
             // Cleanup
             try await context.clearAllUniquenessViolations(
-                for: UniqueTestUser.self,
+                for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
         }
@@ -579,7 +578,7 @@ struct UniquenessEnforcementTests {
 
     @Test("FDBContext uniquenessViolationSummary")
     func contextViolationSummary() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -587,7 +586,7 @@ struct UniquenessEnforcementTests {
             let indexName = "test_context_summary_idx"
 
             // Add violations
-            let store = try await container.store(for: UniqueTestUser.self)
+            let store = try await container.store(for: UniquenessConstrainedUser.self)
             guard let fdbStore = store as? FDBDataStore else {
                 Issue.record("Store is not FDBDataStore")
                 return
@@ -596,7 +595,7 @@ struct UniquenessEnforcementTests {
             try await container.engine.withTransaction { transaction in
                 try await fdbStore.violationTracker.recordViolation(
                     indexName: indexName,
-                    persistableType: "UniqueTestUser",
+                    persistableType: "UniquenessConstrainedUser",
                     valueKey: Tuple("val1").pack(),
                     existingPrimaryKey: Tuple("pk1"),
                     newPrimaryKey: Tuple("pk2"),
@@ -606,7 +605,7 @@ struct UniquenessEnforcementTests {
 
             // Get summary via context API
             let summary = try await context.uniquenessViolationSummary(
-                for: UniqueTestUser.self,
+                for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
             #expect(summary.violationCount == 1)
@@ -614,7 +613,7 @@ struct UniquenessEnforcementTests {
 
             // Cleanup
             try await context.clearAllUniquenessViolations(
-                for: UniqueTestUser.self,
+                for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
         }
@@ -643,7 +642,7 @@ struct UniquenessEnforcementTests {
     func indexIsUniqueDefault() {
         let index = Index(
             name: "test_idx",
-            kind: ScalarIndexKind<UniqueTestUser>(fields: [\.email]),
+            kind: ScalarIndexKind<UniquenessConstrainedUser>(fields: [\.email]),
             rootExpression: FieldKeyExpression(fieldName: "email")
         )
 
@@ -654,7 +653,7 @@ struct UniquenessEnforcementTests {
     func indexIsUniqueTrue() {
         let index = Index(
             name: "unique_idx",
-            kind: ScalarIndexKind<UniqueTestUser>(fields: [\.email]),
+            kind: ScalarIndexKind<UniquenessConstrainedUser>(fields: [\.email]),
             rootExpression: FieldKeyExpression(fieldName: "email"),
             isUnique: true
         )

@@ -6,6 +6,7 @@
 import Testing
 import Foundation
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import Core
 import StorageKit
 import FDBStorage
@@ -20,9 +21,9 @@ struct PartitionedDirectoryTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([Player.self, TenantOrder.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
     }
 
     // MARK: - hasDynamicDirectory Tests
@@ -43,7 +44,7 @@ struct PartitionedDirectoryTests {
 
     @Test("Save TenantOrder extracts tenantID from model")
     func testSaveTenantOrderExtractsTenantID() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -70,7 +71,7 @@ struct PartitionedDirectoryTests {
 
     @Test("Save multiple orders to different tenants")
     func testSaveOrdersToDifferentTenants() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -113,7 +114,7 @@ struct PartitionedDirectoryTests {
 
     @Test("Fetch without partition throws for dynamic directory type")
     func testFetchWithoutPartitionThrows() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -125,7 +126,7 @@ struct PartitionedDirectoryTests {
 
     @Test("Fetch with partition returns correct data")
     func testFetchWithPartitionReturnsCorrectData() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -148,7 +149,7 @@ struct PartitionedDirectoryTests {
 
     @Test("Fetch with where clause filters within partition")
     func testFetchWithWhereFiltersWithinPartition() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -181,7 +182,7 @@ struct PartitionedDirectoryTests {
 
     @Test("Delete TenantOrder from correct partition")
     func testDeleteFromCorrectPartition() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -219,7 +220,7 @@ struct PartitionedDirectoryTests {
 
     @Test("deleteAll without partition throws for dynamic directory type")
     func testDeleteAllWithoutPartitionThrows() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -231,7 +232,7 @@ struct PartitionedDirectoryTests {
 
     @Test("deleteAll with partition deletes only from that partition")
     func testDeleteAllWithPartition() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -272,7 +273,7 @@ struct PartitionedDirectoryTests {
 
     @Test("enumerate without partition throws for dynamic directory type")
     func testEnumerateWithoutPartitionThrows() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -284,7 +285,7 @@ struct PartitionedDirectoryTests {
 
     @Test("enumerate with partition enumerates only that partition")
     func testEnumerateWithPartition() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -339,7 +340,7 @@ struct PartitionedDirectoryTests {
 
     @Test("Static directory types work without partition")
     func testStaticDirectoryTypesWorkWithoutPartition() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -362,7 +363,7 @@ struct PartitionedDirectoryTests {
 
     @Test("deleteAll works for static directory types")
     func testDeleteAllWorksForStaticDirectoryTypes() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -382,7 +383,7 @@ struct PartitionedDirectoryTests {
 
     @Test("model(for:as:) throws for dynamic directory types without partition")
     func testModelWithoutPartitionThrows() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -394,7 +395,7 @@ struct PartitionedDirectoryTests {
 
     @Test("model(for:as:partition:) returns correct data")
     func testModelWithPartitionReturnsCorrectData() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -422,7 +423,7 @@ struct PartitionedDirectoryTests {
 
     @Test("TransactionContext set/get works for dynamic directory types")
     func testTransactionContextSetGetDynamicDirectory() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -450,7 +451,7 @@ struct PartitionedDirectoryTests {
 
     @Test("TransactionContext get throws without partition for dynamic types")
     func testTransactionContextGetThrowsWithoutPartition() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
 
             await #expect(throws: DirectoryPathError.self) {

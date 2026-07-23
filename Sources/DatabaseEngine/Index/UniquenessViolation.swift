@@ -4,7 +4,11 @@
 // Reference: FDB Record Layer StandardIndexMaintainer.java
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/StandardIndexMaintainer.java
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 import Synchronization
@@ -35,12 +39,12 @@ public struct UniquenessViolation: Sendable, Equatable {
     /// The duplicate value (packed tuple bytes)
     ///
     /// Use `unpackedValue()` to get the tuple elements.
-    public let valueKey: [UInt8]
+    public let valueKey: Bytes
 
     /// All primary keys that have this duplicate value
     ///
     /// Contains at least 2 entries (otherwise it's not a violation).
-    public let primaryKeys: [[UInt8]]
+    public let primaryKeys: [Bytes]
 
     /// When the violation was first detected
     public let detectedAt: Date
@@ -50,8 +54,8 @@ public struct UniquenessViolation: Sendable, Equatable {
     public init(
         indexName: String,
         persistableType: String,
-        valueKey: [UInt8],
-        primaryKeys: [[UInt8]],
+        valueKey: Bytes,
+        primaryKeys: [Bytes],
         detectedAt: Date = Date()
     ) {
         self.indexName = indexName
@@ -66,27 +70,25 @@ public struct UniquenessViolation: Sendable, Equatable {
     /// Unpack the value key into tuple elements
     ///
     /// - Returns: Array of tuple element descriptions
-    public func unpackedValue() -> [String] {
-        do {
-            let elements = try Tuple.unpack(from: valueKey)
-            return elements.map { String(describing: $0) }
-        } catch {
-            return ["<unpacking failed>"]
-        }
+    public func unpackedValue() throws -> [String] {
+        try Tuple.unpack(from: valueKey).map { String(describing: $0) }
     }
 
     /// Human-readable description of the duplicate value
     public var valueDescription: String {
-        unpackedValue().joined(separator: ", ")
+        do {
+            return try unpackedValue().joined(separator: ", ")
+        } catch {
+            return "<invalid tuple: \(error)>"
+        }
     }
 
     /// Unpack primary keys into tuples
     ///
     /// - Returns: Array of primary key tuples
-    public func unpackedPrimaryKeys() -> [Tuple] {
-        primaryKeys.compactMap { bytes in
-            guard let elements = try? Tuple.unpack(from: bytes) else { return nil }
-            return Tuple(elements)
+    public func unpackedPrimaryKeys() throws -> [Tuple] {
+        try primaryKeys.map { bytes in
+            Tuple(try Tuple.unpack(from: bytes))
         }
     }
 }
@@ -95,7 +97,12 @@ public struct UniquenessViolation: Sendable, Equatable {
 
 extension UniquenessViolation: CustomStringConvertible {
     public var description: String {
-        let pkDescriptions = unpackedPrimaryKeys().map { String(describing: $0) }
+        let pkDescriptions: [String]
+        do {
+            pkDescriptions = try unpackedPrimaryKeys().map { String(describing: $0) }
+        } catch {
+            pkDescriptions = ["<invalid tuple: \(error)>"]
+        }
         return """
         UniquenessViolation(
             index: \(indexName),
@@ -106,36 +113,6 @@ extension UniquenessViolation: CustomStringConvertible {
             detectedAt: \(detectedAt)
         )
         """
-    }
-}
-
-// MARK: - Codable
-
-extension UniquenessViolation: Codable {
-    enum CodingKeys: String, CodingKey {
-        case indexName
-        case persistableType
-        case valueKey
-        case primaryKeys
-        case detectedAt
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        indexName = try container.decode(String.self, forKey: .indexName)
-        persistableType = try container.decode(String.self, forKey: .persistableType)
-        valueKey = try container.decode([UInt8].self, forKey: .valueKey)
-        primaryKeys = try container.decode([[UInt8]].self, forKey: .primaryKeys)
-        detectedAt = try container.decode(Date.self, forKey: .detectedAt)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(indexName, forKey: .indexName)
-        try container.encode(persistableType, forKey: .persistableType)
-        try container.encode(valueKey, forKey: .valueKey)
-        try container.encode(primaryKeys, forKey: .primaryKeys)
-        try container.encode(detectedAt, forKey: .detectedAt)
     }
 }
 

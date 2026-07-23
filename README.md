@@ -289,7 +289,7 @@ For direct transactional work:
 
     try await context.withTransaction { transaction in
         let value = try await transaction.getValue(for: key)
-        transaction.setValue(updatedValue, for: key)
+        try transaction.setValue(updatedValue, for: key)
         _ = value
     }
 

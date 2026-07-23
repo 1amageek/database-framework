@@ -1,7 +1,11 @@
 // QueryPlanner.swift
 // QueryPlanner - Main entry point for query planning
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Main query planner that coordinates analysis, planning, and optimization
@@ -21,7 +25,7 @@ public final class QueryPlanner<T: Persistable>: @unchecked Sendable {
 
     public init(
         indexes: [IndexDescriptor],
-        statistics: StatisticsProvider = DefaultStatisticsProvider(),
+        statistics: StatisticsProvider = HeuristicStatisticsProvider(),
         costModel: CostModel = .default,
         strategyRegistry: IndexStrategyRegistry = IndexStrategyRegistry()
     ) {
@@ -205,9 +209,6 @@ public final class QueryPlanner<T: Persistable>: @unchecked Sendable {
         case .spatialScan(let op):
             indexes.append(op.index)
 
-        case .aggregation(let op):
-            indexes.append(op.index)
-
         case .union(let op):
             for child in op.children {
                 indexes.append(contentsOf: extractUsedIndexes(child))
@@ -284,10 +285,9 @@ public final class QueryPlanner<T: Persistable>: @unchecked Sendable {
         sortRequirements: [SortDescriptor<T>]
     ) -> Bool {
         for (i, sortDesc) in sortRequirements.enumerated() {
-            guard i < index.keyPaths.count else { return false }
+            guard i < index.fieldNames.count else { return false }
 
-            let indexFieldName = T.fieldName(for: index.keyPaths[i])
-            if indexFieldName != sortDesc.fieldName {
+            if index.fieldNames[i] != sortDesc.fieldName {
                 return false
             }
 
@@ -356,23 +356,20 @@ public final class QueryPlanner<T: Persistable>: @unchecked Sendable {
         case .fullTextScan(let op):
             // Full-text scan satisfies text search conditions
             // Generate identifier matching the text search constraint format
-            if let firstKeyPath = op.index.keyPaths.first {
-                let fieldName = T.fieldName(for: firstKeyPath)
+            if let fieldName = op.index.fieldNames.first {
                 let terms = op.searchTerms.joined(separator: ",")
                 identifiers.insert("\(fieldName):text:\(terms):\(op.matchMode)")
             }
 
         case .vectorSearch(let op):
             // Vector search satisfies similarity conditions
-            if let firstKeyPath = op.index.keyPaths.first {
-                let fieldName = T.fieldName(for: firstKeyPath)
+            if let fieldName = op.index.fieldNames.first {
                 identifiers.insert("\(fieldName):vector:k=\(op.k)")
             }
 
         case .spatialScan(let op):
             // Spatial scan satisfies spatial conditions
-            if let firstKeyPath = op.index.keyPaths.first {
-                let fieldName = T.fieldName(for: firstKeyPath)
+            if let fieldName = op.index.fieldNames.first {
                 identifiers.insert("\(fieldName):spatial:\(op.constraint.type)")
             }
 
@@ -409,9 +406,8 @@ public final class QueryPlanner<T: Persistable>: @unchecked Sendable {
                 identifiers.formUnion(collectSatisfiedConditionIdentifiers(child))
             }
 
-        case .tableScan, .aggregation:
+        case .tableScan:
             // Table scan doesn't satisfy any conditions via index
-            // Aggregation operates on pre-computed values
             break
 
         case .inUnion(let op):

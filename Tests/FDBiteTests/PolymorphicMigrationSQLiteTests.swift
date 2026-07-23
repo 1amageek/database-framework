@@ -4,6 +4,7 @@ import Foundation
 import Database
 import StorageKit
 import TestHeartbeat
+import DatabaseRuntime
 
 protocol SQLitePolymorphicMigrationDocumentV1: Polymorphable {
     var id: String { get }
@@ -13,8 +14,8 @@ protocol SQLitePolymorphicMigrationDocumentV1: Polymorphable {
 extension SQLitePolymorphicMigrationDocumentV1 {
     public static var polymorphableType: String { "SQLitePolymorphicMigrationDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("sqlite_polymorphic_migration_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("sqlite_polymorphic_migration_shared")]
     }
 }
 
@@ -36,8 +37,8 @@ protocol SQLitePolymorphicMigrationDocumentV4: Polymorphable {
 extension SQLitePolymorphicMigrationDocumentV2 {
     public static var polymorphableType: String { "SQLitePolymorphicMigrationDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("sqlite_polymorphic_migration_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("sqlite_polymorphic_migration_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -59,16 +60,16 @@ extension SQLitePolymorphicMigrationDocumentV2 {
 extension SQLitePolymorphicMigrationDocumentV3 {
     public static var polymorphableType: String { "SQLitePolymorphicMigrationDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("sqlite_polymorphic_migration_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("sqlite_polymorphic_migration_shared")]
     }
 }
 
 extension SQLitePolymorphicMigrationDocumentV4 {
     public static var polymorphableType: String { "SQLitePolymorphicMigrationDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("sqlite_polymorphic_migration_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("sqlite_polymorphic_migration_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -297,10 +298,9 @@ struct PolymorphicMigrationSQLiteTests {
         #expect(schema.indexDescriptor(named: "SQLitePolymorphicMigrationDocument_title") == nil)
         #expect(schema.polymorphicGroup(containingIndexNamed: "SQLitePolymorphicMigrationDocument_title") != nil)
         #expect(articleDescriptors.map(\.name) == reportDescriptors.map(\.name))
-        #expect(articleDescriptors.first?.keyPaths.first as? PartialKeyPath<SQLitePolymorphicMigrationArticleV2> != nil)
-        #expect(articleDescriptors.first?.keyPaths.first as? PartialKeyPath<SQLitePolymorphicMigrationReportV2> == nil)
-        #expect(reportDescriptors.first?.keyPaths.first as? PartialKeyPath<SQLitePolymorphicMigrationReportV2> != nil)
-        #expect(reportDescriptors.first?.keyPaths.first as? PartialKeyPath<SQLitePolymorphicMigrationArticleV2> == nil)
+        #expect(articleDescriptors.first?.fieldNames == ["title"])
+        #expect(reportDescriptors.first?.fieldNames == ["title"])
+        #expect(articleDescriptors.first?.kindIdentifier == reportDescriptors.first?.kindIdentifier)
     }
 
     @Test("VersionedSchema detects removed polymorphic descriptors")
@@ -328,6 +328,7 @@ struct PolymorphicMigrationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -346,6 +347,7 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
@@ -353,6 +355,7 @@ struct PolymorphicMigrationSQLiteTests {
         let verificationContainer = try await DBContainer(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -404,6 +407,7 @@ struct PolymorphicMigrationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -430,6 +434,7 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
@@ -437,6 +442,7 @@ struct PolymorphicMigrationSQLiteTests {
         let verificationContainer = try await DBContainer(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -459,6 +465,7 @@ struct PolymorphicMigrationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -481,6 +488,7 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV3.self,
             migrationPlan: SQLitePolymorphicRemovalMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
@@ -521,6 +529,7 @@ struct PolymorphicMigrationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -551,6 +560,7 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV4.self,
             migrationPlan: SQLitePolymorphicRebuildMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
@@ -630,7 +640,7 @@ struct PolymorphicMigrationSQLiteTests {
         let range = indexSubspace.range()
 
         try await container.engine.withTransaction { transaction in
-            transaction.clearRange(beginKey: range.begin, endKey: range.end)
+            try transaction.clearRange(beginKey: range.begin, endKey: range.end)
         }
     }
 
@@ -642,8 +652,8 @@ struct PolymorphicMigrationSQLiteTests {
             identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
         )
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let stateManager = IndexStateManager(container: container, subspace: groupSubspace)
-        return try await stateManager.state(of: indexName)
+        let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
+        return try await lifecycleStore.state(of: indexName)
     }
 }
 #endif

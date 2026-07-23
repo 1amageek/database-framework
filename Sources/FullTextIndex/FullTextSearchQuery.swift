@@ -3,7 +3,11 @@
 //
 // Reference: Lucene BooleanQuery, FDB Record Layer
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 // MARK: - FullTextSearchQuery
 

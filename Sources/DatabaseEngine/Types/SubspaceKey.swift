@@ -4,7 +4,11 @@
 // All subspace keys are defined here to ensure consistency across the codebase.
 // Values are single characters for storage efficiency; names provide semantics.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Subspace key constants for FDB data layout
 ///

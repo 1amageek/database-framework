@@ -5,7 +5,11 @@
 //
 // Reference: W3C OWL 2 Profiles https://www.w3.org/TR/owl2-profiles/
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 
 /// Subspace key definitions for ontology storage

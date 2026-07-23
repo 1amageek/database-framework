@@ -7,16 +7,16 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
 // MARK: - Test Model
 
-struct MinTestProduct: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct CatalogProduct {
+    var id: String = ""
     var category: String
     var brand: String
     var price: Int64
@@ -27,62 +27,18 @@ struct MinTestProduct: Persistable {
         self.brand = brand
         self.price = price
     }
-
-    static var persistableType: String { "MinTestProduct" }
-    static var allFields: [String] { ["id", "category", "brand", "price"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "category": return category
-        case "brand": return brand
-        case "price": return price
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<MinTestProduct, Value>) -> String {
-        switch keyPath {
-        case \MinTestProduct.id: return "id"
-        case \MinTestProduct.category: return "category"
-        case \MinTestProduct.brand: return "brand"
-        case \MinTestProduct.price: return "price"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<MinTestProduct>) -> String {
-        switch keyPath {
-        case \MinTestProduct.id: return "id"
-        case \MinTestProduct.category: return "category"
-        case \MinTestProduct.brand: return "brand"
-        case \MinTestProduct.price: return "price"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<MinTestProduct> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
-// MARK: - Test Helper
+// MARK: - Minimum Index Context
 
-private struct TestContext {
+private struct MinimumIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: MinIndexMaintainer<MinTestProduct, Int64>
+    let maintainer: MinIndexMaintainer<CatalogProduct, Int64>
 
-    init(indexName: String = "MinTestProduct_category_price") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(indexName: String = "CatalogProduct_category_price") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "min", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -90,16 +46,16 @@ private struct TestContext {
         // Expression: category + price (grouping + min value)
         let index = Index(
             name: indexName,
-            kind: MinIndexKind<MinTestProduct, Int64>(groupBy: [\.category], value: \.price),
+            kind: MinIndexKind<CatalogProduct, Int64>(groupBy: [\.category], value: \.price),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "category"),
                 FieldKeyExpression(fieldName: "price")
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["MinTestProduct"])
+            itemTypes: Set(["CatalogProduct"])
         )
 
-        self.maintainer = MinIndexMaintainer<MinTestProduct, Int64>(
+        self.maintainer = MinIndexMaintainer<CatalogProduct, Int64>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -109,7 +65,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -143,14 +99,14 @@ struct MinIndexBehaviorTests {
 
     @Test("Insert adds to sorted set")
     func testInsertAddsToSortedSet() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MinimumIndexContext()
 
-        let product = MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999)
+        let product = CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as MinTestProduct?,
+                oldItem: nil as CatalogProduct?,
                 newItem: product,
                 transaction: transaction
             )
@@ -165,19 +121,19 @@ struct MinIndexBehaviorTests {
 
     @Test("Multiple inserts create multiple entries")
     func testMultipleInserts() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MinimumIndexContext()
 
         let products = [
-            MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
-            MinTestProduct(id: "p2", category: "Electronics", brand: "Samsung", price: 799),
-            MinTestProduct(id: "p3", category: "Electronics", brand: "Sony", price: 599)
+            CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
+            CatalogProduct(id: "p2", category: "Electronics", brand: "Samsung", price: 799),
+            CatalogProduct(id: "p3", category: "Electronics", brand: "Sony", price: 599)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as MinTestProduct?,
+                    oldItem: nil as CatalogProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -195,15 +151,15 @@ struct MinIndexBehaviorTests {
 
     @Test("Delete removes from sorted set")
     func testDeleteRemovesFromSortedSet() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MinimumIndexContext()
 
-        let product = MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999)
+        let product = CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as MinTestProduct?,
+                oldItem: nil as CatalogProduct?,
                 newItem: product,
                 transaction: transaction
             )
@@ -217,7 +173,7 @@ struct MinIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: product,
-                newItem: nil as MinTestProduct?,
+                newItem: nil as CatalogProduct?,
                 transaction: transaction
             )
         }
@@ -232,22 +188,22 @@ struct MinIndexBehaviorTests {
 
     @Test("Update changes position in sorted set")
     func testUpdateChangesPosition() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MinimumIndexContext()
 
-        let product = MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999)
+        let product = CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as MinTestProduct?,
+                oldItem: nil as CatalogProduct?,
                 newItem: product,
                 transaction: transaction
             )
         }
 
         // Update price
-        let updatedProduct = MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 499)
+        let updatedProduct = CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 499)
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: product,
@@ -270,19 +226,19 @@ struct MinIndexBehaviorTests {
 
     @Test("getMin returns minimum value")
     func testGetMinReturnsMinimum() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MinimumIndexContext()
 
         let products = [
-            MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
-            MinTestProduct(id: "p2", category: "Electronics", brand: "Samsung", price: 799),
-            MinTestProduct(id: "p3", category: "Electronics", brand: "Budget", price: 199)
+            CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
+            CatalogProduct(id: "p2", category: "Electronics", brand: "Samsung", price: 799),
+            CatalogProduct(id: "p3", category: "Electronics", brand: "Budget", price: 199)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as MinTestProduct?,
+                    oldItem: nil as CatalogProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -297,20 +253,20 @@ struct MinIndexBehaviorTests {
 
     @Test("Multiple groups are independent")
     func testMultipleGroupsIndependent() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MinimumIndexContext()
 
         let products = [
-            MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
-            MinTestProduct(id: "p2", category: "Electronics", brand: "Budget", price: 199),
-            MinTestProduct(id: "p3", category: "Clothing", brand: "Nike", price: 150),
-            MinTestProduct(id: "p4", category: "Clothing", brand: "Budget", price: 29)
+            CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
+            CatalogProduct(id: "p2", category: "Electronics", brand: "Budget", price: 199),
+            CatalogProduct(id: "p3", category: "Clothing", brand: "Nike", price: 150),
+            CatalogProduct(id: "p4", category: "Clothing", brand: "Budget", price: 29)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as MinTestProduct?,
+                    oldItem: nil as CatalogProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -328,8 +284,8 @@ struct MinIndexBehaviorTests {
 
     @Test("getMin for non-existent group throws error")
     func testGetMinNonExistentGroupThrowsError() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MinimumIndexContext()
 
         await #expect(throws: IndexError.self) {
             _ = try await ctx.getMin(for: "NonExistent")
@@ -342,12 +298,12 @@ struct MinIndexBehaviorTests {
 
     @Test("ScanItem adds to sorted set")
     func testScanItemAddsToSortedSet() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MinimumIndexContext()
 
         let products = [
-            MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
-            MinTestProduct(id: "p2", category: "Electronics", brand: "Budget", price: 199)
+            CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
+            CatalogProduct(id: "p2", category: "Electronics", brand: "Budget", price: 199)
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -374,19 +330,19 @@ struct MinIndexBehaviorTests {
 
     @Test("Min updates correctly when minimum item is deleted")
     func testMinUpdatesOnMinimumDelete() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await MinimumIndexContext()
 
         let products = [
-            MinTestProduct(id: "p1", category: "Electronics", brand: "Expensive", price: 999),
-            MinTestProduct(id: "p2", category: "Electronics", brand: "Cheap", price: 99)
+            CatalogProduct(id: "p1", category: "Electronics", brand: "Expensive", price: 999),
+            CatalogProduct(id: "p2", category: "Electronics", brand: "Cheap", price: 99)
         ]
 
         // Insert both
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as MinTestProduct?,
+                    oldItem: nil as CatalogProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -400,7 +356,7 @@ struct MinIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: products[1],
-                newItem: nil as MinTestProduct?,
+                newItem: nil as CatalogProduct?,
                 transaction: transaction
             )
         }

@@ -384,8 +384,8 @@ struct SPARQLUpdateStatementTests {
         #expect(delete.quads.count == 1)
     }
 
-    @Test("DeleteInsertQuery")
-    func testDeleteInsert() throws {
+    @Test("SPARQLModifyOperation")
+    func testModify() throws {
         let deleteTriple = TriplePattern(
             subject: .variable("s"),
             predicate: .iri("http://xmlns.com/foaf/0.1/age"),
@@ -404,14 +404,20 @@ struct SPARQLUpdateStatementTests {
             )
         ])
 
-        let query = DeleteInsertQuery(
-            deletePattern: [Quad(triple: deleteTriple)],
-            insertPattern: [Quad(triple: insertTriple)],
+        let query = SPARQLModifyOperation(
+            action: .deleteAndInsert(
+                delete: [Quad(triple: deleteTriple)],
+                insert: [Quad(triple: insertTriple)]
+            ),
             wherePattern: wherePattern
         )
 
-        #expect(query.deletePattern?.count == 1)
-        #expect(query.insertPattern?.count == 1)
+        guard case .deleteAndInsert(let deletePattern, let insertPattern) = query.action else {
+            Issue.record("Expected DELETE and INSERT templates")
+            return
+        }
+        #expect(deletePattern.count == 1)
+        #expect(insertPattern.count == 1)
     }
 
     @Test("Quad with graph")
@@ -495,15 +501,17 @@ struct SPARQLQueryFormTests {
         let construct = ConstructQuery(
             template: template,
             pattern: pattern,
-            orderBy: [SortKey(.variable(Variable("name")), direction: .ascending)],
-            limit: 100,
-            offset: 10
+            modifiers: SPARQLSolutionModifiers(
+                orderBy: [SortKey(.variable(Variable("name")), direction: .ascending)],
+                limit: 100,
+                offset: 10
+            )
         )
 
         #expect(construct.template.count == 1)
-        #expect(construct.limit == 100)
-        #expect(construct.offset == 10)
-        #expect(construct.orderBy?.count == 1)
+        #expect(construct.modifiers.limit == 100)
+        #expect(construct.modifiers.offset == 10)
+        #expect(construct.modifiers.orderBy.count == 1)
     }
 
     @Test("AskQuery")
@@ -525,10 +533,10 @@ struct SPARQLQueryFormTests {
     @Test("DescribeQuery with resources")
     func testDescribeQuery() throws {
         let describe = DescribeQuery(
-            resources: [
-                .iri("http://example.org/alice"),
-                .variable("person")
-            ],
+            selection: .resources(
+                first: .iri("http://example.org/alice"),
+                additional: [.variable("person")]
+            ),
             pattern: GraphPattern.basic([
                 TriplePattern(
                     subject: .variable("person"),
@@ -538,14 +546,20 @@ struct SPARQLQueryFormTests {
             ])
         )
 
-        #expect(describe.resources.count == 2)
+        #expect(describe.selection == .resources(
+            first: .iri("http://example.org/alice"),
+            additional: [.variable("person")]
+        ))
         #expect(describe.pattern != nil)
     }
 
     @Test("DescribeQuery without pattern")
     func testDescribeQueryNoPattern() throws {
         let describe = DescribeQuery(
-            resources: [.iri("http://example.org/alice")]
+            selection: .resources(
+                first: .iri("http://example.org/alice"),
+                additional: []
+            )
         )
 
         #expect(describe.pattern == nil)
@@ -568,7 +582,7 @@ struct QueryStatementAnalysisTests {
         let construct = QueryStatement.construct(ConstructQuery(template: [], pattern: .basic([])))
         #expect(construct.isReadOnly == true)
 
-        let describe = QueryStatement.describe(DescribeQuery(resources: []))
+        let describe = QueryStatement.describe(DescribeQuery(selection: .all))
         #expect(describe.isReadOnly == true)
 
         let insert = QueryStatement.insert(InsertQuery(target: TableRef("users"), source: .defaultValues))
@@ -586,24 +600,36 @@ struct QueryStatementAnalysisTests {
         let delete = QueryStatement.delete(DeleteQuery(target: TableRef("users")))
         #expect(delete.isModification == true)
 
-        let insertData = QueryStatement.insertData(InsertDataQuery(quads: []))
-        #expect(insertData.isModification == true)
-
-        let deleteData = QueryStatement.deleteData(DeleteDataQuery(quads: []))
-        #expect(deleteData.isModification == true)
-
-        let deleteInsert = QueryStatement.deleteInsert(DeleteInsertQuery(
-            deletePattern: nil,
-            insertPattern: nil,
-            wherePattern: .basic([])
-        ))
-        #expect(deleteInsert.isModification == true)
-
-        let load = QueryStatement.load(LoadQuery(source: "http://example.org/data"))
-        #expect(load.isModification == true)
-
-        let clear = QueryStatement.clear(ClearQuery(target: .all))
-        #expect(clear.isModification == true)
+        let updateOperations: [SPARQLUpdateOperation] = [
+            .insertData(InsertDataQuery(quads: [])),
+            .deleteData(DeleteDataQuery(quads: [])),
+            .modify(
+                SPARQLModifyOperation(
+                    action: .delete([]),
+                    wherePattern: .basic([])
+                )
+            ),
+            .deleteWhere(DeleteWhereQuery(pattern: [])),
+            .load(LoadQuery(source: "http://example.org/data")),
+            .clear(ClearQuery(target: .all)),
+            .createGraph(
+                CreateSPARQLGraphQuery(graph: "http://example.org/graph")
+            ),
+            .drop(DropQuery(target: .named, silent: true)),
+            .graphTransfer(
+                GraphTransferQuery(
+                    operation: .move,
+                    source: .default,
+                    destination: .graph("http://example.org/graph")
+                )
+            ),
+        ]
+        for operation in updateOperations {
+            let statement = QueryStatement.sparqlUpdate(
+                SPARQLUpdateRequest(firstOperation: operation)
+            )
+            #expect(statement.isModification == true)
+        }
 
         let select = QueryStatement.select(SelectQuery(projection: .all, source: .table(TableRef("users"))))
         #expect(select.isModification == false)
@@ -621,11 +647,28 @@ struct QueryStatementAnalysisTests {
         let dropGraph = QueryStatement.dropGraph("test")
         #expect(dropGraph.isSchemaDefinition == true)
 
-        let createSPARQLGraph = QueryStatement.createSPARQLGraph("http://example.org/graph", silent: false)
-        #expect(createSPARQLGraph.isSchemaDefinition == true)
+        let createSPARQLGraph = QueryStatement.sparqlUpdate(
+            SPARQLUpdateRequest(
+                firstOperation: .createGraph(
+                    CreateSPARQLGraphQuery(
+                        graph: "http://example.org/graph"
+                    )
+                )
+            )
+        )
+        #expect(createSPARQLGraph.isSchemaDefinition == false)
 
-        let dropSPARQLGraph = QueryStatement.dropSPARQLGraph("http://example.org/graph", silent: true)
-        #expect(dropSPARQLGraph.isSchemaDefinition == true)
+        let dropSPARQL = QueryStatement.sparqlUpdate(
+            SPARQLUpdateRequest(
+                firstOperation: .drop(
+                    DropQuery(
+                        target: .graph("http://example.org/graph"),
+                        silent: true
+                    )
+                )
+            )
+        )
+        #expect(dropSPARQL.isSchemaDefinition == false)
 
         let select = QueryStatement.select(SelectQuery(projection: .all, source: .table(TableRef("users"))))
         #expect(select.isSchemaDefinition == false)

@@ -5,7 +5,11 @@
 // Software Library", Software: Practice and Experience, 2016
 // https://arxiv.org/abs/1603.06549
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Roaring Bitmap implementation for efficient set operations
 ///

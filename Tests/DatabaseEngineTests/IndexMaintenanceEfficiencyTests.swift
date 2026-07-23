@@ -8,24 +8,26 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import ScalarIndex
 
 // MARK: - Test Model
 
 /// Model with scalar index for efficiency testing
 @Persistable
-struct EfficiencyTestProduct {
-    #Directory<EfficiencyTestProduct>("test", "efficiency")
+struct IndexMaintenanceProduct {
+    #Directory<IndexMaintenanceProduct>("test", "efficiency")
 
     var id: String = UUID().uuidString
     var sku: String = ""
     var name: String = ""
     var price: Int = 0
 
-    #Index(ScalarIndexKind<EfficiencyTestProduct>(fields: [\.sku]))
-    #Index(ScalarIndexKind<EfficiencyTestProduct>(fields: [\.price]))
+    #Index(ScalarIndexKind<IndexMaintenanceProduct>(fields: [\.sku]))
+    #Index(ScalarIndexKind<IndexMaintenanceProduct>(fields: [\.price]))
 }
 
 // MARK: - Tests
@@ -34,15 +36,15 @@ struct EfficiencyTestProduct {
 struct IndexMaintenanceEfficiencyTests {
 
     private func createContainer() async throws -> DBContainer {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([EfficiencyTestProduct.self])
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([IndexMaintenanceProduct.self])
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
         
-        try? await container.engine.directoryService.remove(path: ["test", "efficiency"])
+        try? await container.engine.removeDirectory(path: ["test", "efficiency"])
     }
 
     private func uniqueID(_ prefix: String) -> String {
@@ -64,14 +66,14 @@ struct IndexMaintenanceEfficiencyTests {
         let priceBase = Int.random(in: 10_000_000..<20_000_000)
         let price1 = priceBase
         let price2 = priceBase + 1
-        var product = EfficiencyTestProduct(sku: sku1, name: "Widget", price: price1)
+        var product = IndexMaintenanceProduct(sku: sku1, name: "Widget", price: price1)
         product.id = productId
 
         context.insert(product)
         try await context.save()
 
         // Verify initial index entry exists
-        let initialFetch = try await context.fetch(EfficiencyTestProduct.self)
+        let initialFetch = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.sku == sku1)
             .execute()
         #expect(initialFetch.count == 1)
@@ -84,25 +86,25 @@ struct IndexMaintenanceEfficiencyTests {
         try await context.save()
 
         // Verify old index entry is removed
-        let oldSkuFetch = try await context.fetch(EfficiencyTestProduct.self)
+        let oldSkuFetch = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.sku == sku1)
             .execute()
         #expect(oldSkuFetch.isEmpty, "Old index entry should be removed")
 
         // Verify new index entry exists
-        let newSkuFetch = try await context.fetch(EfficiencyTestProduct.self)
+        let newSkuFetch = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.sku == sku2)
             .execute()
         #expect(newSkuFetch.count == 1)
         #expect(newSkuFetch.first?.id == productId)
 
         // Verify price index is also updated
-        let oldPriceFetch = try await context.fetch(EfficiencyTestProduct.self)
+        let oldPriceFetch = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.price == price1)
             .execute()
         #expect(oldPriceFetch.isEmpty, "Old price index entry should be removed")
 
-        let newPriceFetch = try await context.fetch(EfficiencyTestProduct.self)
+        let newPriceFetch = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.price == price2)
             .execute()
         #expect(newPriceFetch.count == 1)
@@ -119,14 +121,14 @@ struct IndexMaintenanceEfficiencyTests {
         let productId = uniqueID("P")
         let sku = "\(testPrefix)-SKU-DELETE"
         let price = Int.random(in: 20_000_000..<30_000_000)
-        var product = EfficiencyTestProduct(sku: sku, name: "ToDelete", price: price)
+        var product = IndexMaintenanceProduct(sku: sku, name: "ToDelete", price: price)
         product.id = productId
 
         context.insert(product)
         try await context.save()
 
         // Verify index entry exists
-        let beforeDelete = try await context.fetch(EfficiencyTestProduct.self)
+        let beforeDelete = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.sku == sku)
             .execute()
         #expect(beforeDelete.count == 1)
@@ -136,7 +138,7 @@ struct IndexMaintenanceEfficiencyTests {
         try await context.save()
 
         // Verify index entry is removed
-        let afterDelete = try await context.fetch(EfficiencyTestProduct.self)
+        let afterDelete = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.sku == sku)
             .execute()
         #expect(afterDelete.isEmpty, "Index entry should be removed after delete")
@@ -153,14 +155,14 @@ struct IndexMaintenanceEfficiencyTests {
         let productId = uniqueID("P")
         let sku = "\(testPrefix)-SKU-NEW"
         let price = Int.random(in: 30_000_000..<40_000_000)
-        var product = EfficiencyTestProduct(sku: sku, name: "NewProduct", price: price)
+        var product = IndexMaintenanceProduct(sku: sku, name: "NewProduct", price: price)
         product.id = productId
 
         context.insert(product)
         try await context.save()
 
         // Verify index entry was created
-        let fetch = try await context.fetch(EfficiencyTestProduct.self)
+        let fetch = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.sku == sku)
             .execute()
         #expect(fetch.count == 1)
@@ -176,7 +178,7 @@ struct IndexMaintenanceEfficiencyTests {
         let testPrefix = uniqueID("mul")
         let productId = uniqueID("P")
         let price = Int.random(in: 40_000_000..<50_000_000)
-        var product = EfficiencyTestProduct(sku: "\(testPrefix)-V1", name: "Product", price: price)
+        var product = IndexMaintenanceProduct(sku: "\(testPrefix)-V1", name: "Product", price: price)
         product.id = productId
 
         // Insert
@@ -201,13 +203,13 @@ struct IndexMaintenanceEfficiencyTests {
         // Verify only the latest index entry exists
         for suffix in ["V1", "V2", "V3"] {
             let sku = "\(testPrefix)-\(suffix)"
-            let fetch = try await context.fetch(EfficiencyTestProduct.self)
+            let fetch = try await context.fetch(IndexMaintenanceProduct.self)
                 .where(\.sku == sku)
                 .execute()
             #expect(fetch.isEmpty, "Old SKU '\(sku)' should not exist in index")
         }
 
-        let latestFetch = try await context.fetch(EfficiencyTestProduct.self)
+        let latestFetch = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.sku == "\(testPrefix)-V4")
             .execute()
         #expect(latestFetch.count == 1)
@@ -229,7 +231,7 @@ struct IndexMaintenanceEfficiencyTests {
 
         for i in 0..<batchSize {
             let productId = uniqueID("P-\(i)")
-            var product = EfficiencyTestProduct(
+            var product = IndexMaintenanceProduct(
                 sku: "\(testPrefix)-SKU-\(i)",
                 name: "BatchProduct\(i)",
                 price: priceBase + i
@@ -244,7 +246,7 @@ struct IndexMaintenanceEfficiencyTests {
         let targetId = productIds[50]
         let updatedSku = "\(testPrefix)-UPDATED-50"
         let updatedPrice = priceBase + 99999
-        var targetProduct = EfficiencyTestProduct(
+        var targetProduct = IndexMaintenanceProduct(
             sku: updatedSku,
             name: "UpdatedProduct50",
             price: updatedPrice
@@ -257,14 +259,14 @@ struct IndexMaintenanceEfficiencyTests {
         let elapsed = ContinuousClock.now - startTime
 
         // Verify update was successful
-        let updatedFetch = try await context.fetch(EfficiencyTestProduct.self)
+        let updatedFetch = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.sku == updatedSku)
             .execute()
         #expect(updatedFetch.count == 1)
         #expect(updatedFetch.first?.id == targetId)
 
         // Old index entry should be removed
-        let oldFetch = try await context.fetch(EfficiencyTestProduct.self)
+        let oldFetch = try await context.fetch(IndexMaintenanceProduct.self)
             .where(\.sku == "\(testPrefix)-SKU-50")
             .execute()
         #expect(oldFetch.isEmpty)
@@ -283,10 +285,10 @@ struct IndexMaintenanceEfficiencyTests {
         // Insert multiple products with unique prefix and unique prices
         let testPrefix = uniqueID("multi")
         let priceBase = Int.random(in: 60_000_000..<70_000_000)
-        var products: [EfficiencyTestProduct] = []
+        var products: [IndexMaintenanceProduct] = []
         for i in 0..<10 {
             let productId = uniqueID("P-batch-\(i)")
-            var product = EfficiencyTestProduct(
+            var product = IndexMaintenanceProduct(
                 sku: "\(testPrefix)-\(i)",
                 name: "Multi\(i)",
                 price: priceBase + i * 100
@@ -300,7 +302,7 @@ struct IndexMaintenanceEfficiencyTests {
         // Verify all index entries exist
         for i in 0..<10 {
             let sku = "\(testPrefix)-\(i)"
-            let fetch = try await context.fetch(EfficiencyTestProduct.self)
+            let fetch = try await context.fetch(IndexMaintenanceProduct.self)
                 .where(\.sku == sku)
                 .execute()
             #expect(fetch.count == 1, "Index entry for \(sku) should exist")
@@ -315,7 +317,7 @@ struct IndexMaintenanceEfficiencyTests {
         // Verify deleted entries are gone
         for i in 0..<5 {
             let sku = "\(testPrefix)-\(i)"
-            let fetch = try await context.fetch(EfficiencyTestProduct.self)
+            let fetch = try await context.fetch(IndexMaintenanceProduct.self)
                 .where(\.sku == sku)
                 .execute()
             #expect(fetch.isEmpty, "Index entry for deleted \(sku) should be gone")
@@ -324,7 +326,7 @@ struct IndexMaintenanceEfficiencyTests {
         // Verify remaining entries still exist
         for i in 5..<10 {
             let sku = "\(testPrefix)-\(i)"
-            let fetch = try await context.fetch(EfficiencyTestProduct.self)
+            let fetch = try await context.fetch(IndexMaintenanceProduct.self)
                 .where(\.sku == sku)
                 .execute()
             #expect(fetch.count == 1, "Index entry for \(sku) should still exist")

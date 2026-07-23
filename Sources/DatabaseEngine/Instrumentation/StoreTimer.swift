@@ -4,7 +4,11 @@
 // Reference: FDB Record Layer StoreTimer.java
 // Provides fine-grained timing and counting for database operations.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Metrics
 import Synchronization
 

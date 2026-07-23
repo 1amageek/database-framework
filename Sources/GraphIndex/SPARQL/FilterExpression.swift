@@ -3,9 +3,15 @@
 //
 // Represents filter conditions that can be applied to bindings.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
+import DatabaseValue
+import QueryIR
 
 /// Filter expression for FILTER clauses
 ///
@@ -111,14 +117,21 @@ public indirect enum FilterExpression: Sendable {
     /// For complex filters that can't be expressed with built-in operations.
     /// **Warning**: Variables cannot be extracted from this case, breaking filter pushdown.
     /// Use `customWithVariables` when variable information is available.
-    case custom(@Sendable (VariableBinding) -> Bool)
+    case custom(@Sendable (VariableBinding) throws -> Bool)
 
     /// Custom predicate with explicit variable tracking
     ///
     /// Stores the referenced variables alongside the closure, enabling proper
     /// filter pushdown optimization. This is the preferred form when converting
     /// from QueryIR.Expression.
-    case customWithVariables(@Sendable (VariableBinding) -> Bool, variables: Set<String>)
+    case customWithVariables(
+        @Sendable (VariableBinding) throws -> Bool,
+        variables: Set<String>
+    )
+
+    /// Canonical SPARQL expression plan. This preserves the QueryIR tree and
+    /// execution traits instead of erasing it into a closure.
+    case query(SPARQLExpressionPlan)
 
     /// Always true (identity for AND)
     case alwaysTrue
@@ -132,64 +145,55 @@ public indirect enum FilterExpression: Sendable {
     ///
     /// - Parameter binding: The variable binding to evaluate against
     /// - Returns: `true` if the filter matches, `false` otherwise
-    public func evaluate(_ binding: VariableBinding) -> Bool {
+    public func evaluate(_ binding: VariableBinding) throws -> Bool {
         switch self {
         // Comparison with literal value
         // SPARQL semantics: unbound variables evaluate to false in comparisons
-        // Numeric promotion: string values are coerced to numeric when compared
-        // against numeric values (SPARQL 1.1, Section 17.3 Operator Mapping)
+        // Numeric promotion applies only to typed numeric values and RDF literals.
         case .equals(let variable, let value):
             guard let v = binding[variable] else { return false }
-            let (lhs, rhs) = Self.numericPromote(v, value)
-            if Self.hasNull(lhs, rhs) { return false }
-            return lhs == rhs
+            if Self.hasNull(v, value) { return false }
+            return try Self.valuesEqual(v, value)
 
         case .notEquals(let variable, let value):
             guard let v = binding[variable] else { return false }
-            let (lhs, rhs) = Self.numericPromote(v, value)
-            if Self.hasNull(lhs, rhs) { return false }
-            return lhs != rhs
+            if Self.hasNull(v, value) { return false }
+            return try !Self.valuesEqual(v, value)
 
         case .lessThan(let variable, let value):
             guard let v = binding[variable] else { return false }
-            let (lhs, rhs) = Self.numericPromote(v, value)
-            if Self.hasNull(lhs, rhs) { return false }
-            guard let cmp = lhs.compare(to: rhs) else { return false }
+            if Self.hasNull(v, value) { return false }
+            guard let cmp = try Self.compare(v, value) else { return false }
             return cmp == .orderedAscending
 
         case .lessThanOrEqual(let variable, let value):
             guard let v = binding[variable] else { return false }
-            let (lhs, rhs) = Self.numericPromote(v, value)
-            if Self.hasNull(lhs, rhs) { return false }
-            guard let cmp = lhs.compare(to: rhs) else { return false }
+            if Self.hasNull(v, value) { return false }
+            guard let cmp = try Self.compare(v, value) else { return false }
             return cmp != .orderedDescending
 
         case .greaterThan(let variable, let value):
             guard let v = binding[variable] else { return false }
-            let (lhs, rhs) = Self.numericPromote(v, value)
-            if Self.hasNull(lhs, rhs) { return false }
-            guard let cmp = lhs.compare(to: rhs) else { return false }
+            if Self.hasNull(v, value) { return false }
+            guard let cmp = try Self.compare(v, value) else { return false }
             return cmp == .orderedDescending
 
         case .greaterThanOrEqual(let variable, let value):
             guard let v = binding[variable] else { return false }
-            let (lhs, rhs) = Self.numericPromote(v, value)
-            if Self.hasNull(lhs, rhs) { return false }
-            guard let cmp = lhs.compare(to: rhs) else { return false }
+            if Self.hasNull(v, value) { return false }
+            guard let cmp = try Self.compare(v, value) else { return false }
             return cmp != .orderedAscending
 
-        // Variable comparison — also applies numeric promotion
+        // Variable comparison uses the same typed numeric semantics.
         case .variableEquals(let var1, let var2):
             guard let v1 = binding[var1], let v2 = binding[var2] else { return false }
-            let (lhs, rhs) = Self.numericPromote(v1, v2)
-            if Self.hasNull(lhs, rhs) { return false }
-            return lhs == rhs
+            if Self.hasNull(v1, v2) { return false }
+            return try Self.valuesEqual(v1, v2)
 
         case .variableNotEquals(let var1, let var2):
             guard let v1 = binding[var1], let v2 = binding[var2] else { return false }
-            let (lhs, rhs) = Self.numericPromote(v1, v2)
-            if Self.hasNull(lhs, rhs) { return false }
-            return lhs != rhs
+            if Self.hasNull(v1, v2) { return false }
+            return try !Self.valuesEqual(v1, v2)
 
         // Bound check
         case .bound(let variable):
@@ -201,15 +205,15 @@ public indirect enum FilterExpression: Sendable {
         // String operations — extract string representation from FieldValue
         case .regex(let variable, let pattern):
             guard let value = binding.string(variable) else { return false }
-            return matchesRegex(value, pattern: pattern, flags: "")
+            return try matchesRegex(value, pattern: pattern, flags: "")
 
         case .regexWithFlags(let variable, let pattern, let flags):
             guard let value = binding.string(variable) else { return false }
-            return matchesRegex(value, pattern: pattern, flags: flags)
+            return try matchesRegex(value, pattern: pattern, flags: flags)
 
         case .contains(let variable, let substring):
             guard let value = binding.string(variable) else { return false }
-            return value.contains(substring)
+            return DatabaseText.contains(substring, in: value)
 
         case .startsWith(let variable, let prefix):
             guard let value = binding.string(variable) else { return false }
@@ -225,20 +229,26 @@ public indirect enum FilterExpression: Sendable {
 
         // Logical operations
         case .and(let left, let right):
-            return left.evaluate(binding) && right.evaluate(binding)
+            return try left.evaluate(binding) && right.evaluate(binding)
 
         case .or(let left, let right):
-            return left.evaluate(binding) || right.evaluate(binding)
+            return try left.evaluate(binding) || right.evaluate(binding)
 
         case .not(let expr):
-            return !expr.evaluate(binding)
+            return try !expr.evaluate(binding)
 
         // Custom and constants
         case .custom(let predicate):
-            return predicate(binding)
+            return try predicate(binding)
 
         case .customWithVariables(let predicate, _):
-            return predicate(binding)
+            return try predicate(binding)
+
+        case .query(let plan):
+            return try ExpressionEvaluator.evaluateAsBoolean(
+                plan.expression,
+                binding: binding
+            )
 
         case .alwaysTrue:
             return true
@@ -261,61 +271,76 @@ public indirect enum FilterExpression: Sendable {
         lhs.isNull || rhs.isNull
     }
 
-    // MARK: - Numeric Promotion
+    // MARK: - Numeric Comparison
 
-    /// Promote string values to numeric when comparing against numeric values
-    ///
-    /// SPARQL semantics: When comparing values of different types,
-    /// string values that represent numbers can be promoted to numeric types.
-    /// This happens at the operation boundary, not at storage time,
-    /// preserving the original type in the binding.
-    ///
-    /// Reference: SPARQL 1.1, Section 17.3 (Operator Mapping)
-    private static func numericPromote(_ lhs: FieldValue, _ rhs: FieldValue) -> (FieldValue, FieldValue) {
-        switch (lhs, rhs) {
-        case (.string(let s), _) where rhs.isNumeric:
-            if let promoted = parseNumeric(s) { return (promoted, rhs) }
-        case (_, .string(let s)) where lhs.isNumeric:
-            if let promoted = parseNumeric(s) { return (lhs, promoted) }
-        default:
-            break
+    private static func valuesEqual(
+        _ left: FieldValue,
+        _ right: FieldValue
+    ) throws -> Bool {
+        if case .rdfTerm(.literal(let leftLiteral)) = left,
+           case .rdfTerm(.literal(let rightLiteral)) = right {
+            if leftLiteral == rightLiteral { return true }
+            switch try SPARQLValueComparator().compare(leftLiteral, rightLiteral) {
+            case .equal: return true
+            case .less, .greater: return false
+            case .unordered, .typeError:
+                throw SPARQLExpressionEvaluationError.typeError(
+                    "RDF literals are not value-comparable"
+                )
+            }
         }
-        return (lhs, rhs)
+        if let leftNumeric = SPARQLNumericValue(left),
+           let rightNumeric = SPARQLNumericValue(right) {
+            guard let comparison = leftNumeric.compare(to: rightNumeric) else {
+                throw SPARQLExpressionEvaluationError.typeError(
+                    "numeric values are unordered"
+                )
+            }
+            return comparison == .orderedSame
+        }
+        return left == right
     }
 
-    /// Parse a string as a numeric FieldValue
-    ///
-    /// Tries Int64 first (for exact integer representation),
-    /// then Double (for floating-point). Rejects non-finite values.
-    private static func parseNumeric(_ s: String) -> FieldValue? {
-        if let i = Int64(s) { return .int64(i) }
-        if let d = Double(s), d.isFinite { return .double(d) }
-        return nil
+    private static func compare(
+        _ left: FieldValue,
+        _ right: FieldValue
+    ) throws -> ComparisonResult? {
+        if case .rdfTerm(.literal(let leftLiteral)) = left,
+           case .rdfTerm(.literal(let rightLiteral)) = right {
+            switch try SPARQLValueComparator().compare(leftLiteral, rightLiteral) {
+            case .less: return .orderedAscending
+            case .equal: return .orderedSame
+            case .greater: return .orderedDescending
+            case .unordered, .typeError:
+                throw SPARQLExpressionEvaluationError.typeError(
+                    "RDF literals are not order-comparable"
+                )
+            }
+        }
+        if let leftNumeric = SPARQLNumericValue(left),
+           let rightNumeric = SPARQLNumericValue(right) {
+            guard let comparison = leftNumeric.compare(to: rightNumeric) else {
+                throw SPARQLExpressionEvaluationError.typeError(
+                    "numeric values are unordered"
+                )
+            }
+            return comparison
+        }
+        return left.compare(to: right)
     }
 
     // MARK: - Helpers
 
-    private func matchesRegex(_ value: String, pattern: String, flags: String) -> Bool {
-        var options: NSRegularExpression.Options = []
-        if flags.contains("i") {
-            options.insert(.caseInsensitive)
-        }
-        if flags.contains("m") {
-            options.insert(.anchorsMatchLines)
-        }
-        if flags.contains("s") {
-            options.insert(.dotMatchesLineSeparators)
-        }
-
-        let regex: NSRegularExpression
-        do {
-            regex = try NSRegularExpression(pattern: pattern, options: options)
-        } catch {
-            return false
-        }
-
-        let range = NSRange(value.startIndex..., in: value)
-        return regex.firstMatch(in: value, range: range) != nil
+    private func matchesRegex(
+        _ value: String,
+        pattern: String,
+        flags: String
+    ) throws -> Bool {
+        try SPARQLRegularExpression.evaluateMatch(
+            value,
+            pattern: pattern,
+            flags: flags
+        )
     }
 
     // MARK: - Variables
@@ -347,8 +372,26 @@ public indirect enum FilterExpression: Sendable {
         case .customWithVariables(_, let vars):
             return vars
 
+        case .query(let plan):
+            return plan.referencedVariables
+
         case .alwaysTrue, .alwaysFalse:
             return []
+        }
+    }
+
+    public var isPushdownSafe: Bool {
+        switch self {
+        case .custom, .customWithVariables:
+            return false
+        case .query(let plan):
+            return plan.isFilterPushdownSafe
+        case .and(let left, let right), .or(let left, let right):
+            return left.isPushdownSafe && right.isPushdownSafe
+        case .not(let expression):
+            return expression.isPushdownSafe
+        default:
+            return true
         }
     }
 }
@@ -436,6 +479,8 @@ extension FilterExpression: CustomStringConvertible {
             return "CUSTOM(...)"
         case .customWithVariables(_, let vars):
             return "CUSTOM(vars: \(vars.sorted().joined(separator: ", ")))"
+        case .query(let plan):
+            return "QUERY_IR(\(plan.expression))"
         case .alwaysTrue:
             return "TRUE"
         case .alwaysFalse:
@@ -497,6 +542,8 @@ extension FilterExpression: Equatable {
         case (.customWithVariables(_, let lv), .customWithVariables(_, let rv)):
             // Compare by variables only (closures can't be compared)
             return lv == rv
+        case (.query(let left), .query(let right)):
+            return left == right
         default:
             return false
         }

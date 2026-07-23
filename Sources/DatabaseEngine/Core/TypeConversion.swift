@@ -5,11 +5,16 @@
 // between Swift native types, FieldValue, and TupleElement.
 //
 // Reference: Consolidates duplicate conversion logic from Filter.swift,
-// AggregationPlanExecutor.swift, AggregationExecution.swift, etc.
+// AggregationExecution.swift, and index maintainers.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
+import DatabaseValue
 
 /// 統一型変換ユーティリティ
 ///
@@ -21,7 +26,7 @@ import Core
 /// | Swift Type       | Int64 | Double | String | FieldValue      |
 /// |------------------|-------|--------|--------|-----------------|
 /// | Int, Int8-64     | ✓     | ✓      | -      | .int64          |
-/// | UInt, UInt8-64   | ✓*    | ✓      | -      | .int64          |
+/// | UInt, UInt8-64   | ✓*    | ✓      | -      | .uint64         |
 /// | Double           | -     | ✓      | -      | .double         |
 /// | Float            | -     | ✓      | -      | .double         |
 /// | String           | -     | -      | ✓      | .string         |
@@ -123,35 +128,49 @@ public struct TypeConversion: Sendable {
     /// FieldValue への変換
     ///
     /// - 用途: クエリ実行、統計、HyperLogLog
-    /// - 戻り値: 常に FieldValue を返す（未知の型は .string(description)）
-    public static func toFieldValue(_ value: Any) -> FieldValue {
-        switch value {
-        case let v as Bool: return .bool(v)
-        case let v as Int: return .int64(Int64(v))
-        case let v as Int8: return .int64(Int64(v))
-        case let v as Int16: return .int64(Int64(v))
-        case let v as Int32: return .int64(Int64(v))
-        case let v as Int64: return .int64(v)
-        case let v as UInt: return .int64(Int64(v))
-        case let v as UInt8: return .int64(Int64(v))
-        case let v as UInt16: return .int64(Int64(v))
-        case let v as UInt32: return .int64(Int64(v))
-        case let v as UInt64:
-            if v <= UInt64(Int64.max) {
-                return .int64(Int64(v))
-            } else {
-                return .double(Double(v))
+    /// - Throws: `TypeConversionError` when the value has no exact representation.
+    public static func toFieldValue(
+        _ value: Any
+    ) throws(TypeConversionError) -> FieldValue {
+        let mirror = Mirror(reflecting: value)
+        if mirror.displayStyle == .optional {
+            guard let wrapped = mirror.children.first?.value else {
+                return .null
             }
-        case let v as Float: return .double(Double(v))
-        case let v as Double: return .double(v)
-        case let v as String: return .string(v)
-        case let v as Data: return .data(v)
-        case let v as UUID: return .string(v.uuidString)
-        case let v as Date: return .double(v.timeIntervalSince1970)
-        case let v as FieldValue: return v
-        default:
-            return .string(String(describing: value))
+            return try toFieldValue(wrapped)
         }
+
+        if let fieldValue = value as? FieldValue {
+            return fieldValue
+        }
+        if let bytes = value as? DatabaseBytes {
+            return .data(bytes)
+        }
+        if let data = value as? Data {
+            return .data(DatabaseBytes(retaining: data))
+        }
+        if let bytes = value as? [UInt8] {
+            return .data(DatabaseBytes(bytes))
+        }
+        if let convertible = value as? any FieldValueConvertible {
+            return convertible.toFieldValue()
+        }
+        if mirror.displayStyle == .collection {
+            var elements: [FieldValue] = []
+            elements.reserveCapacity(mirror.children.count)
+            for (index, child) in mirror.children.enumerated() {
+                do {
+                    elements.append(try toFieldValue(child.value))
+                } catch let error {
+                    throw .invalidCollectionElement(
+                        index: index,
+                        reason: error
+                    )
+                }
+            }
+            return .array(elements)
+        }
+        throw .unsupportedType(String(reflecting: type(of: value)))
     }
 
     /// TupleElement への変換
@@ -160,11 +179,6 @@ public struct TypeConversion: Sendable {
     /// - エラー: 変換不可の型は TupleEncodingError をスロー
     public static func toTupleElement(_ value: Any) throws -> any TupleElement {
         return try TupleEncoder.encode(value)
-    }
-
-    /// TupleElement への変換（nil許容版）
-    public static func toTupleElementOrNil(_ value: Any) -> (any TupleElement)? {
-        return TupleEncoder.encodeOrNil(value)
     }
 
     // MARK: - TupleElement からの抽出
@@ -189,8 +203,4 @@ public struct TypeConversion: Sendable {
         return try TupleDecoder.decode(element, as: type)
     }
 
-    /// TupleElement から指定型を抽出（nil許容版）
-    public static func valueOrNil<T>(from element: any TupleElement, as type: T.Type) -> T? {
-        return TupleDecoder.decodeOrNil(element, as: type)
-    }
 }

@@ -2,7 +2,9 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import DatabaseEngine
+import DatabaseRuntime
 import ScalarIndex
 import BenchmarkFramework
 import StorageKit
@@ -29,12 +31,12 @@ struct CoveringIndexBenchmark {
     private let database: any StorageEngine
 
     init() async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
     }
 
     private func makeContext() async throws -> FDBContext {
         do {
-            try await database.directoryService.remove(path: ["benchmarks", "users"])
+            try await database.removeDirectory(path: ["benchmarks", "users"])
         } catch {
             // Ignore missing benchmark directories so each benchmark starts clean.
         }
@@ -43,6 +45,7 @@ struct CoveringIndexBenchmark {
         let container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         try await container.ensureIndexesReady()

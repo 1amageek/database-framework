@@ -4,6 +4,7 @@
 
 import Testing
 import TestHeartbeat
+import DatabaseValue
 @testable import QueryAST
 
 @Suite("QueryAST Tests", .heartbeat)
@@ -14,16 +15,16 @@ struct QueryASTTests {
     @Test("Literal convenience initializers")
     func testLiteralInitializers() throws {
         // Test optional initializer
-        let intLit = Literal(42)
+        let intLit = Literal.int(42)
         #expect(intLit == .int(42))
 
-        let doubleLit = Literal(3.14)
+        let doubleLit = Literal.double(3.14)
         #expect(doubleLit == .double(3.14))
 
-        let stringLit = Literal("hello")
+        let stringLit = Literal.string("hello")
         #expect(stringLit == .string("hello"))
 
-        let boolLit = Literal(true)
+        let boolLit = Literal.bool(true)
         #expect(boolLit == .bool(true))
     }
 
@@ -214,12 +215,11 @@ struct QueryASTTests {
             Issue.record("Expected IRI term")
         }
 
-        let prefixed = SPARQLTerm.prefixedName(prefix: "foaf", local: "name")
-        if case .prefixedName(let p, let l) = prefixed {
-            #expect(p == "foaf")
-            #expect(l == "name")
+        let vocabularyIRI = SPARQLTerm.iri("http://xmlns.com/foaf/0.1/name")
+        if case .iri(let iri) = vocabularyIRI {
+            #expect(iri == "http://xmlns.com/foaf/0.1/name")
         } else {
-            Issue.record("Expected prefixed name term")
+            Issue.record("Expected canonical IRI term")
         }
     }
 
@@ -267,17 +267,21 @@ struct QueryASTTests {
 
     @Test("PropertyPath construction")
     func testPropertyPath() throws {
-        let simple = PropertyPath.iri("http://example.org/knows")
+        let simple = PropertyPath.iri(
+            try DatabaseRDFPredicateIRI("http://example.org/knows")
+        )
         if case .iri(let i) = simple {
-            #expect(i == "http://example.org/knows")
+            #expect(i.rawValue == "http://example.org/knows")
         } else {
             Issue.record("Expected IRI path")
         }
 
-        let inverse = PropertyPath.inverse(.iri("http://example.org/parent"))
+        let inverse = PropertyPath.inverse(
+            .iri(try DatabaseRDFPredicateIRI("http://example.org/parent"))
+        )
         if case .inverse(let inner) = inverse {
             if case .iri(let i) = inner {
-                #expect(i == "http://example.org/parent")
+                #expect(i.rawValue == "http://example.org/parent")
             } else {
                 Issue.record("Expected IRI in inverse path")
             }
@@ -288,11 +292,43 @@ struct QueryASTTests {
 
     @Test("PropertyPath SPARQL serialization")
     func testPropertyPathSerialization() throws {
-        let path = PropertyPath.oneOrMore(.iri("http://example.org/knows"))
+        let path = PropertyPath.oneOrMore(
+            .iri(try DatabaseRDFPredicateIRI("http://example.org/knows"))
+        )
         #expect(path.toSPARQL() == "<http://example.org/knows>+")
 
-        let zeroOrMore = PropertyPath.zeroOrMore(.iri("http://example.org/parent"))
+        let zeroOrMore = PropertyPath.zeroOrMore(
+            .iri(try DatabaseRDFPredicateIRI("http://example.org/parent"))
+        )
         #expect(zeroOrMore.toSPARQL() == "<http://example.org/parent>*")
+    }
+
+    @Test("PropertyPath preserves directional exclusions and exact range bounds")
+    func testDirectionalNegationAndRange() throws {
+        let forward = try DatabaseRDFPredicateIRI("http://example.org/forward")
+        let inverse = try DatabaseRDFPredicateIRI("http://example.org/inverse")
+        let exclusions = try PropertyPathNegatedSet(
+            forward: [forward],
+            inverse: [inverse]
+        )
+        let negated = PropertyPath.negatedPropertySet(exclusions)
+
+        guard case .negatedPropertySet(let decodedExclusions) = negated else {
+            Issue.record("Expected a negated property set")
+            return
+        }
+        #expect(decodedExclusions.forward == [forward])
+        #expect(decodedExclusions.inverse == [inverse])
+
+        let bounds = try PropertyPathRange(minimum: 2, maximum: 4)
+        let ranged = PropertyPath.range(.iri(forward), bounds)
+        guard case .range(let inner, let decodedBounds) = ranged else {
+            Issue.record("Expected a ranged property path")
+            return
+        }
+        #expect(inner == .iri(forward))
+        #expect(decodedBounds == bounds)
+        #expect(ranged.toSPARQL() == "<http://example.org/forward>{2,4}")
     }
 
     // MARK: - Query Plan Tests
@@ -358,7 +394,7 @@ struct QueryASTTests {
             .selectAll()
             .where(TriplePattern(
                 subject: .variable("s"),
-                predicate: .prefixedName(prefix: "foaf", local: "name"),
+                predicate: .iri("http://xmlns.com/foaf/0.1/name"),
                 object: .variable("name")
             ))
 

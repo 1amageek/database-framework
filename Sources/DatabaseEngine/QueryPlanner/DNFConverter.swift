@@ -1,7 +1,11 @@
 // DNFConverter.swift
 // QueryPlanner - Disjunctive Normal Form conversion with explosion protection
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Converts predicates to Disjunctive Normal Form (DNF)
@@ -171,17 +175,17 @@ internal struct DNFConverter<T: Persistable>: Sendable {
             newOp = .isNotNil
         case .isNotNil:
             newOp = .isNil
+        case .in:
+            newOp = .notIn
+        case .notIn:
+            newOp = .in
         default:
             // Complex operators (in, contains, etc.) cannot be directly negated
             // Return nil to signal that the caller should wrap in NOT
             return nil
         }
 
-        return FieldComparison(
-            keyPath: comparison.keyPath,
-            op: newOp,
-            value: comparison.value
-        )
+        return comparison.replacing(op: newOp)
     }
 
     // MARK: - DNF Conversion

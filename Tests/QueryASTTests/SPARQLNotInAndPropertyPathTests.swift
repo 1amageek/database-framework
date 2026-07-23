@@ -5,6 +5,7 @@
 import Testing
 import TestHeartbeat
 import Foundation
+import DatabaseValue
 @testable import QueryAST
 
 // MARK: - Helper
@@ -43,6 +44,43 @@ private func parseExpression(_ sparql: String) throws -> QueryIR.Expression {
         )
     }
     return expr
+}
+
+private enum GraphPatternInspectionError: Error {
+    case expectedBasicGraphPattern(GraphPattern)
+    case expectedSinglePropertyPath(BasicGraphPattern)
+    case expectedSingleTriple(BasicGraphPattern)
+}
+
+private func requireBasicGraphPattern(
+    _ pattern: GraphPattern
+) throws -> BasicGraphPattern {
+    guard case .basic(let basicGraphPattern) = pattern else {
+        throw GraphPatternInspectionError.expectedBasicGraphPattern(pattern)
+    }
+    return basicGraphPattern
+}
+
+private func requireSinglePropertyPath(
+    _ pattern: GraphPattern
+) throws -> SPARQLPropertyPathPattern {
+    let basicGraphPattern = try requireBasicGraphPattern(pattern)
+    guard basicGraphPattern.elements.count == 1,
+          case .propertyPath(let propertyPath) = basicGraphPattern.elements[0] else {
+        throw GraphPatternInspectionError.expectedSinglePropertyPath(basicGraphPattern)
+    }
+    return propertyPath
+}
+
+private func requireSingleTriple(
+    _ pattern: GraphPattern
+) throws -> TriplePattern {
+    let basicGraphPattern = try requireBasicGraphPattern(pattern)
+    guard basicGraphPattern.elements.count == 1,
+          case .triple(let triple) = basicGraphPattern.elements[0] else {
+        throw GraphPatternInspectionError.expectedSingleTriple(basicGraphPattern)
+    }
+    return triple
 }
 
 // MARK: - NOT IN Tests
@@ -155,16 +193,6 @@ struct SPARQLNotInTests {
         #expect(sql.contains("NOT IN"))
     }
 
-    @Test("NOT IN Codable round-trip")
-    func testNotInCodable() throws {
-        let original = Expression.notInList(
-            .variable(Variable("x")),
-            values: [.literal(.int(1)), .literal(.string("test"))]
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(QueryIR.Expression.self, from: data)
-        #expect(original == decoded)
-    }
 }
 
 // MARK: - Property Path Tests
@@ -179,10 +207,10 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s rdfs:subClassOf* ?ancestor }
             """)
 
-        guard case .propertyPath(let s, let path, let o) = pattern else {
-            Issue.record("Expected .propertyPath, got \(pattern)")
-            return
-        }
+        let propertyPath = try requireSinglePropertyPath(pattern)
+        let s = propertyPath.subject
+        let path = propertyPath.path
+        let o = propertyPath.object
         guard case .variable("s") = s else {
             Issue.record("Expected variable s")
             return
@@ -199,7 +227,7 @@ struct SPARQLPropertyPathTests {
             Issue.record("Expected .iri inner")
             return
         }
-        #expect(iri == "http://www.w3.org/2000/01/rdf-schema#subClassOf")
+        #expect(iri.rawValue == "http://www.w3.org/2000/01/rdf-schema#subClassOf")
     }
 
     @Test("Sequence: ?s foaf:knows/foaf:name ?name")
@@ -209,19 +237,16 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s foaf:knows/foaf:name ?name }
             """)
 
-        guard case .propertyPath(_, let path, _) = pattern else {
-            Issue.record("Expected .propertyPath, got \(pattern)")
-            return
-        }
+        let path = try requireSinglePropertyPath(pattern).path
         guard case .sequence(let left, let right) = path else {
             Issue.record("Expected .sequence, got \(path)")
             return
         }
-        guard case .iri(let l) = left, l.hasSuffix("knows") else {
+        guard case .iri(let l) = left, l.rawValue.hasSuffix("knows") else {
             Issue.record("Expected foaf:knows, got \(left)")
             return
         }
-        guard case .iri(let r) = right, r.hasSuffix("name") else {
+        guard case .iri(let r) = right, r.rawValue.hasSuffix("name") else {
             Issue.record("Expected foaf:name, got \(right)")
             return
         }
@@ -234,15 +259,12 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s ^foaf:knows ?follower }
             """)
 
-        guard case .propertyPath(_, let path, _) = pattern else {
-            Issue.record("Expected .propertyPath, got \(pattern)")
-            return
-        }
+        let path = try requireSinglePropertyPath(pattern).path
         guard case .inverse(let inner) = path else {
             Issue.record("Expected .inverse, got \(path)")
             return
         }
-        guard case .iri(let iri) = inner, iri.hasSuffix("knows") else {
+        guard case .iri(let iri) = inner, iri.rawValue.hasSuffix("knows") else {
             Issue.record("Expected foaf:knows, got \(inner)")
             return
         }
@@ -255,19 +277,16 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s (foaf:knows|foaf:friendOf) ?person }
             """)
 
-        guard case .propertyPath(_, let path, _) = pattern else {
-            Issue.record("Expected .propertyPath, got \(pattern)")
-            return
-        }
+        let path = try requireSinglePropertyPath(pattern).path
         guard case .alternative(let left, let right) = path else {
             Issue.record("Expected .alternative, got \(path)")
             return
         }
-        guard case .iri(let l) = left, l.hasSuffix("knows") else {
+        guard case .iri(let l) = left, l.rawValue.hasSuffix("knows") else {
             Issue.record("Expected foaf:knows")
             return
         }
-        guard case .iri(let r) = right, r.hasSuffix("friendOf") else {
+        guard case .iri(let r) = right, r.rawValue.hasSuffix("friendOf") else {
             Issue.record("Expected foaf:friendOf")
             return
         }
@@ -280,10 +299,7 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s foaf:knows+ ?friend }
             """)
 
-        guard case .propertyPath(_, let path, _) = pattern else {
-            Issue.record("Expected .propertyPath")
-            return
-        }
+        let path = try requireSinglePropertyPath(pattern).path
         guard case .oneOrMore(let inner) = path else {
             Issue.record("Expected .oneOrMore, got \(path)")
             return
@@ -301,10 +317,7 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s foaf:knows? ?friend }
             """)
 
-        guard case .propertyPath(_, let path, _) = pattern else {
-            Issue.record("Expected .propertyPath")
-            return
-        }
+        let path = try requireSinglePropertyPath(pattern).path
         guard case .zeroOrOne(let inner) = path else {
             Issue.record("Expected .zeroOrOne, got \(path)")
             return
@@ -322,16 +335,14 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s !(rdf:type) ?val }
             """)
 
-        guard case .propertyPath(_, let path, _) = pattern else {
-            Issue.record("Expected .propertyPath, got \(pattern)")
+        let path = try requireSinglePropertyPath(pattern).path
+        guard case .negatedPropertySet(let exclusions) = path else {
+            Issue.record("Expected .negatedPropertySet, got \(path)")
             return
         }
-        guard case .negation(let iris) = path else {
-            Issue.record("Expected .negation, got \(path)")
-            return
-        }
-        #expect(iris.count == 1)
-        #expect(iris[0] == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
+        #expect(exclusions.forward?.count == 1)
+        #expect(exclusions.forward?.first?.rawValue == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
+        #expect(exclusions.inverse == nil)
     }
 
     @Test("NegatedPropertySet with alternatives: ?s !(rdf:type|rdfs:label) ?val")
@@ -342,15 +353,75 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s !(rdf:type|rdfs:label) ?val }
             """)
 
-        guard case .propertyPath(_, let path, _) = pattern else {
-            Issue.record("Expected .propertyPath")
+        let path = try requireSinglePropertyPath(pattern).path
+        guard case .negatedPropertySet(let exclusions) = path else {
+            Issue.record("Expected .negatedPropertySet, got \(path)")
             return
         }
-        guard case .negation(let iris) = path else {
-            Issue.record("Expected .negation, got \(path)")
+        #expect(exclusions.forward?.count == 2)
+        #expect(exclusions.inverse == nil)
+    }
+
+    @Test("Direct forward negated predicate preserves direction")
+    func testDirectForwardNegatedPredicate() throws {
+        let pattern = try parsePattern("""
+            PREFIX ex: <http://example.org/>
+            SELECT * WHERE { ?s !ex:p ?o }
+            """)
+
+        let path = try requireSinglePropertyPath(pattern).path
+        guard case .negatedPropertySet(let exclusions) = path else {
+            Issue.record("Expected a negated property set")
             return
         }
-        #expect(iris.count == 2)
+        #expect(exclusions.forward?.map(\.rawValue) == ["http://example.org/p"])
+        #expect(exclusions.inverse == nil)
+    }
+
+    @Test("Direct inverse negated predicate preserves direction")
+    func testDirectInverseNegatedPredicate() throws {
+        let pattern = try parsePattern("""
+            PREFIX ex: <http://example.org/>
+            SELECT * WHERE { ?s !^ex:p ?o }
+            """)
+
+        let path = try requireSinglePropertyPath(pattern).path
+        guard case .negatedPropertySet(let exclusions) = path else {
+            Issue.record("Expected a negated property set")
+            return
+        }
+        #expect(exclusions.forward == nil)
+        #expect(exclusions.inverse?.map(\.rawValue) == ["http://example.org/p"])
+    }
+
+    @Test("Mixed negated predicate set preserves forward and inverse members")
+    func testMixedDirectionNegatedPredicateSet() throws {
+        let pattern = try parsePattern("""
+            PREFIX ex: <http://example.org/>
+            SELECT * WHERE { ?s !(ex:p|^ex:q) ?o }
+            """)
+
+        let path = try requireSinglePropertyPath(pattern).path
+        guard case .negatedPropertySet(let exclusions) = path else {
+            Issue.record("Expected a negated property set")
+            return
+        }
+        #expect(exclusions.forward?.map(\.rawValue) == ["http://example.org/p"])
+        #expect(exclusions.inverse?.map(\.rawValue) == ["http://example.org/q"])
+    }
+
+    @Test("Property path rejects an undefined prefix")
+    func testUndefinedPropertyPathPrefix() {
+        #expect(throws: SPARQLParser.ParseError.self) {
+            try parsePattern("SELECT * WHERE { ?s missing:p+ ?o }")
+        }
+    }
+
+    @Test("Property path rejects a relative IRI without a base")
+    func testRelativePropertyPathIRIWithoutBase() {
+        #expect(throws: SPARQLParser.ParseError.self) {
+            try parsePattern("SELECT * WHERE { ?s <relative/path>+ ?o }")
+        }
     }
 
     @Test("Combined: Inverse + Sequence: ?s ^(foaf:knows/foaf:name) ?x")
@@ -360,10 +431,7 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s ^(foaf:knows/foaf:name) ?x }
             """)
 
-        guard case .propertyPath(_, let path, _) = pattern else {
-            Issue.record("Expected .propertyPath, got \(pattern)")
-            return
-        }
+        let path = try requireSinglePropertyPath(pattern).path
         guard case .inverse(let inner) = path else {
             Issue.record("Expected .inverse, got \(path)")
             return
@@ -380,13 +448,9 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s a ?type }
             """)
 
-        guard case .basic(let triples) = pattern else {
-            Issue.record("Expected .basic, got \(pattern)")
-            return
-        }
-        #expect(triples.count == 1)
-        // 'a' → SPARQLTerm.rdfType which is .prefixedName(prefix: "rdf", local: "type")
-        #expect(triples[0].predicate == SPARQLTerm.rdfType)
+        let triple = try requireSingleTriple(pattern)
+        // 'a' resolves directly to the canonical RDF type IRI.
+        #expect(triple.predicate == SPARQLTerm.rdfType)
     }
 
     @Test("Regression: simple IRI predicate still works")
@@ -396,11 +460,7 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s foaf:name ?name }
             """)
 
-        guard case .basic(let triples) = pattern else {
-            Issue.record("Expected .basic, got \(pattern)")
-            return
-        }
-        #expect(triples.count == 1)
+        _ = try requireSingleTriple(pattern)
     }
 
     @Test("Mixed: triple and property path in same subject")
@@ -410,23 +470,19 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s foaf:name ?name ; foaf:knows+ ?friend }
             """)
 
-        // Should contain both a basic triple and a propertyPath
-        func hasPropertyPath(_ p: GraphPattern) -> Bool {
-            switch p {
-            case .propertyPath: return true
-            case .join(let l, let r): return hasPropertyPath(l) || hasPropertyPath(r)
-            default: return false
+        let basicGraphPattern = try requireBasicGraphPattern(pattern)
+        var tripleCount = 0
+        var propertyPathCount = 0
+        for element in basicGraphPattern.elements {
+            switch element {
+            case .triple:
+                tripleCount += 1
+            case .propertyPath:
+                propertyPathCount += 1
             }
         }
-        func hasBasic(_ p: GraphPattern) -> Bool {
-            switch p {
-            case .basic: return true
-            case .join(let l, let r): return hasBasic(l) || hasBasic(r)
-            default: return false
-            }
-        }
-        #expect(hasPropertyPath(pattern))
-        #expect(hasBasic(pattern))
+        #expect(tripleCount == 1)
+        #expect(propertyPathCount == 1)
     }
 
     @Test("Path with 'a' as path primary: ?s a* ?type")
@@ -435,10 +491,7 @@ struct SPARQLPropertyPathTests {
             SELECT * WHERE { ?s a* ?type }
             """)
 
-        guard case .propertyPath(_, let path, _) = pattern else {
-            Issue.record("Expected .propertyPath, got \(pattern)")
-            return
-        }
+        let path = try requireSinglePropertyPath(pattern).path
         guard case .zeroOrMore(let inner) = path else {
             Issue.record("Expected .zeroOrMore, got \(path)")
             return
@@ -447,7 +500,7 @@ struct SPARQLPropertyPathTests {
             Issue.record("Expected .iri, got \(inner)")
             return
         }
-        #expect(iri == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
+        #expect(iri.rawValue == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
     }
 
     @Test("Multiple triples block with path")
@@ -460,16 +513,19 @@ struct SPARQLPropertyPathTests {
             }
             """)
 
-        // Should successfully parse both a regular triple and a path pattern
-        func countPatterns(_ p: GraphPattern) -> Int {
-            switch p {
-            case .basic(let t): return t.count
-            case .propertyPath: return 1
-            case .join(let l, let r): return countPatterns(l) + countPatterns(r)
-            default: return 0
+        let basicGraphPattern = try requireBasicGraphPattern(pattern)
+        var tripleCount = 0
+        var propertyPathCount = 0
+        for element in basicGraphPattern.elements {
+            switch element {
+            case .triple:
+                tripleCount += 1
+            case .propertyPath:
+                propertyPathCount += 1
             }
         }
-        #expect(countPatterns(pattern) >= 2)
+        #expect(tripleCount == 1)
+        #expect(propertyPathCount == 1)
     }
 }
 #endif

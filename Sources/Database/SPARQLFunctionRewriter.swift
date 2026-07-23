@@ -1,13 +1,18 @@
 // SPARQLFunctionRewriter.swift
 // Database - Rewrite SelectQuery by executing SPARQL() functions
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import QueryIR
 import QueryAST
 import GraphIndex
 import Graph
 import DatabaseEngine
+import DatabaseValue
 import StorageKit
 
 /// Rewrites SelectQuery by executing SPARQL() subqueries
@@ -26,12 +31,17 @@ import StorageKit
 /// ```
 internal struct SPARQLFunctionRewriter: Sendable {
     private let context: FDBContext
+    private let workMeter: DatabaseWorkMeter
 
     /// Initialize with FDBContext
     ///
     /// - Parameter context: The context for transaction and schema access
-    internal init(context: FDBContext) {
+    internal init(
+        context: FDBContext,
+        workMeter: DatabaseWorkMeter
+    ) {
         self.context = context
+        self.workMeter = workMeter
     }
 
     // MARK: - Rewrite Entry Point
@@ -60,8 +70,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             distinct: query.distinct,
             subqueries: query.subqueries,
             reduced: query.reduced,
-            from: query.from,
-            fromNamed: query.fromNamed
+            dataset: query.dataset
         )
     }
 
@@ -215,7 +224,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             return .function(FunctionCall(name: call.name, arguments: rewrittenArgs, distinct: call.distinct))
 
         // Terminal cases - no recursion needed
-        case .literal, .column, .variable, .bound, .aggregate:
+        case .literal, .column, .variable, .parameter, .bound, .aggregate:
             return expr
 
         // RDF/SPARQL-specific cases (no recursion needed for now)
@@ -245,12 +254,10 @@ internal struct SPARQLFunctionRewriter: Sendable {
         // 2. Resolve type via TypeResolver
         let resolver = TypeResolver(schema: context.container.schema)
         let entity = try resolver.resolve(typeName: typeName)
-        let graphIndex = try resolver.findGraphIndex(for: entity)
-
-        // 3. Extract graph index metadata via AnyGraphIndexKind
-        guard let graphKind = graphIndex.kind as? any AnyGraphIndexKind else {
+        guard let dataset = try RDFDatasetReadResolver.resolve(entity: entity) else {
             throw SPARQLFunctionError.invalidGraphIndex(entity.name)
         }
+        let graphIndex = dataset.indexDescriptor
 
         // 4. Resolve type directory and index subspace
         guard let persistableType = entity.persistableType else {
@@ -264,9 +271,10 @@ internal struct SPARQLFunctionRewriter: Sendable {
         // 5. Execute SPARQL within the same transaction scope
         let result = try await executeSPARQLWithinTransaction(
             sparqlQuery: sparqlQuery,
+            entityName: entity.name,
+            indexName: graphIndex.name,
             indexSubspace: indexSubspace,
-            graphKind: graphKind,
-            storedFieldNames: graphIndex.storedFieldNames
+            metadata: dataset.metadata
         )
 
         // 5. Extract single-variable values
@@ -352,11 +360,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
     /// - Throws: Directory resolution errors (including dynamic directory detection)
     private func resolveTypeDirectory(_ persistableType: any Persistable.Type) async throws -> Subspace {
         // Check for dynamic directory components (not supported in SPARQL function)
-        let hasDynamicComponent = persistableType.directoryPathComponents.contains { component in
-            component is any DynamicDirectoryElement
-        }
-
-        if hasDynamicComponent {
+        if persistableType.hasDynamicDirectory {
             throw SPARQLFunctionError.invalidArguments(
                 "Dynamic directory partitions not supported in SPARQL() function. " +
                 "Type '\(persistableType.persistableType)' has dynamic directory components."
@@ -374,28 +378,31 @@ internal struct SPARQLFunctionRewriter: Sendable {
     /// - Parameters:
     ///   - sparqlQuery: SPARQL query string
     ///   - indexSubspace: Resolved index subspace
-    ///   - graphKind: Graph index metadata
+    ///   - metadata: RDF dataset index metadata
     ///   - storedFieldNames: Stored field names for the index
     /// - Returns: SPARQL result
     /// - Throws: SPARQL execution errors
     private func executeSPARQLWithinTransaction(
         sparqlQuery: String,
+        entityName: String,
+        indexName: String,
         indexSubspace: Subspace,
-        graphKind: any AnyGraphIndexKind,
-        storedFieldNames: [String]
+        metadata: RDFDatasetIndexMetadata
     ) async throws -> SPARQLResult {
+        let source = RDFDatasetSource(
+            entityName: entityName,
+            indexName: indexName,
+            indexSubspace: indexSubspace,
+            coverage: try metadata.graphScope.sourceCoverage
+        )
         // Execute using database transaction (shares snapshot with parent SQL transaction)
         return try await context.container.engine.withTransaction(configuration: .default) { transaction in
-            try await executeSPARQLString(
+            try await _executeSPARQLString(
                 sparqlQuery,
                 database: context.container.engine,
-                indexSubspace: indexSubspace,
-                strategy: graphKind.strategy,
-                fromFieldName: graphKind.fromFieldName,
-                edgeFieldName: graphKind.edgeFieldName,
-                toFieldName: graphKind.toFieldName,
-                graphFieldName: graphKind.graphFieldName,
-                storedFieldNames: storedFieldNames
+                sources: [source],
+                transaction: transaction,
+                workMeter: workMeter
             )
         }
     }
@@ -415,12 +422,16 @@ internal struct SPARQLFunctionRewriter: Sendable {
             return .bool(value)
         case .int64(let value):
             return .int(value)
+        case .uint64(let value):
+            return .uint(value)
         case .double(let value):
             return .double(value)
         case .string(let value):
             return .string(value)
         case .data(let value):
             return .binary(value)
+        case .rdfTerm(let term):
+            return .rdfTerm(term)
         case .array:
             // Array values are not supported in SPARQL function results
             throw SPARQLFunctionError.invalidArguments("Array values not supported in SPARQL() results")

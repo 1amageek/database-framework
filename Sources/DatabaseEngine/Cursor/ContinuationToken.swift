@@ -4,7 +4,6 @@
 // Reference: FDB Record Layer RecordCursorContinuation
 // Enables stateless pagination across transactions.
 
-import Foundation
 import StorageKit
 
 // MARK: - ContinuationToken
@@ -50,12 +49,12 @@ public struct ContinuationToken: Sendable, Hashable {
     // MARK: - Properties
 
     /// Raw serialized data (Tuple-encoded)
-    public let data: [UInt8]
+    public let data: Bytes
 
     // MARK: - Initialization
 
     /// Create from raw bytes
-    public init(data: [UInt8]) {
+    public init(data: Bytes) {
         self.data = data
     }
 
@@ -65,7 +64,7 @@ public struct ContinuationToken: Sendable, Hashable {
     ///
     /// Base64 encoding is URL-safe and suitable for query parameters.
     public var base64String: String {
-        Data(data).base64EncodedString()
+        DatabaseBase64Codec.encode(data)
     }
 
     /// Parse from base64 string
@@ -74,10 +73,13 @@ public struct ContinuationToken: Sendable, Hashable {
     /// - Returns: Parsed continuation token
     /// - Throws: `ContinuationError.invalidTokenFormat` if parsing fails
     public static func fromBase64(_ string: String) throws -> ContinuationToken {
-        guard let data = Data(base64Encoded: string) else {
+        let data: Bytes
+        do {
+            data = try DatabaseBase64Codec.decode(string)
+        } catch {
             throw ContinuationError.invalidTokenFormat
         }
-        return ContinuationToken(data: Array(data))
+        return ContinuationToken(data: data)
     }
 
     // MARK: - Special Tokens

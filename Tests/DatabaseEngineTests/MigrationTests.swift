@@ -5,8 +5,10 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 
 @Persistable(type: "SchemaRegistryAppendOnlyUser")
 struct SchemaRegistryAppendOnlyUserV1 {
@@ -123,9 +125,9 @@ struct MigrationTests {
     // MARK: - Helper Types
 
     @Persistable
-    struct MigrationTestUser {
-        #Directory<MigrationTestUser>("test", "migration", "users")
-        #Index(ScalarIndexKind<MigrationTestUser>(fields: [\.email]))
+    struct MigrationUser {
+        #Directory<MigrationUser>("test", "migration", "users")
+        #Index(ScalarIndexKind<MigrationUser>(fields: [\.email]))
 
         var id: String = ULID().ulidString
         var email: String
@@ -133,8 +135,8 @@ struct MigrationTests {
     }
 
     @Persistable
-    struct BatchTestRecord {
-        #Directory<BatchTestRecord>("test", "migration", "batch")
+    struct BatchMigrationRecord {
+        #Directory<BatchMigrationRecord>("test", "migration", "batch")
 
         var id: String = ULID().ulidString
         var name: String
@@ -150,46 +152,48 @@ struct MigrationTests {
     // MARK: - Helper Methods
 
     private func makeSystemPriorityEngine() async throws -> any StorageEngine {
-        let engine = try await FDBTestSetup.shared.makeEngine()
+        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let database = FDBSystemPriorityDatabase(wrapping: engine.database)
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await makeSystemPriorityEngine()
 
         // Use Schema([Type.self]) to properly register types
-        let schema = Schema([MigrationTestUser.self], version: Schema.Version(1, 0, 0))
+        let schema = Schema([MigrationUser.self], version: Schema.Version(1, 0, 0))
 
         return try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
             )
     }
 
     private func setupBatchTestContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await makeSystemPriorityEngine()
 
         // Use Schema([Type.self]) to properly register types
-        let schema = Schema([BatchTestRecord.self], version: Schema.Version(1, 0, 0))
+        let schema = Schema([BatchMigrationRecord.self], version: Schema.Version(1, 0, 0))
 
         return try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
             )
     }
 
     private func cleanup(container: DBContainer) async throws {
         do {
-            try await container.engine.directoryService.remove(path: ["test", "migration"])
+            try await container.engine.removeDirectory(path: ["test", "migration"])
         } catch {
         }
         do {
-            try await container.engine.directoryService.remove(path: ["_metadata"])
+            try await container.engine.removeDirectory(path: ["_metadata"])
         } catch {
         }
     }
@@ -200,34 +204,34 @@ struct MigrationTests {
     ) async throws {
         try await database.withTransaction { transaction in
             for typeName in typeNames {
-                transaction.clear(key: Tuple(["_schema", typeName]).pack())
+                try transaction.clear(key: Tuple(["_schema", typeName]).pack())
             }
         }
     }
 
     private func clearMetadata(in database: any StorageEngine) async throws {
         do {
-            try await database.directoryService.remove(path: ["_metadata"])
+            try await database.removeDirectory(path: ["_metadata"])
         } catch {
         }
     }
 
     private func insertTestRecords(
         container: DBContainer,
-        records: [BatchTestRecord]
+        records: [BatchMigrationRecord]
     ) async throws {
         let encoder = ProtobufEncoder()
-        let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
-        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchTestRecord.persistableType)
+        let subspace = try await container.resolveDirectory(for: BatchMigrationRecord.self)
+        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationRecord.persistableType)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         try await container.engine.withTransaction { transaction in
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             for record in records {
                 let data = try encoder.encode(record)
-                let validatedID = try record.validateIDForStorage()
-                let itemKey = itemSubspace.pack(Tuple(validatedID))
-                try await storage.write(Array(data), for: itemKey)
+                let identifier = try record.recordIdentifierTuple()
+                let itemKey = itemSubspace.pack(identifier)
+                try await storage.write(Bytes(data), for: itemKey)
             }
         }
     }
@@ -236,7 +240,7 @@ struct MigrationTests {
 
     @Test("getCurrentSchemaVersion returns nil for new database")
     func getCurrentSchemaVersionReturnsNilForNewDatabase() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
@@ -248,7 +252,7 @@ struct MigrationTests {
 
     @Test("setCurrentSchemaVersion and getCurrentSchemaVersion roundtrip")
     func schemaVersionRoundtrip() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
@@ -263,20 +267,20 @@ struct MigrationTests {
 
     @Test("Schema version persists across container instances")
     func schemaVersionPersistsAcrossContainers() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
 
-            let schema = Schema([MigrationTestUser.self], version: Schema.Version(2, 0, 0))
+            let schema = Schema([MigrationUser.self], version: Schema.Version(2, 0, 0))
 
             // Clean up first
             try await clearMetadata(in: database)
 
             // Create first container and set version
-            let container1 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container1 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             try await container1.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
 
             // Create second container and read version
-            let container2 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container2 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let version = try await container2.getCurrentSchemaVersion()
 
             #expect(version == Schema.Version(2, 0, 0))
@@ -288,7 +292,7 @@ struct MigrationTests {
 
     @Test("SchemaRegistry accepts append-only field additions")
     func schemaRegistryAcceptsAppendOnlyFieldAdditions() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
             let registry = SchemaRegistry(database: database)
             let typeName = SchemaRegistryAppendOnlyUserV1.persistableType
@@ -307,7 +311,7 @@ struct MigrationTests {
 
     @Test("Lightweight migration keeps existing FDB data readable end-to-end")
     func lightweightMigrationPreservesExistingDataEndToEnd() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
             let typeName = SchemaRegistryAppendOnlyUserV1.persistableType
             let userID = "fdb-lightweight-\(UUID().uuidString)"
@@ -318,6 +322,7 @@ struct MigrationTests {
             let initialContainer = try await DBContainer(
                 for: SchemaRegistryAppendOnlySchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(database)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -334,13 +339,15 @@ struct MigrationTests {
             let migratedContainer = try await DBContainer(
                 for: SchemaRegistryAppendOnlySchemaV2.self,
                 migrationPlan: SchemaRegistryAppendOnlyMigrationPlan.self,
-                configuration: .init(backend: .custom(database))
+                configuration: .init(backend: .custom(database)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 
             let verificationContainer = try await DBContainer(
                 for: SchemaRegistryAppendOnlySchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(database)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let migratedUsers = try await verificationContainer
@@ -358,7 +365,7 @@ struct MigrationTests {
 
     @Test("SchemaRegistry rejects reordered fields without migration")
     func schemaRegistryRejectsReorderedFieldsWithoutMigration() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
             let registry = SchemaRegistry(database: database)
             let typeName = SchemaRegistryAppendOnlyUserV1.persistableType
@@ -392,7 +399,7 @@ struct MigrationTests {
 
     @Test("Custom migration can persist breaking schema changes")
     func customMigrationCanPersistBreakingSchemaChanges() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
             let typeName = SchemaRegistryMigratedUserV1.persistableType
             let idPrefix = UUID().uuidString
@@ -404,6 +411,7 @@ struct MigrationTests {
             let initialContainer = try await DBContainer(
                 for: SchemaRegistryMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(database)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -419,7 +427,8 @@ struct MigrationTests {
             let migratedContainer = try await DBContainer(
                 for: SchemaRegistryMigrationSchemaV2.self,
                 migrationPlan: SchemaRegistryCustomMigrationPlan.self,
-                configuration: .init(backend: .custom(database))
+                configuration: .init(backend: .custom(database)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -435,6 +444,7 @@ struct MigrationTests {
             let verificationContainer = try await DBContainer(
                 for: SchemaRegistryMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(database)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let verificationContext = verificationContainer.newContext()
@@ -450,7 +460,7 @@ struct MigrationTests {
 
     @Test("Custom migration transforms FDB data end-to-end")
     func customMigrationTransformsDataEndToEnd() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
             let typeName = SchemaRegistryMigratedUserV1.persistableType
             let idPrefix = UUID().uuidString
@@ -463,6 +473,7 @@ struct MigrationTests {
             let initialContainer = try await DBContainer(
                 for: SchemaRegistryMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(database)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -487,13 +498,15 @@ struct MigrationTests {
             let migratedContainer = try await DBContainer(
                 for: SchemaRegistryMigrationSchemaV2.self,
                 migrationPlan: SchemaRegistryCustomMigrationPlan.self,
-                configuration: .init(backend: .custom(database))
+                configuration: .init(backend: .custom(database)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 
             let verificationContainer = try await DBContainer(
                 for: SchemaRegistryMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(database)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let migratedUsers = try await verificationContainer
@@ -513,25 +526,25 @@ struct MigrationTests {
 
     @Test("MigrationContext batch update works correctly")
     func migrationContextBatchUpdate() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupBatchTestContainer()
             // Clean up at START of test
             try await cleanup(container: container)
 
             // Create test records with known IDs
-            let records = (1...5).map { BatchTestRecord(name: "User \($0)", status: "active") }
+            let records = (1...5).map { BatchMigrationRecord(name: "User \($0)", status: "active") }
             try await insertTestRecords(container: container, records: records)
 
             // Setup MigrationContext
-            let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
+            let subspace = try await container.resolveDirectory(for: BatchMigrationRecord.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),
                 blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
-            let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
+            let storeRegistry = [BatchMigrationRecord.persistableType: storeInfo]
 
-            let metadataSubspace = try await container.engine.directoryService.createOrOpen(path: ["_metadata"])
+            let metadataSubspace = try await container.engine.createOrOpenDirectory(path: ["_metadata"])
 
             let context = MigrationContext(
                 container: container,
@@ -542,25 +555,25 @@ struct MigrationTests {
 
             // Batch update records
             let updatedRecords = records.map {
-                BatchTestRecord(id: $0.id, name: $0.name, status: "migrated")
+                BatchMigrationRecord(id: $0.id, name: $0.name, status: "migrated")
             }
             try await context.batchUpdate(updatedRecords, batchSize: 2)
 
             // Verify updates
-            let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchTestRecord.persistableType)
+            let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationRecord.persistableType)
 
             for record in records {
-                let validatedID = try record.validateIDForStorage()
-                let key = itemSubspace.pack(Tuple(validatedID))
+                let identifier = try record.recordIdentifierTuple()
+                let key = itemSubspace.pack(identifier)
                 let data: Bytes? = try await container.engine.withTransaction { tx in
-                    let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace)
+                    let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
                     return try await storage.read(for: key, snapshot: false)
                 }
                 guard let data = data else {
                     Issue.record("Record with id \(record.id) not found after batchUpdate")
                     continue
                 }
-                let decoded: BatchTestRecord = try DataAccess.deserialize(data)
+                let decoded: BatchMigrationRecord = try DataAccess.deserialize(data)
                 #expect(decoded.status == "migrated", "Expected status 'migrated' but got '\(decoded.status)'")
             }
         }
@@ -568,25 +581,25 @@ struct MigrationTests {
 
     @Test("MigrationContext count works correctly")
     func migrationContextCount() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupBatchTestContainer()
             // Clean up at START of test
             try await cleanup(container: container)
 
             // Insert test records
-            let records = (1...7).map { BatchTestRecord(name: "User \($0)") }
+            let records = (1...7).map { BatchMigrationRecord(name: "User \($0)") }
             try await insertTestRecords(container: container, records: records)
 
             // Setup MigrationContext
-            let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
+            let subspace = try await container.resolveDirectory(for: BatchMigrationRecord.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),
                 blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
-            let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
+            let storeRegistry = [BatchMigrationRecord.persistableType: storeInfo]
 
-            let metadataSubspace = try await container.engine.directoryService.createOrOpen(path: ["_metadata"])
+            let metadataSubspace = try await container.engine.createOrOpenDirectory(path: ["_metadata"])
 
             let context = MigrationContext(
                 container: container,
@@ -595,33 +608,33 @@ struct MigrationTests {
                 storeRegistry: storeRegistry
             )
 
-            let count = try await context.count(BatchTestRecord.self)
+            let count = try await context.count(BatchMigrationRecord.self)
             #expect(count == 7)
         }
     }
 
     @Test("MigrationContext single update and delete work correctly")
     func migrationContextSingleOperations() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupBatchTestContainer()
             // Clean up at START of test
             try await cleanup(container: container)
 
             // Create test records
-            let updateRecord = BatchTestRecord(name: "ToUpdate", status: "active")
-            let deleteRecord = BatchTestRecord(name: "ToDelete", status: "active")
+            let updateRecord = BatchMigrationRecord(name: "ToUpdate", status: "active")
+            let deleteRecord = BatchMigrationRecord(name: "ToDelete", status: "active")
             try await insertTestRecords(container: container, records: [updateRecord, deleteRecord])
 
             // Setup MigrationContext
-            let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
+            let subspace = try await container.resolveDirectory(for: BatchMigrationRecord.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),
                 blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
-            let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
+            let storeRegistry = [BatchMigrationRecord.persistableType: storeInfo]
 
-            let metadataSubspace = try await container.engine.directoryService.createOrOpen(path: ["_metadata"])
+            let metadataSubspace = try await container.engine.createOrOpenDirectory(path: ["_metadata"])
 
             let context = MigrationContext(
                 container: container,
@@ -631,33 +644,33 @@ struct MigrationTests {
             )
 
             // Single update
-            let updated = BatchTestRecord(id: updateRecord.id, name: "ToUpdate", status: "updated")
+            let updated = BatchMigrationRecord(id: updateRecord.id, name: "ToUpdate", status: "updated")
             try await context.update(updated)
 
             // Single delete
             try await context.delete(deleteRecord)
 
             // Verify
-            let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchTestRecord.persistableType)
+            let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationRecord.persistableType)
 
             // Check update
-            let updateValidatedID = try updateRecord.validateIDForStorage()
-            let updateKey = itemSubspace.pack(Tuple(updateValidatedID))
+            let updateIdentifier = try updateRecord.recordIdentifierTuple()
+            let updateKey = itemSubspace.pack(updateIdentifier)
             let updateData: Bytes? = try await container.engine.withTransaction { tx in
-                let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace)
+                let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
                 return try await storage.read(for: updateKey, snapshot: false)
             }
             #expect(updateData != nil, "Updated item not found")
             if let updateData = updateData {
-                let decoded: BatchTestRecord = try DataAccess.deserialize(updateData)
+                let decoded: BatchMigrationRecord = try DataAccess.deserialize(updateData)
                 #expect(decoded.status == "updated", "Expected status 'updated' but got '\(decoded.status)'")
             }
 
             // Check delete
-            let deleteValidatedID = try deleteRecord.validateIDForStorage()
-            let deleteKey = itemSubspace.pack(Tuple(deleteValidatedID))
+            let deleteIdentifier = try deleteRecord.recordIdentifierTuple()
+            let deleteKey = itemSubspace.pack(deleteIdentifier)
             let deleteData: Bytes? = try await container.engine.withTransaction { tx in
-                let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace)
+                let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
                 return try await storage.read(for: deleteKey, snapshot: false)
             }
             #expect(deleteData == nil)

@@ -342,7 +342,41 @@ struct GraphTableParsingTests {
         }
 
         #expect(gt.graphName == "social")
+        #expect(gt.alias == "g")
         #expect(gt.columns?.count == 2)
+    }
+
+    @Test("Preserve a bare GRAPH_TABLE alias and parse named property parameters")
+    func testGraphTableBareAliasAndNamedPropertyParameter() throws {
+        let sql = """
+        SELECT *
+        FROM GRAPH_TABLE(social,
+          MATCH (a:Person {id: :personID})
+        ) people
+        """
+
+        let query = try SQLParser().parseSelect(sql)
+        guard case .graphTable(let graphTable) = query.source,
+              let firstElement = graphTable.matchPattern.paths.first?.elements.first,
+              case .node(let node) = firstElement else {
+            Issue.record("Expected an aliased graphTable with a node pattern")
+            return
+        }
+
+        #expect(graphTable.alias == "people")
+        #expect(node.labels == ["Person"])
+        #expect(node.properties == [
+            PropertyBinding(key: "id", value: .parameter(.name("personID"))),
+        ])
+    }
+
+    @Test("Reject GRAPH_TABLE AS without an alias")
+    func testGraphTableMissingAlias() {
+        #expect(throws: SQLParser.ParseError.self) {
+            _ = try SQLParser().parseSelect(
+                "SELECT * FROM GRAPH_TABLE(social, MATCH (a)) AS"
+            )
+        }
     }
 
     @Test("Parse GRAPH_TABLE with outer WHERE and LIMIT")
@@ -734,6 +768,7 @@ struct ComplexGraphTableQueryTests {
             Issue.record("Expected graphTable in join")
             return
         }
+        #expect(gt.alias == "friend2")
 
         // Verify path pattern: (p1)-[f1]->(p2)-[f2]->(p3)
         let path = gt.matchPattern.paths[0]
@@ -812,6 +847,7 @@ struct ComplexGraphTableQueryTests {
             Issue.record("Expected graphTable")
             return
         }
+        #expect(gt.alias == "path")
 
         let path = gt.matchPattern.paths[0]
         #expect(path.elements.count == 5)
@@ -859,6 +895,7 @@ struct ComplexGraphTableQueryTests {
             Issue.record("Expected graphTable in join")
             return
         }
+        #expect(gt.alias == "p")
 
         let path = gt.matchPattern.paths[0]
 
@@ -912,6 +949,7 @@ struct ComplexGraphTableQueryTests {
             Issue.record("Expected graphTable in join")
             return
         }
+        #expect(gt.alias == "p2")
 
         let path = gt.matchPattern.paths[0]
 
@@ -986,6 +1024,7 @@ struct ComplexGraphTableQueryTests {
             Issue.record("Expected graphTable")
             return
         }
+        #expect(gt.alias == "mutual")
 
         let path = gt.matchPattern.paths[0]
 
@@ -1026,6 +1065,7 @@ struct ComplexGraphTableQueryTests {
             Issue.record("Expected graphTable")
             return
         }
+        #expect(gt.alias == "citations")
 
         // Verify complex WHERE clause exists
         #expect(gt.matchPattern.where != nil)
@@ -1068,6 +1108,7 @@ struct ComplexGraphTableQueryTests {
             Issue.record("Expected graphTable")
             return
         }
+        #expect(gt.alias == "triangle")
 
         let path = gt.matchPattern.paths[0]
 

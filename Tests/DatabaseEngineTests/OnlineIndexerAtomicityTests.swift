@@ -11,6 +11,7 @@
 import Testing
 import Foundation
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import Core
 import StorageKit
 import FDBStorage
@@ -20,12 +21,12 @@ import TestSupport
 struct OnlineIndexerAtomicityTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Test Context
 
-    struct TestContext: Sendable {
+    struct AtomicIndexingContext: Sendable {
         let database: any StorageEngine
         let container: DBContainer
         let testSubspace: Subspace
@@ -34,7 +35,7 @@ struct OnlineIndexerAtomicityTests {
         let blobsSubspace: Subspace
 
         init() async throws {
-            self.database = try await FDBTestSetup.shared.makeEngine()
+            self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
             let testId = UUID().uuidString.prefix(8)
             self.testSubspace = Subspace(prefix: Tuple("test", "atomicity", String(testId)).pack())
             self.itemSubspace = testSubspace.subspace("R")
@@ -43,13 +44,13 @@ struct OnlineIndexerAtomicityTests {
 
             // Create container with Player schema
             let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
-            self.container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            self.container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         }
 
         func cleanup() async throws {
             try await database.withTransaction { tx in
                 let range = testSubspace.range()
-                tx.clearRange(beginKey: range.begin, endKey: range.end)
+                try tx.clearRange(beginKey: range.begin, endKey: range.end)
             }
         }
 
@@ -60,7 +61,7 @@ struct OnlineIndexerAtomicityTests {
                 let batchEnd = min(batchStart + batchSize, players.count)
                 let batch = Array(players[batchStart..<batchEnd])
                 try await database.withTransaction { tx in
-                    let storage = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace)
+                    let storage = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
                     for player in batch {
                         let key = itemSubspace.subspace(Player.persistableType).pack(Tuple(player.id))
                         let value = try DataAccess.serialize(player)
@@ -75,24 +76,24 @@ struct OnlineIndexerAtomicityTests {
 
     @Test("Progress is consistent with indexed data")
     func testProgressConsistencyWithIndexedData() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await AtomicIndexingContext()
 
-            let players = LargeTestDataGenerator.generatePlayers(count: 100, nameLength: 50)
+            let players = PlayerDatasetGenerator.generatePlayers(count: 100, nameLength: 50)
             try await ctx.insertPlayers(players)
 
-            let index = TestIndex.create(name: "consistency_idx")
+            let index = PlayerIdentifierIndexDefinition.make(name: "consistency_idx")
             let maintainer = CountingIndexMaintainer<Player>(
                 indexSubspace: ctx.indexSubspace,
                 indexName: index.name
             )
 
-            let stateManager = IndexStateManager(
+            let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
-            try await stateManager.enable(index.name)
+            try await lifecycleStore.enable(index.name)
 
             let indexer = OnlineIndexer(
                 container: ctx.container,
@@ -100,7 +101,7 @@ struct OnlineIndexerAtomicityTests {
                 itemType: Player.persistableType,
                 index: index,
                 indexMaintainer: maintainer,
-                indexStateManager: stateManager,
+                indexLifecycleStore: lifecycleStore,
                 batchSize: 15
             )
 
@@ -117,14 +118,14 @@ struct OnlineIndexerAtomicityTests {
 
     @Test("MultiTarget progress is atomic across all indexes")
     func testMultiTargetAtomicProgress() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await AtomicIndexingContext()
 
-            let players = LargeTestDataGenerator.generatePlayers(count: 75, nameLength: 50)
+            let players = PlayerDatasetGenerator.generatePlayers(count: 75, nameLength: 50)
             try await ctx.insertPlayers(players)
 
-            let index1 = TestIndex.create(name: "atomic_idx_1")
-            let index2 = TestIndex.create(name: "atomic_idx_2")
+            let index1 = PlayerIdentifierIndexDefinition.make(name: "atomic_idx_1")
+            let index2 = PlayerIdentifierIndexDefinition.make(name: "atomic_idx_2")
 
             let maintainer1 = CountingIndexMaintainer<Player>(
                 indexSubspace: ctx.indexSubspace,
@@ -135,7 +136,7 @@ struct OnlineIndexerAtomicityTests {
                 indexName: index2.name
             )
 
-            let stateManager = IndexStateManager(
+            let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
@@ -152,7 +153,7 @@ struct OnlineIndexerAtomicityTests {
                 blobsSubspace: ctx.blobsSubspace,
                 itemType: Player.persistableType,
                 targets: targets,
-                stateManager: stateManager,
+                lifecycleStore: lifecycleStore,
                 batchSize: 20
             )
 
@@ -173,29 +174,29 @@ struct OnlineIndexerAtomicityTests {
 
     @Test("RangeSet progress is saved atomically with work")
     func testRangeSetAtomicProgress() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await AtomicIndexingContext()
 
             let batchSize = 10
-            let players = LargeTestDataGenerator.generateForBatchTesting(
+            let players = PlayerDatasetGenerator.generateForBatchTesting(
                 batchSize: batchSize,
                 batches: 5,
                 remainder: 3
             )
             try await ctx.insertPlayers(players)
 
-            let index = TestIndex.create(name: "rangeset_idx")
+            let index = PlayerIdentifierIndexDefinition.make(name: "rangeset_idx")
             let maintainer = CountingIndexMaintainer<Player>(
                 indexSubspace: ctx.indexSubspace,
                 indexName: index.name
             )
 
-            let stateManager = IndexStateManager(
+            let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
-            try await stateManager.enable(index.name)
+            try await lifecycleStore.enable(index.name)
 
             let indexer = OnlineIndexer(
                 container: ctx.container,
@@ -203,7 +204,7 @@ struct OnlineIndexerAtomicityTests {
                 itemType: Player.persistableType,
                 index: index,
                 indexMaintainer: maintainer,
-                indexStateManager: stateManager,
+                indexLifecycleStore: lifecycleStore,
                 batchSize: batchSize
             )
 
@@ -222,24 +223,24 @@ struct OnlineIndexerAtomicityTests {
 
     @Test("Progress cleared after successful completion")
     func testProgressClearedAfterCompletion() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await AtomicIndexingContext()
 
-            let players = LargeTestDataGenerator.generatePlayers(count: 25, nameLength: 50)
+            let players = PlayerDatasetGenerator.generatePlayers(count: 25, nameLength: 50)
             try await ctx.insertPlayers(players)
 
-            let index = TestIndex.create(name: "clear_progress_idx")
+            let index = PlayerIdentifierIndexDefinition.make(name: "clear_progress_idx")
             let maintainer = CountingIndexMaintainer<Player>(
                 indexSubspace: ctx.indexSubspace,
                 indexName: index.name
             )
 
-            let stateManager = IndexStateManager(
+            let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
-            try await stateManager.enable(index.name)
+            try await lifecycleStore.enable(index.name)
 
             let indexer = OnlineIndexer(
                 container: ctx.container,
@@ -247,7 +248,7 @@ struct OnlineIndexerAtomicityTests {
                 itemType: Player.persistableType,
                 index: index,
                 indexMaintainer: maintainer,
-                indexStateManager: stateManager,
+                indexLifecycleStore: lifecycleStore,
                 batchSize: 5
             )
 

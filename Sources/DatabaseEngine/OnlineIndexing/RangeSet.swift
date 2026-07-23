@@ -1,3 +1,4 @@
+import DatabaseWire
 import StorageKit
 
 // MARK: - Byte Array Comparison Helpers
@@ -46,7 +47,7 @@ private func bytesMax(_ lhs: Bytes, _ rhs: Bytes) -> Bytes {
 /// - Next batch starts AFTER the continuation key
 ///
 /// **Reference**: FDB Record Layer's `ScanProperties` and continuation handling
-public struct RangeContinuation: Sendable, Codable, Equatable {
+public struct RangeContinuation: Sendable, Equatable {
     /// Beginning of the range (inclusive)
     public let rangeBegin: Bytes
 
@@ -105,42 +106,9 @@ public struct RangeContinuation: Sendable, Codable, Equatable {
 /// 2. **Transaction-safe**: Progress is recorded per batch, not per range
 /// 3. **FDB-native batching**: Actual batching via `getRange(limit:)`
 ///
-/// **Usage Pattern**:
-/// ```swift
-/// var rangeSet = RangeSet(initialRange: totalRange)
-///
-/// while let bounds = rangeSet.nextBatchBounds() {
-///     try await database.withTransaction { tx in
-///         var lastKey: Bytes? = nil
-///         var count = 0
-///
-///         // FDB limits the batch, not RangeSet
-///         let sequence = tx.getRange(
-///             begin: bounds.begin,
-///             end: bounds.end,
-///             limit: batchSize
-///         )
-///
-///         for (key, value) in sequence {
-///             // Process item
-///             lastKey = Array(key)
-///             count += 1
-///         }
-///
-///         // Record progress
-///         if let lastKey = lastKey {
-///             let isComplete = count < batchSize
-///             rangeSet.recordProgress(lastProcessedKey: lastKey, isComplete: isComplete)
-///         }
-///
-///         // Save to FDB
-///         saveProgress(rangeSet, tx)
-///     }
-/// }
-/// ```
-public struct RangeSet: Sendable, Codable {
-    /// A single range of keys (for backwards compatibility)
-    public struct Range: Sendable, Codable, Equatable {
+public struct RangeSet: Sendable {
+    /// A single range of keys.
+    public struct Range: Sendable, Equatable {
         /// Beginning of range (inclusive)
         public let begin: Bytes
 
@@ -166,15 +134,11 @@ public struct RangeSet: Sendable, Codable {
     /// Range continuations (sorted by rangeBegin)
     private var continuations: [RangeContinuation]
 
-    /// Index of the currently processing range
-    private var currentIndex: Int
-
     // MARK: - Initialization
 
     /// Initialize with a single range
     public init(initialRange: (begin: Bytes, end: Bytes)) {
         self.continuations = [RangeContinuation(begin: initialRange.begin, end: initialRange.end)]
-        self.currentIndex = 0
     }
 
     /// Initialize with multiple ranges
@@ -182,13 +146,15 @@ public struct RangeSet: Sendable, Codable {
         self.continuations = ranges
             .sorted { bytesLessThan($0.begin, $1.begin) }
             .map { RangeContinuation(begin: $0.begin, end: $0.end) }
-        self.currentIndex = 0
     }
 
-    /// Initialize with continuations (for deserialization)
-    public init(continuations: [RangeContinuation], currentIndex: Int = 0) {
+    /// Initialize with persisted continuations.
+    public init(continuations: [RangeContinuation]) {
         self.continuations = continuations
-        self.currentIndex = currentIndex
+    }
+
+    package var persistedContinuations: [RangeContinuation] {
+        continuations
     }
 
     // MARK: - Query
@@ -378,17 +344,22 @@ extension RangeSet: CustomStringConvertible {
 
 extension RangeSet.Range: CustomStringConvertible {
     public var description: String {
-        let beginHex = begin.prefix(8).map { String(format: "%02x", $0) }.joined()
-        let endHex = end.prefix(8).map { String(format: "%02x", $0) }.joined()
+        let beginHex = begin.prefix(8).map(hexByte).joined()
+        let endHex = end.prefix(8).map(hexByte).joined()
         return "Range[\(beginHex)...\(endHex)]"
     }
 }
 
 extension RangeContinuation: CustomStringConvertible {
     public var description: String {
-        let beginHex = rangeBegin.prefix(4).map { String(format: "%02x", $0) }.joined()
-        let endHex = rangeEnd.prefix(4).map { String(format: "%02x", $0) }.joined()
+        let beginHex = rangeBegin.prefix(4).map(hexByte).joined()
+        let endHex = rangeEnd.prefix(4).map(hexByte).joined()
         let status = isComplete ? "complete" : (lastProcessedKey != nil ? "in-progress" : "pending")
         return "RangeContinuation[\(beginHex)...\(endHex), \(status)]"
     }
+}
+
+private func hexByte(_ byte: UInt8) -> String {
+    let value = String(byte, radix: 16)
+    return value.count == 1 ? "0" + value : value
 }

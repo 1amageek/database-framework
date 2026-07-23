@@ -5,18 +5,19 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import ScalarIndex
 
 // Test model for ScalarIndexKind
-struct TestProduct: Persistable {
+struct ScalarIndexRecord: Persistable {
     typealias ID = String
     var id: String
     var name: String
     var price: Int64
 
-    static var persistableType: String { "TestProduct" }
+    static var persistableType: String { "ScalarIndexRecord" }
     static var allFields: [String] { ["id", "name", "price"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
     static func fieldNumber(for fieldName: String) -> Int? { nil }
@@ -31,26 +32,26 @@ struct TestProduct: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestProduct, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<ScalarIndexRecord, Value>) -> String {
         switch keyPath {
-        case \TestProduct.id: return "id"
-        case \TestProduct.name: return "name"
-        case \TestProduct.price: return "price"
+        case \ScalarIndexRecord.id: return "id"
+        case \ScalarIndexRecord.name: return "name"
+        case \ScalarIndexRecord.price: return "price"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestProduct>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<ScalarIndexRecord>) -> String {
         switch keyPath {
-        case \TestProduct.id: return "id"
-        case \TestProduct.name: return "name"
-        case \TestProduct.price: return "price"
+        case \ScalarIndexRecord.id: return "id"
+        case \ScalarIndexRecord.name: return "name"
+        case \ScalarIndexRecord.price: return "price"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestProduct> {
+        if let partial = keyPath as? PartialKeyPath<ScalarIndexRecord> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
@@ -64,12 +65,12 @@ struct ScalarIndexKindTests {
 
     @Test("ScalarIndexKind has correct identifier")
     func testIdentifier() {
-        #expect(ScalarIndexKind<TestProduct>.identifier == "scalar")
+        #expect(ScalarIndexKind<ScalarIndexRecord>.identifier == "scalar")
     }
 
     @Test("ScalarIndexKind has flat subspace structure")
     func testSubspaceStructure() {
-        #expect(ScalarIndexKind<TestProduct>.subspaceStructure == .flat)
+        #expect(ScalarIndexKind<ScalarIndexRecord>.subspaceStructure == .flat)
     }
 
     // MARK: - Type Validation Tests
@@ -77,37 +78,37 @@ struct ScalarIndexKindTests {
     @Test("ScalarIndexKind validates single Comparable field")
     func testValidateSingleComparableField() throws {
         // String
-        try ScalarIndexKind<TestProduct>.validateTypes([String.self])
+        try ScalarIndexKind<ScalarIndexRecord>.validateTypes([String.self])
 
         // Int64
-        try ScalarIndexKind<TestProduct>.validateTypes([Int64.self])
+        try ScalarIndexKind<ScalarIndexRecord>.validateTypes([Int64.self])
 
         // Double
-        try ScalarIndexKind<TestProduct>.validateTypes([Double.self])
+        try ScalarIndexKind<ScalarIndexRecord>.validateTypes([Double.self])
 
         // Date
-        try ScalarIndexKind<TestProduct>.validateTypes([Date.self])
+        try ScalarIndexKind<ScalarIndexRecord>.validateTypes([Date.self])
 
         // UUID
-        try ScalarIndexKind<TestProduct>.validateTypes([UUID.self])
+        try ScalarIndexKind<ScalarIndexRecord>.validateTypes([UUID.self])
     }
 
     @Test("ScalarIndexKind validates composite Comparable fields")
     func testValidateCompositeComparableFields() throws {
         // String + Int64
-        try ScalarIndexKind<TestProduct>.validateTypes([String.self, Int64.self])
+        try ScalarIndexKind<ScalarIndexRecord>.validateTypes([String.self, Int64.self])
 
         // String + String + Double
-        try ScalarIndexKind<TestProduct>.validateTypes([String.self, String.self, Double.self])
+        try ScalarIndexKind<ScalarIndexRecord>.validateTypes([String.self, String.self, Double.self])
 
         // Date + UUID
-        try ScalarIndexKind<TestProduct>.validateTypes([Date.self, UUID.self])
+        try ScalarIndexKind<ScalarIndexRecord>.validateTypes([Date.self, UUID.self])
     }
 
     @Test("ScalarIndexKind rejects empty fields")
     func testRejectEmptyFields() {
         #expect(throws: IndexTypeValidationError.self) {
-            try ScalarIndexKind<TestProduct>.validateTypes([])
+            try ScalarIndexKind<ScalarIndexRecord>.validateTypes([])
         }
     }
 
@@ -115,12 +116,12 @@ struct ScalarIndexKindTests {
     func testRejectNonComparableTypes() {
         // Array type (not Comparable)
         #expect(throws: IndexTypeValidationError.self) {
-            try ScalarIndexKind<TestProduct>.validateTypes([[Int].self])
+            try ScalarIndexKind<ScalarIndexRecord>.validateTypes([[Int].self])
         }
 
         // Optional type (not Comparable)
         #expect(throws: IndexTypeValidationError.self) {
-            try ScalarIndexKind<TestProduct>.validateTypes([Int?.self])
+            try ScalarIndexKind<ScalarIndexRecord>.validateTypes([Int?.self])
         }
     }
 
@@ -128,7 +129,7 @@ struct ScalarIndexKindTests {
 
     @Test("ScalarIndexKind is Codable")
     func testCodable() throws {
-        let kind = ScalarIndexKind<TestProduct>(fields: [\.name])
+        let kind = ScalarIndexKind<ScalarIndexRecord>(fields: [\.name])
 
         // JSON encoding
         let encoder = JSONEncoder()
@@ -136,7 +137,7 @@ struct ScalarIndexKindTests {
 
         // JSON decoding
         let decoder = JSONDecoder()
-        let decoded = try decoder.decode(ScalarIndexKind<TestProduct>.self, from: data)
+        let decoded = try decoder.decode(ScalarIndexKind<ScalarIndexRecord>.self, from: data)
 
         #expect(decoded == kind)
     }
@@ -145,8 +146,8 @@ struct ScalarIndexKindTests {
 
     @Test("ScalarIndexKind is Hashable")
     func testHashable() {
-        let kind1 = ScalarIndexKind<TestProduct>(fields: [\.name])
-        let kind2 = ScalarIndexKind<TestProduct>(fields: [\.name])
+        let kind1 = ScalarIndexKind<ScalarIndexRecord>(fields: [\.name])
+        let kind2 = ScalarIndexKind<ScalarIndexRecord>(fields: [\.name])
 
         #expect(kind1 == kind2)
         #expect(kind1.hashValue == kind2.hashValue)

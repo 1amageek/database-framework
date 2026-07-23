@@ -4,6 +4,7 @@ import StorageKit
 import Core
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 
 @Suite("OnlineIndexer Batch Dispatch Tests", .heartbeat)
 struct OnlineIndexerBatchDispatchTests {
@@ -20,18 +21,19 @@ struct OnlineIndexerBatchDispatchTests {
         let container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
 
         let batchSize = 5
-        let players = LargeTestDataGenerator.generateForBatchTesting(
+        let players = PlayerDatasetGenerator.generateForBatchTesting(
             batchSize: batchSize,
             batches: 2,
             remainder: 2
         )
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             for player in players {
                 let key = itemSubspace.subspace(Player.persistableType).pack(Tuple(player.id))
                 let value = try DataAccess.serialize(player)
@@ -39,18 +41,18 @@ struct OnlineIndexerBatchDispatchTests {
             }
         }
 
-        let index = TestIndex.create(name: "batch_hook_idx")
+        let index = PlayerIdentifierIndexDefinition.make(name: "batch_hook_idx")
         let maintainer = BatchTrackingIndexMaintainer<Player>(
             indexSubspace: indexSubspace,
             indexName: index.name
         )
 
-        let stateManager = IndexStateManager(
+        let lifecycleStore = IndexLifecycleStore(
             container: container,
             subspace: indexSubspace.subspace("_meta")
         )
 
-        try await stateManager.enable(index.name)
+        try await lifecycleStore.enable(index.name)
 
         let indexer = OnlineIndexer(
             container: container,
@@ -58,7 +60,7 @@ struct OnlineIndexerBatchDispatchTests {
             itemType: Player.persistableType,
             index: index,
             indexMaintainer: maintainer,
-            indexStateManager: stateManager,
+            indexLifecycleStore: lifecycleStore,
             batchSize: batchSize
         )
 
@@ -82,18 +84,19 @@ struct OnlineIndexerBatchDispatchTests {
         let container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
 
         let batchSize = 5
-        let players = LargeTestDataGenerator.generateForBatchTesting(
+        let players = PlayerDatasetGenerator.generateForBatchTesting(
             batchSize: batchSize,
             batches: 2,
             remainder: 2
         )
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             for player in players {
                 let key = itemSubspace.subspace(Player.persistableType).pack(Tuple(player.id))
                 let value = try DataAccess.serialize(player)
@@ -101,8 +104,8 @@ struct OnlineIndexerBatchDispatchTests {
             }
         }
 
-        let firstIndex = TestIndex.create(name: "multi_batch_hook_1")
-        let secondIndex = TestIndex.create(name: "multi_batch_hook_2")
+        let firstIndex = PlayerIdentifierIndexDefinition.make(name: "multi_batch_hook_1")
+        let secondIndex = PlayerIdentifierIndexDefinition.make(name: "multi_batch_hook_2")
         let firstMaintainer = BatchTrackingIndexMaintainer<Player>(
             indexSubspace: indexSubspace,
             indexName: firstIndex.name
@@ -112,7 +115,7 @@ struct OnlineIndexerBatchDispatchTests {
             indexName: secondIndex.name
         )
 
-        let stateManager = IndexStateManager(
+        let lifecycleStore = IndexLifecycleStore(
             container: container,
             subspace: indexSubspace.subspace("_meta")
         )
@@ -127,7 +130,7 @@ struct OnlineIndexerBatchDispatchTests {
                 IndexBuildTarget(index: firstIndex, maintainer: firstMaintainer),
                 IndexBuildTarget(index: secondIndex, maintainer: secondMaintainer)
             ],
-            stateManager: stateManager,
+            lifecycleStore: lifecycleStore,
             batchSize: batchSize
         )
 
@@ -154,18 +157,19 @@ struct OnlineIndexerBatchDispatchTests {
         let container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
 
         let batchSize = 5
-        let players = LargeTestDataGenerator.generateForBatchTesting(
+        let players = PlayerDatasetGenerator.generateForBatchTesting(
             batchSize: batchSize,
             batches: 2,
             remainder: 2
         )
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             for player in players {
                 let key = itemSubspace.subspace(Player.persistableType).pack(Tuple(player.id))
                 let value = try DataAccess.serialize(player)
@@ -173,8 +177,8 @@ struct OnlineIndexerBatchDispatchTests {
             }
         }
 
-        let forwardIndex = TestIndex.create(name: "mutual_batch_forward")
-        let reverseIndex = TestIndex.create(name: "mutual_batch_reverse")
+        let forwardIndex = PlayerIdentifierIndexDefinition.make(name: "mutual_batch_forward")
+        let reverseIndex = PlayerIdentifierIndexDefinition.make(name: "mutual_batch_reverse")
         let forwardMaintainer = BatchTrackingIndexMaintainer<Player>(
             indexSubspace: indexSubspace,
             indexName: forwardIndex.name
@@ -184,7 +188,7 @@ struct OnlineIndexerBatchDispatchTests {
             indexName: reverseIndex.name
         )
 
-        let stateManager = IndexStateManager(
+        let lifecycleStore = IndexLifecycleStore(
             container: container,
             subspace: indexSubspace.subspace("_meta")
         )
@@ -199,7 +203,7 @@ struct OnlineIndexerBatchDispatchTests {
             reverseIndex: reverseIndex,
             forwardMaintainer: forwardMaintainer,
             reverseMaintainer: reverseMaintainer,
-            stateManager: stateManager,
+            lifecycleStore: lifecycleStore,
             batchSize: batchSize
         )
 

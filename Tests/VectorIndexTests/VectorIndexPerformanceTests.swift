@@ -5,6 +5,7 @@ import Testing
 import TestHeartbeat
 import Foundation
 import Core
+import DatabaseValue
 import StorageKit
 import Vector
 @testable import DatabaseEngine
@@ -67,7 +68,7 @@ struct BenchmarkDocument: Persistable {
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Vector Benchmark Context
 
 private struct BenchmarkContext {
     let database: any StorageEngine
@@ -109,7 +110,7 @@ private struct BenchmarkContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 

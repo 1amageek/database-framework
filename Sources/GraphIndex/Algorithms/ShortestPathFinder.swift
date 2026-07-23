@@ -3,7 +3,11 @@
 //
 // Provides BFS-based shortest path finding with bidirectional optimization.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -22,8 +26,8 @@ import Graph
 /// - Bidirectional BFS: O(b^(d/2)) where b=branching factor, d=distance
 ///
 /// **Transaction Strategy**:
-/// - Each BFS level uses batch transactions (100 nodes per batch)
-/// - Snapshot reads minimize conflicts
+/// - The caller provides one snapshot for the complete search
+/// - Neighbor ranges are consumed lazily without nested transactions
 /// - Parent tracking enables path reconstruction
 ///
 /// **Reference**: Cormen et al., "Introduction to Algorithms" (CLRS), Ch. 22
@@ -46,28 +50,22 @@ import Graph
 ///     print("Path: \(path.nodeIDs.joined(separator: " -> "))")
 /// }
 /// ```
-public final class ShortestPathFinder<Edge: Persistable>: Sendable {
+public final class ShortestPathFinder: Sendable {
 
     // MARK: - Types
 
     /// Internal state for BFS search
     private struct SearchState: Sendable {
-        var visited: Set<String> = []
-        var parent: [String: String] = [:]      // child -> parent for path reconstruction
-        var edgeLabel: [String: String] = [:]   // child -> edge label from parent
+        var visited: Set<GraphIdentity> = []
+        var parent: [GraphIdentity: GraphIdentity] = [:]      // child -> parent for path reconstruction
+        var edgeLabel: [GraphIdentity: GraphIdentity] = [:]   // child -> edge label from parent
         var nodesExplored: Int = 0
-    }
-
-    /// Direction for neighbor lookup
-    public enum Direction: Sendable {
-        case outgoing
-        case incoming
     }
 
     // MARK: - Properties
 
-    /// Database connection (internally thread-safe)
-    private let database: any StorageEngine
+    /// Storage snapshot shared by the complete traversal.
+    private let snapshot: GraphReadSnapshot
 
     /// Edge scanner for neighbor lookups (centralizes key structure knowledge)
     private let scanner: GraphEdgeScanner
@@ -75,24 +73,34 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
     /// Configuration
     private let configuration: ShortestPathConfiguration
 
+    /// Shared request work budget.
+    private let workBudget: GraphAlgorithmWorkBudget?
+
     // MARK: - Initialization
 
     /// Initialize shortest path finder
     ///
     /// - Parameters:
-    ///   - database: FDB database connection
+    ///   - snapshot: Stable storage snapshot for the complete algorithm
     ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
     ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
-    public init(
-        database: any StorageEngine,
+    package init(
+        snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
+        scope: GraphScanScope = .all,
         configuration: ShortestPathConfiguration = .default
     ) {
-        self.database = database
-        self.scanner = GraphEdgeScanner(indexSubspace: subspace, strategy: strategy)
+        self.snapshot = snapshot
+        self.scanner = GraphEdgeScanner(
+            indexSubspace: subspace,
+            strategy: strategy,
+            scope: scope,
+            snapshot: snapshot
+        )
         self.configuration = configuration
+        self.workBudget = snapshot.workBudget
     }
 
     // MARK: - Public API
@@ -107,19 +115,19 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
     ///   - bidirectional: Use bidirectional BFS (overrides configuration)
     /// - Returns: ShortestPathResult containing path or nil if not connected
     public func findShortestPath(
-        from source: String,
-        to target: String,
-        edgeLabel: String? = nil,
+        from source: GraphIdentity,
+        to target: GraphIdentity,
+        edgeLabel: GraphIdentity? = nil,
         maxDepth: Int? = nil,
         bidirectional: Bool? = nil
-    ) async throws -> ShortestPathResult<Edge> {
+    ) async throws -> ShortestPathResult {
         let startTime = MonotonicClock.now()
         let effectiveMaxDepth = maxDepth ?? configuration.maxDepth
         let useBidirectional = bidirectional ?? configuration.bidirectional
 
         // Early termination: source == target
         if source == target {
-            let path = GraphPath<Edge>(singleNode: source)
+            let path = GraphPath(singleNode: source)
             return ShortestPathResult(
                 path: path,
                 distance: 0,
@@ -128,7 +136,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
             )
         }
 
-        if useBidirectional {
+        if useBidirectional && configuration.maxNodesExplored >= 2 {
             return try await bidirectionalBFS(
                 source: source,
                 target: target,
@@ -159,17 +167,17 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
     ///   - maxDepth: Maximum search depth
     /// - Returns: AllShortestPathsResult containing all paths
     public func findAllShortestPaths(
-        from source: String,
-        to target: String,
-        edgeLabel: String? = nil,
+        from source: GraphIdentity,
+        to target: GraphIdentity,
+        edgeLabel: GraphIdentity? = nil,
         maxDepth: Int? = nil
-    ) async throws -> AllShortestPathsResult<Edge> {
+    ) async throws -> AllShortestPathsResult {
         let startTime = MonotonicClock.now()
         let effectiveMaxDepth = maxDepth ?? configuration.maxDepth
 
         // Early termination: source == target
         if source == target {
-            let path = GraphPath<Edge>(singleNode: source)
+            let path = GraphPath(singleNode: source)
             return AllShortestPathsResult(
                 paths: [path],
                 distance: 0,
@@ -197,11 +205,13 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
     ///   - target: Target node ID
     ///   - edgeLabel: Optional edge label filter
     ///   - maxDepth: Maximum search depth
-    /// - Returns: true if connected, false otherwise
+    /// - Returns: true if connected, false after a definitive complete search
+    /// - Throws: `ShortestPathError.incomplete` when a configured limit makes
+    ///   a negative result inconclusive
     public func isConnected(
-        from source: String,
-        to target: String,
-        edgeLabel: String? = nil,
+        from source: GraphIdentity,
+        to target: GraphIdentity,
+        edgeLabel: GraphIdentity? = nil,
         maxDepth: Int? = nil
     ) async throws -> Bool {
         let result = try await findShortestPath(
@@ -210,51 +220,69 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
             edgeLabel: edgeLabel,
             maxDepth: maxDepth
         )
-        return result.isConnected
+        if result.isConnected {
+            return true
+        }
+        guard result.isComplete else {
+            guard let limitReason = result.limitReason else {
+                throw ShortestPathError.inconsistentResultState
+            }
+            throw ShortestPathError.incomplete(limitReason)
+        }
+        return false
     }
 
     // MARK: - BFS Implementations
 
     /// Unidirectional BFS from source to target
     private func unidirectionalBFS(
-        source: String,
-        target: String,
-        edgeLabel: String?,
+        source: GraphIdentity,
+        target: GraphIdentity,
+        edgeLabel: GraphIdentity?,
         maxDepth: Int,
         startTime: MonotonicTimestamp
-    ) async throws -> ShortestPathResult<Edge> {
+    ) async throws -> ShortestPathResult {
         var state = SearchState()
         state.visited.insert(source)
-        var currentLevel: [String] = [source]
+        state.nodesExplored = 1
+        var currentLevel: [GraphIdentity] = [source]
         var depth = 0
 
         while depth < maxDepth && !currentLevel.isEmpty {
             depth += 1
-            var nextLevel: [String] = []
+            var nextLevel: [GraphIdentity] = []
 
             // Process in batches to respect transaction limits
             for batchStart in stride(from: 0, to: currentLevel.count, by: configuration.batchSize) {
                 let batchEnd = min(batchStart + configuration.batchSize, currentLevel.count)
-                let batch = Array(currentLevel[batchStart..<batchEnd])
-
-                let neighbors = try await getNeighborsBatch(
-                    nodes: batch,
+                let neighbors = getNeighbors(
+                    nodes: currentLevel[batchStart..<batchEnd],
                     edgeLabel: edgeLabel,
-                    direction: .outgoing,
-                    visited: state.visited
+                    direction: .outgoing
                 )
 
-                for (parentNode, targetNode, edge) in neighbors {
-                    state.nodesExplored += 1
+                do {
+                    for try await (parentNode, targetNode, edge) in neighbors {
+                        guard !state.visited.contains(targetNode) else { continue }
+                        guard state.nodesExplored < configuration.maxNodesExplored else {
+                            return .notFound(
+                                nodesExplored: state.nodesExplored,
+                                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                                isComplete: false,
+                                limitReason: .maxNodesReached(
+                                    explored: state.nodesExplored,
+                                    limit: configuration.maxNodesExplored
+                                )
+                            )
+                        }
 
-                    if !state.visited.contains(targetNode) {
                         state.visited.insert(targetNode)
+                        state.nodesExplored += 1
                         state.parent[targetNode] = parentNode
                         state.edgeLabel[targetNode] = edge
 
-                        // Found target - reconstruct path
                         if targetNode == target {
-                            let path = reconstructPath(
+                            let path = try reconstructPath(
                                 from: source,
                                 to: target,
                                 parent: state.parent,
@@ -270,14 +298,13 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
 
                         nextLevel.append(targetNode)
                     }
-
-                    // Check max nodes limit
-                    if state.nodesExplored >= configuration.maxNodesExplored {
-                        return .notFound(
-                            nodesExplored: state.nodesExplored,
-                            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-                        )
-                    }
+                } catch ShortestPathError.incomplete(let limitReason) {
+                    return .notFound(
+                        nodesExplored: state.nodesExplored,
+                        durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                        isComplete: false,
+                        limitReason: limitReason
+                    )
                 }
             }
 
@@ -285,9 +312,14 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
         }
 
         // No path found
+        let hitMaximumDepth = depth >= maxDepth && !currentLevel.isEmpty
         return .notFound(
             nodesExplored: state.nodesExplored,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            isComplete: !hitMaximumDepth,
+            limitReason: hitMaximumDepth
+                ? .maxDepthReached(depth: depth, limit: maxDepth)
+                : nil
         )
     }
 
@@ -296,58 +328,79 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
     /// Searches from both source (forward) and target (backward),
     /// meeting in the middle. This is O(b^(d/2)) instead of O(b^d).
     private func bidirectionalBFS(
-        source: String,
-        target: String,
-        edgeLabel: String?,
+        source: GraphIdentity,
+        target: GraphIdentity,
+        edgeLabel: GraphIdentity?,
         maxDepth: Int,
         startTime: MonotonicTimestamp
-    ) async throws -> ShortestPathResult<Edge> {
+    ) async throws -> ShortestPathResult {
         // Forward search state
-        var forwardVisited: Set<String> = [source]
-        var forwardParent: [String: String] = [:]
-        var forwardEdge: [String: String] = [:]
-        var forwardLevel: [String] = [source]
+        var forwardVisited: Set<GraphIdentity> = [source]
+        var forwardParent: [GraphIdentity: GraphIdentity] = [:]
+        var forwardEdge: [GraphIdentity: GraphIdentity] = [:]
+        var forwardLevel: [GraphIdentity] = [source]
 
         // Backward search state
-        var backwardVisited: Set<String> = [target]
-        var backwardParent: [String: String] = [:]
-        var backwardEdge: [String: String] = [:]
-        var backwardLevel: [String] = [target]
+        var backwardVisited: Set<GraphIdentity> = [target]
+        var backwardParent: [GraphIdentity: GraphIdentity] = [:]
+        var backwardEdge: [GraphIdentity: GraphIdentity] = [:]
+        var backwardLevel: [GraphIdentity] = [target]
 
-        var nodesExplored = 0
+        var nodesExplored = 2
         var depth = 0
 
-        while depth < maxDepth && (!forwardLevel.isEmpty || !backwardLevel.isEmpty) {
+        guard nodesExplored <= configuration.maxNodesExplored else {
+            return .notFound(
+                nodesExplored: configuration.maxNodesExplored,
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                isComplete: false,
+                limitReason: .maxNodesReached(
+                    explored: configuration.maxNodesExplored,
+                    limit: configuration.maxNodesExplored
+                )
+            )
+        }
+
+        while depth < maxDepth && !forwardLevel.isEmpty && !backwardLevel.isEmpty {
             depth += 1
 
             // Expand the smaller frontier (optimization)
             let expandForward = forwardLevel.count <= backwardLevel.count
 
             if expandForward && !forwardLevel.isEmpty {
-                var nextLevel: [String] = []
+                var nextLevel: [GraphIdentity] = []
 
                 for batchStart in stride(from: 0, to: forwardLevel.count, by: configuration.batchSize) {
                     let batchEnd = min(batchStart + configuration.batchSize, forwardLevel.count)
-                    let batch = Array(forwardLevel[batchStart..<batchEnd])
-
-                    let neighbors = try await getNeighborsBatch(
-                        nodes: batch,
+                    let neighbors = getNeighbors(
+                        nodes: forwardLevel[batchStart..<batchEnd],
                         edgeLabel: edgeLabel,
-                        direction: .outgoing,
-                        visited: forwardVisited
+                        direction: .outgoing
                     )
 
-                    for (parentNode, targetNode, edge) in neighbors {
-                        nodesExplored += 1
+                    do {
+                        for try await (parentNode, targetNode, edge) in neighbors {
+                            guard !forwardVisited.contains(targetNode) else { continue }
+                            let isNewNode = !backwardVisited.contains(targetNode)
+                            guard !isNewNode || nodesExplored < configuration.maxNodesExplored else {
+                                return .notFound(
+                                    nodesExplored: nodesExplored,
+                                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                                    isComplete: false,
+                                    limitReason: .maxNodesReached(
+                                        explored: nodesExplored,
+                                        limit: configuration.maxNodesExplored
+                                    )
+                                )
+                            }
 
-                        if !forwardVisited.contains(targetNode) {
                             forwardVisited.insert(targetNode)
+                            if isNewNode { nodesExplored += 1 }
                             forwardParent[targetNode] = parentNode
                             forwardEdge[targetNode] = edge
 
-                            // Check if we met the backward search
                             if backwardVisited.contains(targetNode) {
-                                let path = reconstructBidirectionalPath(
+                                let path = try reconstructBidirectionalPath(
                                     meetingPoint: targetNode,
                                     source: source,
                                     target: target,
@@ -366,43 +419,51 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
 
                             nextLevel.append(targetNode)
                         }
-
-                        if nodesExplored >= configuration.maxNodesExplored {
-                            return .notFound(
-                                nodesExplored: nodesExplored,
-                                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-                            )
-                        }
+                    } catch ShortestPathError.incomplete(let limitReason) {
+                        return .notFound(
+                            nodesExplored: nodesExplored,
+                            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                            isComplete: false,
+                            limitReason: limitReason
+                        )
                     }
                 }
 
                 forwardLevel = nextLevel
             } else if !backwardLevel.isEmpty {
-                var nextLevel: [String] = []
+                var nextLevel: [GraphIdentity] = []
 
                 for batchStart in stride(from: 0, to: backwardLevel.count, by: configuration.batchSize) {
                     let batchEnd = min(batchStart + configuration.batchSize, backwardLevel.count)
-                    let batch = Array(backwardLevel[batchStart..<batchEnd])
-
-                    // Search incoming edges (reverse direction)
-                    let neighbors = try await getNeighborsBatch(
-                        nodes: batch,
+                    let neighbors = getNeighbors(
+                        nodes: backwardLevel[batchStart..<batchEnd],
                         edgeLabel: edgeLabel,
-                        direction: .incoming,
-                        visited: backwardVisited
+                        direction: .incoming
                     )
 
-                    for (parentNode, targetNode, edge) in neighbors {
-                        nodesExplored += 1
+                    do {
+                        for try await (parentNode, targetNode, edge) in neighbors {
+                            guard !backwardVisited.contains(targetNode) else { continue }
+                            let isNewNode = !forwardVisited.contains(targetNode)
+                            guard !isNewNode || nodesExplored < configuration.maxNodesExplored else {
+                                return .notFound(
+                                    nodesExplored: nodesExplored,
+                                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                                    isComplete: false,
+                                    limitReason: .maxNodesReached(
+                                        explored: nodesExplored,
+                                        limit: configuration.maxNodesExplored
+                                    )
+                                )
+                            }
 
-                        if !backwardVisited.contains(targetNode) {
                             backwardVisited.insert(targetNode)
+                            if isNewNode { nodesExplored += 1 }
                             backwardParent[targetNode] = parentNode
                             backwardEdge[targetNode] = edge
 
-                            // Check if we met the forward search
                             if forwardVisited.contains(targetNode) {
-                                let path = reconstructBidirectionalPath(
+                                let path = try reconstructBidirectionalPath(
                                     meetingPoint: targetNode,
                                     source: source,
                                     target: target,
@@ -421,13 +482,13 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
 
                             nextLevel.append(targetNode)
                         }
-
-                        if nodesExplored >= configuration.maxNodesExplored {
-                            return .notFound(
-                                nodesExplored: nodesExplored,
-                                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-                            )
-                        }
+                    } catch ShortestPathError.incomplete(let limitReason) {
+                        return .notFound(
+                            nodesExplored: nodesExplored,
+                            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                            isComplete: false,
+                            limitReason: limitReason
+                        )
                     }
                 }
 
@@ -435,65 +496,82 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
             }
         }
 
+        let hitMaximumDepth = depth >= maxDepth
+            && !forwardLevel.isEmpty
+            && !backwardLevel.isEmpty
         return .notFound(
             nodesExplored: nodesExplored,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            isComplete: !hitMaximumDepth,
+            limitReason: hitMaximumDepth
+                ? .maxDepthReached(depth: depth, limit: maxDepth)
+                : nil
         )
     }
 
     /// BFS that finds all shortest paths (not just one)
     private func allPathsBFS(
-        source: String,
-        target: String,
-        edgeLabel: String?,
+        source: GraphIdentity,
+        target: GraphIdentity,
+        edgeLabel: GraphIdentity?,
         maxDepth: Int,
         startTime: MonotonicTimestamp
-    ) async throws -> AllShortestPathsResult<Edge> {
+    ) async throws -> AllShortestPathsResult {
         // Track all parents for each node (not just one)
-        var visited: Set<String> = [source]
-        var parents: [String: [(parent: String, edge: String)]] = [:]
-        var currentLevel: [String] = [source]
-        var nodesExplored = 0
+        var visited: Set<GraphIdentity> = [source]
+        var parents: [GraphIdentity: [(parent: GraphIdentity, edge: GraphIdentity)]] = [:]
+        var currentLevel: [GraphIdentity] = [source]
+        var nodesExplored = 1
         var depth = 0
         var foundDepth: Int? = nil
+        var limitReason: LimitReason?
 
         // BFS level by level
-        while depth < maxDepth && !currentLevel.isEmpty {
+        search: while depth < maxDepth && !currentLevel.isEmpty {
             depth += 1
-            var nextLevel: [String] = []
-            var levelNewNodes: Set<String> = []
+            var nextLevel: [GraphIdentity] = []
+            var levelNewNodes: Set<GraphIdentity> = []
 
             for batchStart in stride(from: 0, to: currentLevel.count, by: configuration.batchSize) {
                 let batchEnd = min(batchStart + configuration.batchSize, currentLevel.count)
-                let batch = Array(currentLevel[batchStart..<batchEnd])
-
-                let neighbors = try await getNeighborsBatch(
-                    nodes: batch,
+                let neighbors = getNeighbors(
+                    nodes: currentLevel[batchStart..<batchEnd],
                     edgeLabel: edgeLabel,
-                    direction: .outgoing,
-                    visited: Set()  // Don't filter by visited - we want all paths
+                    direction: .outgoing
                 )
 
-                for (parentNode, targetNode, edge) in neighbors {
-                    nodesExplored += 1
-
-                    // If we found the target at a previous depth, don't explore further
-                    if let found = foundDepth, depth > found {
-                        continue
-                    }
-
-                    // If this is a new node at this level, track it
-                    if !visited.contains(targetNode) {
-                        levelNewNodes.insert(targetNode)
-                        parents[targetNode, default: []].append((parentNode, edge))
-
-                        if targetNode == target {
-                            foundDepth = depth
+                do {
+                    for try await (parentNode, targetNode, edge) in neighbors {
+                        if let found = foundDepth, depth > found {
+                            continue
                         }
-                    } else if !currentLevel.contains(targetNode) && levelNewNodes.contains(targetNode) {
-                        // Same level, different path - add additional parent
-                        parents[targetNode, default: []].append((parentNode, edge))
+
+                        if !visited.contains(targetNode) {
+                            let isNewAtLevel = !levelNewNodes.contains(targetNode)
+                            if isNewAtLevel {
+                                guard nodesExplored < configuration.maxNodesExplored else {
+                                    limitReason = .maxNodesReached(
+                                        explored: nodesExplored,
+                                        limit: configuration.maxNodesExplored
+                                    )
+                                    break search
+                                }
+                                nodesExplored += 1
+                            }
+
+                            levelNewNodes.insert(targetNode)
+                            parents[targetNode, default: []].append((parentNode, edge))
+
+                            if targetNode == target {
+                                foundDepth = depth
+                            }
+                        } else if !currentLevel.contains(targetNode) && levelNewNodes.contains(targetNode) {
+                            parents[targetNode, default: []].append((parentNode, edge))
+                        }
                     }
+                } catch ShortestPathError.incomplete(let workLimitReason) {
+                    limitReason = workLimitReason
+                    break search
                 }
             }
 
@@ -507,27 +585,42 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
             currentLevel = nextLevel
         }
 
+        if limitReason == nil,
+           foundDepth == nil,
+           depth >= maxDepth,
+           !currentLevel.isEmpty {
+            limitReason = .maxDepthReached(depth: depth, limit: maxDepth)
+        }
+
         // Reconstruct all paths
         guard foundDepth != nil else {
             return AllShortestPathsResult(
                 paths: [],
                 distance: nil,
                 nodesExplored: nodesExplored,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                isComplete: limitReason == nil,
+                limitReason: limitReason
             )
         }
 
-        let paths = reconstructAllPaths(
+        let reconstruction = try reconstructAllPaths(
             from: source,
             to: target,
             parents: parents
         )
+        let paths = reconstruction.paths
+        if limitReason == nil {
+            limitReason = reconstruction.limitReason
+        }
 
         return AllShortestPathsResult(
             paths: paths,
             distance: paths.first.map { Double($0.length) },
             nodesExplored: nodesExplored,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            isComplete: limitReason == nil,
+            limitReason: limitReason
         )
     }
 
@@ -537,127 +630,130 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
     ///
     /// Returns (sourceNode, targetNode, edgeLabel) tuples.
     ///
-    /// **Performance Note (Adjacency Strategy)**:
-    /// - When `edgeLabel` is specified: O(degree) per source node via prefix scan
-    /// - When `edgeLabel` is nil: O(E) full scan of edge subspace + filter
-    ///
-    /// For efficient `(from, ?, ?)` queries without edge label filter,
-    /// consider using `tripleStore` or `hexastore` strategy instead.
-    private func getNeighborsBatch(
-        nodes: [String],
-        edgeLabel: String?,
-        direction: Direction,
-        visited: Set<String>
-    ) async throws -> [(source: String, target: String, edge: String)] {
-        let currentVisited = visited
+    /// The scanner selects one batch plan and never opens a nested transaction.
+    private func getNeighbors(
+        nodes: ArraySlice<GraphIdentity>,
+        edgeLabel: GraphIdentity?,
+        direction: GraphTraversalDirection
+    ) -> ShortestPathNeighborSequence {
+        ShortestPathNeighborSequence(
+            scanner: scanner,
+            snapshot: snapshot,
+            nodes: nodes,
+            edgeLabel: edgeLabel,
+            direction: direction
+        )
+    }
 
-        return try await database.withTransaction(configuration: .default) { transaction in
-            // Use GraphEdgeScanner for correct key structure handling
-            let edges: [EdgeInfo]
-            if direction == .outgoing {
-                edges = try await self.scanner.batchScanOutgoing(
-                    from: nodes,
-                    edgeLabel: edgeLabel,
-                    transaction: transaction
-                )
-            } else {
-                edges = try await self.scanner.batchScanIncoming(
-                    to: nodes,
-                    edgeLabel: edgeLabel,
-                    transaction: transaction
-                )
-            }
-
-            // Filter out visited nodes and convert to result format
-            // Return format: (parentNode, targetNode, edgeLabel)
-            // - For outgoing: parent=source, target=target (going FROM source TO target)
-            // - For incoming: parent=target, target=source (at target, going BACK to source)
-            return edges.compactMap { edge in
-                let targetNode = direction == .outgoing ? edge.target : edge.source
-                guard !currentVisited.contains(targetNode) else { return nil }
-
-                if direction == .outgoing {
-                    return (edge.source, edge.target, edge.edgeLabel)
-                } else {
-                    // Swap for incoming direction to maintain (parent, target) semantics
-                    return (edge.target, edge.source, edge.edgeLabel)
-                }
-            }
-        }
+    private func consumeWork(_ units: UInt64 = 1) throws -> Bool {
+        try workBudget?.consume(units) ?? true
     }
 
     // MARK: - Path Reconstruction
 
     /// Reconstruct path from source to target using parent pointers
     private func reconstructPath(
-        from source: String,
-        to target: String,
-        parent: [String: String],
-        edgeLabel: [String: String]
-    ) -> GraphPath<Edge> {
-        var nodeIDs: [String] = [target]
-        var edgeLabels: [String] = []
+        from source: GraphIdentity,
+        to target: GraphIdentity,
+        parent: [GraphIdentity: GraphIdentity],
+        edgeLabel: [GraphIdentity: GraphIdentity]
+    ) throws -> GraphPath {
+        var nodeIDs: [GraphIdentity] = [target]
+        var edgeLabels: [GraphIdentity] = []
         var current = target
+        var visited: Set<GraphIdentity> = [target]
 
         while let p = parent[current] {
-            if let edge = edgeLabel[current] {
-                edgeLabels.append(edge)
+            guard let edge = edgeLabel[current] else {
+                throw ShortestPathError.missingEdgeLabel(node: current)
             }
+            guard visited.insert(p).inserted else {
+                throw ShortestPathError.parentCycle(node: p)
+            }
+            edgeLabels.append(edge)
             nodeIDs.append(p)
             current = p
         }
+        guard current == source else {
+            throw ShortestPathError.pathDoesNotReachSource(
+                expected: source,
+                actual: current
+            )
+        }
 
-        return GraphPath(
-            nodeIDs: nodeIDs.reversed(),
-            edgeLabels: edgeLabels.reversed(),
+        return try GraphPath(
+            nodeIDs: Array(nodeIDs.reversed()),
+            edgeLabels: Array(edgeLabels.reversed()),
             weights: nil
         )
     }
 
     /// Reconstruct path when bidirectional BFS meets in the middle
     private func reconstructBidirectionalPath(
-        meetingPoint: String,
-        source: String,
-        target: String,
-        forwardParent: [String: String],
-        backwardParent: [String: String],
-        forwardEdge: [String: String],
-        backwardEdge: [String: String]
-    ) -> GraphPath<Edge> {
+        meetingPoint: GraphIdentity,
+        source: GraphIdentity,
+        target: GraphIdentity,
+        forwardParent: [GraphIdentity: GraphIdentity],
+        backwardParent: [GraphIdentity: GraphIdentity],
+        forwardEdge: [GraphIdentity: GraphIdentity],
+        backwardEdge: [GraphIdentity: GraphIdentity]
+    ) throws -> GraphPath {
         // Build path from source to meeting point
-        var forwardNodes: [String] = [meetingPoint]
-        var forwardEdges: [String] = []
+        var forwardNodes: [GraphIdentity] = [meetingPoint]
+        var forwardEdges: [GraphIdentity] = []
         var current = meetingPoint
+        var visitedForward: Set<GraphIdentity> = [meetingPoint]
 
         while let p = forwardParent[current] {
-            if let edge = forwardEdge[current] {
-                forwardEdges.append(edge)
+            guard let edge = forwardEdge[current] else {
+                throw ShortestPathError.missingEdgeLabel(node: current)
             }
+            guard visitedForward.insert(p).inserted else {
+                throw ShortestPathError.parentCycle(node: p)
+            }
+            forwardEdges.append(edge)
             forwardNodes.append(p)
             current = p
+        }
+        guard current == source else {
+            throw ShortestPathError.pathDoesNotReachSource(
+                expected: source,
+                actual: current
+            )
         }
 
         forwardNodes.reverse()
         forwardEdges.reverse()
 
         // Build path from meeting point to target
-        var backwardNodes: [String] = []
-        var backwardEdges: [String] = []
+        var backwardNodes: [GraphIdentity] = []
+        var backwardEdges: [GraphIdentity] = []
         current = meetingPoint
+        var visitedBackward: Set<GraphIdentity> = [meetingPoint]
 
         while let p = backwardParent[current] {
-            backwardNodes.append(p)
-            if let edge = backwardEdge[current] {
-                backwardEdges.append(edge)
+            guard let edge = backwardEdge[current] else {
+                throw ShortestPathError.missingEdgeLabel(node: current)
             }
+            guard visitedBackward.insert(p).inserted else {
+                throw ShortestPathError.parentCycle(node: p)
+            }
+            backwardNodes.append(p)
+            backwardEdges.append(edge)
             current = p
+        }
+        guard current == target else {
+            throw ShortestPathError.pathDoesNotReachTarget(
+                expected: target,
+                actual: current
+            )
         }
 
         // Combine paths
         let nodeIDs = forwardNodes + backwardNodes
         let edgeLabels = forwardEdges + backwardEdges
 
-        return GraphPath(
+        return try GraphPath(
             nodeIDs: nodeIDs,
             edgeLabels: edgeLabels,
             weights: nil
@@ -666,23 +762,30 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
 
     /// Reconstruct all paths from source to target
     private func reconstructAllPaths(
-        from source: String,
-        to target: String,
-        parents: [String: [(parent: String, edge: String)]]
-    ) -> [GraphPath<Edge>] {
-        var paths: [GraphPath<Edge>] = []
+        from source: GraphIdentity,
+        to target: GraphIdentity,
+        parents: [GraphIdentity: [(parent: GraphIdentity, edge: GraphIdentity)]]
+    ) throws -> (paths: [GraphPath], limitReason: LimitReason?) {
+        var paths: [GraphPath] = []
+        var limitReason: LimitReason?
 
         // DFS to enumerate all paths
         func buildPaths(
-            current: String,
-            pathNodes: [String],
-            pathEdges: [String]
-        ) {
+            current: GraphIdentity,
+            pathNodes: [GraphIdentity],
+            pathEdges: [GraphIdentity]
+        ) throws {
+            guard limitReason == nil else { return }
+            guard try consumeWork() else {
+                limitReason = workBudget?.limitReason
+                return
+            }
+
             if current == source {
                 // Found complete path
-                let path = GraphPath<Edge>(
-                    nodeIDs: pathNodes.reversed(),
-                    edgeLabels: pathEdges.reversed(),
+                let path = try GraphPath(
+                    nodeIDs: Array(pathNodes.reversed()),
+                    edgeLabels: Array(pathEdges.reversed()),
                     weights: nil
                 )
                 paths.append(path)
@@ -692,7 +795,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
             guard let nodeParents = parents[current] else { return }
 
             for (parentNode, edge) in nodeParents {
-                buildPaths(
+                try buildPaths(
                     current: parentNode,
                     pathNodes: pathNodes + [parentNode],
                     pathEdges: pathEdges + [edge]
@@ -700,7 +803,17 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
             }
         }
 
-        buildPaths(current: target, pathNodes: [target], pathEdges: [])
-        return paths
+        try buildPaths(current: target, pathNodes: [target], pathEdges: [])
+        return (paths, limitReason)
     }
+}
+
+public enum ShortestPathError: Error, Sendable, Equatable {
+    case incomplete(LimitReason)
+    case inconsistentWorkBudget
+    case inconsistentResultState
+    case missingEdgeLabel(node: GraphIdentity)
+    case parentCycle(node: GraphIdentity)
+    case pathDoesNotReachSource(expected: GraphIdentity, actual: GraphIdentity)
+    case pathDoesNotReachTarget(expected: GraphIdentity, actual: GraphIdentity)
 }

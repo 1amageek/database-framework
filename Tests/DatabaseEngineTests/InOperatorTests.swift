@@ -7,6 +7,7 @@ import Testing
 import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
+import DatabaseValue
 @testable import Core
 @testable import ScalarIndex
 
@@ -16,10 +17,10 @@ struct InOperatorTests {
     // MARK: - Helper
 
     private func makeIndex(name: String) -> IndexDescriptor {
-        let kind = ScalarIndexKind<InOpTestUser>(fields: [\.status])
+        let kind = ScalarIndexKind<InOperatorUser>(fields: [\.status])
         return IndexDescriptor(
             name: name,
-            keyPaths: [\InOpTestUser.status],
+            keyPaths: [\InOperatorUser.status],
             kind: kind
         )
     }
@@ -32,7 +33,7 @@ struct InOperatorTests {
         // Type-safe values using String
         let values: [String] = ["active", "pending", "verified"]
 
-        let op = InUnionOperator<InOpTestUser, String>(
+        let op = InUnionOperator<InOperatorUser, String>(
             index: index,
             fieldPath: "status",
             values: values,
@@ -54,7 +55,7 @@ struct InOperatorTests {
         // Type-safe values using Int
         let values: [Int] = Array(0..<10)
 
-        let op = InUnionOperator<InOpTestUser, Int>(
+        let op = InUnionOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "category",
             values: values,
@@ -69,9 +70,9 @@ struct InOperatorTests {
         let values: [String] = ["active"]
 
         // Create a filter predicate
-        let filter: DatabaseEngine.Predicate<InOpTestUser> = .true
+        let filter: DatabaseEngine.Predicate<InOperatorUser> = .true
 
-        let op = InUnionOperator<InOpTestUser, String>(
+        let op = InUnionOperator<InOperatorUser, String>(
             index: index,
             fieldPath: "status",
             values: values,
@@ -87,7 +88,7 @@ struct InOperatorTests {
         let index = makeIndex(name: "idx_customer_id")
         let values: [String] = (0..<100).map { "customer_\($0)" }
 
-        let op = InJoinOperator<InOpTestUser, String>(
+        let op = InJoinOperator<InOperatorUser, String>(
             index: index,
             fieldPath: "customerId",
             values: values,
@@ -107,7 +108,7 @@ struct InOperatorTests {
         let index = makeIndex(name: "idx_region")
         let values: [String] = ["US", "EU"]
 
-        let op = InJoinOperator<InOpTestUser, String>(
+        let op = InJoinOperator<InOperatorUser, String>(
             index: index,
             fieldPath: "region",
             values: values
@@ -123,12 +124,12 @@ struct InOperatorTests {
         let index = makeIndex(name: "idx_status")
         let values: [String] = ["A", "B"]
 
-        let inUnionOp = InUnionOperator<InOpTestUser, String>(
+        let inUnionOp = InUnionOperator<InOperatorUser, String>(
             index: index,
             fieldPath: "status",
             values: values
         )
-        let planOp: PlanOperator<InOpTestUser> = .inUnion(inUnionOp)
+        let planOp: PlanOperator<InOperatorUser> = .inUnion(inUnionOp)
 
         let description = planOp.description
         #expect(description.contains("InUnion"))
@@ -139,12 +140,12 @@ struct InOperatorTests {
         let index = makeIndex(name: "idx_region")
         let values: [Int] = Array(0..<50)
 
-        let inJoinOp = InJoinOperator<InOpTestUser, Int>(
+        let inJoinOp = InJoinOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "region",
             values: values
         )
-        let planOp: PlanOperator<InOpTestUser> = .inJoin(inJoinOp)
+        let planOp: PlanOperator<InOperatorUser> = .inJoin(inJoinOp)
 
         let description = planOp.description
         #expect(description.contains("InJoin"))
@@ -154,7 +155,7 @@ struct InOperatorTests {
     // MARK: - InPredicateOptimizer Configuration Tests
 
     @Test func inPredicateOptimizerDefaultConfiguration() {
-        let config = InPredicateOptimizer<InOpTestUser>.Configuration.default
+        let config = InPredicateOptimizer<InOperatorUser>.Configuration.default
 
         #expect(config.unionThreshold == 10)
         #expect(config.joinThreshold == 1000)
@@ -162,7 +163,7 @@ struct InOperatorTests {
     }
 
     @Test func inPredicateOptimizerCustomConfiguration() {
-        let config = InPredicateOptimizer<InOpTestUser>.Configuration(
+        let config = InPredicateOptimizer<InOperatorUser>.Configuration(
             unionThreshold: 5,
             joinThreshold: 500,
             minSelectivityImprovement: 0.2
@@ -181,7 +182,7 @@ struct InOperatorTests {
         // Small list should use union strategy
         let values: [Int] = Array(0..<5)
 
-        let op = InUnionOperator<InOpTestUser, Int>(
+        let op = InUnionOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "status",
             values: values,
@@ -198,7 +199,7 @@ struct InOperatorTests {
         // Medium list
         let values: [Int] = Array(0..<15)
 
-        let op = InUnionOperator<InOpTestUser, Int>(
+        let op = InUnionOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "category",
             values: values,
@@ -214,7 +215,7 @@ struct InOperatorTests {
         // Large list should use join strategy
         let values: [Int] = Array(0..<500)
 
-        let op = InJoinOperator<InOpTestUser, Int>(
+        let op = InJoinOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "customerId",
             values: values,
@@ -229,7 +230,7 @@ struct InOperatorTests {
         let values: [String] = ["a", "b", "c"]
 
         // With deduplication
-        let opWithDedup = InUnionOperator<InOpTestUser, String>(
+        let opWithDedup = InUnionOperator<InOperatorUser, String>(
             index: index,
             fieldPath: "tags",
             values: values,
@@ -238,7 +239,7 @@ struct InOperatorTests {
         #expect(opWithDedup.deduplicate == true)
 
         // Without deduplication
-        let opNoDedup = InUnionOperator<InOpTestUser, String>(
+        let opNoDedup = InUnionOperator<InOperatorUser, String>(
             index: index,
             fieldPath: "tags",
             values: values,
@@ -252,7 +253,7 @@ struct InOperatorTests {
         let values: [Int] = Array(0..<200)
 
         // Small batch
-        let opSmallBatch = InJoinOperator<InOpTestUser, Int>(
+        let opSmallBatch = InJoinOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "id",
             values: values,
@@ -261,7 +262,7 @@ struct InOperatorTests {
         #expect(opSmallBatch.batchSize == 10)
 
         // Large batch
-        let opLargeBatch = InJoinOperator<InOpTestUser, Int>(
+        let opLargeBatch = InJoinOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "id",
             values: values,
@@ -274,7 +275,7 @@ struct InOperatorTests {
         let index = makeIndex(name: "idx_field")
 
         // Edge case: empty values
-        let emptyOp = InUnionOperator<InOpTestUser, Int>(
+        let emptyOp = InUnionOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "field",
             values: [],
@@ -283,7 +284,7 @@ struct InOperatorTests {
         #expect(emptyOp.estimatedTotalResults == 0)
 
         // Single value
-        let singleOp = InUnionOperator<InOpTestUser, Int>(
+        let singleOp = InUnionOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "field",
             values: [1],
@@ -297,7 +298,7 @@ struct InOperatorTests {
         let values: [Int] = Array(0..<1000)
 
         // Very selective (few matches)
-        let selectiveOp = InJoinOperator<InOpTestUser, Int>(
+        let selectiveOp = InJoinOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "region",
             values: values,
@@ -313,7 +314,7 @@ struct InOperatorTests {
         let index = makeIndex(name: "idx_status")
         let values: [String] = ["active", "pending"]
 
-        let op = InUnionOperator<InOpTestUser, String>(
+        let op = InUnionOperator<InOperatorUser, String>(
             index: index,
             fieldPath: "status",
             values: values
@@ -339,7 +340,7 @@ struct InOperatorTests {
         // Create operator with > 50 values to trigger Bloom filter creation
         let values: [Int] = Array(0..<100)
 
-        let op = InJoinOperator<InOpTestUser, Int>(
+        let op = InJoinOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "largeField",
             values: values,
@@ -359,7 +360,7 @@ struct InOperatorTests {
         // Create operator with < 50 values (no Bloom filter)
         let values: [Int] = Array(0..<30)
 
-        let op = InJoinOperator<InOpTestUser, Int>(
+        let op = InJoinOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "smallField",
             values: values,
@@ -379,7 +380,7 @@ struct InOperatorTests {
         let index = makeIndex(name: "idx_test")
         let values: [Int] = Array(0..<5)
 
-        let op = InUnionOperator<InOpTestUser, Int>(
+        let op = InUnionOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "field",
             values: values
@@ -396,7 +397,7 @@ struct InOperatorTests {
         let index = makeIndex(name: "idx_test")
         let values: [Int] = Array(0..<1000)
 
-        let op = InJoinOperator<InOpTestUser, Int>(
+        let op = InJoinOperator<InOperatorUser, Int>(
             index: index,
             fieldPath: "field",
             values: values
@@ -413,7 +414,7 @@ struct InOperatorTests {
 // MARK: - Test Model
 
 /// Test model for IN operator tests
-struct InOpTestUser: Persistable {
+struct InOperatorUser: Persistable {
     typealias ID = String
 
     var id: String
@@ -430,7 +431,7 @@ struct InOpTestUser: Persistable {
         self.country = country
     }
 
-    static var persistableType: String { "InOpTestUser" }
+    static var persistableType: String { "InOperatorUser" }
 
     static var allFields: [String] { ["id", "name", "status", "age", "country"] }
 
@@ -451,30 +452,30 @@ struct InOpTestUser: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<InOpTestUser, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<InOperatorUser, Value>) -> String {
         switch keyPath {
-        case \InOpTestUser.id: return "id"
-        case \InOpTestUser.name: return "name"
-        case \InOpTestUser.status: return "status"
-        case \InOpTestUser.age: return "age"
-        case \InOpTestUser.country: return "country"
+        case \InOperatorUser.id: return "id"
+        case \InOperatorUser.name: return "name"
+        case \InOperatorUser.status: return "status"
+        case \InOperatorUser.age: return "age"
+        case \InOperatorUser.country: return "country"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<InOpTestUser>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<InOperatorUser>) -> String {
         switch keyPath {
-        case \InOpTestUser.id: return "id"
-        case \InOpTestUser.name: return "name"
-        case \InOpTestUser.status: return "status"
-        case \InOpTestUser.age: return "age"
-        case \InOpTestUser.country: return "country"
+        case \InOperatorUser.id: return "id"
+        case \InOperatorUser.name: return "name"
+        case \InOperatorUser.status: return "status"
+        case \InOperatorUser.age: return "age"
+        case \InOperatorUser.country: return "country"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<InOpTestUser> {
+        if let partial = keyPath as? PartialKeyPath<InOperatorUser> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"

@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -14,7 +15,7 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct TestEdge: Persistable {
+struct GraphIndexEdge: Persistable {
     typealias ID = String
 
     var id: String
@@ -31,7 +32,7 @@ struct TestEdge: Persistable {
         self.weight = weight
     }
 
-    static var persistableType: String { "TestEdge" }
+    static var persistableType: String { "GraphIndexEdge" }
     static var allFields: [String] { ["id", "source", "target", "label", "weight"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -49,30 +50,30 @@ struct TestEdge: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestEdge, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<GraphIndexEdge, Value>) -> String {
         switch keyPath {
-        case \TestEdge.id: return "id"
-        case \TestEdge.source: return "source"
-        case \TestEdge.target: return "target"
-        case \TestEdge.label: return "label"
-        case \TestEdge.weight: return "weight"
+        case \GraphIndexEdge.id: return "id"
+        case \GraphIndexEdge.source: return "source"
+        case \GraphIndexEdge.target: return "target"
+        case \GraphIndexEdge.label: return "label"
+        case \GraphIndexEdge.weight: return "weight"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestEdge>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<GraphIndexEdge>) -> String {
         switch keyPath {
-        case \TestEdge.id: return "id"
-        case \TestEdge.source: return "source"
-        case \TestEdge.target: return "target"
-        case \TestEdge.label: return "label"
-        case \TestEdge.weight: return "weight"
+        case \GraphIndexEdge.id: return "id"
+        case \GraphIndexEdge.source: return "source"
+        case \GraphIndexEdge.target: return "target"
+        case \GraphIndexEdge.label: return "label"
+        case \GraphIndexEdge.weight: return "weight"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestEdge> {
+        if let partial = keyPath as? PartialKeyPath<GraphIndexEdge> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
@@ -81,22 +82,25 @@ struct TestEdge: Persistable {
 
 // MARK: - Test Helper
 
-private struct TestContext {
+private struct GraphIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: GraphIndexMaintainer<TestEdge>
-    let kind: GraphIndexKind<TestEdge>
-    let strategy: GraphIndexStrategy
+    let maintainer: GraphIndexMaintainer<GraphIndexEdge>
+    let kind: GraphIndexKind<GraphIndexEdge>
+    let strategy: PropertyGraphIndexStrategy
 
-    init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "TestEdge_graph") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(
+        strategy: PropertyGraphIndexStrategy = .adjacency,
+        indexName: String = "TestEdge_graph"
+    ) async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "graph", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.strategy = strategy
 
-        self.kind = GraphIndexKind<TestEdge>(
+        self.kind = GraphIndexKind<GraphIndexEdge>(
             from: \.source,
             edge: \.label,
             to: \.target,
@@ -112,10 +116,10 @@ private struct TestContext {
                 FieldKeyExpression(fieldName: "label")
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["TestEdge"])
+            itemTypes: Set(["GraphIndexEdge"])
         )
 
-        self.maintainer = GraphIndexMaintainer<TestEdge>(
+        self.maintainer = GraphIndexMaintainer<GraphIndexEdge>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
@@ -129,7 +133,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -200,14 +204,14 @@ struct GraphIndexAdjacencyTests {
 
     @Test("Insert creates outgoing edge entry")
     func testInsertCreatesOutgoingEdge() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .adjacency)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await GraphIndexContext(strategy: .adjacency)
 
-        let edge = TestEdge(source: "alice", target: "bob", label: "follows")
+        let edge = GraphIndexEdge(source: "alice", target: "bob", label: "follows")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestEdge?,
+                oldItem: nil as GraphIndexEdge?,
                 newItem: edge,
                 transaction: transaction
             )
@@ -221,14 +225,14 @@ struct GraphIndexAdjacencyTests {
 
     @Test("Insert creates incoming edge entry")
     func testInsertCreatesIncomingEdge() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .adjacency)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await GraphIndexContext(strategy: .adjacency)
 
-        let edge = TestEdge(source: "alice", target: "bob", label: "follows")
+        let edge = GraphIndexEdge(source: "alice", target: "bob", label: "follows")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestEdge?,
+                oldItem: nil as GraphIndexEdge?,
                 newItem: edge,
                 transaction: transaction
             )
@@ -242,13 +246,13 @@ struct GraphIndexAdjacencyTests {
 
     @Test("Multiple edges from same source")
     func testMultipleEdgesFromSameSource() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .adjacency)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await GraphIndexContext(strategy: .adjacency)
 
         let edges = [
-            TestEdge(source: "alice", target: "bob", label: "follows"),
-            TestEdge(source: "alice", target: "charlie", label: "follows"),
-            TestEdge(source: "alice", target: "dave", label: "follows")
+            GraphIndexEdge(source: "alice", target: "bob", label: "follows"),
+            GraphIndexEdge(source: "alice", target: "charlie", label: "follows"),
+            GraphIndexEdge(source: "alice", target: "dave", label: "follows")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -272,13 +276,13 @@ struct GraphIndexAdjacencyTests {
 
     @Test("Multiple edges to same target")
     func testMultipleEdgesToSameTarget() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .adjacency)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await GraphIndexContext(strategy: .adjacency)
 
         let edges = [
-            TestEdge(source: "alice", target: "dave", label: "follows"),
-            TestEdge(source: "bob", target: "dave", label: "follows"),
-            TestEdge(source: "charlie", target: "dave", label: "follows")
+            GraphIndexEdge(source: "alice", target: "dave", label: "follows"),
+            GraphIndexEdge(source: "bob", target: "dave", label: "follows"),
+            GraphIndexEdge(source: "charlie", target: "dave", label: "follows")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -302,15 +306,15 @@ struct GraphIndexAdjacencyTests {
 
     @Test("Delete removes edge entries")
     func testDeleteRemovesEdges() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .adjacency)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await GraphIndexContext(strategy: .adjacency)
 
-        let edge = TestEdge(source: "alice", target: "bob", label: "follows")
+        let edge = GraphIndexEdge(source: "alice", target: "bob", label: "follows")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestEdge?,
+                oldItem: nil as GraphIndexEdge?,
                 newItem: edge,
                 transaction: transaction
             )
@@ -338,13 +342,13 @@ struct GraphIndexAdjacencyTests {
 
     @Test("Different labels create separate edges")
     func testDifferentLabels() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .adjacency)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await GraphIndexContext(strategy: .adjacency)
 
         let edges = [
-            TestEdge(id: "e1", source: "alice", target: "bob", label: "follows"),
-            TestEdge(id: "e2", source: "alice", target: "bob", label: "blocks"),
-            TestEdge(id: "e3", source: "alice", target: "bob", label: "likes")
+            GraphIndexEdge(id: "e1", source: "alice", target: "bob", label: "follows"),
+            GraphIndexEdge(id: "e2", source: "alice", target: "bob", label: "blocks"),
+            GraphIndexEdge(id: "e3", source: "alice", target: "bob", label: "likes")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -376,14 +380,14 @@ struct GraphIndexTripleStoreTests {
 
     @Test("TripleStore creates 3 index entries")
     func testTripleStoreCreates3Entries() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .tripleStore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await GraphIndexContext(strategy: .tripleStore)
 
-        let edge = TestEdge(source: "alice", target: "bob", label: "knows")
+        let edge = GraphIndexEdge(source: "alice", target: "bob", label: "knows")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestEdge?,
+                oldItem: nil as GraphIndexEdge?,
                 newItem: edge,
                 transaction: transaction
             )
@@ -408,15 +412,15 @@ struct GraphIndexTripleStoreTests {
 
     @Test("TripleStore delete removes all 3 entries")
     func testTripleStoreDeleteRemovesAllEntries() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .tripleStore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await GraphIndexContext(strategy: .tripleStore)
 
-        let edge = TestEdge(source: "alice", target: "bob", label: "knows")
+        let edge = GraphIndexEdge(source: "alice", target: "bob", label: "knows")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestEdge?,
+                oldItem: nil as GraphIndexEdge?,
                 newItem: edge,
                 transaction: transaction
             )
@@ -456,14 +460,14 @@ struct GraphIndexHexastoreTests {
 
     @Test("Hexastore creates 6 index entries")
     func testHexastoreCreates6Entries() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .hexastore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await GraphIndexContext(strategy: .hexastore)
 
-        let edge = TestEdge(source: "alice", target: "bob", label: "knows")
+        let edge = GraphIndexEdge(source: "alice", target: "bob", label: "knows")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestEdge?,
+                oldItem: nil as GraphIndexEdge?,
                 newItem: edge,
                 transaction: transaction
             )
@@ -488,15 +492,15 @@ struct GraphIndexHexastoreTests {
 
     @Test("Hexastore delete removes all 6 entries")
     func testHexastoreDeleteRemovesAllEntries() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .hexastore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await GraphIndexContext(strategy: .hexastore)
 
-        let edge = TestEdge(source: "alice", target: "bob", label: "knows")
+        let edge = GraphIndexEdge(source: "alice", target: "bob", label: "knows")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestEdge?,
+                oldItem: nil as GraphIndexEdge?,
                 newItem: edge,
                 transaction: transaction
             )

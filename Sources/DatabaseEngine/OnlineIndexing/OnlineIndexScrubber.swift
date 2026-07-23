@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 import Metrics
@@ -180,26 +184,15 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     /// - Returns: ScrubberResult with health status and statistics
     /// - Throws: ScrubberError if scrubbing fails
     public func scrubIndex() async throws -> ScrubberResult {
+        try validateConfiguration()
+        let capabilities = try requirePhysicalEntryCapabilities()
         let startTime = Date()
-        var entriesScanned = 0
-        var itemsScanned = 0
-        var danglingEntriesDetected = 0
-        var danglingEntriesRepaired = 0
-        var missingEntriesDetected = 0
-        var missingEntriesRepaired = 0
-
         do {
             // Phase 1: Index → Item (detect dangling entries)
-            let phase1Result = try await runPhase1()
-            entriesScanned = phase1Result.entriesScanned
-            danglingEntriesDetected = phase1Result.danglingDetected
-            danglingEntriesRepaired = phase1Result.danglingRepaired
+            let phase1Result = try await runPhase1(capabilities: capabilities)
 
             // Phase 2: Item → Index (detect missing entries)
             let phase2Result = try await runPhase2()
-            itemsScanned = phase2Result.itemsScanned
-            missingEntriesDetected = phase2Result.missingDetected
-            missingEntriesRepaired = phase2Result.missingRepaired
 
             // Clear progress after successful completion
             try await clearProgress()
@@ -210,16 +203,17 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
             let summary = ScrubberSummary(
                 timeElapsed: duration,
-                entriesScanned: entriesScanned,
-                itemsScanned: itemsScanned,
-                danglingEntriesDetected: danglingEntriesDetected,
-                danglingEntriesRepaired: danglingEntriesRepaired,
-                missingEntriesDetected: missingEntriesDetected,
-                missingEntriesRepaired: missingEntriesRepaired,
+                entriesScanned: phase1Result.entriesScanned,
+                itemsScanned: phase2Result.itemsScanned,
+                danglingEntriesDetected: phase1Result.danglingDetected,
+                danglingEntriesRepaired: phase1Result.danglingRepaired,
+                missingEntriesDetected: phase2Result.missingDetected,
+                missingEntriesRepaired: phase2Result.missingRepaired,
                 indexName: index.name
             )
 
-            let isHealthy = danglingEntriesDetected == 0 && missingEntriesDetected == 0
+            let isHealthy = phase1Result.danglingDetected == 0
+                && phase2Result.missingDetected == 0
 
             return ScrubberResult(
                 isHealthy: isHealthy,
@@ -229,26 +223,8 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
         } catch {
             errorsCounter.increment()
-
-            let duration = Date().timeIntervalSince(startTime)
-            let summary = ScrubberSummary(
-                timeElapsed: duration,
-                entriesScanned: entriesScanned,
-                itemsScanned: itemsScanned,
-                danglingEntriesDetected: danglingEntriesDetected,
-                danglingEntriesRepaired: danglingEntriesRepaired,
-                missingEntriesDetected: missingEntriesDetected,
-                missingEntriesRepaired: missingEntriesRepaired,
-                indexName: index.name
-            )
-
-            return ScrubberResult(
-                isHealthy: false,
-                completedSuccessfully: false,
-                summary: summary,
-                terminationReason: error.localizedDescription,
-                error: error
-            )
+            scrubDurationTimer.recordSeconds(Date().timeIntervalSince(startTime))
+            throw error
         }
     }
 
@@ -262,7 +238,9 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     }
 
     /// Run Phase 1: Scan index entries and verify items exist
-    private func runPhase1() async throws -> Phase1Result {
+    private func runPhase1(
+        capabilities: IndexPhysicalEntryCapabilities
+    ) async throws -> Phase1Result {
         let indexNameSubspace = indexSubspace.subspace(index.name)
         let totalRange = indexNameSubspace.range()
 
@@ -280,48 +258,27 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
-            var retryCount = 0
-            var batchSuccess = false
+            let batchResult = try await processPhase1Batch(
+                bounds: bounds,
+                batchSize: configuration.entriesScanLimit,
+                indexNameSubspace: indexNameSubspace,
+                decoder: capabilities.decoder,
+                rangeSet: &rangeSet
+            )
 
-            while !batchSuccess && retryCount < configuration.maxRetries {
-                do {
-                    let batchResult = try await processPhase1Batch(
-                        bounds: bounds,
-                        batchSize: configuration.entriesScanLimit,
-                        indexNameSubspace: indexNameSubspace,
-                        rangeSet: &rangeSet
-                    )
+            totalEntriesScanned += batchResult.entriesScanned
+            totalDanglingDetected += batchResult.danglingDetected
+            totalDanglingRepaired += batchResult.danglingRepaired
 
-                    totalEntriesScanned += batchResult.entriesScanned
-                    totalDanglingDetected += batchResult.danglingDetected
-                    totalDanglingRepaired += batchResult.danglingRepaired
+            entriesScannedCounter.increment(by: batchResult.entriesScanned)
+            danglingEntriesCounter.increment(by: batchResult.danglingDetected)
+            entriesRepairedCounter.increment(by: batchResult.danglingRepaired)
 
-                    // Update metrics
-                    entriesScannedCounter.increment(by: batchResult.entriesScanned)
-                    danglingEntriesCounter.increment(by: batchResult.danglingDetected)
-                    entriesRepairedCounter.increment(by: batchResult.danglingRepaired)
-
-                    // Save progress
-                    try await saveProgress(rangeSet, key: phase1ProgressKey)
-
-                    batchSuccess = true
-
-                } catch {
-                    retryCount += 1
-                    if retryCount >= configuration.maxRetries {
-                        throw ScrubberError.retryLimitExceeded(
-                            phase: "Phase 1 (Index → Item)",
-                            attempts: retryCount,
-                            lastError: error
-                        )
-                    }
-                    try await Task.sleep(nanoseconds: UInt64(configuration.retryDelayMillis) * 1_000_000)
-                }
-            }
+            try await saveProgress(rangeSet, key: phase1ProgressKey)
 
             // Throttle between batches
             if configuration.throttleDelayMs > 0 {
-                try await Task.sleep(nanoseconds: UInt64(configuration.throttleDelayMs) * 1_000_000)
+                try await sleep(milliseconds: configuration.throttleDelayMs)
             }
         }
 
@@ -337,14 +294,18 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         bounds: RangeSet.BatchBounds,
         batchSize: Int,
         indexNameSubspace: Subspace,
+        decoder: any IndexPhysicalEntryDecoder,
         rangeSet: inout RangeSet
     ) async throws -> Phase1Result {
 
-        let result = try await container.engine.withTransaction(configuration: .batch) { transaction in
+        let result = try await container.engine.withTransaction(
+            configuration: transactionConfiguration
+        ) { transaction in
             var entriesScanned = 0
             var danglingDetected = 0
             var danglingRepaired = 0
             var lastProcessedKey: Bytes? = nil
+            var bytesScanned = 0
 
             // Use limit + .iterator for efficient batch scrubbing
             // .iterator is appropriate since we do reads within the transaction
@@ -356,20 +317,41 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 streamingMode: .iterator
             )
 
-            for (indexKey, _) in sequence {
+            for (indexKey, value) in sequence {
+                let (entryBytes, entryOverflow) = indexKey.count
+                    .addingReportingOverflow(value.count)
+                let (newBytesScanned, totalOverflow) = bytesScanned
+                    .addingReportingOverflow(entryBytes)
+                guard !entryOverflow,
+                      !totalOverflow,
+                      newBytesScanned <= self.configuration.maxTransactionBytes else {
+                    throw ScrubberError.transactionByteLimitExceeded(
+                        maximum: self.configuration.maxTransactionBytes
+                    )
+                }
+                bytesScanned = newBytesScanned
                 entriesScanned += 1
 
-                // Extract primary key from index key
-                guard let primaryKey = try? self.extractPrimaryKeyFromIndexKey(
-                    indexKey,
-                    indexSubspace: indexNameSubspace
-                ) else {
-                    lastProcessedKey = indexKey
-                    continue
+                // Extract primary key from index key. A malformed physical key
+                // invalidates the scrub rather than being counted as healthy.
+                let entry: IndexPhysicalEntry
+                do {
+                    entry = try decoder.decode(
+                        key: indexKey,
+                        in: indexNameSubspace,
+                        index: self.index
+                    )
+                } catch {
+                    throw ScrubberError.invalidPhysicalEntry(
+                        indexName: self.index.name,
+                        reason: String(describing: error)
+                    )
                 }
 
                 // Check if item exists
-                let itemKey = self.itemSubspace.subspace(self.itemType).pack(primaryKey)
+                let itemKey = self.itemSubspace
+                    .subspace(self.itemType)
+                    .pack(entry.primaryKey)
                 let itemExists = try await transaction.getValue(for: itemKey, snapshot: false) != nil
 
                 if !itemExists {
@@ -378,7 +360,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
                     if self.configuration.allowRepair {
                         // Repair: Remove dangling index entry
-                        transaction.clear(key: indexKey)
+                        try transaction.clear(key: indexKey)
                         danglingRepaired += 1
                     }
                 }
@@ -394,7 +376,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
             let isComplete = result.0 < batchSize
             rangeSet.recordProgress(
                 rangeIndex: bounds.rangeIndex,
-                lastProcessedKey: Array(lastKey),
+                lastProcessedKey: lastKey,
                 isComplete: isComplete
             )
         } else {
@@ -436,48 +418,26 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
-            var retryCount = 0
-            var batchSuccess = false
+            let batchResult = try await processPhase2Batch(
+                bounds: bounds,
+                batchSize: configuration.entriesScanLimit,
+                itemTypeSubspace: itemTypeSubspace,
+                rangeSet: &rangeSet
+            )
 
-            while !batchSuccess && retryCount < configuration.maxRetries {
-                do {
-                    let batchResult = try await processPhase2Batch(
-                        bounds: bounds,
-                        batchSize: configuration.entriesScanLimit,
-                        itemTypeSubspace: itemTypeSubspace,
-                        rangeSet: &rangeSet
-                    )
+            totalItemsScanned += batchResult.itemsScanned
+            totalMissingDetected += batchResult.missingDetected
+            totalMissingRepaired += batchResult.missingRepaired
 
-                    totalItemsScanned += batchResult.itemsScanned
-                    totalMissingDetected += batchResult.missingDetected
-                    totalMissingRepaired += batchResult.missingRepaired
+            itemsScannedCounter.increment(by: batchResult.itemsScanned)
+            missingEntriesCounter.increment(by: batchResult.missingDetected)
+            entriesRepairedCounter.increment(by: batchResult.missingRepaired)
 
-                    // Update metrics
-                    itemsScannedCounter.increment(by: batchResult.itemsScanned)
-                    missingEntriesCounter.increment(by: batchResult.missingDetected)
-                    entriesRepairedCounter.increment(by: batchResult.missingRepaired)
-
-                    // Save progress
-                    try await saveProgress(rangeSet, key: phase2ProgressKey)
-
-                    batchSuccess = true
-
-                } catch {
-                    retryCount += 1
-                    if retryCount >= configuration.maxRetries {
-                        throw ScrubberError.retryLimitExceeded(
-                            phase: "Phase 2 (Item → Index)",
-                            attempts: retryCount,
-                            lastError: error
-                        )
-                    }
-                    try await Task.sleep(nanoseconds: UInt64(configuration.retryDelayMillis) * 1_000_000)
-                }
-            }
+            try await saveProgress(rangeSet, key: phase2ProgressKey)
 
             // Throttle between batches
             if configuration.throttleDelayMs > 0 {
-                try await Task.sleep(nanoseconds: UInt64(configuration.throttleDelayMs) * 1_000_000)
+                try await sleep(milliseconds: configuration.throttleDelayMs)
             }
         }
 
@@ -496,14 +456,17 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         rangeSet: inout RangeSet
     ) async throws -> Phase2Result {
 
-        let result = try await container.engine.withTransaction(configuration: .batch) { transaction in
+        let result = try await container.engine.withTransaction(
+            configuration: transactionConfiguration
+        ) { transaction in
             var itemsScanned = 0
             var missingDetected = 0
             var missingRepaired = 0
             var lastProcessedKey: Bytes? = nil
+            var bytesScanned = 0
 
             // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
             )
@@ -516,6 +479,18 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
             )
 
             for try await (key, data) in scanSequence {
+                let (entryBytes, entryOverflow) = key.count
+                    .addingReportingOverflow(data.count)
+                let (newBytesScanned, totalOverflow) = bytesScanned
+                    .addingReportingOverflow(entryBytes)
+                guard !entryOverflow,
+                      !totalOverflow,
+                      newBytesScanned <= self.configuration.maxTransactionBytes else {
+                    throw ScrubberError.transactionByteLimitExceeded(
+                        maximum: self.configuration.maxTransactionBytes
+                    )
+                }
+                bytesScanned = newBytesScanned
                 itemsScanned += 1
 
                 // Deserialize item from decompressed data
@@ -533,6 +508,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 )
 
                 // Check if all expected index entries exist
+                var missingForItem = 0
                 for expectedKey in expectedIndexKeys {
                     let indexEntryExists = try await transaction.getValue(
                         for: expectedKey,
@@ -540,19 +516,18 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                     ) != nil
 
                     if !indexEntryExists {
-                        // Missing entry detected
                         missingDetected += 1
-
-                        if self.configuration.allowRepair {
-                            // Repair: Add missing index entry using scanItem
-                            try await self.indexMaintainer.scanItem(
-                                item,
-                                id: id,
-                                transaction: transaction
-                            )
-                            missingRepaired += 1
-                        }
+                        missingForItem += 1
                     }
+                }
+
+                if missingForItem > 0 && self.configuration.allowRepair {
+                    try await self.indexMaintainer.scanItem(
+                        item,
+                        id: id,
+                        transaction: transaction
+                    )
+                    missingRepaired += missingForItem
                 }
 
                 lastProcessedKey = key
@@ -566,7 +541,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
             let isComplete = result.0 < batchSize
             rangeSet.recordProgress(
                 rangeIndex: bounds.rangeIndex,
-                lastProcessedKey: Array(lastKey),
+                lastProcessedKey: lastKey,
                 isComplete: isComplete
             )
         } else {
@@ -582,50 +557,27 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     // MARK: - Helper Methods
 
-    /// Extract primary key from index key
-    ///
-    /// Index key structure: [indexSubspace]/[indexName]/[indexValues...]/[primaryKey]
-    /// The primary key is typically the last element(s) of the tuple.
-    private func extractPrimaryKeyFromIndexKey(
-        _ indexKey: Bytes,
-        indexSubspace: Subspace
-    ) throws -> Tuple {
-        let tuple = try indexSubspace.unpack(indexKey)
-
-        // For scalar indexes, primary key is the last element
-        // This may need customization for different index types
-        guard !tuple.isEmpty else {
-            throw ScrubberError.invalidItemType("Empty tuple in index key")
-        }
-
-        // Return the last element as primary key tuple
-        // Adjust this logic based on your index key structure
-        guard let lastElement = tuple[tuple.count - 1] else {
-            throw ScrubberError.invalidItemType("Unable to extract primary key from index key")
-        }
-        return Tuple([lastElement])
-    }
-
     // MARK: - Progress Management
 
     /// Load saved progress
     private func loadProgress(key: Bytes) async throws -> RangeSet? {
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.engine.withTransaction(
+            configuration: transactionConfiguration
+        ) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
 
-            let decoder = JSONDecoder()
-            return try decoder.decode(RangeSet.self, from: Data(bytes))
+            return try RangeSetCodec.decode(bytes)
         }
     }
 
     /// Save progress
     private func saveProgress(_ rangeSet: RangeSet, key: Bytes) async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
-            let encoder = JSONEncoder()
-            let data = try encoder.encode(rangeSet)
-            transaction.setValue(Array(data), for: key)
+        try await container.engine.withTransaction(
+            configuration: transactionConfiguration
+        ) { transaction in
+            try transaction.setValue(try RangeSetCodec.encode(rangeSet), for: key)
         }
     }
 
@@ -633,10 +585,76 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     private func clearProgress() async throws {
         let phase1Key = self.phase1ProgressKey
         let phase2Key = self.phase2ProgressKey
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.clear(key: phase1Key)
-            transaction.clear(key: phase2Key)
+        try await container.engine.withTransaction(
+            configuration: transactionConfiguration
+        ) { transaction in
+            try transaction.clear(key: phase1Key)
+            try transaction.clear(key: phase2Key)
         }
+    }
+
+    private var transactionConfiguration: TransactionConfiguration {
+        TransactionConfiguration(
+            timeout: configuration.transactionTimeoutMillis,
+            maximumAttempts: configuration.maxRetries,
+            maxRetryDelay: configuration.retryDelayMillis,
+            initialRetryDelay: configuration.retryDelayMillis,
+            priority: .batch,
+            readPriority: .low,
+            disableReadCache: true
+        )
+    }
+
+    private func requirePhysicalEntryCapabilities()
+        throws -> IndexPhysicalEntryCapabilities {
+        guard let capabilities = container.runtimeConfiguration
+            .indexMaintainerProviders
+            .physicalEntryCapabilities(for: index.kind.identifier),
+              capabilities.supportsItemReferenceValidation else {
+            throw ScrubberError.unsupportedIndexType(
+                indexName: index.name,
+                indexType: index.kind.identifier
+            )
+        }
+        if configuration.allowRepair,
+           !capabilities.supportsIndependentEntryRepair {
+            throw ScrubberError.repairUnsupported(
+                indexName: index.name,
+                indexType: index.kind.identifier
+            )
+        }
+        return capabilities
+    }
+
+    private func validateConfiguration() throws {
+        let positiveValues = [
+            "entriesScanLimit": configuration.entriesScanLimit,
+            "maxTransactionBytes": configuration.maxTransactionBytes,
+            "transactionTimeoutMillis": configuration.transactionTimeoutMillis,
+            "maxRetries": configuration.maxRetries
+        ]
+        for (field, value) in positiveValues where value <= 0 {
+            throw ScrubberError.invalidConfiguration(field: field, value: value)
+        }
+        let nonnegativeValues = [
+            "retryDelayMillis": configuration.retryDelayMillis,
+            "throttleDelayMs": configuration.throttleDelayMs
+        ]
+        for (field, value) in nonnegativeValues where value < 0 {
+            throw ScrubberError.invalidConfiguration(field: field, value: value)
+        }
+        guard configuration.throttleDelayMs <= Int(UInt64.max / 1_000_000) else {
+            throw ScrubberError.invalidConfiguration(
+                field: "throttleDelayMs",
+                value: configuration.throttleDelayMs
+            )
+        }
+    }
+
+    private func sleep(milliseconds: Int) async throws {
+        try await container.engine.monotonicClock.sleep(
+            for: .milliseconds(Int64(milliseconds))
+        )
     }
 }
 

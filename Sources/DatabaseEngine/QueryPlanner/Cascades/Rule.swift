@@ -6,8 +6,13 @@
 //
 // Reference: Graefe, G. "The Cascades Framework for Query Optimization", 1995
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 
 // MARK: - Rule Protocol
 
@@ -492,7 +497,7 @@ public struct SortImplementationRule: ImplementationRule {
 
         // Estimate sort cost (N log N)
         let cardinality = 1000.0  // Would get from group statistics
-        let cost = cardinality * log2(max(2, cardinality)) * context.costModel.cpuOperatorCost
+        let cost = cardinality * DatabaseMath.binaryLogarithm(max(2, cardinality)) * context.costModel.cpuOperatorCost
 
         return [(.sort(input: input, keys: keys, limit: nil), cost)]
     }
@@ -649,10 +654,10 @@ public struct MergeSortUnionImplementationRule: ImplementationRule {
         // Add sort cost for children if they aren't already sorted
         let k = Double(inputs.count)
         let totalCard = k * 1000.0  // Simplified cardinality estimate
-        let mergeComparisonCost = totalCard * log2(max(2, k)) * context.costModel.cpuOperatorCost * context.costModel.mergeComparisonWeight
+        let mergeComparisonCost = totalCard * DatabaseMath.binaryLogarithm(max(2, k)) * context.costModel.cpuOperatorCost * context.costModel.mergeComparisonWeight
         let heapOperationCost = totalCard * context.costModel.cpuOperatorCost * context.costModel.heapOperationWeight
         // Add estimated child sort cost (will be refined by child optimization)
-        let childSortCost = totalCard * log2(max(2, totalCard / k)) * context.costModel.cpuOperatorCost * 0.01
+        let childSortCost = totalCard * DatabaseMath.binaryLogarithm(max(2, totalCard / k)) * context.costModel.cpuOperatorCost * 0.01
 
         let cost = mergeComparisonCost + heapOperationCost + childSortCost
 
@@ -746,7 +751,7 @@ public struct MergeSortIntersectionImplementationRule: ImplementationRule {
         // Use mergeComparisonWeight for skip-ahead comparisons (similar to merge comparison)
         let skipAheadCost = smallestCard * k * context.costModel.cpuOperatorCost * context.costModel.mergeComparisonWeight * 5.0  // 5x for seek overhead
         // Add estimated child sort cost
-        let childSortCost = smallestCard * k * log2(max(2, smallestCard)) * context.costModel.cpuOperatorCost * 0.01
+        let childSortCost = smallestCard * k * DatabaseMath.binaryLogarithm(max(2, smallestCard)) * context.costModel.cpuOperatorCost * 0.01
 
         let cost = skipAheadCost + childSortCost
 

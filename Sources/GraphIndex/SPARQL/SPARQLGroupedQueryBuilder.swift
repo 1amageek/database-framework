@@ -3,9 +3,14 @@
 //
 // Fluent builder for constructing SPARQL GROUP BY queries with aggregation.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
+import DatabaseWire
 import Graph
 import QueryIR
 
@@ -35,10 +40,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
     // MARK: - Configuration
 
     private let queryContext: IndexQueryContext
-    private let fromFieldName: String
-    private let edgeFieldName: String
-    private let toFieldName: String
-    private let graphFieldName: String?
+    private let selection: RDFDatasetIndexSelection?
 
     // MARK: - Query State
 
@@ -56,18 +58,12 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
 
     internal init(
         queryContext: IndexQueryContext,
-        fromFieldName: String,
-        edgeFieldName: String,
-        toFieldName: String,
-        graphFieldName: String? = nil,
+        selection: RDFDatasetIndexSelection?,
         sourcePattern: ExecutionPattern,
         groupVariables: [String]
     ) {
         self.queryContext = queryContext
-        self.fromFieldName = fromFieldName
-        self.edgeFieldName = edgeFieldName
-        self.toFieldName = toFieldName
-        self.graphFieldName = graphFieldName
+        self.selection = selection
         self.sourcePattern = sourcePattern
         self.groupVariables = groupVariables
         self.aggregates = []
@@ -92,48 +88,60 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
     }
 
     /// Add COUNT(?var) aggregate
-    public func count(_ variable: String, as alias: String) -> Self {
-        addAggregate(.count(variable, as: alias))
+    public func count(_ variable: String, as alias: String) throws -> Self {
+        try addAggregate(.count(variable, as: alias))
     }
 
     /// Add COUNT(DISTINCT ?var) aggregate
-    public func countDistinct(_ variable: String, as alias: String) -> Self {
-        addAggregate(.countDistinct(variable, as: alias))
+    public func countDistinct(_ variable: String, as alias: String) throws -> Self {
+        try addAggregate(.countDistinct(variable, as: alias))
     }
 
     /// Add SUM(?var) aggregate
-    public func sum(_ variable: String, as alias: String) -> Self {
-        addAggregate(.sum(variable, as: alias))
+    public func sum(_ variable: String, as alias: String) throws -> Self {
+        try addAggregate(.sum(variable, as: alias))
     }
 
     /// Add AVG(?var) aggregate
-    public func avg(_ variable: String, as alias: String) -> Self {
-        addAggregate(.avg(variable, as: alias))
+    public func avg(_ variable: String, as alias: String) throws -> Self {
+        try addAggregate(.avg(variable, as: alias))
     }
 
     /// Add MIN(?var) aggregate
-    public func min(_ variable: String, as alias: String) -> Self {
-        addAggregate(.min(variable, as: alias))
+    public func min(_ variable: String, as alias: String) throws -> Self {
+        try addAggregate(.min(variable, as: alias))
     }
 
     /// Add MAX(?var) aggregate
-    public func max(_ variable: String, as alias: String) -> Self {
-        addAggregate(.max(variable, as: alias))
+    public func max(_ variable: String, as alias: String) throws -> Self {
+        try addAggregate(.max(variable, as: alias))
     }
 
     /// Add SAMPLE(?var) aggregate
-    public func sample(_ variable: String, as alias: String) -> Self {
-        addAggregate(.sample(variable, as: alias))
+    public func sample(_ variable: String, as alias: String) throws -> Self {
+        try addAggregate(.sample(variable, as: alias))
     }
 
     /// Add GROUP_CONCAT(?var) aggregate
-    public func groupConcat(_ variable: String, separator: String = " ", as alias: String) -> Self {
-        addAggregate(.groupConcat(variable, separator: separator, as: alias))
+    public func groupConcat(
+        _ variable: String,
+        separator: String = " ",
+        as alias: String
+    ) throws -> Self {
+        try addAggregate(
+            .groupConcat(variable, separator: separator, as: alias)
+        )
     }
 
     /// Add GROUP_CONCAT(DISTINCT ?var) aggregate
-    public func groupConcatDistinct(_ variable: String, separator: String = " ", as alias: String) -> Self {
-        addAggregate(.groupConcatDistinct(variable, separator: separator, as: alias))
+    public func groupConcatDistinct(
+        _ variable: String,
+        separator: String = " ",
+        as alias: String
+    ) throws -> Self {
+        try addAggregate(
+            .groupConcatDistinct(variable, separator: separator, as: alias)
+        )
     }
 
     /// Add a custom aggregate expression
@@ -209,7 +217,10 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
     /// ```
     public func having(_ expression: QueryIR.Expression) -> Self {
         having(.custom { binding in
-            ExpressionEvaluator.evaluateAsBoolean(expression, binding: binding)
+            try ExpressionEvaluator.evaluateAsBoolean(
+                expression,
+                binding: binding
+            )
         })
     }
 
@@ -283,8 +294,13 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
     /// 3. Projection (SELECT)
     /// 4. DISTINCT
     /// 5. OFFSET / LIMIT (Slice)
-    public func execute() async throws -> SPARQLGroupedResult {
-        guard !fromFieldName.isEmpty else {
+    public func execute(
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+    ) async throws -> SPARQLGroupedResult {
+        guard offsetCount >= 0, limitCount.map({ $0 >= 0 }) ?? true else {
+            throw SPARQLQueryError.invalidPagination
+        }
+        guard let selection else {
             throw SPARQLQueryError.indexNotConfigured
         }
 
@@ -293,51 +309,50 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
             throw SPARQLQueryError.invalidGroupBy("GROUP BY requires at least one group variable or aggregate")
         }
 
-        // Build the group by pattern
+        let groupKeys = try groupVariables.map {
+            try SPARQLGroupKeyPlan.executionVariable($0)
+        }
+        let grouping: SPARQLGroupingPlan = groupKeys.isEmpty
+            ? .implicitSingleGroup
+            : .explicit(groupKeys)
         let groupByPattern = ExecutionPattern.groupBy(
             sourcePattern,
-            groupVariables: groupVariables,
+            grouping: grouping,
             aggregates: aggregates,
             having: havingExpression
         )
 
-        var indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
-        if let graphFieldName {
-            let g = graphFieldName.replacingOccurrences(of: ".", with: "_")
-            indexName += "_\(g)"
-        }
-        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
-              let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
-            throw SPARQLQueryError.indexNotFound(indexName)
-        }
-
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
+        let indexSubspace = typeSubspace.subspace(selection.indexName)
+        let source = try RDFDatasetSource(
+            entityName: T.persistableType,
+            selection: selection,
+            indexSubspace: indexSubspace
+        )
 
         let executor = SPARQLQueryExecutor(
             database: queryContext.context.container.engine,
-            indexSubspace: indexSubspace,
-            strategy: kind.strategy,
-            fromFieldName: fromFieldName,
-            edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName,
-            graphFieldName: kind.graphField,
-            storedFieldNames: indexDescriptor.storedFieldNames
+            sources: [source]
         )
+        let workMeter = DatabaseWorkMeter(budget: budget)
 
         let startTime = MonotonicClock.now()
 
         // Step 1: Pattern evaluation + GROUP BY + HAVING
-        var (bindings, stats) = try await executor.executeGrouped(
+        var (bindings, stats) = try await executor.execute(
             pattern: groupByPattern,
-            groupVariables: groupVariables,
-            aggregates: aggregates,
-            having: havingExpression
+            limit: nil,
+            offset: 0,
+            workMeter: workMeter
         )
 
         // Step 2: ORDER BY (before projection, per W3C Section 15)
         if !sortKeys.isEmpty {
-            bindings = BindingSorter.sort(bindings, by: sortKeys)
+            bindings = try BindingSorter.sort(
+                bindings,
+                by: sortKeys,
+                workMeter: workMeter
+            )
         }
 
         // Step 3: Projection (SELECT)
@@ -346,12 +361,18 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
             outputVariables = projected
         }
         let projectionSet = Set(outputVariables)
-        var projected = bindings.map { $0.project(projectionSet) }
+        var projected = try bindings.map { binding in
+            try workMeter.consume(at: .projection)
+            return binding.project(projectionSet)
+        }
 
         // Step 4: DISTINCT
         if isDistinct {
             var seen = Set<VariableBinding>()
-            projected = projected.filter { seen.insert($0).inserted }
+            projected = try projected.filter { binding in
+                try workMeter.consume(at: .deduplication)
+                return seen.insert(binding).inserted
+            }
         }
 
         // Step 5: OFFSET / LIMIT (Slice)
@@ -366,19 +387,31 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         var finalStats = stats
         finalStats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
+        guard let outputRows = UInt32(exactly: projected.count) else {
+            throw DatabaseWorkLimitError.maximumRows(
+                stage: .resultMaterialization,
+                consumed: workMeter.consumedRows,
+                requested: UInt32.max,
+                maximum: budget.maximumRows
+            )
+        }
+        try workMeter.recordOutputRows(outputRows)
+        let reachedLimit = limitCount.map { projected.count >= $0 } ?? false
         return SPARQLGroupedResult(
             bindings: projected,
             groupVariables: groupVariables,
             aggregateAliases: aggregates.map { $0.alias },
             projectedVariables: outputVariables,
-            isComplete: limitCount == nil || projected.count < limitCount!,
+            isComplete: !reachedLimit,
             statistics: finalStats
         )
     }
 
     /// Execute and return just the first result (or nil)
-    public func first() async throws -> VariableBinding? {
-        try await limit(1).execute().bindings.first
+    public func first(
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+    ) async throws -> VariableBinding? {
+        try await limit(1).execute(budget: budget).bindings.first
     }
 
     // MARK: - Query Info

@@ -1,7 +1,11 @@
 // SecureTransactionContext.swift
 // DatabaseEngine - Security-aware transaction context
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 
@@ -9,7 +13,7 @@ import Core
 ///
 /// Implements TransactionContextProtocol with security evaluation on each operation.
 /// Created by FDBDataStore.withTransaction() and uses the store's security delegate.
-internal final class SecureTransactionContext: TransactionContextProtocol, @unchecked Sendable {
+internal final class SecureTransactionContext: TransactionContextProtocol, Sendable {
 
     // MARK: - Properties
 
@@ -19,6 +23,7 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
     private let blobsSubspace: Subspace
     private let indexMaintenanceService: IndexMaintenanceService
     private let securityDelegate: (any DataStoreSecurityDelegate)?
+    private let itemStorageFactory: ItemStorageFactory
 
     // MARK: - Initialization
 
@@ -28,7 +33,8 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         indexSubspace: Subspace,
         blobsSubspace: Subspace,
         indexMaintenanceService: IndexMaintenanceService,
-        securityDelegate: (any DataStoreSecurityDelegate)?
+        securityDelegate: (any DataStoreSecurityDelegate)?,
+        itemStorageFactory: ItemStorageFactory
     ) {
         self.transaction = transaction
         self.itemSubspace = itemSubspace
@@ -36,21 +42,22 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         self.blobsSubspace = blobsSubspace
         self.indexMaintenanceService = indexMaintenanceService
         self.securityDelegate = securityDelegate
+        self.itemStorageFactory = itemStorageFactory
     }
 
     // MARK: - TransactionContextProtocol
 
     public func get<T: Persistable>(
         _ type: T.Type,
-        id: any TupleElement,
+        id: T.ID,
         snapshot: Bool = false
     ) async throws -> T? {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
-        let keyTuple = (id as? Tuple) ?? Tuple([id])
+        let keyTuple = try RecordIdentifierKeyCodec.tuple(for: id)
         let key = typeSubspace.pack(keyTuple)
 
         // Use ItemStorage with snapshot semantics properly propagated
-        let storage = ItemStorage(
+        let storage = itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
@@ -68,7 +75,7 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
 
     public func getMany<T: Persistable>(
         _ type: T.Type,
-        ids: [any TupleElement],
+        ids: [T.ID],
         snapshot: Bool = false
     ) async throws -> [T] {
         var results: [T] = []
@@ -81,14 +88,13 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
     }
 
     public func set<T: Persistable>(_ model: T) async throws {
-        let validatedID = try model.validateIDForStorage()
-        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+        let idTuple = try model.recordIdentifierTuple()
 
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
         // Use ItemStorage for large value handling (stores chunks in blobs subspace)
-        let storage = ItemStorage(
+        let storage = itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
@@ -118,13 +124,12 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
     }
 
     public func delete<T: Persistable>(_ model: T) async throws {
-        let validatedID = try model.validateIDForStorage()
-        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+        let idTuple = try model.recordIdentifierTuple()
 
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        let storage = ItemStorage(
+        let storage = itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
@@ -147,7 +152,7 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         try await storage.delete(for: key)
     }
 
-    public func delete<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws {
+    public func delete<T: Persistable>(_ type: T.Type, id: T.ID) async throws {
         guard let model: T = try await get(type, id: id, snapshot: false) else {
             return
         }

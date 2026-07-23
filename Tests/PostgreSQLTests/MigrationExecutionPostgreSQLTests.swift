@@ -8,6 +8,7 @@ import PostgreSQLStorage
 @testable import ScalarIndex
 import TestSupport
 import TestHeartbeat
+import DatabaseRuntime
 
 private actor PGMigrationEventRecorder {
     private var events: [String] = []
@@ -193,16 +194,16 @@ enum PGStageFailureMigrationPlan: SchemaMigrationPlan {
     }
 }
 
-@Suite("Migration Execution PostgreSQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
+@Suite("Migration Execution PostgreSQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
 struct MigrationExecutionPostgreSQLTests {
     @Test("Multi-stage migration executes in order and persists stage boundaries on PostgreSQL")
     func multiStageMigrationExecutesInOrderAndPersistsBetweenStages() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            try await PostgreSQLTestSetup.shared.cleanAllData()
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
             await pgMigrationEventRecorder.reset()
-            let engine = try await PostgreSQLTestSetup.shared.engine
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let initialContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGStageBoundarySchemaV1.makeSchema()
             )
             let initialContext = initialContainer.newContext()
@@ -216,14 +217,15 @@ struct MigrationExecutionPostgreSQLTests {
             let migratedContainer = try await DBContainer(
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
             )
             try await migratedContainer.migrateIfNeeded()
 
             let events = await pgMigrationEventRecorder.snapshot()
             let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
 
-            let verificationContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGStageBoundarySchemaV3.makeSchema()
             )
             let migratedUsers = try await verificationContainer.newContext()
@@ -241,12 +243,12 @@ struct MigrationExecutionPostgreSQLTests {
 
     @Test("Failed later stage keeps earlier stage committed on PostgreSQL")
     func failedLaterStageKeepsEarlierStageCommitted() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            try await PostgreSQLTestSetup.shared.cleanAllData()
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
             await pgMigrationEventRecorder.reset()
-            let engine = try await PostgreSQLTestSetup.shared.engine
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let initialContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGStageFailureSchemaV1.makeSchema()
             )
             let initialContext = initialContainer.newContext()
@@ -260,7 +262,8 @@ struct MigrationExecutionPostgreSQLTests {
             let migratedContainer = try await DBContainer(
                 for: PGStageFailureSchemaV3.self,
                 migrationPlan: PGStageFailureMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
             )
 
             do {
@@ -275,7 +278,7 @@ struct MigrationExecutionPostgreSQLTests {
             let registry = SchemaRegistry(database: engine)
             let entity = try await registry.load(typeName: PGStageFailureUserV1.persistableType)
 
-            let verificationContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGStageFailureSchemaV2.makeSchema()
             )
             let migratedUsers = try await verificationContainer.newContext()
@@ -294,15 +297,16 @@ struct MigrationExecutionPostgreSQLTests {
 
     @Test("Empty database bootstraps to latest schema without executing stages on PostgreSQL")
     func emptyDatabaseBootstrapsWithoutExecutingStages() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            try await PostgreSQLTestSetup.shared.cleanAllData()
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
             await pgMigrationEventRecorder.reset()
-            let engine = try await PostgreSQLTestSetup.shared.engine
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
             let migratedContainer = try await DBContainer(
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -320,12 +324,12 @@ struct MigrationExecutionPostgreSQLTests {
 
     @Test("Re-entrant migrateIfNeeded is idempotent on PostgreSQL")
     func reEntrantMigrateIsIdempotent() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            try await PostgreSQLTestSetup.shared.cleanAllData()
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
             await pgMigrationEventRecorder.reset()
-            let engine = try await PostgreSQLTestSetup.shared.engine
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let initialContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGStageBoundarySchemaV1.makeSchema()
             )
             let initialContext = initialContainer.newContext()
@@ -339,7 +343,8 @@ struct MigrationExecutionPostgreSQLTests {
             let migratedContainer = try await DBContainer(
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
             )
 
             try await migratedContainer.migrateIfNeeded()
@@ -350,7 +355,7 @@ struct MigrationExecutionPostgreSQLTests {
 
             let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
 
-            let verificationContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGStageBoundarySchemaV3.makeSchema()
             )
             let migratedUsers = try await verificationContainer.newContext()

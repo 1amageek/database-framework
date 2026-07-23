@@ -1,12 +1,17 @@
 // FDBContext+SQL.swift
 // Database - FDBContext extension for executing SQL strings with SPARQL() function support
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import QueryIR
 import QueryAST
 import DatabaseEngine
 import DatabaseRuntime
+import DatabaseWire
 
 // MARK: - FDBContext + SQL String Execution
 
@@ -40,10 +45,10 @@ extension FDBContext {
     ///           `CanonicalReadError` for conversion errors, or any underlying fetch errors
     public func executeSQL<T: Persistable>(
         _ sql: String,
-        as type: T.Type
+        as type: T.Type,
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
     ) async throws -> [T] {
-        BuiltinReadRuntime.registerBuiltins()
-
+        let workMeter = DatabaseWorkMeter(budget: budget)
         // 1. Parse SQL string
         let parser = SQLParser()
         let statement = try parser.parse(sql)
@@ -54,10 +59,31 @@ extension FDBContext {
         }
 
         // 3. Rewrite SPARQL() functions if present
-        let rewrittenQuery = try await rewriteSPARQLFunctions(selectQuery)
+        let rewrittenQuery = try await rewriteSPARQLFunctions(
+            selectQuery,
+            workMeter: workMeter
+        )
 
         // 4. Execute via DatabaseEngine layer
-        return try await execute(rewrittenQuery, as: type)
+        let response = try await query(
+            rewrittenQuery,
+            execution: ReadExecutionContext(
+                options: ReadExecutionOptions(budget: budget),
+                workMeter: workMeter
+            )
+        )
+        guard let rowCount = UInt32(exactly: response.rows.count) else {
+            throw DatabaseWorkLimitError.maximumRows(
+                stage: .resultMaterialization,
+                consumed: workMeter.consumedRows,
+                requested: UInt32.max,
+                maximum: budget.maximumRows
+            )
+        }
+        try workMeter.recordOutputRows(rowCount)
+        return try response.rows.map { row in
+            try QueryRowCodec.decode(row, as: type)
+        }
     }
 
     // MARK: - SPARQL Function Rewriting
@@ -67,8 +93,14 @@ extension FDBContext {
     /// - Parameter selectQuery: Query to rewrite
     /// - Returns: Rewritten query with SPARQL() replaced by literal values
     /// - Throws: `SPARQLFunctionError` for SPARQL execution errors
-    private func rewriteSPARQLFunctions(_ selectQuery: QueryIR.SelectQuery) async throws -> QueryIR.SelectQuery {
-        let rewriter = SPARQLFunctionRewriter(context: self)
+    private func rewriteSPARQLFunctions(
+        _ selectQuery: QueryIR.SelectQuery,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> QueryIR.SelectQuery {
+        let rewriter = SPARQLFunctionRewriter(
+            context: self,
+            workMeter: workMeter
+        )
         return try await rewriter.rewrite(selectQuery)
     }
 }

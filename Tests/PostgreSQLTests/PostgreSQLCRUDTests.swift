@@ -20,7 +20,7 @@ struct PGDemoItem: Equatable {
     var tags: [String] = []
 }
 
-@Suite("PostgreSQL CRUD Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
+@Suite("PostgreSQL CRUD Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
 struct PostgreSQLCRUDTests {
 
     private func uniqueID(_ prefix: String) -> String {
@@ -29,14 +29,14 @@ struct PostgreSQLCRUDTests {
 
     private func setupContainer() async throws -> DBContainer {
         let schema = Schema([PGDemoItem.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLTestSetup.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
     }
 
     // MARK: - Basic CRUD
 
     @Test("Create -> Read -> Update -> Delete round-trip")
     func roundTrip() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -98,7 +98,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Insert multiple items and save in batch")
     func batchInsertSave() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -129,7 +129,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Delete via change tracking")
     func deleteViaChangeTracking() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -165,7 +165,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Fetch with where clause")
     func fetchWithWhere() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -195,7 +195,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Fetch with limit")
     func fetchWithLimit() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -222,7 +222,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Read non-existent item returns nil")
     func readNonExistent() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -235,7 +235,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Insert same ID overwrites (upsert behavior)")
     func upsertBehavior() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -268,7 +268,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Empty array field round-trip")
     func emptyArrayRoundTrip() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 

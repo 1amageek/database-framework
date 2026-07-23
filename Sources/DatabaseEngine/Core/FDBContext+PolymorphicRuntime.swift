@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import StorageKit
 
@@ -50,7 +54,7 @@ extension FDBContext {
         )
 
         return try await withRawTransaction(configuration: configuration) { transaction in
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+            let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
             let (begin, end) = itemSubspace.range()
             var records: [PolymorphicRecord] = []
 
@@ -88,7 +92,7 @@ extension FDBContext {
         let typeMap = polymorphicTypeMap(for: group)
 
         return try await withRawTransaction(configuration: configuration) { transaction in
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+            let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
             var items: [PolymorphicRecord] = []
 
             for id in ids {
@@ -155,7 +159,7 @@ extension FDBContext {
         offset: Int?,
         orderBy: [String]?
     ) throws {
-        func helper<T: Persistable>(_ concreteType: T.Type) throws {
+        func evaluateConcreteListAccess<T: Persistable>(_ concreteType: T.Type) throws {
             try container.securityDelegate?.evaluateList(
                 type: concreteType,
                 limit: limit,
@@ -164,7 +168,7 @@ extension FDBContext {
             )
         }
 
-        try _openExistential(type, do: helper)
+        try _openExistential(type, do: evaluateConcreteListAccess)
     }
 
     private func isPolymorphicGetAllowed(_ item: any Persistable) -> Bool {

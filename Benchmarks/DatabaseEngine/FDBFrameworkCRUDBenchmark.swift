@@ -2,9 +2,11 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import StorageKit
 import TestSupport
 import DatabaseEngine
+import DatabaseRuntime
 
 struct CRUDBenchmarkRecord: Persistable {
     typealias ID = String
@@ -35,8 +37,13 @@ struct CRUDBenchmarkRecord: Persistable {
         ["id", "runID", "name", "age", "score"]
     }
 
-    static var directoryPathComponents: [any DirectoryPathElement] {
-        [Path("test"), Path("performance"), Field<CRUDBenchmarkRecord>(\.runID), Path("crud-records")]
+    static var directoryPathComponents: [DirectoryPathComponent] {
+        [
+            .staticPath("test"),
+            .staticPath("performance"),
+            .dynamicField(fieldName: "runID"),
+            .staticPath("crud-records"),
+        ]
     }
 
     static var directoryLayer: DirectoryLayer { .partition }
@@ -90,7 +97,7 @@ private struct CRUDBenchmarkContext: Sendable {
     let rawSubspace: Subspace
 
     init(runID: String = "crud-\(UUID().uuidString.prefix(8))") async throws {
-        self.engine = try await FDBTestSetup.shared.makeEngine()
+        self.engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         self.runID = runID
 
         var path = DirectoryPath<CRUDBenchmarkRecord>()
@@ -102,19 +109,20 @@ private struct CRUDBenchmarkContext: Sendable {
         self.container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
     }
 
     func cleanup() async throws {
         do {
-            try await engine.directoryService.remove(path: ["test", "performance", runID, "crud-records"])
+            try await engine.removeDirectory(path: ["test", "performance", runID, "crud-records"])
         } catch {
             // Ignore missing directory for empty/failed runs.
         }
         try await engine.withTransaction { transaction in
             let (begin, end) = rawSubspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -138,20 +146,20 @@ private struct CRUDBenchmarkContext: Sendable {
     }
 
     func rawWrite(id: String) async throws {
-        let value = Array(repeating: UInt8(0x42), count: 72)
+        let value = Bytes(repeating: 0x42, count: 72)
         let key = rawSubspace.pack(Tuple([id]))
         try await engine.withAutoCommit { transaction in
-            transaction.setValue(value, for: key)
+            try transaction.setValue(value, for: key)
         }
     }
 
-    func frameworkLayoutWrite(_ record: CRUDBenchmarkRecord, isNewRecord: Bool) async throws {
+    func frameworkLayoutWrite(_ record: CRUDBenchmarkRecord) async throws {
         let layout = try await frameworkLayout()
         let key = layout.itemSubspace.pack(Tuple([record.id]))
         let data = try DataAccess.serialize(record)
         try await engine.withAutoCommit { transaction in
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: layout.blobsSubspace)
-            try await storage.write(data, for: key, isNewRecord: isNewRecord)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: layout.blobsSubspace, configuration: .v1)
+            try await storage.write(data, for: key)
         }
     }
 
@@ -167,7 +175,7 @@ private struct CRUDBenchmarkContext: Sendable {
         let layout = try await frameworkLayout()
         let key = layout.itemSubspace.pack(Tuple([id]))
         return try await engine.withAutoCommit { transaction in
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: layout.blobsSubspace)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: layout.blobsSubspace, configuration: .v1)
             guard let data = try await storage.read(for: key, snapshot: false) else {
                 return nil
             }
@@ -184,7 +192,7 @@ private struct CRUDBenchmarkContext: Sendable {
     func dataStoreRead(id: String) async throws -> CRUDBenchmarkRecord? {
         let store = try await container.store(for: CRUDBenchmarkRecord.self, path: path)
         return try await store.withAutoCommit { transaction in
-            try await store.fetchByIdInTransaction(CRUDBenchmarkRecord.self, id: id, transaction: transaction)
+            try await store.fetchByIDInTransaction(CRUDBenchmarkRecord.self, id: id, transaction: transaction)
         }
     }
 
@@ -223,14 +231,14 @@ struct FDBFrameworkCRUDBenchmarkTests {
 
     @Test("write path layer comparison", .timeLimit(.minutes(1)))
     func testWritePathLayerComparison() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             try await withCRUDBenchmarkContext { context in
                 let rawMeasurement = try await measureBenchmark(name: "L1 Raw KV") {
                     try await context.rawWrite(id: UUID().uuidString)
                 }
 
                 let storageMeasurement = try await measureBenchmark(name: "L2 ItemStorage") {
-                    try await context.frameworkLayoutWrite(context.makeRecord(seed: Int.random(in: 0...1_000_000)), isNewRecord: true)
+                    try await context.frameworkLayoutWrite(context.makeRecord(seed: Int.random(in: 0...1_000_000)))
                 }
 
                 let dataStoreMeasurement = try await measureBenchmark(name: "L3 DataStore") {
@@ -252,7 +260,7 @@ struct FDBFrameworkCRUDBenchmarkTests {
 
     @Test("read path layer comparison", .timeLimit(.minutes(1)))
     func testReadPathLayerComparison() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             try await withCRUDBenchmarkContext { context in
                 let records: [(String, CRUDBenchmarkRecord)] = (0..<128).map { index in
                     let id = "record-\(index)"
@@ -261,7 +269,7 @@ struct FDBFrameworkCRUDBenchmarkTests {
                 }
 
                 for (_, record) in records {
-                    try await context.frameworkLayoutWrite(record, isNewRecord: true)
+                    try await context.frameworkLayoutWrite(record)
                 }
 
                 var cursor = 0
@@ -301,7 +309,7 @@ struct FDBFrameworkCRUDBenchmarkTests {
 
     @Test("benchmark partitions remain isolated", .timeLimit(.minutes(1)))
     func testBenchmarkPartitionsRemainIsolated() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let first = try await CRUDBenchmarkContext(runID: "crud-a-\(UUID().uuidString.prefix(8))")
             let second = try await CRUDBenchmarkContext(runID: "crud-b-\(UUID().uuidString.prefix(8))")
 

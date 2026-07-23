@@ -1,7 +1,11 @@
 // SecurityError.swift
 // DatabaseEngine - Security error type
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Security error thrown when access is denied
 ///

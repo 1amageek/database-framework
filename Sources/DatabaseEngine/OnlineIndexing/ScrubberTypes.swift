@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 
 // MARK: - ScrubberConfiguration
@@ -9,18 +13,9 @@ import StorageKit
 ///
 /// ## Index Type Behavior
 ///
-/// **Per-Item Indexes (Scalar, Min, Max, Version)**:
-/// - Phase 1: Detects dangling entries (index → missing item)
-/// - Phase 2: Detects missing entries (item → missing index)
-/// - Repair: Can fully repair by adding/removing individual entries
-///
-/// **Aggregation Indexes (Count, Sum)**:
-/// - Phase 1: Detects dangling group keys (keys with no contributing items)
-/// - Phase 2: Detects missing group keys (items with no group key entry)
-/// - Repair: **Limited** - `scanItem` adds incremental values, not absolute values
-///
-/// **Important**: For aggregation indexes, use `allowRepair=false` for detection only.
-/// To fix aggregation index values, use `OnlineIndexer.rebuildIndex()` for a full rebuild.
+/// Scrubbing is available only when the registered index runtime provider exposes
+/// an explicit physical-entry decoder. Repair additionally requires the provider
+/// to declare that individual entries are independently repairable.
 public struct ScrubberConfiguration: Sendable {
     // MARK: - Scan Limits
 
@@ -47,18 +42,8 @@ public struct ScrubberConfiguration: Sendable {
     /// - Default: false (detection only, no repair)
     /// - **Caution**: Enable carefully in production environments
     ///
-    /// **Per-Item Indexes (Scalar, Min, Max, Version)**:
-    /// When `true`, scrubber will:
-    /// - Remove dangling index entries (Phase 1)
-    /// - Add missing index entries via `scanItem` (Phase 2)
-    ///
-    /// **Aggregation Indexes (Count, Sum)**:
-    /// When `true`, scrubber will:
-    /// - Remove dangling group keys (Phase 1) - **Use with caution**
-    /// - Increment counts/sums via `scanItem` (Phase 2) - **May cause incorrect values**
-    ///
-    /// For aggregation indexes, prefer `allowRepair=false` and use
-    /// `OnlineIndexer.rebuildIndex()` for full rebuild instead.
+    /// Enabling repair fails before scanning unless the registered physical-entry
+    /// capability guarantees independent, idempotent entry repair.
     public let allowRepair: Bool
 
     // MARK: - Retry Settings
@@ -287,6 +272,18 @@ public enum ScrubberError: Error, CustomStringConvertible {
     /// Unsupported index type for scrubbing
     case unsupportedIndexType(indexName: String, indexType: String)
 
+    /// The index layout cannot safely repair individual entries.
+    case repairUnsupported(indexName: String, indexType: String)
+
+    /// A physical entry cannot be decoded by the registered index capability.
+    case invalidPhysicalEntry(indexName: String, reason: String)
+
+    /// A configuration value violates the scrubber's execution contract.
+    case invalidConfiguration(field: String, value: Int)
+
+    /// A batch exceeded the configured read-byte budget.
+    case transactionByteLimitExceeded(maximum: Int)
+
     /// Retry limit exceeded
     case retryLimitExceeded(phase: String, attempts: Int, lastError: Error)
 
@@ -301,6 +298,14 @@ public enum ScrubberError: Error, CustomStringConvertible {
             return "Index '\(name)' is not readable (current state: \(state))"
         case .unsupportedIndexType(let name, let type):
             return "Index '\(name)' has unsupported type '\(type)' for scrubbing"
+        case .repairUnsupported(let name, let type):
+            return "Index '\(name)' of type '\(type)' does not support independent entry repair"
+        case .invalidPhysicalEntry(let name, let reason):
+            return "Index '\(name)' contains an invalid physical entry: \(reason)"
+        case .invalidConfiguration(let field, let value):
+            return "Invalid scrubber configuration '\(field)': \(value)"
+        case .transactionByteLimitExceeded(let maximum):
+            return "Scrubber batch exceeded its \(maximum)-byte transaction budget"
         case .retryLimitExceeded(let phase, let attempts, let error):
             return "\(phase): Retry limit exceeded after \(attempts) attempts. Last error: \(error)"
         case .invalidItemType(let type):
@@ -326,7 +331,7 @@ extension ScrubberSummary: CustomStringConvertible {
         return """
         ScrubberSummary(
             index: \(indexName),
-            timeElapsed: \(String(format: "%.2f", timeElapsed))s,
+            timeElapsed: \(DatabaseTextFormatting.fixedDecimal(timeElapsed, fractionDigits: 2))s,
             entriesScanned: \(entriesScanned),
             itemsScanned: \(itemsScanned),
             danglingEntries: \(danglingEntriesDetected) detected / \(danglingEntriesRepaired) repaired,

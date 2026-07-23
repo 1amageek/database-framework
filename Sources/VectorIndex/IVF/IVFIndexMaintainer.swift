@@ -4,7 +4,11 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -296,10 +300,10 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Remove from inverted list
         let listSubspace = subspace.subspace(SubspaceKey.lists.rawValue)
         let listKey = listSubspace.subspace(Int(clusterId)).pack(id)
-        transaction.clear(key: listKey)
+        try transaction.clear(key: listKey)
 
         // Remove assignment
-        transaction.clear(key: assignmentKey)
+        try transaction.clear(key: assignmentKey)
     }
 
     /// Add a vector to its inverted list
@@ -325,20 +329,19 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let listSubspace = subspace.subspace(SubspaceKey.lists.rawValue)
         let listKey = listSubspace.subspace(clusterId).pack(id)
         let vectorValue = VectorConversion.floatArrayToBytes(vector)
-        transaction.setValue(vectorValue, for: listKey)
+        try transaction.setValue(vectorValue, for: listKey)
 
         // Store assignment
         let assignmentSubspace = subspace.subspace(SubspaceKey.assignments.rawValue)
         let assignmentKey = assignmentSubspace.pack(id)
         let assignmentValue = Tuple([Int64(clusterId)]).pack()
-        transaction.setValue(assignmentValue, for: assignmentKey)
+        try transaction.setValue(assignmentValue, for: assignmentKey)
     }
 
     /// Extract vector from item using VectorConversion
     private func extractVector(from item: Item) throws -> [Float] {
-        let fieldValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
+        let fieldValues = try DataAccess.evaluate(
+            item: item,
             expression: index.rootExpression
         )
 
@@ -362,7 +365,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         for (i, centroid) in centroids.enumerated() {
             let key = centroidSubspace.pack(Tuple([i]))
             let value = VectorConversion.floatArrayToBytes(centroid)
-            transaction.setValue(value, for: key)
+            try transaction.setValue(value, for: key)
         }
     }
 
@@ -391,7 +394,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
         let encoder = JSONEncoder()
         let data = try encoder.encode(metadata)
-        transaction.setValue([UInt8](data), for: metadataKey)
+        try transaction.setValue(Bytes(data), for: metadataKey)
     }
 
     /// Load metadata

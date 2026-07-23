@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
 // MARK: - Test Model
 
-struct CountTestUser: Persistable {
+struct CountIndexedUser: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ struct CountTestUser: Persistable {
         self.active = active
     }
 
-    static var persistableType: String { "CountTestUser" }
+    static var persistableType: String { "CountIndexedUser" }
     static var allFields: [String] { ["id", "city", "department", "active"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,57 +46,57 @@ struct CountTestUser: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<CountTestUser, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<CountIndexedUser, Value>) -> String {
         switch keyPath {
-        case \CountTestUser.id: return "id"
-        case \CountTestUser.city: return "city"
-        case \CountTestUser.department: return "department"
-        case \CountTestUser.active: return "active"
+        case \CountIndexedUser.id: return "id"
+        case \CountIndexedUser.city: return "city"
+        case \CountIndexedUser.department: return "department"
+        case \CountIndexedUser.active: return "active"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<CountTestUser>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<CountIndexedUser>) -> String {
         switch keyPath {
-        case \CountTestUser.id: return "id"
-        case \CountTestUser.city: return "city"
-        case \CountTestUser.department: return "department"
-        case \CountTestUser.active: return "active"
+        case \CountIndexedUser.id: return "id"
+        case \CountIndexedUser.city: return "city"
+        case \CountIndexedUser.department: return "department"
+        case \CountIndexedUser.active: return "active"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<CountTestUser> {
+        if let partial = keyPath as? PartialKeyPath<CountIndexedUser> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Count Index Context
 
-private struct TestContext {
+private struct CountIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: CountIndexMaintainer<CountTestUser>
+    let maintainer: CountIndexMaintainer<CountIndexedUser>
 
-    init(indexName: String = "CountTestUser_city") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(indexName: String = "CountIndexedUser_city") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "count", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         let index = Index(
             name: indexName,
-            kind: CountIndexKind<CountTestUser>(groupBy: [\.city]),
+            kind: CountIndexKind<CountIndexedUser>(groupBy: [\.city]),
             rootExpression: FieldKeyExpression(fieldName: "city"),
             subspaceKey: indexName,
-            itemTypes: Set(["CountTestUser"])
+            itemTypes: Set(["CountIndexedUser"])
         )
 
-        self.maintainer = CountIndexMaintainer<CountTestUser>(
+        self.maintainer = CountIndexMaintainer<CountIndexedUser>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -105,7 +106,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -134,10 +135,10 @@ struct CountIndexBehaviorTests {
 
     @Test("Insert increments count")
     func testInsertIncrementsCount() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await CountIndexContext()
 
-        let user = CountTestUser(id: "user1", city: "Tokyo", department: "Engineering")
+        let user = CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -155,13 +156,13 @@ struct CountIndexBehaviorTests {
 
     @Test("Multiple inserts to same group increment count")
     func testMultipleInsertsIncrement() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await CountIndexContext()
 
         let users = [
-            CountTestUser(id: "user1", city: "Tokyo", department: "Engineering"),
-            CountTestUser(id: "user2", city: "Tokyo", department: "Sales"),
-            CountTestUser(id: "user3", city: "Tokyo", department: "Marketing")
+            CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering"),
+            CountIndexedUser(id: "user2", city: "Tokyo", department: "Sales"),
+            CountIndexedUser(id: "user3", city: "Tokyo", department: "Marketing")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -182,14 +183,14 @@ struct CountIndexBehaviorTests {
 
     @Test("Inserts to different groups are independent")
     func testDifferentGroupsIndependent() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await CountIndexContext()
 
         let users = [
-            CountTestUser(id: "user1", city: "Tokyo", department: "Engineering"),
-            CountTestUser(id: "user2", city: "Tokyo", department: "Sales"),
-            CountTestUser(id: "user3", city: "Osaka", department: "Marketing"),
-            CountTestUser(id: "user4", city: "Kyoto", department: "Engineering")
+            CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering"),
+            CountIndexedUser(id: "user2", city: "Tokyo", department: "Sales"),
+            CountIndexedUser(id: "user3", city: "Osaka", department: "Marketing"),
+            CountIndexedUser(id: "user4", city: "Kyoto", department: "Engineering")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -217,10 +218,10 @@ struct CountIndexBehaviorTests {
 
     @Test("Delete decrements count")
     func testDeleteDecrementsCount() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await CountIndexContext()
 
-        let user = CountTestUser(id: "user1", city: "Tokyo", department: "Engineering")
+        let user = CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -251,12 +252,12 @@ struct CountIndexBehaviorTests {
 
     @Test("Delete one from multiple decrements correctly")
     func testDeleteOneFromMultiple() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await CountIndexContext()
 
-        let user1 = CountTestUser(id: "user1", city: "Tokyo", department: "Engineering")
-        let user2 = CountTestUser(id: "user2", city: "Tokyo", department: "Sales")
-        let user3 = CountTestUser(id: "user3", city: "Tokyo", department: "Marketing")
+        let user1 = CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering")
+        let user2 = CountIndexedUser(id: "user2", city: "Tokyo", department: "Sales")
+        let user3 = CountIndexedUser(id: "user3", city: "Tokyo", department: "Marketing")
 
         // Insert all
         try await ctx.database.withTransaction { transaction in
@@ -287,10 +288,10 @@ struct CountIndexBehaviorTests {
 
     @Test("Update same group does not change count")
     func testUpdateSameGroupNoChange() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await CountIndexContext()
 
-        let user = CountTestUser(id: "user1", city: "Tokyo", department: "Engineering")
+        let user = CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -302,7 +303,7 @@ struct CountIndexBehaviorTests {
         }
 
         // Update department (same city)
-        let updatedUser = CountTestUser(id: "user1", city: "Tokyo", department: "Sales")
+        let updatedUser = CountIndexedUser(id: "user1", city: "Tokyo", department: "Sales")
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: user,
@@ -319,10 +320,10 @@ struct CountIndexBehaviorTests {
 
     @Test("Update different group moves count")
     func testUpdateDifferentGroupMovesCount() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await CountIndexContext()
 
-        let user = CountTestUser(id: "user1", city: "Tokyo", department: "Engineering")
+        let user = CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -339,7 +340,7 @@ struct CountIndexBehaviorTests {
         #expect(osakaCountBefore == 0)
 
         // Update city from Tokyo to Osaka
-        let updatedUser = CountTestUser(id: "user1", city: "Osaka", department: "Engineering")
+        let updatedUser = CountIndexedUser(id: "user1", city: "Osaka", department: "Engineering")
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: user,
@@ -360,13 +361,13 @@ struct CountIndexBehaviorTests {
 
     @Test("ScanItem increments count")
     func testScanItemIncrementsCount() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await CountIndexContext()
 
         let users = [
-            CountTestUser(id: "user1", city: "Tokyo", department: "Engineering"),
-            CountTestUser(id: "user2", city: "Tokyo", department: "Sales"),
-            CountTestUser(id: "user3", city: "Osaka", department: "Marketing")
+            CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering"),
+            CountIndexedUser(id: "user2", city: "Tokyo", department: "Sales"),
+            CountIndexedUser(id: "user3", city: "Osaka", department: "Marketing")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -392,14 +393,14 @@ struct CountIndexBehaviorTests {
 
     @Test("GetAllCounts returns all groups")
     func testGetAllCountsReturnsAllGroups() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await CountIndexContext()
 
         let users = [
-            CountTestUser(id: "user1", city: "Tokyo", department: "Engineering"),
-            CountTestUser(id: "user2", city: "Tokyo", department: "Sales"),
-            CountTestUser(id: "user3", city: "Osaka", department: "Marketing"),
-            CountTestUser(id: "user4", city: "Kyoto", department: "Engineering")
+            CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering"),
+            CountIndexedUser(id: "user2", city: "Tokyo", department: "Sales"),
+            CountIndexedUser(id: "user3", city: "Osaka", department: "Marketing"),
+            CountIndexedUser(id: "user4", city: "Kyoto", department: "Engineering")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -424,8 +425,8 @@ struct CountIndexBehaviorTests {
 
     @Test("GetCount for non-existent group returns zero")
     func testGetCountNonExistentGroupReturnsZero() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await CountIndexContext()
 
         let count = try await ctx.getCount(for: "NonExistentCity")
         #expect(count == 0, "Count for non-existent group should be 0")
@@ -437,34 +438,34 @@ struct CountIndexBehaviorTests {
 
     @Test("Composite grouping with multiple fields")
     func testCompositeGrouping() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "count", "composite", String(testId)).pack())
-        let indexSubspace = subspace.subspace("I").subspace("CountTestUser_city_department")
+        let indexSubspace = subspace.subspace("I").subspace("CountIndexedUser_city_department")
 
         let index = Index(
-            name: "CountTestUser_city_department",
-            kind: CountIndexKind<CountTestUser>(groupBy: [\.city, \.department]),
+            name: "CountIndexedUser_city_department",
+            kind: CountIndexKind<CountIndexedUser>(groupBy: [\.city, \.department]),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "city"),
                 FieldKeyExpression(fieldName: "department")
             ]),
-            subspaceKey: "CountTestUser_city_department",
-            itemTypes: Set(["CountTestUser"])
+            subspaceKey: "CountIndexedUser_city_department",
+            itemTypes: Set(["CountIndexedUser"])
         )
 
-        let maintainer = CountIndexMaintainer<CountTestUser>(
+        let maintainer = CountIndexMaintainer<CountIndexedUser>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
 
         let users = [
-            CountTestUser(id: "user1", city: "Tokyo", department: "Engineering"),
-            CountTestUser(id: "user2", city: "Tokyo", department: "Engineering"),
-            CountTestUser(id: "user3", city: "Tokyo", department: "Sales"),
-            CountTestUser(id: "user4", city: "Osaka", department: "Engineering")
+            CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering"),
+            CountIndexedUser(id: "user2", city: "Tokyo", department: "Engineering"),
+            CountIndexedUser(id: "user3", city: "Tokyo", department: "Sales"),
+            CountIndexedUser(id: "user4", city: "Osaka", department: "Engineering")
         ]
 
         try await database.withTransaction { transaction in
@@ -508,7 +509,7 @@ struct CountIndexBehaviorTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }

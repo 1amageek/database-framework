@@ -3,8 +3,13 @@
 //
 // Represents terms in triple patterns following SPARQL semantics.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import Graph
 
 /// Represents a term in a SPARQL-like triple pattern
 ///
@@ -36,10 +41,8 @@ public enum ExecutionTerm: Sendable, Hashable {
     /// Equivalent to an unnamed variable that isn't referenced elsewhere
     case wildcard
 
-    /// RDF-star quoted triple - a triple used as a term
-    /// Enables statements about statements (e.g., metadata on triples)
-    /// Reference: W3C RDF-star and SPARQL-star
-    indirect case quotedTriple(subject: ExecutionTerm, predicate: ExecutionTerm, object: ExecutionTerm)
+    /// RDF 1.2 triple term used in object position.
+    indirect case tripleTerm(subject: ExecutionTerm, predicate: ExecutionTerm, object: ExecutionTerm)
 
     /// Whether this term is a named variable that creates bindings
     ///
@@ -68,12 +71,25 @@ public enum ExecutionTerm: Sendable, Hashable {
         switch self {
         case .value(let v):
             return v
-        case .quotedTriple(let s, let p, let o):
-            // Return canonical string encoding for storage
-            guard let sv = s.literalValue, let pv = p.literalValue, let ov = o.literalValue else {
+        case .tripleTerm(let s, let p, let o):
+            guard let subjectValue = s.literalValue,
+                  let predicateValue = p.literalValue,
+                  let objectValue = o.literalValue,
+                  case .rdfTerm(let subject) = subjectValue,
+                  case .rdfTerm(let predicate) = predicateValue,
+                  case .rdfTerm(let object) = objectValue,
+                  subject.isRDFSubject,
+                  predicate.isRDFPredicate,
+                  object.isRDFObject else {
                 return nil
             }
-            return .string(QuotedTripleEncoding.encode(subject: sv, predicate: pv, object: ov))
+            return .rdfTerm(
+                .tripleTerm(
+                    subject: subject,
+                    predicate: predicate,
+                    object: object
+                )
+            )
         default:
             return nil
         }
@@ -91,7 +107,7 @@ public enum ExecutionTerm: Sendable, Hashable {
         switch self {
         case .value:
             return true
-        case .quotedTriple(let s, let p, let o):
+        case .tripleTerm(let s, let p, let o):
             return s.isBound && p.isBound && o.isBound
         default:
             return false
@@ -120,8 +136,8 @@ public enum ExecutionTerm: Sendable, Hashable {
                 return .value(value)
             }
             return self
-        case .quotedTriple(let s, let p, let o):
-            return .quotedTriple(
+        case .tripleTerm(let s, let p, let o):
+            return .tripleTerm(
                 subject: s.substitute(binding),
                 predicate: p.substitute(binding),
                 object: o.substitute(binding)
@@ -165,14 +181,15 @@ extension ExecutionTerm: CustomStringConvertible {
             switch v {
             case .string(let s): return "\"\(s)\""
             case .int64(let i): return String(i)
+            case .uint64(let i): return String(i)
             case .double(let d): return String(d)
             case .bool(let b): return String(b)
             default: return "\"\(v)\""
             }
         case .wildcard:
             return "_"
-        case .quotedTriple(let s, let p, let o):
-            return "<< \(s) \(p) \(o) >>"
+        case .tripleTerm(let s, let p, let o):
+            return "<<( \(s) \(p) \(o) )>>"
         }
     }
 }

@@ -3,7 +3,11 @@
 //
 // Provides detailed information about why an operation was incomplete.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 // MARK: - LimitReason
 
@@ -57,6 +61,27 @@ public enum LimitReason: Sendable, Equatable {
     ///   - limit: The configured maximum cycles to detect
     case maxCyclesReached(found: Int, limit: Int)
 
+    /// Maximum total path weight was reached.
+    ///
+    /// - Parameters:
+    ///   - weight: Smallest weight pruned by the configured bound
+    ///   - limit: The configured maximum weight
+    case maxWeightReached(weight: Double, limit: Double)
+
+    /// Maximum algorithm iteration count was reached before convergence.
+    ///
+    /// - Parameters:
+    ///   - iterations: Number of completed iterations
+    ///   - limit: The configured maximum iterations
+    case maxIterationsReached(iterations: Int, limit: Int)
+
+    /// Maximum abstract work-unit budget was reached.
+    ///
+    /// - Parameters:
+    ///   - consumed: Number of work units consumed
+    ///   - limit: The configured maximum work units
+    case maxWorkUnitsReached(consumed: UInt64, limit: UInt64)
+
     /// Maximum cell scan limit was reached (spatial queries).
     ///
     /// - Parameters:
@@ -79,6 +104,12 @@ extension LimitReason: CustomStringConvertible {
             return "maxDepthReached(depth: \(depth), limit: \(limit))"
         case .maxCyclesReached(let found, let limit):
             return "maxCyclesReached(found: \(found), limit: \(limit))"
+        case .maxWeightReached(let weight, let limit):
+            return "maxWeightReached(weight: \(weight), limit: \(limit))"
+        case .maxIterationsReached(let iterations, let limit):
+            return "maxIterationsReached(iterations: \(iterations), limit: \(limit))"
+        case .maxWorkUnitsReached(let consumed, let limit):
+            return "maxWorkUnitsReached(consumed: \(consumed), limit: \(limit))"
         case .maxCellsReached(let scanned, let limit):
             return "maxCellsReached(scanned: \(scanned), limit: \(limit))"
         }

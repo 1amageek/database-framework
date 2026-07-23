@@ -4,7 +4,11 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Parameters for Product Quantization
 ///

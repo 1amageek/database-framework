@@ -6,16 +6,17 @@ import Testing
 import TestHeartbeat
 import Foundation
 import Core
+import DatabaseValue
 @testable import DatabaseEngine
 @testable import VersionIndex
 
 // Test model for VersionIndexKind
-struct TestDoc: Persistable {
+struct VersionIndexRecord: Persistable {
     typealias ID = String
     var id: String
     var title: String
 
-    static var persistableType: String { "TestDoc" }
+    static var persistableType: String { "VersionIndexRecord" }
     static var allFields: [String] { ["id", "title"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
     static func fieldNumber(for fieldName: String) -> Int? { nil }
@@ -29,24 +30,24 @@ struct TestDoc: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestDoc, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<VersionIndexRecord, Value>) -> String {
         switch keyPath {
-        case \TestDoc.id: return "id"
-        case \TestDoc.title: return "title"
+        case \VersionIndexRecord.id: return "id"
+        case \VersionIndexRecord.title: return "title"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestDoc>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<VersionIndexRecord>) -> String {
         switch keyPath {
-        case \TestDoc.id: return "id"
-        case \TestDoc.title: return "title"
+        case \VersionIndexRecord.id: return "id"
+        case \VersionIndexRecord.title: return "title"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestDoc> {
+        if let partial = keyPath as? PartialKeyPath<VersionIndexRecord> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
@@ -60,13 +61,13 @@ struct VersionIndexKindTests {
 
     @Test("VersionIndexKind has correct identifier")
     func testIdentifier() {
-        #expect(VersionIndexKind<TestDoc>.identifier == "version")
+        #expect(VersionIndexKind<VersionIndexRecord>.identifier == "version")
     }
 
     @Test("VersionIndexKind has hierarchical subspace structure")
     func testSubspaceStructure() {
         // Version indexes store history hierarchically by versionstamp
-        #expect(VersionIndexKind<TestDoc>.subspaceStructure == .hierarchical)
+        #expect(VersionIndexKind<VersionIndexRecord>.subspaceStructure == .hierarchical)
     }
 
     // MARK: - Type Validation Tests
@@ -74,18 +75,18 @@ struct VersionIndexKindTests {
     @Test("VersionIndexKind accepts any types")
     func testAcceptsAnyTypes() throws {
         // Version index accepts any types without validation
-        try VersionIndexKind<TestDoc>.validateTypes([Int.self])
-        try VersionIndexKind<TestDoc>.validateTypes([String.self])
-        try VersionIndexKind<TestDoc>.validateTypes([Double.self])
-        try VersionIndexKind<TestDoc>.validateTypes([Int.self, String.self])
-        try VersionIndexKind<TestDoc>.validateTypes([])
+        try VersionIndexKind<VersionIndexRecord>.validateTypes([Int.self])
+        try VersionIndexKind<VersionIndexRecord>.validateTypes([String.self])
+        try VersionIndexKind<VersionIndexRecord>.validateTypes([Double.self])
+        try VersionIndexKind<VersionIndexRecord>.validateTypes([Int.self, String.self])
+        try VersionIndexKind<VersionIndexRecord>.validateTypes([])
     }
 
     // MARK: - Codable Tests
 
     @Test("VersionIndexKind is Codable")
     func testCodable() throws {
-        let kind = VersionIndexKind<TestDoc>(field: \.id)
+        let kind = VersionIndexKind<VersionIndexRecord>(field: \.id)
 
         // JSON encoding
         let encoder = JSONEncoder()
@@ -93,7 +94,7 @@ struct VersionIndexKindTests {
 
         // JSON decoding
         let decoder = JSONDecoder()
-        let decoded = try decoder.decode(VersionIndexKind<TestDoc>.self, from: data)
+        let decoded = try decoder.decode(VersionIndexKind<VersionIndexRecord>.self, from: data)
 
         #expect(decoded == kind)
     }
@@ -102,8 +103,8 @@ struct VersionIndexKindTests {
 
     @Test("VersionIndexKind is Hashable")
     func testHashable() {
-        let kind1 = VersionIndexKind<TestDoc>(field: \.id)
-        let kind2 = VersionIndexKind<TestDoc>(field: \.id)
+        let kind1 = VersionIndexKind<VersionIndexRecord>(field: \.id)
+        let kind2 = VersionIndexKind<VersionIndexRecord>(field: \.id)
 
         #expect(kind1 == kind2)
         #expect(kind1.hashValue == kind2.hashValue)

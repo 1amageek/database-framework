@@ -9,220 +9,51 @@
 import Testing
 import TestHeartbeat
 import Foundation
+import DatabaseValue
 import Graph
 @testable import GraphIndex
 
-// MARK: - RDFTerm Tests
-
-@Suite("RDFTerm Tests", .heartbeat)
-struct RDFTermTests {
-
-    // MARK: - Encoding
-
-    @Test("IRI encodes as-is")
-    func testIRIEncoding() {
-        let term = RDFTerm.iri("ex:Alice")
-        #expect(term.encoded == "ex:Alice")
-
-        let fullIRI = RDFTerm.iri("http://example.org/Person")
-        #expect(fullIRI.encoded == "http://example.org/Person")
-    }
-
-    @Test("Plain literal encodes with quotes")
-    func testPlainLiteralEncoding() {
-        let term = RDFTerm.string("Alice")
-        #expect(term.encoded == "\"Alice\"")
-    }
-
-    @Test("Typed literal encodes with ^^ datatype")
-    func testTypedLiteralEncoding() {
-        let term = RDFTerm.literal(OWLLiteral(lexicalForm: "30", datatype: "xsd:integer"))
-        #expect(term.encoded == "\"30\"^^xsd:integer")
-    }
-
-    @Test("xsd:string literal uses compact form (no ^^xsd:string suffix)")
-    func testXSDStringCompactForm() {
-        // xsd:string uses compact form per W3C N-Triples convention
-        let term = RDFTerm.string("hello")
-        #expect(term.encoded == "\"hello\"")
-    }
-
-    @Test("Language-tagged literal encodes with @ tag")
-    func testLanguageTagEncoding() {
-        let term = RDFTerm.literal(OWLLiteral(lexicalForm: "hello", datatype: "rdf:langString", language: "en"))
-        #expect(term.encoded == "\"hello\"@en")
-
-        let withLang = RDFTerm.langString("bonjour", language: "fr")
-        #expect(withLang.encoded == "\"bonjour\"@fr")
-    }
-
-    @Test("Blank node encodes with _: prefix")
-    func testBlankNodeEncoding() {
-        let term = RDFTerm.blankNode("b1")
-        #expect(term.encoded == "_:b1")
-    }
-
-    @Test("Special characters are escaped in literals")
-    func testEscaping() {
-        let term = RDFTerm.string("line1\nline2\ttab \"quoted\" \\slash")
-        let encoded = term.encoded
-        #expect(encoded == "\"line1\\nline2\\ttab \\\"quoted\\\" \\\\slash\"")
-    }
-
-    // MARK: - Decoding
-
-    @Test("Decode IRI (no special prefix)")
-    func testDecodeIRI() {
-        let term = RDFTerm.decode("ex:Alice")
-        if case .iri(let value) = term {
-            #expect(value == "ex:Alice")
-        } else {
-            Issue.record("Expected .iri, got \(term)")
-        }
-    }
-
-    @Test("Decode blank node")
-    func testDecodeBlankNode() {
-        let term = RDFTerm.decode("_:b1")
-        if case .blankNode(let id) = term {
-            #expect(id == "b1")
-        } else {
-            Issue.record("Expected .blankNode, got \(term)")
-        }
-    }
-
-    @Test("Decode plain literal")
-    func testDecodePlainLiteral() {
-        let term = RDFTerm.decode("\"Alice\"")
-        if case .literal(let owl) = term {
-            #expect(owl.lexicalForm == "Alice")
-            #expect(owl.datatype == "xsd:string")
-            #expect(owl.language == nil)
-        } else {
-            Issue.record("Expected .literal, got \(term)")
-        }
-    }
-
-    @Test("Decode typed literal")
-    func testDecodeTypedLiteral() {
-        let term = RDFTerm.decode("\"30\"^^xsd:integer")
-        if case .literal(let owl) = term {
-            #expect(owl.lexicalForm == "30")
-            #expect(owl.datatype == "xsd:integer")
-            #expect(owl.language == nil)
-        } else {
-            Issue.record("Expected .literal, got \(term)")
-        }
-    }
-
-    @Test("Decode language-tagged literal")
-    func testDecodeLanguageTagged() {
-        let term = RDFTerm.decode("\"hello\"@en")
-        if case .literal(let owl) = term {
-            #expect(owl.lexicalForm == "hello")
-            #expect(owl.datatype == "rdf:langString")
-            #expect(owl.language == "en")
-        } else {
-            Issue.record("Expected .literal, got \(term)")
-        }
-    }
-
-    @Test("Decode literal with escaped characters")
-    func testDecodeEscaped() {
-        let term = RDFTerm.decode("\"line1\\nline2\\ttab \\\"quoted\\\" \\\\slash\"")
-        if case .literal(let owl) = term {
-            #expect(owl.lexicalForm == "line1\nline2\ttab \"quoted\" \\slash")
-        } else {
-            Issue.record("Expected .literal, got \(term)")
-        }
-    }
-
-    // MARK: - Round-trip
-
-    @Test("Encode-decode round-trip for all term types")
-    func testRoundTrip() {
-        let terms: [RDFTerm] = [
-            .iri("ex:Alice"),
-            .iri("http://example.org/Person"),
-            .string("Alice"),
-            .literal(OWLLiteral(lexicalForm: "30", datatype: "xsd:integer")),
-            .literal(OWLLiteral(lexicalForm: "3.14", datatype: "xsd:decimal")),
-            .literal(OWLLiteral(lexicalForm: "true", datatype: "xsd:boolean")),
-            .literal(OWLLiteral(lexicalForm: "hello", datatype: "rdf:langString", language: "en")),
-            .blankNode("b1"),
-            .blankNode("node42"),
+@Suite("Canonical RDF term storage encoding", .heartbeat)
+struct CanonicalRDFTermStorageEncodingTests {
+    @Test("All RDF term roles round-trip through canonical storage encoding")
+    func allRDFTermRolesRoundTripThroughCanonicalStorageEncoding() throws {
+        let terms: [DatabaseRDFTerm] = [
+            .iri("https://example.com/alice"),
+            .blankNode("node-1"),
+            .literal(
+                DatabaseRDFLiteral(
+                    lexicalForm: "Alice",
+                    datatype: .xsdString
+                )
+            ),
+            .tripleTerm(
+                subject: .iri("https://example.com/alice"),
+                predicate: .iri("https://example.com/knows"),
+                object: .iri("https://example.com/bob")
+            ),
         ]
 
-        for original in terms {
-            let encoded = original.encoded
-            let decoded = RDFTerm.decode(encoded)
-            #expect(original == decoded, "Round-trip failed for \(original): encoded=\(encoded), decoded=\(decoded)")
+        for term in terms {
+            let encoded = try DatabaseRDFTermCodec.encode(term)
+            let decoded = try DatabaseRDFTermCodec.decode(encoded)
+            #expect(decoded == term)
         }
     }
 
-    @Test("Round-trip with special characters in literals")
-    func testRoundTripSpecialChars() {
-        let terms: [RDFTerm] = [
-            .string("line1\nline2"),
-            .string("tab\there"),
-            .string("\"quoted\""),
-            .string("back\\slash"),
-            .string("mix\n\t\"\\"),
-            .string(""),  // empty string
-        ]
+    @Test("Literal metadata and special characters round-trip exactly")
+    func literalMetadataAndSpecialCharactersRoundTripExactly() throws {
+        let term = DatabaseRDFTerm.literal(
+            DatabaseRDFLiteral(
+                lexicalForm: "line1\nline2\t\"quoted\" \\slash",
+                language: try DatabaseRDFLanguageTag("en"),
+                direction: .leftToRight
+            )
+        )
 
-        for original in terms {
-            let encoded = original.encoded
-            let decoded = RDFTerm.decode(encoded)
-            #expect(original == decoded, "Round-trip failed for special chars: encoded=\(encoded)")
-        }
-    }
+        let encoded = try DatabaseRDFTermCodec.encode(term)
+        let decoded = try DatabaseRDFTermCodec.decode(encoded)
 
-    // MARK: - Convenience Constructors
-
-    @Test("Convenience constructors produce correct terms")
-    func testConvenienceConstructors() {
-        let str = RDFTerm.string("hello")
-        #expect(str == .literal(OWLLiteral(lexicalForm: "hello", datatype: "xsd:string")))
-
-        let int = RDFTerm.integer(42)
-        #expect(int == .literal(OWLLiteral(lexicalForm: "42", datatype: "xsd:integer")))
-
-        let dec = RDFTerm.decimal(3.14)
-        if case .literal(let owl) = dec {
-            #expect(owl.datatype == "xsd:decimal")
-            #expect(owl.lexicalForm == "3.14")
-        } else {
-            Issue.record("Expected .literal for .decimal()")
-        }
-
-        let bool = RDFTerm.boolean(true)
-        #expect(bool == .literal(OWLLiteral(lexicalForm: "true", datatype: "xsd:boolean")))
-
-        let lang = RDFTerm.langString("hello", language: "en")
-        #expect(lang == .literal(OWLLiteral(lexicalForm: "hello", datatype: "rdf:langString", language: "en")))
-    }
-
-    // MARK: - Codable
-
-    @Test("Codable round-trip for RDFTerm")
-    func testCodableRoundTrip() throws {
-        let terms: [RDFTerm] = [
-            .iri("ex:Alice"),
-            .string("hello"),
-            .literal(OWLLiteral(lexicalForm: "30", datatype: "xsd:integer")),
-            .langString("hi", language: "en"),
-            .blankNode("b1"),
-        ]
-
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        for original in terms {
-            let data = try encoder.encode(original)
-            let decoded = try decoder.decode(RDFTerm.self, from: data)
-            #expect(original == decoded)
-        }
+        #expect(decoded == term)
     }
 }
 
@@ -416,7 +247,7 @@ struct SHACLConstraintTests {
     @Test("Invalid pattern throws typed SHACL error")
     func testInvalidPatternThrowsTypedError() throws {
         do {
-            _ = try SHACLConstraintEvaluator.compilePattern("[", options: [])
+            _ = try SHACLRegularExpression(pattern: "[", flags: nil)
             Issue.record("Expected SHACLError.invalidPattern to be thrown")
         } catch let error as SHACLError {
             if case .invalidPattern(let regex, let reason) = error {
@@ -455,7 +286,7 @@ struct SHACLConstraintTests {
             .in_([.integer(1), .integer(2), .integer(3)]),
             // Indirect cases referencing SHACLShape
             .not(.node(NodeShape(
-                iri: "ex:ForbiddenShape",
+                identifier: .iri("ex:ForbiddenShape"),
                 constraints: [.maxCount(0)]
             ))),
             .and([
@@ -471,7 +302,7 @@ struct SHACLConstraintTests {
                 .node(NodeShape(constraints: [.hasValue(.boolean(false))])),
             ]),
             .node(NodeShape(
-                iri: "ex:AddressShape",
+                identifier: .iri("ex:AddressShape"),
                 constraints: [.minCount(1)]
             )),
             .qualifiedValueShape(
@@ -537,22 +368,22 @@ struct SHACLShapesGraphTests {
             iri: "http://example.org/shapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:ActiveShape",
+                    identifier: .iri("ex:ActiveShape"),
                     targets: [.class_("ex:Person")],
                     deactivated: false
                 )),
                 .node(NodeShape(
-                    iri: "ex:InactiveShape",
+                    identifier: .iri("ex:InactiveShape"),
                     targets: [.class_("ex:Animal")],
                     deactivated: true
                 )),
                 .property(PropertyShape(
-                    iri: "ex:ActiveProp",
+                    identifier: .iri("ex:ActiveProp"),
                     path: .predicate("ex:name"),
                     deactivated: false
                 )),
                 .property(PropertyShape(
-                    iri: "ex:InactiveProp",
+                    identifier: .iri("ex:InactiveProp"),
                     path: .predicate("ex:age"),
                     deactivated: true
                 )),
@@ -564,10 +395,10 @@ struct SHACLShapesGraphTests {
         #expect(active.allSatisfy { !$0.isDeactivated })
     }
 
-    @Test("findShape(iri:) returns the matching shape")
-    func testFindShapeByIRI() {
+    @Test("findShape(identifier:) returns the matching shape")
+    func testFindShapeByIdentifier() {
         let targetShape = NodeShape(
-            iri: "ex:PersonShape",
+            identifier: .iri("ex:PersonShape"),
             targets: [.class_("ex:Person")],
             constraints: [.minCount(1)]
         )
@@ -575,15 +406,15 @@ struct SHACLShapesGraphTests {
             iri: "http://example.org/shapes",
             shapes: [
                 .node(targetShape),
-                .node(NodeShape(iri: "ex:OtherShape")),
+                .node(NodeShape(identifier: .iri("ex:OtherShape"))),
             ]
         )
 
-        let found = graph.findShape(iri: "ex:PersonShape")
+        let found = graph.findShape(identifier: .iri("ex:PersonShape"))
         #expect(found != nil)
-        #expect(found?.iri == "ex:PersonShape")
+        #expect(found?.identifier == .iri("ex:PersonShape"))
 
-        let notFound = graph.findShape(iri: "ex:NonExistent")
+        let notFound = graph.findShape(identifier: .iri("ex:NonExistent"))
         #expect(notFound == nil)
     }
 
@@ -593,12 +424,12 @@ struct SHACLShapesGraphTests {
             iri: "http://example.org/shapes",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:Shape1",
+                    identifier: .iri("ex:Shape1"),
                     targets: [.class_("ex:Person"), .class_("ex:Agent")]
                 )),
                 .node(NodeShape(
-                    iri: "ex:Shape2",
-                    targets: [.class_("ex:Organization"), .node("ex:SpecificNode")]
+                    identifier: .iri("ex:Shape2"),
+                    targets: [.class_("ex:Organization"), .node(.iri("ex:SpecificNode"))]
                 )),
                 .property(PropertyShape(
                     path: .predicate("ex:name"),
@@ -613,8 +444,8 @@ struct SHACLShapesGraphTests {
 
     @Test("nodeShapes and propertyShapes computed properties")
     func testNodeAndPropertyShapeAccess() {
-        let ns1 = NodeShape(iri: "ex:NS1")
-        let ns2 = NodeShape(iri: "ex:NS2")
+        let ns1 = NodeShape(identifier: .iri("ex:NS1"))
+        let ns2 = NodeShape(identifier: .iri("ex:NS2"))
         let ps1 = PropertyShape(path: .predicate("ex:name"))
         let ps2 = PropertyShape(path: .predicate("ex:age"))
 
@@ -630,8 +461,8 @@ struct SHACLShapesGraphTests {
 
         #expect(graph.nodeShapes.count == 2)
         #expect(graph.propertyShapes.count == 2)
-        #expect(graph.nodeShapes[0].iri == "ex:NS1")
-        #expect(graph.nodeShapes[1].iri == "ex:NS2")
+        #expect(graph.nodeShapes[0].identifier == .iri("ex:NS1"))
+        #expect(graph.nodeShapes[1].identifier == .iri("ex:NS2"))
     }
 
     @Test("Codable round-trip for full shapes graph")
@@ -640,12 +471,12 @@ struct SHACLShapesGraphTests {
             iri: "http://example.org/shapes/person",
             shapes: [
                 .node(NodeShape(
-                    iri: "ex:PersonShape",
+                    identifier: .iri("ex:PersonShape"),
                     targets: [.class_("ex:Person")],
                     constraints: [.nodeKind(.blankNodeOrIRI)],
                     propertyShapes: [
                         PropertyShape(
-                            iri: "ex:PersonNameShape",
+                            identifier: .iri("ex:PersonNameShape"),
                             path: .predicate("ex:name"),
                             constraints: [.minCount(1), .datatype("xsd:string"), .maxLength(200)]
                         ),
@@ -662,7 +493,7 @@ struct SHACLShapesGraphTests {
                     messages: ["Person must have a name"]
                 )),
                 .property(PropertyShape(
-                    iri: "ex:EmailShape",
+                    identifier: .iri("ex:EmailShape"),
                     path: .predicate("ex:email"),
                     constraints: [
                         .pattern("^[^@]+@[^@]+$", flags: nil),
@@ -695,12 +526,12 @@ struct SHACLValidationReportTests {
         // Even with warnings/infos, conforms should be true (only violations matter)
         let reportWithWarning = SHACLValidationReport(results: [
             SHACLValidationResult(
-                focusNode: "ex:Alice",
+                focusNode: .iri("ex:Alice"),
                 sourceConstraintComponent: "sh:MinCountConstraintComponent",
                 resultSeverity: .warning
             ),
             SHACLValidationResult(
-                focusNode: "ex:Bob",
+                focusNode: .iri("ex:Bob"),
                 sourceConstraintComponent: "sh:DatatypeConstraintComponent",
                 resultSeverity: .info
             ),
@@ -712,7 +543,7 @@ struct SHACLValidationReportTests {
     func testNotConforms() {
         let report = SHACLValidationReport(results: [
             SHACLValidationResult(
-                focusNode: "ex:Alice",
+                focusNode: .iri("ex:Alice"),
                 resultPath: .predicate("ex:name"),
                 sourceConstraintComponent: "sh:MinCountConstraintComponent",
                 resultMessage: ["Missing required property ex:name"],
@@ -726,22 +557,22 @@ struct SHACLValidationReportTests {
     func testViolationsFilter() {
         let report = SHACLValidationReport(results: [
             SHACLValidationResult(
-                focusNode: "ex:Alice",
+                focusNode: .iri("ex:Alice"),
                 sourceConstraintComponent: "sh:MinCountConstraintComponent",
                 resultSeverity: .violation
             ),
             SHACLValidationResult(
-                focusNode: "ex:Bob",
+                focusNode: .iri("ex:Bob"),
                 sourceConstraintComponent: "sh:DatatypeConstraintComponent",
                 resultSeverity: .warning
             ),
             SHACLValidationResult(
-                focusNode: "ex:Carol",
+                focusNode: .iri("ex:Carol"),
                 sourceConstraintComponent: "sh:NodeKindConstraintComponent",
                 resultSeverity: .violation
             ),
             SHACLValidationResult(
-                focusNode: "ex:Dave",
+                focusNode: .iri("ex:Dave"),
                 sourceConstraintComponent: "sh:MaxCountConstraintComponent",
                 resultSeverity: .info
             ),
@@ -755,22 +586,22 @@ struct SHACLValidationReportTests {
     func testWarningsAndInfos() {
         let report = SHACLValidationReport(results: [
             SHACLValidationResult(
-                focusNode: "ex:A",
+                focusNode: .iri("ex:A"),
                 sourceConstraintComponent: "sh:MinCountConstraintComponent",
                 resultSeverity: .violation
             ),
             SHACLValidationResult(
-                focusNode: "ex:B",
+                focusNode: .iri("ex:B"),
                 sourceConstraintComponent: "sh:PatternConstraintComponent",
                 resultSeverity: .warning
             ),
             SHACLValidationResult(
-                focusNode: "ex:C",
+                focusNode: .iri("ex:C"),
                 sourceConstraintComponent: "sh:MaxLengthConstraintComponent",
                 resultSeverity: .warning
             ),
             SHACLValidationResult(
-                focusNode: "ex:D",
+                focusNode: .iri("ex:D"),
                 sourceConstraintComponent: "sh:DatatypeConstraintComponent",
                 resultSeverity: .info
             ),
@@ -782,53 +613,23 @@ struct SHACLValidationReportTests {
         #expect(report.infos.allSatisfy { $0.resultSeverity == .info })
     }
 
-    @Test("Merged report combines results from two reports")
-    func testMerged() {
-        let report1 = SHACLValidationReport(results: [
-            SHACLValidationResult(
-                focusNode: "ex:Alice",
-                sourceConstraintComponent: "sh:MinCountConstraintComponent",
-                resultSeverity: .violation
-            ),
-        ])
-        let report2 = SHACLValidationReport(results: [
-            SHACLValidationResult(
-                focusNode: "ex:Bob",
-                sourceConstraintComponent: "sh:DatatypeConstraintComponent",
-                resultSeverity: .warning
-            ),
-            SHACLValidationResult(
-                focusNode: "ex:Carol",
-                sourceConstraintComponent: "sh:MaxCountConstraintComponent",
-                resultSeverity: .violation
-            ),
-        ])
-
-        let merged = report1.merged(with: report2)
-        #expect(merged.results.count == 3)
-        // merged has violations from both reports
-        #expect(merged.conforms == false)
-        #expect(merged.violations.count == 2)
-        #expect(merged.warnings.count == 1)
-    }
-
     @Test("resultsByFocusNode groups results correctly")
     func testResultsByFocusNode() {
         let report = SHACLValidationReport(results: [
             SHACLValidationResult(
-                focusNode: "ex:Alice",
+                focusNode: .iri("ex:Alice"),
                 resultPath: .predicate("ex:name"),
                 sourceConstraintComponent: "sh:MinCountConstraintComponent",
                 resultSeverity: .violation
             ),
             SHACLValidationResult(
-                focusNode: "ex:Alice",
+                focusNode: .iri("ex:Alice"),
                 resultPath: .predicate("ex:email"),
                 sourceConstraintComponent: "sh:PatternConstraintComponent",
                 resultSeverity: .warning
             ),
             SHACLValidationResult(
-                focusNode: "ex:Bob",
+                focusNode: .iri("ex:Bob"),
                 resultPath: .predicate("ex:age"),
                 sourceConstraintComponent: "sh:DatatypeConstraintComponent",
                 resultSeverity: .violation
@@ -837,8 +638,8 @@ struct SHACLValidationReportTests {
 
         let grouped = report.resultsByFocusNode
         #expect(grouped.count == 2)
-        #expect(grouped["ex:Alice"]?.count == 2)
-        #expect(grouped["ex:Bob"]?.count == 1)
+        #expect(grouped[.iri("ex:Alice")]?.count == 2)
+        #expect(grouped[.iri("ex:Bob")]?.count == 1)
     }
 }
 #endif

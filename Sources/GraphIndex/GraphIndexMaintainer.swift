@@ -1,16 +1,21 @@
 // GraphIndexMaintainer.swift
-// GraphIndex - Unified index maintainer for graph/RDF triple indexes
+// GraphIndex - Property graph index maintainer
 //
 // Maintains graph edge indexes using configurable storage strategies.
 // Supports adjacency (2-index), tripleStore (3-index), and hexastore (6-index).
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import Graph
 import DatabaseEngine
+import DatabaseValue
 import StorageKit
 
-/// Maintainer for unified graph indexes
+/// Maintainer for property graph indexes.
 ///
 /// **Functionality**:
 /// - Supports multiple storage strategies (adjacency, tripleStore, hexastore)
@@ -21,8 +26,8 @@ import StorageKit
 ///
 /// ```
 /// adjacency (2-index):
-///   [out]/[edge]/[from]/[to]     - outgoing edges
-///   [in]/[edge]/[to]/[from]      - incoming edges
+///   [out]/[from]/[edge]/[to]     - outgoing edges
+///   [in]/[to]/[edge]/[from]      - incoming edges
 ///
 /// tripleStore (3-index):
 ///   [spo]/[from]/[edge]/[to]     - Subject-Predicate-Object
@@ -60,7 +65,7 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private let graphField: String?
 
     /// Storage strategy
-    private let strategy: GraphIndexStrategy
+    private let strategy: PropertyGraphIndexStrategy
 
     /// Strategy-specific cached subspaces
     private let strategySubspaces: StrategySubspaces
@@ -86,7 +91,7 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         edgeField: String,
         toField: String,
         graphField: String? = nil,
-        strategy: GraphIndexStrategy
+        strategy: PropertyGraphIndexStrategy
     ) {
         self.index = index
         self.subspace = subspace
@@ -116,16 +121,16 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         if let oldItem = oldItem {
             let keys = try buildIndexKeys(for: oldItem)
             for key in keys {
-                transaction.clear(key: key)
+                try transaction.clear(key: key)
             }
         }
 
         // Add new index entries
         if let newItem = newItem {
             let keys = try buildIndexKeys(for: newItem)
-            let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
+            let value = try CoveringValueBuilder.build(for: newItem, index: index)
             for key in keys {
-                transaction.setValue(value, for: key)
+                try transaction.setValue(value, for: key)
             }
         }
     }
@@ -142,9 +147,9 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any Transaction
     ) async throws {
         let keys = try buildIndexKeys(for: item)
-        let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
+        let value = try CoveringValueBuilder.build(for: item, index: index)
         for key in keys {
-            transaction.setValue(value, for: key)
+            try transaction.setValue(value, for: key)
         }
     }
 
@@ -195,8 +200,8 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Build adjacency strategy keys (2 indexes)
     ///
-    /// - out: [edge]/[from]/[to]{/[graph]} - for outgoing edge queries
-    /// - in: [edge]/[to]/[from]{/[graph]} - for incoming edge queries
+    /// - out: [from]/[edge]/[to]{/[graph]} - for outgoing edge queries
+    /// - in: [to]/[edge]/[from]{/[graph]} - for incoming edge queries
     private func buildAdjacencyKeys(
         from: any TupleElement,
         edge: any TupleElement,
@@ -206,15 +211,15 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         var keys: [Bytes] = []
         keys.reserveCapacity(2)
 
-        // [out]/[edge]/[from]/[to]{/[graph]}
-        var outElements: [any TupleElement] = [edge, from, to]
+        // [out]/[from]/[edge]/[to]{/[graph]}
+        var outElements: [any TupleElement] = [from, edge, to]
         if let graph { outElements.append(graph) }
         let outKey = strategySubspaces.out.pack(Tuple(outElements))
         try validateKeySize(outKey)
         keys.append(outKey)
 
-        // [in]/[edge]/[to]/[from]{/[graph]}
-        var inElements: [any TupleElement] = [edge, to, from]
+        // [in]/[to]/[edge]/[from]{/[graph]}
+        var inElements: [any TupleElement] = [to, edge, from]
         if let graph { inElements.append(graph) }
         let inKey = strategySubspaces.in.pack(Tuple(inElements))
         try validateKeySize(inKey)
@@ -330,8 +335,9 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         var keys: [Bytes] = []
         keys.reserveCapacity(3)
 
-        // Empty string represents the default graph when no graph field value is present.
-        let graphElement: any TupleElement = graph ?? ""
+        // An empty byte value is disjoint from every property-graph String,
+        // including the valid empty identifier.
+        let graphElement: any TupleElement = graph ?? Bytes()
 
         let gspoKey = strategySubspaces.gspo.pack(Tuple([graphElement, from, edge, to]))
         try validateKeySize(gspoKey)
@@ -367,15 +373,7 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
             return nil  // nil graph = default graph (valid for Named Graph support)
         }
 
-        guard let tupleElement = value as? any TupleElement else {
-            throw GraphIndexError.invalidFieldType(
-                fieldName: graphField,
-                expectedType: "TupleElement",
-                actualType: String(describing: type(of: value))
-            )
-        }
-
-        return tupleElement
+        return try tupleElement(value, fieldName: graphField)
     }
 
     /// Extract a field value from an item
@@ -390,15 +388,21 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
             throw DataAccessError.nilValueCannotBeIndexed
         }
 
-        guard let tupleElement = value as? any TupleElement else {
+        return try tupleElement(value, fieldName: fieldName)
+    }
+
+    private func tupleElement(
+        _ value: Any,
+        fieldName: String
+    ) throws -> any TupleElement {
+        guard let string = value as? String else {
             throw GraphIndexError.invalidFieldType(
                 fieldName: fieldName,
-                expectedType: "TupleElement",
+                expectedType: "String",
                 actualType: String(describing: type(of: value))
             )
         }
-
-        return tupleElement
+        return string
     }
 }
 
@@ -430,7 +434,7 @@ struct StrategySubspaces: Sendable {
     /// Initialize subspaces based on strategy
     ///
     /// Only creates subspaces needed for the given strategy to minimize memory.
-    init(base: Subspace, strategy: GraphIndexStrategy) {
+    init(base: Subspace, strategy: PropertyGraphIndexStrategy) {
         // Use integer keys for storage efficiency
         // Keys: 0=out, 1=in, 2=spo, 3=pos, 4=osp, 5=sop, 6=pso, 7=ops
         self.out = base.subspace(Int64(0))
@@ -450,11 +454,23 @@ struct StrategySubspaces: Sendable {
 // MARK: - Errors
 
 /// Errors specific to graph index operations
-public enum GraphIndexError: Error, CustomStringConvertible {
+public enum GraphIndexError: Error, CustomStringConvertible, Sendable {
     case fieldNotFound(fieldName: String, itemType: String)
     case invalidFieldType(fieldName: String, expectedType: String, actualType: String)
     case unsupportedQueryPattern(pattern: String, strategy: GraphIndexStrategy)
     case unexpectedElementType(expected: String, actual: String)
+    case malformedIndexKey(ordering: GraphIndexOrdering, elementCount: Int)
+    case identityRepresentationMismatch(
+        expected: GraphIdentity.Representation,
+        actual: GraphIdentity.Representation
+    )
+    case invalidRDFPredicate
+    case invalidRDFSubject
+    case invalidRDFObject
+    case invalidRDFGraphName
+    case invalidRDFEncoding(DatabaseRDFTermCodecError)
+    case rdfPhysicalIndex(RDFQuadIndexPhysicalCodecError)
+    case invalidScanState
 
     public var description: String {
         switch self {
@@ -466,6 +482,24 @@ public enum GraphIndexError: Error, CustomStringConvertible {
             return "Query pattern '\(pattern)' is not optimally supported by \(strategy) strategy"
         case .unexpectedElementType(let expected, let actual):
             return "Unexpected TupleElement type: expected \(expected), got \(actual)"
+        case .malformedIndexKey(let ordering, let elementCount):
+            return "Malformed \(ordering) graph index key with \(elementCount) elements"
+        case .identityRepresentationMismatch(let expected, let actual):
+            return "Graph identity representation mismatch: expected \(expected), got \(actual)"
+        case .invalidRDFPredicate:
+            return "RDF graph index key contains a non-IRI predicate"
+        case .invalidRDFSubject:
+            return "RDF graph index key contains an invalid subject"
+        case .invalidRDFObject:
+            return "RDF graph index key contains an invalid object"
+        case .invalidRDFGraphName:
+            return "RDF graph index key contains an invalid graph name"
+        case .invalidRDFEncoding(let reason):
+            return "RDF graph index key contains invalid canonical bytes: \(reason)"
+        case .rdfPhysicalIndex(let reason):
+            return "RDF graph index key has an invalid physical layout: \(reason)"
+        case .invalidScanState:
+            return "Graph scan iterator lost its prepared range state"
         }
     }
 }

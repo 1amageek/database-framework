@@ -159,13 +159,14 @@ struct TripleTermTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { ?s ?p <<( <http://example.org/a> <http://example.org/b> 42 )>> }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic, got \\(pattern)")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         #expect(triples.count == 1)
-        guard case .quotedTriple(let s, let p, let o) = triples[0].object else {
-            Issue.record("Expected quotedTriple, got \\(triples[0].object)")
+        guard case .tripleTerm(let s, let p, let o) = triples[0].object else {
+            Issue.record("Expected tripleTerm, got \\(triples[0].object)")
             return
         }
         #expect(s == .iri("http://example.org/a"))
@@ -178,18 +179,20 @@ struct TripleTermTests {
 
     @Test("Triple term <<( )>> is distinct from quoted << >>")
     func testTripleTermVsQuoted() throws {
-        // Both should produce .quotedTriple
+        // Both should produce .tripleTerm
         let pattern1 = try parsePattern("""
             SELECT * WHERE { ?s ?p << ?a ?b ?c >> }
             """)
         let pattern2 = try parsePattern("""
             SELECT * WHERE { ?s ?p <<( ?a ?b ?c )>> }
             """)
-        guard case .basic(let triples1) = pattern1,
-              case .basic(let triples2) = pattern2 else {
+        guard case .basic(let basicGraphPattern1) = pattern1,
+              case .basic(let basicGraphPattern2) = pattern2 else {
             Issue.record("Expected .basic")
             return
         }
+        let triples1 = try basicGraphPattern1.triplePatterns()
+        let triples2 = try basicGraphPattern2.triplePatterns()
         #expect(triples1[0].object == triples2[0].object)
     }
 }
@@ -204,10 +207,11 @@ struct ReifiedTripleTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { << ?s ?p ?o ~?r >> <http://example.org/meta> "annotated" }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic, got \(pattern)")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         #expect(triples.count == 1)
         guard case .reifiedTriple(let s, let p, let o, let r) = triples[0].subject else {
             Issue.record("Expected reifiedTriple subject, got \(triples[0].subject)")
@@ -225,10 +229,11 @@ struct ReifiedTripleTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { ?x <http://example.org/ref> << ?a ?b ?c ~?r >> }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic, got \(pattern)")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         #expect(triples.count == 1)
         guard case .reifiedTriple(let s, let p, let o, let r) = triples[0].object else {
             Issue.record("Expected reifiedTriple object, got \(triples[0].object)")
@@ -259,10 +264,11 @@ struct AnnotationTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { ?s ?p ?o {| <http://example.org/confidence> 0.9 |} }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic, got \\(pattern)")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         // Should have 2 triples: the original (s, p, o) and the annotation (<<(s,p,o)>>, confidence, 0.9)
         #expect(triples.count == 2)
 
@@ -272,8 +278,8 @@ struct AnnotationTests {
         #expect(triples[0].object == .variable("o"))
 
         // Second triple: annotation
-        guard case .quotedTriple(let as1, let ap, let ao) = triples[1].subject else {
-            Issue.record("Expected quotedTriple annotation subject, got \\(triples[1].subject)")
+        guard case .tripleTerm(let as1, let ap, let ao) = triples[1].subject else {
+            Issue.record("Expected tripleTerm annotation subject, got \\(triples[1].subject)")
             return
         }
         #expect(as1 == .variable("s"))
@@ -292,10 +298,11 @@ struct AnnotationTests {
                 |}
             }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic, got \\(pattern)")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         // 1 original + 2 annotation triples
         #expect(triples.count == 3)
     }
@@ -305,10 +312,11 @@ struct AnnotationTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { ?s ?p ?o }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         #expect(triples.count == 1)
     }
 
@@ -321,10 +329,11 @@ struct AnnotationTests {
                 |}
             }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic, got \(pattern)")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         // 1 original + 2 annotation triples (same predicate, two objects)
         #expect(triples.count == 3)
     }
@@ -338,10 +347,11 @@ struct AnnotationTests {
                 |}
             }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         #expect(triples.count == 2)
     }
 }
@@ -356,10 +366,11 @@ struct ReifiedTripleEdgeCaseTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { << ?s ?p ?o ~<http://example.org/reifier1> >> <http://example.org/meta> "info" }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic, got \(pattern)")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         #expect(triples.count == 1)
         guard case .reifiedTriple(_, _, _, let reifier) = triples[0].subject else {
             Issue.record("Expected reifiedTriple subject")
@@ -373,10 +384,11 @@ struct ReifiedTripleEdgeCaseTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { << ?s ?p ?o ~_:b0 >> <http://example.org/meta> "info" }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         #expect(triples.count == 1)
         guard case .reifiedTriple(_, _, _, let reifier) = triples[0].subject else {
             Issue.record("Expected reifiedTriple subject")
@@ -393,12 +405,13 @@ struct ReifiedTripleEdgeCaseTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { << ?s ?p ?o >> <http://example.org/meta> "info" }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic")
             return
         }
-        guard case .quotedTriple = triples[0].subject else {
-            Issue.record("Expected quotedTriple subject, got \(triples[0].subject)")
+        let triples = try basicGraphPattern.triplePatterns()
+        guard case .tripleTerm = triples[0].subject else {
+            Issue.record("Expected tripleTerm subject, got \(triples[0].subject)")
             return
         }
     }
@@ -414,13 +427,14 @@ struct TripleTermEdgeCaseTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { <<( <http://example.org/a> <http://example.org/b> <http://example.org/c> )>> <http://example.org/meta> "info" }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         #expect(triples.count == 1)
-        guard case .quotedTriple = triples[0].subject else {
-            Issue.record("Expected quotedTriple subject")
+        guard case .tripleTerm = triples[0].subject else {
+            Issue.record("Expected tripleTerm subject")
             return
         }
     }
@@ -430,12 +444,13 @@ struct TripleTermEdgeCaseTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { ?x <http://example.org/ref> <<( ?a ?b ?c )>> }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic")
             return
         }
-        guard case .quotedTriple(let s, let p, let o) = triples[0].object else {
-            Issue.record("Expected quotedTriple object")
+        let triples = try basicGraphPattern.triplePatterns()
+        guard case .tripleTerm(let s, let p, let o) = triples[0].object else {
+            Issue.record("Expected tripleTerm object")
             return
         }
         #expect(s == .variable("a"))
@@ -478,6 +493,25 @@ struct VersionEdgeCaseTests {
             SELECT * WHERE { ?s ?p ?o }
             """#)
         #expect(query.projection == .all)
+    }
+
+    @Test("BASE resolves absolute-path references against the authority")
+    func testBaseAuthorityResolution() throws {
+        let pattern = try parsePattern(#"""
+            BASE <https://example.org/a/b>
+            SELECT * WHERE { </events/today> <#kind> ?value }
+            """#)
+        guard case .basic(let basicGraphPattern) = pattern else {
+            Issue.record("Expected one basic graph pattern")
+            return
+        }
+        let triples = try basicGraphPattern.triplePatterns()
+        guard let triple = triples.first else {
+            Issue.record("Expected one basic triple")
+            return
+        }
+        #expect(triple.subject == .iri("https://example.org/events/today"))
+        #expect(triple.predicate == .iri("https://example.org/a/b#kind"))
     }
 }
 
@@ -555,15 +589,19 @@ struct CombinedFeatureTests {
             PREFIX ex: <http://example.org/>
             SELECT * FROM <http://example.org/graph1> WHERE { ?s ex:label "text"@ar--rtl }
             """#)
-        #expect(query.from?.count == 1)
+        #expect(query.dataset == .explicit(
+            defaultGraphs: ["http://example.org/graph1"],
+            namedGraphs: []
+        ))
         guard case .graphPattern(let pattern) = query.source else {
             Issue.record("Expected graphPattern source")
             return
         }
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected basic")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         guard case .literal(.dirLangLiteral(let val, let lang, let dir)) = triples[0].object else {
             Issue.record("Expected dirLangLiteral, got \(triples[0].object)")
             return
@@ -582,20 +620,21 @@ struct CombinedFeatureTests {
                 |}
             }
             """)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         // 1 original triple + 1 annotation triple
         #expect(triples.count == 2)
         // Original: ?s ref <<(a b 42)>>
-        guard case .quotedTriple = triples[0].object else {
-            Issue.record("Expected quotedTriple object")
+        guard case .tripleTerm = triples[0].object else {
+            Issue.record("Expected tripleTerm object")
             return
         }
-        // Annotation subject should be quotedTriple of the full triple
-        guard case .quotedTriple = triples[1].subject else {
-            Issue.record("Expected quotedTriple annotation subject")
+        // Annotation subject should be tripleTerm of the full triple
+        guard case .tripleTerm = triples[1].subject else {
+            Issue.record("Expected tripleTerm annotation subject")
             return
         }
     }
@@ -735,7 +774,7 @@ struct LateralJoinTests {
             Issue.record("Expected graphPattern")
             return
         }
-        let vars = pattern.variables
+        let vars = pattern.variableScope.visibleVariables
         #expect(vars.contains("s"))
         #expect(vars.contains("name"))
     }
@@ -793,11 +832,11 @@ struct LateralJoinTests {
             Issue.record("Expected .lateral pattern")
             return
         }
-        guard case .basic(let triples) = right else {
+        guard case .basic(let basicGraphPattern) = right else {
             Issue.record("Expected empty .basic right, got \(right)")
             return
         }
-        #expect(triples.isEmpty)
+        #expect(basicGraphPattern.isEmpty)
     }
 
     @Test("LATERAL with UNION inside")
@@ -841,6 +880,45 @@ struct LateralJoinTests {
         }
     }
 
+    @Test("Single-variable VALUES accepts multiple RDF values")
+    func testSingleVariableValues() throws {
+        let pattern = try parsePattern("""
+            SELECT * WHERE {
+                VALUES ?value { <urn:first> "literal" UNDEF }
+            }
+            """)
+
+        guard case .values(let variables, let bindings) = pattern else {
+            Issue.record("Expected a VALUES pattern")
+            return
+        }
+        #expect(variables == ["value"])
+        #expect(bindings == [[.iri("urn:first")], [.string("literal")], [nil]])
+    }
+
+    @Test("Full VALUES rows preserve IRIs instead of converting them to UNDEF")
+    func testFullValuesPreservesIRIs() throws {
+        let pattern = try parsePattern("""
+            SELECT * WHERE {
+                VALUES (?left ?right) { (<urn:left> <urn:right>) }
+            }
+            """)
+
+        guard case .values(let variables, let bindings) = pattern else {
+            Issue.record("Expected a VALUES pattern")
+            return
+        }
+        #expect(variables == ["left", "right"])
+        #expect(bindings == [[.iri("urn:left"), .iri("urn:right")]])
+    }
+
+    @Test("VALUES rejects blank nodes instead of treating them as UNDEF")
+    func testValuesRejectsBlankNodes() {
+        #expect(throws: SPARQLParser.ParseError.self) {
+            try parseQuery("SELECT * WHERE { VALUES ?value { _:blank } }")
+        }
+    }
+
     @Test("LATERAL followed by triples block")
     func testLateralFollowedByTriples() throws {
         let query = try parseQuery("""
@@ -858,7 +936,7 @@ struct LateralJoinTests {
         }
         // Structure: join(lateral(basic, basic), basic)
         // The trailing triple is joined after the LATERAL
-        let vars = pattern.variables
+        let vars = pattern.variableScope.visibleVariables
         #expect(vars.contains("s"))
         #expect(vars.contains("name"))
         #expect(vars.contains("age"))
@@ -878,7 +956,7 @@ struct LateralJoinTests {
             Issue.record("Expected graphPattern")
             return
         }
-        let required = pattern.requiredVariables
+        let required = pattern.variableScope.definitelyBoundVariables
         #expect(required.contains("s"))
         #expect(required.contains("name"))
     }

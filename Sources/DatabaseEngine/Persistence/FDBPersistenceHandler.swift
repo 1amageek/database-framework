@@ -1,7 +1,11 @@
 // FDBPersistenceHandler.swift
 // DatabaseEngine - ModelPersistenceHandler implementation using FDBContext
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 
@@ -28,21 +32,37 @@ public struct FDBPersistenceHandler: ModelPersistenceHandler {
 
     public func save(
         _ model: any Persistable,
+        precondition: WritePrecondition,
         transaction: any Transaction
     ) async throws {
         let modelType = type(of: model)
 
         // For dynamic directory types, extract partition from model instance
-        let store: any DataStore
+        let store: FDBDataStore
         if hasDynamicDirectory(modelType) {
-            let binding = buildAnyDirectoryPath(from: model)
-            store = try await context.container.store(for: modelType, path: binding)
+            let binding = try buildAnyDirectoryPath(from: model)
+            store = try await context.container.fdbStore(
+                for: modelType,
+                path: binding,
+                transaction: transaction
+            )
         } else {
-            store = try await context.container.store(for: modelType)
+            store = try await context.container.fdbStore(
+                for: modelType,
+                transaction: transaction
+            )
         }
 
-        try await store.executeBatchInTransaction(
+        let serialized = try await store.executeBatchInTransactionWithPreconditions(
             inserts: [model],
+            deletes: [],
+            transaction: transaction,
+            skipExistingCheck: false,
+            insertPreconditions: [precondition],
+            deletePreconditions: []
+        )
+        try await context.processDualWrites(
+            serializedInserts: serialized,
             deletes: [],
             transaction: transaction
         )
@@ -50,21 +70,37 @@ public struct FDBPersistenceHandler: ModelPersistenceHandler {
 
     public func delete(
         _ model: any Persistable,
+        precondition: WritePrecondition,
         transaction: any Transaction
     ) async throws {
         let modelType = type(of: model)
 
         // For dynamic directory types, extract partition from model instance
-        let store: any DataStore
+        let store: FDBDataStore
         if hasDynamicDirectory(modelType) {
-            let binding = buildAnyDirectoryPath(from: model)
-            store = try await context.container.store(for: modelType, path: binding)
+            let binding = try buildAnyDirectoryPath(from: model)
+            store = try await context.container.fdbStore(
+                for: modelType,
+                path: binding,
+                transaction: transaction
+            )
         } else {
-            store = try await context.container.store(for: modelType)
+            store = try await context.container.fdbStore(
+                for: modelType,
+                transaction: transaction
+            )
         }
 
-        try await store.executeBatchInTransaction(
+        try await store.executeBatchInTransactionWithPreconditions(
             inserts: [],
+            deletes: [model],
+            transaction: transaction,
+            skipExistingCheck: false,
+            insertPreconditions: [],
+            deletePreconditions: [precondition]
+        )
+        try await context.processDualWrites(
+            serializedInserts: [],
             deletes: [model],
             transaction: transaction
         )
@@ -73,6 +109,7 @@ public struct FDBPersistenceHandler: ModelPersistenceHandler {
     public func load(
         _ typeName: String,
         id: Tuple,
+        partition: AnyDirectoryPath?,
         transaction: any Transaction
     ) async throws -> (any Persistable)? {
         guard let entity = context.container.schema.entities.first(where: { $0.name == typeName }) else {
@@ -83,61 +120,144 @@ public struct FDBPersistenceHandler: ModelPersistenceHandler {
             throw FDBRuntimeError.internalError("Entity '\(typeName)' has no Persistable type")
         }
 
-        // Dynamic directory types cannot be loaded without partition info
-        if hasDynamicDirectory(persistableType) {
+        let subspace: Subspace
+        if hasDynamicDirectory(persistableType), partition == nil {
             throw DirectoryPathError.dynamicFieldsRequired(
                 typeName: typeName,
                 fields: extractDirectoryFieldNames(persistableType)
             )
         }
-
-        let subspace = try await context.container.resolveDirectory(for: persistableType)
+        if let partition {
+            subspace = try await context.container.openDirectory(
+                for: persistableType,
+                path: partition,
+                transaction: transaction
+            )
+        } else {
+            subspace = try await context.container.openDirectory(
+                for: persistableType,
+                transaction: transaction
+            )
+        }
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let typeSubspace = itemSubspace.subspace(typeName)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let key = typeSubspace.pack(id)
 
         // Use ItemStorage to properly read ItemEnvelope format
-        let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+        let storage = context.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
         guard let data = try await storage.read(for: key) else {
             return nil
         }
 
-        let decoder = ProtobufDecoder()
-        return try decoder.decode(persistableType, from: Data(data))
+        return try DataAccess.deserializeAny(data, as: persistableType)
+    }
+
+    public func scan(
+        _ typeName: String,
+        partition: AnyDirectoryPath?,
+        limit: Int,
+        transaction: any Transaction
+    ) async throws -> [any Persistable] {
+        guard limit > 0 else {
+            throw FDBRuntimeError.internalError("Transaction-scoped scans require a positive limit")
+        }
+        guard let entity = context.container.schema.entities.first(where: { $0.name == typeName }) else {
+            throw FDBRuntimeError.internalError("Entity '\(typeName)' is not registered in the compiled schema")
+        }
+        guard let persistableType = entity.persistableType else {
+            throw FDBRuntimeError.internalError("Entity '\(typeName)' has no Persistable type")
+        }
+
+        if hasDynamicDirectory(persistableType), partition == nil {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: typeName,
+                fields: extractDirectoryFieldNames(persistableType)
+            )
+        }
+
+        try context.container.securityDelegate?.evaluateList(
+            type: persistableType,
+            limit: limit,
+            offset: nil,
+            orderBy: nil
+        )
+
+        let subspace: Subspace
+        if let partition {
+            subspace = try await context.container.openDirectory(
+                for: persistableType,
+                path: partition,
+                transaction: transaction
+            )
+        } else {
+            subspace = try await context.container.openDirectory(
+                for: persistableType,
+                transaction: transaction
+            )
+        }
+
+        let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let typeSubspace = itemSubspace.subspace(typeName)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
+        let (begin, end) = typeSubspace.range()
+        let storage = context.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
+        var models: [any Persistable] = []
+        models.reserveCapacity(limit)
+
+        for try await (_, data) in storage.scan(
+            begin: begin,
+            end: end,
+            snapshot: false,
+            limit: limit
+        ) {
+            let model = try DataAccess.deserializeAny(data, as: persistableType)
+            try context.container.securityDelegate?.evaluateGet(model)
+            models.append(model)
+        }
+
+        return models
+    }
+
+    public func validateFinalState(
+        of models: [any Persistable],
+        transaction: any Transaction
+    ) async throws {
+        let service = RecordMutationMaintenanceService(
+            container: context.container,
+            maintainers: context.container.runtimeConfiguration.recordMutationMaintainers
+        )
+        try await service.validateFinalState(
+            of: models,
+            transaction: transaction
+        )
     }
 
     // MARK: - Private Helpers
 
-    /// Check if a type has dynamic directory (contains Field components)
+    /// Check if a type has dynamic directory components.
     private func hasDynamicDirectory(_ type: any Persistable.Type) -> Bool {
-        type.directoryPathComponents.contains { $0 is any DynamicDirectoryElement }
+        type.hasDynamicDirectory
     }
 
     /// Extract directory field names for error messages
     private func extractDirectoryFieldNames(_ type: any Persistable.Type) -> [String] {
-        type.directoryPathComponents.compactMap { component -> String? in
-            guard let dynamicElement = component as? any DynamicDirectoryElement else { return nil }
-            return type.fieldName(for: dynamicElement.anyKeyPath)
-        }
+        type.directoryFieldNames
     }
 
     /// Build type-erased partition binding from a model instance
-    private func buildAnyDirectoryPath(from model: any Persistable) -> AnyDirectoryPath {
+    private func buildAnyDirectoryPath(from model: any Persistable) throws -> AnyDirectoryPath {
         let modelType = type(of: model)
-        var bindings: [(keyPath: AnyKeyPath, value: any Sendable)] = []
+        var bindings: [(name: String, value: any Sendable)] = []
 
         for component in modelType.directoryPathComponents {
-            if let dynamicElement = component as? any DynamicDirectoryElement {
-                let keyPath = dynamicElement.anyKeyPath
-                let fieldName = modelType.fieldName(for: keyPath)
-                if let value = model[dynamicMember: fieldName] {
-                    bindings.append((keyPath, value))
-                }
+            guard case .dynamicField(let fieldName) = component else { continue }
+            if let value = model[dynamicMember: fieldName] {
+                bindings.append((fieldName, value))
             }
         }
 
-        return AnyDirectoryPath(fieldValues: bindings, type: modelType)
+        return try AnyDirectoryPath(fieldValues: bindings, type: modelType)
     }
 }
 

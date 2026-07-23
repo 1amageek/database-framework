@@ -1,6 +1,11 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
+import DatabaseValue
 import Synchronization
 import Logging
 
@@ -104,7 +109,7 @@ public final class FDBContext: Sendable {
     private let logger: Logger
 
     /// Cached stores keyed by (typeName, partitionPath) to avoid re-creation on every save()
-    private let storeCache: Mutex<[StoreKey: FDBDataStore]> = Mutex([:])
+    private let storeRegistry = Mutex(ContextDataStoreRegistry())
 
     /// Error handler for autosave failures
     ///
@@ -219,22 +224,16 @@ public final class FDBContext: Sendable {
         }
     }
 
-    /// Key for grouping by (type, partition path) in save() and store caching
-    private struct StoreKey: Hashable, Sendable {
-        let typeName: String
-        let resolvedPath: String
-    }
-
     private func cachedStore<T: Persistable>(
         for type: T.Type
     ) async throws -> FDBDataStore {
-        let storeKey = StoreKey(typeName: T.persistableType, resolvedPath: "")
-        if let cached = storeCache.withLock({ $0[storeKey] }) {
+        let storeKey = ContextDataStoreIdentity(typeName: T.persistableType, resolvedPath: [])
+        if let cached = storeRegistry.withLock({ $0.stores[storeKey] }) {
             return cached
         }
 
         let store = try await container.fdbStore(for: type)
-        storeCache.withLock { $0[storeKey] = store }
+        storeRegistry.withLock { $0.stores[storeKey] = store }
         return store
     }
 
@@ -252,14 +251,17 @@ public final class FDBContext: Sendable {
         for type: T.Type,
         path: DirectoryPath<T>
     ) async throws -> FDBDataStore {
-        let resolvedPath = AnyDirectoryPath(path).resolve().joined(separator: "/")
-        let storeKey = StoreKey(typeName: T.persistableType, resolvedPath: resolvedPath)
-        if let cached = storeCache.withLock({ $0[storeKey] }) {
+        let resolvedPath = try AnyDirectoryPath(path).resolve()
+        let storeKey = ContextDataStoreIdentity(
+            typeName: T.persistableType,
+            resolvedPath: resolvedPath
+        )
+        if let cached = storeRegistry.withLock({ $0.stores[storeKey] }) {
             return cached
         }
 
         let store = try await container.fdbStore(for: type, path: path)
-        storeCache.withLock { $0[storeKey] = store }
+        storeRegistry.withLock { $0.stores[storeKey] = store }
         return store
     }
 
@@ -281,15 +283,32 @@ public final class FDBContext: Sendable {
     }
 
     private func pendingModelLookup<T: Persistable>(
-        for id: any TupleElement,
-        as type: T.Type
+        for id: T.ID,
+        as type: T.Type,
+        partitionPath: [String]
+    ) -> (inserted: T?, isDeleted: Bool) {
+        pendingModelLookup(
+            for: id.recordIdentifierValue,
+            as: type,
+            partitionPath: partitionPath
+        )
+    }
+
+    private func pendingModelLookup<T: Persistable>(
+        for identifier: RecordIdentifierValue,
+        as type: T.Type,
+        partitionPath: [String]
     ) -> (inserted: T?, isDeleted: Bool) {
         stateLock.withLock { state in
             guard state.hasChanges else {
                 return (nil, false)
             }
 
-            let key = ModelKey(persistableType: T.persistableType, id: id)
+            let key = ModelKey(
+                persistableType: T.persistableType,
+                identifier: identifier,
+                partitionPath: partitionPath
+            )
             guard let mutation = state.pending[key] else {
                 return (nil, false)
             }
@@ -314,36 +333,50 @@ public final class FDBContext: Sendable {
     /// Key for tracking models
     private struct ModelKey: Hashable, Sendable {
         let persistableType: String
-        let idBytes: [UInt8]
+        let identifier: RecordIdentifierValue
+        let partitionPath: [String]
 
-        init<T: Persistable>(_ model: T) {
-            self.persistableType = T.persistableType
-            self.idBytes = Self.packID(model.id)
+        init(_ model: any Persistable) {
+            let modelType = type(of: model)
+            self.persistableType = modelType.persistableType
+            self.identifier = model.recordIdentifierValue
+            self.partitionPath = Self.partitionPath(for: model)
         }
 
-        init(persistableType: String, id: any Sendable) {
+        init(
+            persistableType: String,
+            identifier: RecordIdentifierValue,
+            partitionPath: [String]
+        ) {
             self.persistableType = persistableType
-            self.idBytes = Self.packID(id)
+            self.identifier = identifier
+            self.partitionPath = partitionPath
         }
 
-        private static func packID(_ id: any Sendable) -> [UInt8] {
-            // Tuple types (compound keys)
-            if let tuple = id as? Tuple {
-                return tuple.pack()
+        private static func partitionPath(
+            for model: any Persistable
+        ) -> [String] {
+            let modelType = type(of: model)
+            var path: [String] = []
+            for component in modelType.directoryPathComponents {
+                switch component {
+                case .staticPath(let value):
+                    path.append(value)
+                case .dynamicField(let fieldName):
+                    if let value = model[dynamicMember: fieldName] {
+                        path.append(Self.stagingPartitionComponent(from: value))
+                    }
+                }
             }
-            // TupleElement types (String, Int, UUID, etc.)
-            if let element = id as? any TupleElement {
-                return Tuple([element]).pack()
-            }
-            // UUID (common ID type, not TupleElement by default)
-            if let uuid = id as? UUID {
-                return Tuple([uuid.uuidString]).pack()
-            }
-            // Fallback: Use string representation
-            // WARNING: This may cause inconsistencies for custom types
-            // Consider making your ID type conform to TupleElement
-            return Tuple([String(describing: id)]).pack()
+            return path
         }
+
+        private static func stagingPartitionComponent(
+            from value: any Sendable
+        ) -> String {
+            "\(String(reflecting: type(of: value))):\(String(reflecting: value))"
+        }
+
     }
 
     // MARK: - Public Properties
@@ -675,7 +708,7 @@ public final class FDBContext: Sendable {
                 )
 
                 try await self.withRawTransaction(configuration: .batch) { transaction in
-                    let storage = ItemStorage(
+                    let storage = self.container.itemStorageFactory.make(
                         transaction: transaction,
                         blobsSubspace: blobsSubspace
                     )
@@ -692,7 +725,7 @@ public final class FDBContext: Sendable {
                             transaction: transaction
                         )
                     }
-                    transaction.clearRange(beginKey: polyBegin, endKey: polyEnd)
+                    try transaction.clearRange(beginKey: polyBegin, endKey: polyEnd)
                 }
             }
         }
@@ -772,6 +805,19 @@ public final class FDBContext: Sendable {
     /// - `.cached`: Use cached read version if available (no time limit)
     /// - `.stale(N)`: Use cache only if younger than N seconds
     internal func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
+        try await withFetchedModelsInTransaction(query) { models, _ in
+            models
+        }
+    }
+
+    /// Executes a model query and dependent reads at one transaction read version.
+    package func withFetchedModelsInTransaction<T: Persistable, Result: Sendable>(
+        _ query: Query<T>,
+        _ operation: @Sendable @escaping (
+            [T],
+            any Transaction
+        ) async throws -> Result
+    ) async throws -> Result {
         // Check if type requires partition and validate
         if T.hasDynamicDirectory {
             guard let binding = query.partitionBinding else {
@@ -784,7 +830,7 @@ public final class FDBContext: Sendable {
         }
 
         // Get store for this type (partition-aware if needed)
-        let store: any DataStore
+        let store: FDBDataStore
         if let binding = query.partitionBinding {
             store = try await cachedStore(for: T.self, path: binding)
         } else {
@@ -796,11 +842,11 @@ public final class FDBContext: Sendable {
 
         // Execute fetch within transaction (uses ReadVersionCache)
         return try await self.withRawTransaction(configuration: config) { transaction in
-            guard let fdbStore = store as? FDBDataStore else {
-                // Fall back to original behavior if not FDBDataStore
-                return try await store.fetch(query)
-            }
-            return try await fdbStore.fetchInTransaction(query, transaction: transaction)
+            let models = try await store.fetchInTransaction(
+                query,
+                transaction: transaction
+            )
+            return try await operation(models, transaction)
         }
     }
 
@@ -873,11 +919,23 @@ public final class FDBContext: Sendable {
     ///   - cachePolicy: Cache policy for this read (default: `.server`)
     /// - Returns: The model if found, nil if not found
     public func model<T: Persistable>(
-        for id: any TupleElement,
+        for id: T.ID,
         as type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
-        let pendingResult = pendingModelLookup(for: id, as: type)
+        // A dynamic type has no unambiguous in-memory identity without its partition.
+        if T.hasDynamicDirectory {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: T.persistableType,
+                fields: T.directoryFieldNames
+            )
+        }
+
+        let pendingResult = pendingModelLookup(
+            for: id,
+            as: type,
+            partitionPath: []
+        )
 
         if let inserted = pendingResult.inserted {
             // Evaluate GET security for pending insert (not via DataStore)
@@ -889,7 +947,33 @@ public final class FDBContext: Sendable {
             return nil
         }
 
-        // Validate: dynamic directory types require partition
+        // Auto-commit for default cache policy (single point read, no transaction needed).
+        // Non-default cache policies require TransactionRunner for ReadVersionCache support.
+        if case .server = cachePolicy {
+            let store = try await pointReadStore(for: type)
+            return try await store.withAutoCommit { transaction in
+                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
+            }
+        } else {
+            let store = try await cachedStore(for: type)
+            let config = TransactionConfiguration(cachePolicy: cachePolicy)
+            return try await self.withRawTransaction(configuration: config) { transaction in
+                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
+            }
+        }
+    }
+
+    /// Resolves an identifier tuple emitted by an index without weakening the
+    /// application-facing `T.ID` contract.
+    ///
+    /// The schema-guided decode is also used to match staged mutations. The
+    /// original tuple is retained for the storage read so its bytes are not
+    /// reconstructed through a dynamically guessed Swift type.
+    func model<T: Persistable>(
+        forIdentifierTuple identifierTuple: Tuple,
+        as type: T.Type,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> T? {
         if T.hasDynamicDirectory {
             throw DirectoryPathError.dynamicFieldsRequired(
                 typeName: T.persistableType,
@@ -897,19 +981,43 @@ public final class FDBContext: Sendable {
             )
         }
 
-        // Auto-commit for default cache policy (single point read, no transaction needed).
-        // Non-default cache policies require TransactionRunner for ReadVersionCache support.
+        let identifier = try RecordIdentifierKeyCodec.value(
+            from: identifierTuple,
+            expectedType: T.recordIdentifierType
+        )
+        let pendingResult = pendingModelLookup(
+            for: identifier,
+            as: type,
+            partitionPath: []
+        )
+
+        if let inserted = pendingResult.inserted {
+            try container.securityDelegate?.evaluateGet(inserted)
+            return inserted
+        }
+        if pendingResult.isDeleted {
+            return nil
+        }
+
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type)
             return try await store.withAutoCommit { transaction in
-                try await store.fetchByIdInTransaction(type, id: id, transaction: transaction)
+                try await store.fetchByIdentifierTupleInTransaction(
+                    type,
+                    identifier: identifierTuple,
+                    transaction: transaction
+                )
             }
-        } else {
-            let store = try await cachedStore(for: type)
-            let config = TransactionConfiguration(cachePolicy: cachePolicy)
-            return try await self.withRawTransaction(configuration: config) { transaction in
-                try await store.fetchByIdInTransaction(type, id: id, transaction: transaction)
-            }
+        }
+
+        let store = try await cachedStore(for: type)
+        let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
+        return try await withRawTransaction(configuration: configuration) { transaction in
+            try await store.fetchByIdentifierTupleInTransaction(
+                type,
+                identifier: identifierTuple,
+                transaction: transaction
+            )
         }
     }
 
@@ -935,12 +1043,16 @@ public final class FDBContext: Sendable {
     /// )
     /// ```
     public func model<T: Persistable>(
-        for id: any TupleElement,
+        for id: T.ID,
         as type: T.Type,
         partition path: DirectoryPath<T>,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
-        let pendingResult = pendingModelLookup(for: id, as: type)
+        let pendingResult = pendingModelLookup(
+            for: id,
+            as: type,
+            partitionPath: try AnyDirectoryPath(path).resolve()
+        )
 
         if let inserted = pendingResult.inserted {
             // Evaluate GET security for pending insert (not via DataStore)
@@ -957,14 +1069,62 @@ public final class FDBContext: Sendable {
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type, path: path)
             return try await store.withAutoCommit { transaction in
-                try await store.fetchByIdInTransaction(type, id: id, transaction: transaction)
+                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
             let store = try await cachedStore(for: type, path: path)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
             return try await self.withRawTransaction(configuration: config) { transaction in
-                try await store.fetchByIdInTransaction(type, id: id, transaction: transaction)
+                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
+        }
+    }
+
+    /// Resolves an index identifier tuple inside a dynamic directory binding.
+    func model<T: Persistable>(
+        forIdentifierTuple identifierTuple: Tuple,
+        as type: T.Type,
+        partition path: DirectoryPath<T>,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> T? {
+        let identifier = try RecordIdentifierKeyCodec.value(
+            from: identifierTuple,
+            expectedType: T.recordIdentifierType
+        )
+        let partitionPath = try AnyDirectoryPath(path).resolve()
+        let pendingResult = pendingModelLookup(
+            for: identifier,
+            as: type,
+            partitionPath: partitionPath
+        )
+
+        if let inserted = pendingResult.inserted {
+            try container.securityDelegate?.evaluateGet(inserted)
+            return inserted
+        }
+        if pendingResult.isDeleted {
+            return nil
+        }
+
+        if case .server = cachePolicy {
+            let store = try await pointReadStore(for: type, path: path)
+            return try await store.withAutoCommit { transaction in
+                try await store.fetchByIdentifierTupleInTransaction(
+                    type,
+                    identifier: identifierTuple,
+                    transaction: transaction
+                )
+            }
+        }
+
+        let store = try await cachedStore(for: type, path: path)
+        let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
+        return try await withRawTransaction(configuration: configuration) { transaction in
+            try await store.fetchByIdentifierTupleInTransaction(
+                type,
+                identifier: identifierTuple,
+                transaction: transaction
+            )
         }
     }
 
@@ -1119,19 +1279,13 @@ public final class FDBContext: Sendable {
             } catch {
                 stateLock.withLock { state in
                     for staged in inserts {
-                        let key = ModelKey(
-                            persistableType: type(of: staged.model).persistableType,
-                            id: staged.model.id
-                        )
+                        let key = ModelKey(staged.model)
                         state.pending[key] = staged.strict
                             ? .insert(new: staged.model, precondition: staged.precondition)
                             : .upsert(new: staged.model, precondition: staged.precondition)
                     }
                     for staged in replaces {
-                        let key = ModelKey(
-                            persistableType: type(of: staged.new).persistableType,
-                            id: staged.new.id
-                        )
+                        let key = ModelKey(staged.new)
                         state.pending[key] = .replace(
                             old: staged.old,
                             new: staged.new,
@@ -1139,10 +1293,7 @@ public final class FDBContext: Sendable {
                         )
                     }
                     for staged in deletes {
-                        let key = ModelKey(
-                            persistableType: type(of: staged.model).persistableType,
-                            id: staged.model.id
-                        )
+                        let key = ModelKey(staged.model)
                         state.pending[key] = .delete(
                             old: staged.model,
                             precondition: staged.precondition
@@ -1177,6 +1328,11 @@ public final class FDBContext: Sendable {
         // Not eligible if model has indexes (index updates need atomicity with data write)
         guard modelType.indexDescriptors.isEmpty else { return nil }
 
+        // Runtime-maintained descriptors require commit-time final-state validation.
+        guard !modelType.descriptors.contains(where: {
+            $0 is any RuntimeMaintainedDescriptor
+        }) else { return nil }
+
         // Not eligible if security is enabled (CREATE/UPDATE evaluation needs existing record check)
         guard container.securityDelegate == nil else { return nil }
 
@@ -1209,10 +1365,7 @@ public final class FDBContext: Sendable {
 
     private func restoreSingleInsert(_ staged: StagedInsert) {
         stateLock.withLock { state in
-            let key = ModelKey(
-                persistableType: type(of: staged.model).persistableType,
-                id: staged.model.id
-            )
+            let key = ModelKey(staged.model)
             state.pending[key] = staged.strict
                 ? .insert(new: staged.model, precondition: staged.precondition)
                 : .upsert(new: staged.model, precondition: staged.precondition)
@@ -1222,10 +1375,7 @@ public final class FDBContext: Sendable {
 
     private func restoreSingleDelete(_ staged: StagedDelete) {
         stateLock.withLock { state in
-            let key = ModelKey(
-                persistableType: type(of: staged.model).persistableType,
-                id: staged.model.id
-            )
+            let key = ModelKey(staged.model)
             state.pending[key] = .delete(old: staged.model, precondition: staged.precondition)
             state.isSaving = false
         }
@@ -1238,15 +1388,15 @@ public final class FDBContext: Sendable {
         deletesSnapshot: [StagedDelete]
     ) async throws {
         // Group models by (type, partition) for partition-aware batching
-        var insertsByStore: [StoreKey: [StagedInsert]] = [:]
-        var replacesByStore: [StoreKey: [StagedReplace]] = [:]
-        var deletesByStore: [StoreKey: [StagedDelete]] = [:]
+        var insertsByStore: [ContextDataStoreIdentity: [StagedInsert]] = [:]
+        var replacesByStore: [ContextDataStoreIdentity: [StagedReplace]] = [:]
+        var deletesByStore: [ContextDataStoreIdentity: [StagedDelete]] = [:]
 
         for staged in insertsSnapshot {
             let modelType = type(of: staged.model)
             let typeName = modelType.persistableType
-            let resolvedPath = resolvePartitionPath(for: staged.model)
-            let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
+            let resolvedPath = try resolvePartitionPath(for: staged.model)
+            let key = ContextDataStoreIdentity(typeName: typeName, resolvedPath: resolvedPath)
             insertsByStore[key, default: []].append(staged)
         }
 
@@ -1255,12 +1405,18 @@ public final class FDBContext: Sendable {
             // share the same ModelKey by construction (merge rule invariant).
             let modelType = type(of: staged.new)
             let typeName = modelType.persistableType
-            let oldResolvedPath = resolvePartitionPath(for: staged.old)
-            let newResolvedPath = resolvePartitionPath(for: staged.new)
+            let oldResolvedPath = try resolvePartitionPath(for: staged.old)
+            let newResolvedPath = try resolvePartitionPath(for: staged.new)
 
             if hasDynamicDirectory(modelType), oldResolvedPath != newResolvedPath {
-                let oldKey = StoreKey(typeName: typeName, resolvedPath: oldResolvedPath)
-                let newKey = StoreKey(typeName: typeName, resolvedPath: newResolvedPath)
+                let oldKey = ContextDataStoreIdentity(
+                    typeName: typeName,
+                    resolvedPath: oldResolvedPath
+                )
+                let newKey = ContextDataStoreIdentity(
+                    typeName: typeName,
+                    resolvedPath: newResolvedPath
+                )
                 deletesByStore[oldKey, default: []].append(
                     StagedDelete(model: staged.old, precondition: staged.precondition)
                 )
@@ -1268,7 +1424,10 @@ public final class FDBContext: Sendable {
                     StagedInsert(model: staged.new, strict: false, precondition: .none)
                 )
             } else {
-                let key = StoreKey(typeName: typeName, resolvedPath: newResolvedPath)
+                let key = ContextDataStoreIdentity(
+                    typeName: typeName,
+                    resolvedPath: newResolvedPath
+                )
                 replacesByStore[key, default: []].append(staged)
             }
         }
@@ -1276,8 +1435,8 @@ public final class FDBContext: Sendable {
         for staged in deletesSnapshot {
             let modelType = type(of: staged.model)
             let typeName = modelType.persistableType
-            let resolvedPath = resolvePartitionPath(for: staged.model)
-            let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
+            let resolvedPath = try resolvePartitionPath(for: staged.model)
+            let key = ContextDataStoreIdentity(typeName: typeName, resolvedPath: resolvedPath)
             deletesByStore[key, default: []].append(staged)
         }
 
@@ -1286,10 +1445,10 @@ public final class FDBContext: Sendable {
             .union(deletesByStore.keys)
 
         // Resolve stores with caching (avoids FDBDataStore re-creation across save() calls)
-        var resolvedStores: [StoreKey: FDBDataStore] = [:]
+        var resolvedStores: [ContextDataStoreIdentity: FDBDataStore] = [:]
         for storeKey in allStoreKeys {
             // Check cache first
-            if let cached = storeCache.withLock({ $0[storeKey] }) {
+            if let cached = storeRegistry.withLock({ $0.stores[storeKey] }) {
                 resolvedStores[storeKey] = cached
                 continue
             }
@@ -1304,13 +1463,13 @@ public final class FDBContext: Sendable {
             let store: FDBDataStore
 
             if hasDynamicDirectory(modelType) {
-                let binding = buildAnyDirectoryPath(from: model)
+                let binding = try buildAnyDirectoryPath(from: model)
                 store = try await container.fdbStore(for: modelType, path: binding)
             } else {
                 store = try await container.fdbStore(for: modelType)
             }
             resolvedStores[storeKey] = store
-            storeCache.withLock { $0[storeKey] = store }
+            storeRegistry.withLock { $0.stores[storeKey] = store }
         }
         let storesByKey = resolvedStores
 
@@ -1318,6 +1477,9 @@ public final class FDBContext: Sendable {
         let insertsForTransaction = insertsByStore
         let replacesForTransaction = replacesByStore
         let deletesForTransaction = deletesByStore
+        let finalModelsForTransaction: [any Persistable] =
+            insertsSnapshot.map(\.model) + replacesSnapshot.map(\.new)
+        let persistenceHandler = makePersistenceHandler()
 
         // Get any store to provide the transaction (all stores share the same database)
         guard storesByKey.values.first != nil else {
@@ -1391,61 +1553,42 @@ public final class FDBContext: Sendable {
                 deletes: deletesSnapshot.map { $0.model },
                 transaction: transaction
             )
+            try await persistenceHandler.validateFinalState(
+                of: finalModelsForTransaction,
+                transaction: transaction
+            )
         }
     }
 
     // MARK: - Partition Helpers
 
-    /// Check if a type has dynamic directory (contains Field components)
-    ///
-    /// Uses `DynamicDirectoryElement` protocol for explicit Field identification.
+    /// Check if a type has dynamic directory components.
     private func hasDynamicDirectory(_ type: any Persistable.Type) -> Bool {
-        type.directoryPathComponents.contains { $0 is any DynamicDirectoryElement }
+        type.hasDynamicDirectory
     }
 
-    /// Resolve the partition path for a model (empty string for static directories)
-    private func resolvePartitionPath(for model: any Persistable) -> String {
+    /// Resolve the complete, collision-free partition path for a model.
+    private func resolvePartitionPath(for model: any Persistable) throws -> [String] {
         let modelType = type(of: model)
         guard hasDynamicDirectory(modelType) else {
-            return ""
+            return []
         }
-
-        // Build path by extracting Field values from model
-        var path: [String] = []
-        for component in modelType.directoryPathComponents {
-            if let pathElement = component as? Path {
-                path.append(pathElement.value)
-            } else if let stringElement = component as? String {
-                path.append(stringElement)
-            } else if let dynamicElement = component as? any DynamicDirectoryElement {
-                // Extract field value using anyKeyPath from DynamicDirectoryElement
-                let fieldName = modelType.fieldName(for: dynamicElement.anyKeyPath)
-                if let value = model[dynamicMember: fieldName] {
-                    path.append(directoryPathString(from: value))
-                }
-            }
-        }
-        return path.joined(separator: "/")
+        return try buildAnyDirectoryPath(from: model).resolve()
     }
 
-    /// Build type-erased partition binding from a model instance
-    ///
-    /// Uses `DynamicDirectoryElement.anyKeyPath` to extract Field keyPaths without Mirror.
-    private func buildAnyDirectoryPath(from model: any Persistable) -> AnyDirectoryPath {
+    /// Build a type-erased partition binding from a model instance.
+    private func buildAnyDirectoryPath(from model: any Persistable) throws -> AnyDirectoryPath {
         let modelType = type(of: model)
-        var bindings: [(keyPath: AnyKeyPath, value: any Sendable)] = []
+        var bindings: [(name: String, value: any Sendable)] = []
 
         for component in modelType.directoryPathComponents {
-            if let dynamicElement = component as? any DynamicDirectoryElement {
-                let keyPath = dynamicElement.anyKeyPath
-                let fieldName = modelType.fieldName(for: keyPath)
-                if let value = model[dynamicMember: fieldName] {
-                    bindings.append((keyPath, value))
-                }
+            guard case .dynamicField(let fieldName) = component else { continue }
+            if let value = model[dynamicMember: fieldName] {
+                bindings.append((fieldName, value))
             }
         }
 
-        return AnyDirectoryPath(fieldValues: bindings, type: modelType)
+        return try AnyDirectoryPath(fieldValues: bindings, type: modelType)
     }
 
     // MARK: - Polymorphable Dual-Write Support
@@ -1461,7 +1604,7 @@ public final class FDBContext: Sendable {
     ///   - serializedInserts: Pre-serialized insert models from DataStore
     ///   - deletes: Models to delete
     ///   - transaction: The transaction to use
-    private func processDualWrites(
+    internal func processDualWrites(
         serializedInserts: [SerializedModel],
         deletes: [any Persistable],
         transaction: any Transaction
@@ -1494,9 +1637,7 @@ public final class FDBContext: Sendable {
             let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
             guard typeDirectory != polyDirectory else { continue }
 
-            // Compute ID tuple
-            guard let tupleElement = model.id as? any TupleElement else { continue }
-            let idTuple = (tupleElement as? Tuple) ?? Tuple([tupleElement])
+            let idTuple = try model.recordIdentifierTuple()
 
             let key = ObjectIdentifier(polymorphicType)
             deletesByPolyType[key, default: []].append((model, idTuple, polymorphicType))
@@ -1516,7 +1657,7 @@ public final class FDBContext: Sendable {
             )
 
             // Use ItemStorage for large value handling (stores chunks in blobs subspace)
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
@@ -1568,7 +1709,7 @@ public final class FDBContext: Sendable {
             )
 
             // Use ItemStorage for large value handling
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
@@ -1625,12 +1766,13 @@ public final class FDBContext: Sendable {
             container.indexConfigurations[index.name] ?? []
         }
         return IndexMaintenanceService(
-            indexStateManager: IndexStateManager(container: container, subspace: subspace),
+            indexLifecycleStore: IndexLifecycleStore(container: container, subspace: subspace),
             violationTracker: UniquenessViolationTracker(
                 container: container,
                 metadataSubspace: subspace.subspace(SubspaceKey.metadata)
             ),
             indexSubspace: subspace.subspace(SubspaceKey.indexes),
+            maintainerProviders: container.runtimeConfiguration.indexMaintainerProviders,
             configurations: groupConfigurations
         )
     }
@@ -1649,10 +1791,19 @@ public final class FDBContext: Sendable {
     // MARK: - Autosave
 
     private func scheduleAutosave() {
-        Task { [weak self] in
+        let clock = container.engine.monotonicClock
+        Task { [weak self, clock] in
             do {
-                try await Task.sleep(nanoseconds: 10_000_000)  // 10ms
+                try await clock.sleep(for: .milliseconds(10))
+            } catch is CancellationError {
+                return
             } catch {
+                guard let self else { return }
+                self.logger.error("Autosave scheduling failed: \(error)")
+                let errorHandler = self.stateLock.withLock {
+                    $0.autosaveErrorHandler
+                }
+                errorHandler?(error)
                 return
             }
 
@@ -1839,12 +1990,14 @@ extension FDBContext {
     /// **Reference**: Cloud Firestore transaction model, FDB Record Layer FDBRecordContext
     public func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration = .default,
+        executionDeadline: TransactionExecutionDeadline? = nil,
         _ operation: @Sendable @escaping (TransactionContext) async throws -> T
     ) async throws -> T {
         // Use TransactionRunner with context's own ReadVersionCache
         let runner = TransactionRunner(database: container.engine)
         return try await runner.run(
             configuration: configuration,
+            executionDeadline: executionDeadline,
             readVersionCache: readVersionCache,
             operationDescription: "FDBContext.withTransaction"
         ) { transaction in
@@ -1852,7 +2005,9 @@ extension FDBContext {
                 transaction: transaction,
                 container: self.container
             )
-            return try await operation(context)
+            let result = try await operation(context)
+            try await context.finalize()
+            return result
         }
     }
 
@@ -1875,11 +2030,13 @@ extension FDBContext {
     /// - Throws: Error if the transaction cannot be committed after retries
     internal func withRawTransaction<T: Sendable>(
         configuration: TransactionConfiguration = .default,
+        executionDeadline: TransactionExecutionDeadline? = nil,
         _ operation: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T {
         let runner = TransactionRunner(database: container.engine)
         return try await runner.run(
             configuration: configuration,
+            executionDeadline: executionDeadline,
             readVersionCache: readVersionCache,
             operationDescription: "FDBContext.withRawTransaction",
             operation: operation
@@ -2006,7 +2163,7 @@ extension FDBContext {
 
         let results: [any Persistable] = try await self.withRawTransaction(configuration: .default) { transaction in
             // Use ItemStorage.scan to properly handle external (large) values
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
@@ -2071,7 +2228,7 @@ extension FDBContext {
         // Search all type subspaces for this ID
         let result: (any Persistable)? = try await self.withRawTransaction(configuration: .default) { transaction in
             // Use ItemStorage for proper handling of large values
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
@@ -2106,7 +2263,7 @@ extension FDBContext {
 
     /// Deserialize bytes into a concrete Persistable type
     private func deserializePolymorphic(
-        bytes: [UInt8],
+        bytes: Bytes,
         as type: any Persistable.Type
     ) throws -> any Persistable {
         // Persistable types are always Codable (via @Persistable macro)
@@ -2159,8 +2316,7 @@ extension FDBContext {
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
-        let validatedID = try item.validateIDForStorage()
-        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+        let idTuple = try item.recordIdentifierTuple()
         let compositeID = makePolymorphicCompositeID(typeCode: typeCode, idTuple: idTuple)
         let key = itemSubspace.pack(compositeID)
 
@@ -2168,7 +2324,7 @@ extension FDBContext {
 
         // Security: Check if this is CREATE or UPDATE
         let oldData: Bytes? = try await self.withRawTransaction(configuration: .default) { transaction in
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
@@ -2185,7 +2341,7 @@ extension FDBContext {
         }
 
         try await self.withRawTransaction(configuration: .default) { transaction in
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
@@ -2260,7 +2416,7 @@ extension FDBContext {
         // Security: Fetch existing item to evaluate DELETE permission
         let oldItem: T?
         if let oldData: Bytes = try await self.withRawTransaction(configuration: .default, { transaction in
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
@@ -2274,7 +2430,7 @@ extension FDBContext {
         }
 
         try await self.withRawTransaction(configuration: .default) { transaction in
-            let storage = ItemStorage(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )

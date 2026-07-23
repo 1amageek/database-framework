@@ -5,7 +5,12 @@
 //
 // Reference: Neumann, T., Weikum, G. (2010). "x-RDF-3X: Fast Querying, Strong Consistency, and Versatile Updates in RDF Databases"
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseMath
 
 /// SPARQL Query Optimizer
 ///
@@ -118,7 +123,7 @@ public struct SPARQLQueryOptimizer: Sendable {
     /// After: FILTER(?x > 5) applied immediately after ?x is bound
     private func pushDownFilters(_ pattern: ExecutionPattern) -> ExecutionPattern {
         switch pattern {
-        case .basic:
+        case .basic, .values:
             return pattern
 
         case .join(let left, let right):
@@ -143,11 +148,21 @@ public struct SPARQLQueryOptimizer: Sendable {
             // Try to push filter into the inner pattern
             return pushFilterInto(innerPattern, filter: expression)
 
-        case .groupBy(let sourcePattern, let groupVars, let aggs, let having):
+        case .extend(let innerPattern, let variable, let expression):
+            return .extend(
+                pushDownFilters(innerPattern),
+                variable: variable,
+                expression: expression
+            )
+
+        case .graph(let selector, let innerPattern):
+            return .graph(selector, pushDownFilters(innerPattern))
+
+        case .groupBy(let sourcePattern, let grouping, let aggs, let having):
             // Optimize the source pattern, preserve groupBy structure
             return .groupBy(
                 pushDownFilters(sourcePattern),
-                groupVariables: groupVars,
+                grouping: grouping,
                 aggregates: aggs,
                 having: having
             )
@@ -161,11 +176,18 @@ public struct SPARQLQueryOptimizer: Sendable {
 
         case .lateral(let left, let right):
             return .lateral(pushDownFilters(left), pushDownFilters(right))
+
+        case .subquery:
+            // A Select boundary owns its projection and solution modifiers.
+            return pattern
         }
     }
 
     /// Push a filter expression into a pattern
     private func pushFilterInto(_ pattern: ExecutionPattern, filter: FilterExpression) -> ExecutionPattern {
+        guard filter.isPushdownSafe else {
+            return .filter(pushDownFilters(pattern), filter)
+        }
         let filterVariables = extractVariables(from: filter)
 
         switch pattern {
@@ -237,13 +259,42 @@ public struct SPARQLQueryOptimizer: Sendable {
                 filter: .and(existingFilter, filter)
             )
 
-        case .groupBy(let sourcePattern, let groupVars, let aggs, let having):
+        case .extend(let innerPattern, let variable, let expression):
+            return .filter(
+                .extend(
+                    pushDownFilters(innerPattern),
+                    variable: variable,
+                    expression: expression
+                ),
+                filter
+            )
+
+        case .values(let table):
+            if filterVariables.isSubset(of: Set(table.variables)) {
+                return .filter(pattern, filter)
+            }
+            return .filter(pattern, filter)
+
+        case .graph(let selector, let innerPattern):
+            let innerVariables = extractPatternVariables(innerPattern)
+            if filterVariables.isSubset(of: innerVariables) {
+                return .graph(
+                    selector,
+                    pushFilterInto(innerPattern, filter: filter)
+                )
+            }
+            return .filter(
+                .graph(selector, pushDownFilters(innerPattern)),
+                filter
+            )
+
+        case .groupBy(let sourcePattern, let grouping, let aggs, let having):
             // Can't push filter into groupBy source (would change semantics)
             // But we can optimize the source pattern
             return .filter(
                 .groupBy(
                     pushDownFilters(sourcePattern),
-                    groupVariables: groupVars,
+                    grouping: grouping,
                     aggregates: aggs,
                     having: having
                 ),
@@ -275,6 +326,11 @@ public struct SPARQLQueryOptimizer: Sendable {
                 )
             }
             return .filter(.lateral(pushDownFilters(left), pushDownFilters(right)), filter)
+
+        case .subquery:
+            // Filters from the enclosing query cannot observe hidden inner
+            // variables and therefore remain outside the Select boundary.
+            return .filter(pattern, filter)
         }
     }
 
@@ -287,7 +343,7 @@ public struct SPARQLQueryOptimizer: Sendable {
             let optimized = optimizePatternOrder(patterns)
             return .basic(optimized)
 
-        case .basic:
+        case .basic, .values:
             return pattern
 
         case .join(let left, let right):
@@ -307,10 +363,20 @@ public struct SPARQLQueryOptimizer: Sendable {
         case .filter(let innerPattern, let expression):
             return .filter(optimizeJoins(innerPattern), expression)
 
-        case .groupBy(let sourcePattern, let groupVars, let aggs, let having):
+        case .extend(let innerPattern, let variable, let expression):
+            return .extend(
+                optimizeJoins(innerPattern),
+                variable: variable,
+                expression: expression
+            )
+
+        case .graph(let selector, let innerPattern):
+            return .graph(selector, optimizeJoins(innerPattern))
+
+        case .groupBy(let sourcePattern, let grouping, let aggs, let having):
             return .groupBy(
                 optimizeJoins(sourcePattern),
-                groupVariables: groupVars,
+                grouping: grouping,
                 aggregates: aggs,
                 having: having
             )
@@ -323,6 +389,9 @@ public struct SPARQLQueryOptimizer: Sendable {
 
         case .lateral(let left, let right):
             return .lateral(optimizeJoins(left), optimizeJoins(right))
+
+        case .subquery:
+            return pattern
         }
     }
 
@@ -460,7 +529,9 @@ public struct SPARQLQueryOptimizer: Sendable {
             let sharedVars = leftVars.intersection(rightVars)
 
             // Join selectivity based on shared variables
-            let joinSelectivity = sharedVars.isEmpty ? 1.0 : pow(0.1, Double(sharedVars.count))
+            let joinSelectivity = sharedVars.isEmpty
+                ? 1.0
+                : DatabaseMath.power(0.1, Double(sharedVars.count))
             return leftCard * rightCard * joinSelectivity
 
         case .optional(let left, let right):
@@ -476,11 +547,26 @@ public struct SPARQLQueryOptimizer: Sendable {
             // Filter typically reduces by ~50%
             return estimateCardinality(innerPattern) * 0.5
 
-        case .groupBy(let sourcePattern, let groupVars, _, _):
+        case .extend(let innerPattern, _, _):
+            return estimateCardinality(innerPattern)
+
+        case .values(let table):
+            return Double(table.rowCount)
+
+        case .graph(let selector, let innerPattern):
+            let innerCardinality = estimateCardinality(innerPattern)
+            switch selector {
+            case .named:
+                return innerCardinality
+            case .variable:
+                return innerCardinality * 10
+            }
+
+        case .groupBy(let sourcePattern, let grouping, _, _):
             // GROUP BY reduces cardinality to number of distinct group values
             let sourceCard = estimateCardinality(sourcePattern)
             // Estimate distinct groups as sqrt of source
-            let groupFactor = pow(0.5, Double(groupVars.count))
+            let groupFactor = DatabaseMath.power(0.5, Double(grouping.keys.count))
             return max(1, sourceCard * groupFactor)
 
         case .minus(let left, let right):
@@ -506,12 +592,14 @@ public struct SPARQLQueryOptimizer: Sendable {
 
             // F-4: Adjust multiplier for ontology-known properties
             if let ctx = ontologyContext, case .iri(let predIRI) = path {
-                let subPropCount = ctx.subProperties(of: predIRI).count
+                let subPropCount = ctx.subProperties(
+                    of: predIRI.rawValue
+                ).count
 
                 // Functional property: at most 1 value per subject per property.
                 // With sub-properties, each sub-property contributes at most 1 result,
                 // so the upper bound is 1 + subPropCount (property itself + subs).
-                if ctx.isFunctional(predIRI) {
+                if ctx.isFunctional(predIRI.rawValue) {
                     if subPropCount == 0 {
                         pathMultiplier = min(pathMultiplier, 1.0)
                     } else {
@@ -540,6 +628,17 @@ public struct SPARQLQueryOptimizer: Sendable {
             let leftCard = estimateCardinality(left)
             let rightCard = estimateCardinality(right)
             return leftCard * rightCard * 0.1
+
+        case .subquery(let plan):
+            let estimated = estimateCardinality(plan.select.ordered.algebra)
+            let afterOffset = max(
+                0,
+                estimated - Double(plan.select.slice.offset)
+            )
+            if let limit = plan.select.slice.limit {
+                return min(afterOffset, Double(limit))
+            }
+            return afterOffset
         }
     }
 
@@ -633,9 +732,16 @@ public struct SPARQLQueryOptimizer: Sendable {
             return extractPatternVariables(left)  // MINUS does not project right variables
         case .filter(let innerPattern, _):
             return extractPatternVariables(innerPattern)
-        case .groupBy(_, let groupVars, let aggs, _):
-            // GROUP BY output variables are group variables + aggregate aliases
-            var vars = Set(groupVars)
+        case .extend(let innerPattern, let variable, _):
+            return extractPatternVariables(innerPattern).union([variable])
+        case .values(let table):
+            return Set(table.variables)
+        case .graph(let selector, let innerPattern):
+            return selector.variables.union(
+                extractPatternVariables(innerPattern)
+            )
+        case .groupBy(_, let grouping, let aggs, _):
+            var vars = Set(grouping.keys.lazy.map(\.outputVariable))
             for agg in aggs {
                 vars.insert(agg.alias)
             }
@@ -646,6 +752,9 @@ public struct SPARQLQueryOptimizer: Sendable {
             if case .variable(let name) = subject { vars.insert(name) }
             if case .variable(let name) = object { vars.insert(name) }
             return vars
+
+        case .subquery(let plan):
+            return Set(plan.select.projectionVariables)
         }
     }
 }

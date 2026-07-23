@@ -1,10 +1,14 @@
 // PostCommit.swift
-// DatabaseEngine - Post-commit callback hooks
+// DatabaseEngine - Post-commit actions
 //
 // Reference: FDB Record Layer PostCommit
 // Provides callbacks that execute after successful transaction commit.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Logging
 import StorageKit
 import Synchronization
@@ -103,18 +107,18 @@ public struct NamedPostCommit: Sendable {
     }
 }
 
-// MARK: - Built-in PostCommit Implementations
+// MARK: - Post-Commit Actions
 
-/// Closure-based post-commit hook
-public struct ClosurePostCommit: PostCommit {
-    private let closure: @Sendable () async throws -> Void
+/// Executes an application-provided action after a successful commit.
+public struct PostCommitAction: PostCommit {
+    private let performAction: @Sendable () async throws -> Void
 
-    public init(_ closure: @escaping @Sendable () async throws -> Void) {
-        self.closure = closure
+    public init(_ performAction: @escaping @Sendable () async throws -> Void) {
+        self.performAction = performAction
     }
 
     public func run() async throws {
-        try await closure()
+        try await performAction()
     }
 }
 
@@ -138,15 +142,22 @@ public struct FireAndForgetPostCommit: PostCommit {
 /// Delayed post-commit that waits before executing
 public struct DelayedPostCommit: PostCommit {
     private let inner: any PostCommit
-    private let delay: TimeInterval
+    private let delay: Duration
+    private let clock: any StorageMonotonicClock
 
-    public init(_ inner: any PostCommit, delay: TimeInterval) {
+    public init(
+        _ inner: any PostCommit,
+        delay: Duration,
+        clock: any StorageMonotonicClock = SystemStorageClock()
+    ) {
+        precondition(delay >= .zero, "Post-commit delay must not be negative")
         self.inner = inner
         self.delay = delay
+        self.clock = clock
     }
 
     public func run() async throws {
-        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        try await clock.sleep(until: clock.now.advanced(by: delay))
         try await inner.run()
     }
 }
@@ -156,11 +167,24 @@ public struct RetryingPostCommit: PostCommit {
     private let inner: any PostCommit
     private let maxAttempts: Int
     private let backoffMs: Int
+    private let clock: any StorageMonotonicClock
 
-    public init(_ inner: any PostCommit, maxAttempts: Int = 3, backoffMs: Int = 100) {
+    public init(
+        _ inner: any PostCommit,
+        maxAttempts: Int = 3,
+        backoffMs: Int = 100,
+        clock: any StorageMonotonicClock = SystemStorageClock()
+    ) {
+        precondition(maxAttempts > 0, "Post-commit retry count must be positive")
+        precondition(backoffMs >= 0, "Post-commit backoff must not be negative")
+        precondition(
+            maxAttempts <= Int.bitWidth,
+            "Post-commit retry count exceeds the backoff exponent range"
+        )
         self.inner = inner
         self.maxAttempts = maxAttempts
         self.backoffMs = backoffMs
+        self.clock = clock
     }
 
     public func run() async throws {
@@ -173,8 +197,15 @@ public struct RetryingPostCommit: PostCommit {
             } catch {
                 lastError = error
                 if attempt < maxAttempts - 1 {
-                    let delay = backoffMs * (1 << attempt)
-                    try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
+                    let (delay, overflow) = backoffMs.multipliedReportingOverflow(
+                        by: 1 << attempt
+                    )
+                    precondition(!overflow, "Post-commit backoff overflow")
+                    try await clock.sleep(
+                        until: clock.now.advanced(
+                            by: .milliseconds(Int64(delay))
+                        )
+                    )
                 }
             }
         }
@@ -267,14 +298,14 @@ public final class PostCommitRegistry: Sendable {
         hooks.withLock { $0.append(named) }
     }
 
-    /// Add a closure-based hook
+    /// Add an application-defined post-commit action.
     public func add(
         name: String? = nil,
         priority: Int = 100,
         runConcurrently: Bool = true,
-        _ closure: @escaping @Sendable () async throws -> Void
+        _ action: @escaping @Sendable () async throws -> Void
     ) {
-        add(ClosurePostCommit(closure), name: name, priority: priority, runConcurrently: runConcurrently)
+        add(PostCommitAction(action), name: name, priority: priority, runConcurrently: runConcurrently)
     }
 
     /// Remove all hooks
@@ -345,14 +376,14 @@ public final class PostCommitRegistry: Sendable {
 
 // MARK: - Common PostCommit Factories
 
-extension PostCommit where Self == ClosurePostCommit {
+extension PostCommit where Self == PostCommitAction {
     /// Create a cache invalidation post-commit
     public static func invalidateCache<Cache: Sendable>(
         _ cache: Cache,
         keys: [String],
         invalidate: @escaping @Sendable (Cache, String) async -> Void
     ) -> some PostCommit {
-        ClosurePostCommit {
+        PostCommitAction {
             for key in keys {
                 await invalidate(cache, key)
             }
@@ -361,10 +392,10 @@ extension PostCommit where Self == ClosurePostCommit {
 
     /// Create a notification post-commit
     public static func notify(
-        _ closure: @escaping @Sendable () async -> Void
+        _ sendNotification: @escaping @Sendable () async -> Void
     ) -> some PostCommit {
-        ClosurePostCommit {
-            await closure()
+        PostCommitAction {
+            await sendNotification()
         }
     }
 }

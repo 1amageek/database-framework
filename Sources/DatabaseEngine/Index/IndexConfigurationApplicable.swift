@@ -1,8 +1,8 @@
 // IndexConfigurationApplicable.swift
 // FDBIndexing - Protocols for applying IndexConfiguration to IndexMaintainer
 //
-// These protocols bridge IndexConfiguration (defined in FDBModel) with
-// IndexMaintainer implementations (defined in upper layers).
+// These protocols apply IndexConfiguration values to concrete maintainers while
+// preserving static type checking.
 
 import Core
 

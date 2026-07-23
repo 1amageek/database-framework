@@ -4,9 +4,14 @@
 // Reference: Cloud Firestore Transaction model
 // https://firebase.google.com/docs/firestore/manage-data/transactions
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
+import DatabaseValue
 
 // MARK: - TransactionContext
 
@@ -40,17 +45,20 @@ import Core
 /// (external API calls, etc.) inside the transaction closure.
 ///
 /// **Reference**: FDB snapshot read semantics
-public final class TransactionContext: @unchecked Sendable {
+public actor TransactionContext: TransactionContextProtocol {
     // MARK: - Properties
 
     /// The underlying FDB transaction
-    private let transaction: any Transaction
+    nonisolated private let transaction: any Transaction
 
     /// The container for directory resolution
     private let container: DBContainer
 
     /// Cache of resolved subspaces per cache key (type + partition path)
-    private var subspaceCache: [String: ResolvedSubspaces] = [:]
+    private var subspaceCache: [DatabaseStoreCacheKey: ResolvedSubspaces] = [:]
+
+    /// Models whose final reference state must be validated before commit.
+    private var finalModels: [RecordIdentity: any Persistable] = [:]
 
     /// Resolved subspaces for a type
     private struct ResolvedSubspaces {
@@ -89,15 +97,21 @@ public final class TransactionContext: @unchecked Sendable {
             )
         }
 
-        let typeName = T.persistableType
+        let cacheKey = DatabaseStoreCacheKey(
+            entity: T.persistableType,
+            components: []
+        )
 
         // Check cache first
-        if let cached = subspaceCache[typeName] {
+        if let cached = subspaceCache[cacheKey] {
             return cached
         }
 
         // Resolve directory from container
-        let subspace = try await container.resolveDirectory(for: type)
+        let subspace = try await container.resolveDirectory(
+            for: type,
+            transaction: transaction
+        )
         let resolved = ResolvedSubspaces(
             rootSubspace: subspace,
             itemSubspace: subspace.subspace(SubspaceKey.items),
@@ -106,7 +120,7 @@ public final class TransactionContext: @unchecked Sendable {
         )
 
         // Cache for reuse within this transaction
-        subspaceCache[typeName] = resolved
+        subspaceCache[cacheKey] = resolved
 
         return resolved
     }
@@ -122,8 +136,11 @@ public final class TransactionContext: @unchecked Sendable {
         try path.validate()
 
         // Cache key includes path for uniqueness
-        let pathComponents = path.resolve()
-        let cacheKey = pathComponents.joined(separator: "/")
+        let pathComponents = try path.resolve()
+        let cacheKey = DatabaseStoreCacheKey(
+            entity: T.persistableType,
+            components: pathComponents
+        )
 
         // Check cache first
         if let cached = subspaceCache[cacheKey] {
@@ -131,7 +148,11 @@ public final class TransactionContext: @unchecked Sendable {
         }
 
         // Resolve directory from container with path
-        let subspace = try await container.resolveDirectory(for: type, path: path)
+        let subspace = try await container.resolveDirectory(
+            for: type,
+            path: try AnyDirectoryPath(path),
+            transaction: transaction
+        )
         let resolved = ResolvedSubspaces(
             rootSubspace: subspace,
             itemSubspace: subspace.subspace(SubspaceKey.items),
@@ -170,7 +191,7 @@ public final class TransactionContext: @unchecked Sendable {
     /// - Throws: `DirectoryPathError.dynamicFieldsRequired` for dynamic directory types
     public func get<T: Persistable>(
         _ type: T.Type,
-        id: any TupleElement,
+        id: T.ID,
         snapshot: Bool = false
     ) async throws -> T? {
         let subspaces = try await resolveSubspaces(for: type)
@@ -197,7 +218,7 @@ public final class TransactionContext: @unchecked Sendable {
     /// - Returns: The model if found, nil otherwise
     public func get<T: Persistable>(
         _ type: T.Type,
-        id: any TupleElement,
+        id: T.ID,
         partition path: DirectoryPath<T>,
         snapshot: Bool = false
     ) async throws -> T? {
@@ -208,16 +229,16 @@ public final class TransactionContext: @unchecked Sendable {
     /// Internal: Get with pre-resolved subspaces
     private func getWithSubspaces<T: Persistable>(
         _ type: T.Type,
-        id: any TupleElement,
+        id: T.ID,
         subspaces: ResolvedSubspaces,
         snapshot: Bool
     ) async throws -> T? {
         let typeSubspace = subspaces.itemSubspace.subspace(T.persistableType)
-        let keyTuple = (id as? Tuple) ?? Tuple([id])
+        let keyTuple = try RecordIdentifierKeyCodec.tuple(for: id)
         let key = typeSubspace.pack(keyTuple)
 
         // Use ItemStorage with snapshot semantics properly propagated
-        let storage = ItemStorage(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: subspaces.blobsSubspace
         )
@@ -238,7 +259,7 @@ public final class TransactionContext: @unchecked Sendable {
     /// - Throws: `DirectoryPathError.dynamicFieldsRequired` for dynamic directory types
     public func getMany<T: Persistable>(
         _ type: T.Type,
-        ids: [any TupleElement],
+        ids: [T.ID],
         snapshot: Bool = false
     ) async throws -> [T] {
         let subspaces = try await resolveSubspaces(for: type)
@@ -255,7 +276,7 @@ public final class TransactionContext: @unchecked Sendable {
     /// - Returns: Array of found models (missing IDs are skipped)
     public func getMany<T: Persistable>(
         _ type: T.Type,
-        ids: [any TupleElement],
+        ids: [T.ID],
         partition path: DirectoryPath<T>,
         snapshot: Bool = false
     ) async throws -> [T] {
@@ -266,7 +287,7 @@ public final class TransactionContext: @unchecked Sendable {
     /// Internal: Get many with pre-resolved subspaces
     private func getManyWithSubspaces<T: Persistable>(
         _ type: T.Type,
-        ids: [any TupleElement],
+        ids: [T.ID],
         subspaces: ResolvedSubspaces,
         snapshot: Bool
     ) async throws -> [T] {
@@ -310,7 +331,7 @@ public final class TransactionContext: @unchecked Sendable {
         let key = typeSubspace.pack(idTuple)
 
         // Use ItemStorage for large value handling (stores chunks in blobs subspace)
-        let storage = ItemStorage(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: subspaces.blobsSubspace
         )
@@ -329,6 +350,7 @@ public final class TransactionContext: @unchecked Sendable {
             id: idTuple,
             subspaces: subspaces
         )
+        finalModels[try DatabaseRecordIdentityEncoder.encode(model)] = model
     }
 
     /// Delete a model
@@ -350,7 +372,7 @@ public final class TransactionContext: @unchecked Sendable {
         let typeSubspace = subspaces.itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        let storage = ItemStorage(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: subspaces.blobsSubspace
         )
@@ -367,6 +389,9 @@ public final class TransactionContext: @unchecked Sendable {
 
         // Delete record (handles external blob chunks)
         try await storage.delete(for: key)
+        finalModels.removeValue(
+            forKey: try DatabaseRecordIdentityEncoder.encode(model)
+        )
     }
 
     // MARK: - Private: Index Maintenance
@@ -377,7 +402,7 @@ public final class TransactionContext: @unchecked Sendable {
         id: Tuple,
         subspaces: ResolvedSubspaces
     ) async throws {
-        let indexStateManager = IndexStateManager(
+        let indexLifecycleStore = IndexLifecycleStore(
             container: container,
             subspace: subspaces.rootSubspace
         )
@@ -386,9 +411,10 @@ public final class TransactionContext: @unchecked Sendable {
             metadataSubspace: subspaces.rootSubspace.subspace(SubspaceKey.metadata)
         )
         let maintenanceService = IndexMaintenanceService(
-            indexStateManager: indexStateManager,
+            indexLifecycleStore: indexLifecycleStore,
             violationTracker: violationTracker,
             indexSubspace: subspaces.indexSubspace,
+            maintainerProviders: container.runtimeConfiguration.indexMaintainerProviders,
             configurations: container.indexConfigurations.values.flatMap { $0 }
         )
 
@@ -396,6 +422,15 @@ public final class TransactionContext: @unchecked Sendable {
             oldModel: oldModel,
             newModel: newModel,
             id: id,
+            transaction: transaction
+        )
+        let recordMaintenanceService = RecordMutationMaintenanceService(
+            container: container,
+            maintainers: container.runtimeConfiguration.recordMutationMaintainers
+        )
+        try await recordMaintenanceService.update(
+            oldModel: oldModel,
+            newModel: newModel,
             transaction: transaction
         )
     }
@@ -408,7 +443,7 @@ public final class TransactionContext: @unchecked Sendable {
     ///   - type: The Persistable type
     ///   - id: The model's identifier
     /// - Throws: `DirectoryPathError.dynamicFieldsRequired` for dynamic directory types
-    public func delete<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws {
+    public func delete<T: Persistable>(_ type: T.Type, id: T.ID) async throws {
         guard let model: T = try await get(type, id: id, snapshot: false) else {
             return // Model doesn't exist, nothing to delete
         }
@@ -427,7 +462,7 @@ public final class TransactionContext: @unchecked Sendable {
     /// - Throws: Error if the model is not found or deletion fails
     public func delete<T: Persistable>(
         _ type: T.Type,
-        id: any TupleElement,
+        id: T.ID,
         partition path: DirectoryPath<T>
     ) async throws {
         guard let model: T = try await get(type, id: id, partition: path, snapshot: false) else {
@@ -442,8 +477,19 @@ public final class TransactionContext: @unchecked Sendable {
     ///
     /// Use with caution - direct transaction access bypasses the
     /// TransactionContext's abstractions.
-    public var rawTransaction: any Transaction {
+    nonisolated public var rawTransaction: any Transaction {
         transaction
+    }
+
+    package func finalize() async throws {
+        let service = RecordMutationMaintenanceService(
+            container: container,
+            maintainers: container.runtimeConfiguration.recordMutationMaintainers
+        )
+        try await service.validateFinalState(
+            of: Array(finalModels.values),
+            transaction: transaction
+        )
     }
 }
 

@@ -7,6 +7,7 @@ import Testing
 import Foundation
 import StorageKit
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 
@@ -140,7 +141,7 @@ private struct SecuredItem: Persistable, SecurityPolicy {
 }
 
 /// Simple auth context for testing
-private struct TestAuth: AuthContext {
+private struct AuthenticatedUserContext: AuthContext {
     let userID: String
     var roles: Set<String> = []
 }
@@ -151,21 +152,21 @@ private struct TestAuth: AuthContext {
 struct SecurityStrictModeTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Strict Mode Tests
 
     @Test("Strict mode rejects models without SecurityPolicy on create")
     func strictModeRejectsUnsecuredCreate() async throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         let item = UnsecuredItem(name: "Test")
 
         // Non-admin user
-        AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             #expect(throws: SecurityError.self) {
                 try delegate.evaluateCreate(item)
             }
@@ -174,13 +175,13 @@ struct SecurityStrictModeTests {
 
     @Test("Strict mode rejects models without SecurityPolicy on get")
     func strictModeRejectsUnsecuredGet() async throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         let item = UnsecuredItem(name: "Test")
 
-        AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             #expect(throws: SecurityError.self) {
                 try delegate.evaluateGet(item)
             }
@@ -189,11 +190,11 @@ struct SecurityStrictModeTests {
 
     @Test("Strict mode rejects models without SecurityPolicy on list")
     func strictModeRejectsUnsecuredList() async throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
-        AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             #expect(throws: SecurityError.self) {
                 try delegate.evaluateList(
                     type: UnsecuredItem.self,
@@ -207,14 +208,14 @@ struct SecurityStrictModeTests {
 
     @Test("Strict mode rejects models without SecurityPolicy on update")
     func strictModeRejectsUnsecuredUpdate() async throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         let item = UnsecuredItem(name: "Test")
         let newItem = UnsecuredItem(id: item.id, name: "Updated")
 
-        AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             #expect(throws: SecurityError.self) {
                 try delegate.evaluateUpdate(item, newResource: newItem)
             }
@@ -223,13 +224,13 @@ struct SecurityStrictModeTests {
 
     @Test("Strict mode rejects models without SecurityPolicy on delete")
     func strictModeRejectsUnsecuredDelete() async throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         let item = UnsecuredItem(name: "Test")
 
-        AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             #expect(throws: SecurityError.self) {
                 try delegate.evaluateDelete(item)
             }
@@ -240,13 +241,13 @@ struct SecurityStrictModeTests {
 
     @Test("Non-strict mode allows models without SecurityPolicy")
     func nonStrictModeAllowsUnsecured() throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: false)
         )
 
         let item = UnsecuredItem(name: "Test")
 
-        try AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        try AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             // Should NOT throw
             try delegate.evaluateCreate(item)
             try delegate.evaluateGet(item)
@@ -264,21 +265,21 @@ struct SecurityStrictModeTests {
 
     @Test("Strict mode evaluates SecurityPolicy for secured models")
     func strictModeEvaluatesSecurityPolicy() throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         let item = SecuredItem(ownerID: "user1", name: "Test")
 
         // Owner can access
-        try AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        try AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             try delegate.evaluateCreate(item)
             try delegate.evaluateGet(item)
             try delegate.evaluateDelete(item)
         }
 
         // Non-owner cannot access
-        AuthContextKey.$current.withValue(TestAuth(userID: "user2")) {
+        AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user2")) {
             #expect(throws: SecurityError.self) {
                 try delegate.evaluateGet(item)
             }
@@ -289,14 +290,14 @@ struct SecurityStrictModeTests {
 
     @Test("Admin bypasses strict mode check")
     func adminBypassesStrictMode() async throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true, adminRoles: ["admin"])
         )
 
         let item = UnsecuredItem(name: "Test")
 
         // Admin can access even without SecurityPolicy
-        try AuthContextKey.$current.withValue(TestAuth(userID: "admin1", roles: ["admin"])) {
+        try AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "admin1", roles: ["admin"])) {
             try delegate.evaluateCreate(item)
             try delegate.evaluateGet(item)
         }
@@ -306,13 +307,13 @@ struct SecurityStrictModeTests {
 
     @Test("Error message indicates SecurityPolicy not implemented")
     func errorMessageIndicatesSecurityPolicyNotImplemented() async throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         let item = UnsecuredItem(name: "Test")
 
-        let error: SecurityError? = AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        let error: SecurityError? = AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             do {
                 try delegate.evaluateCreate(item)
                 return nil
@@ -333,11 +334,11 @@ struct SecurityStrictModeTests {
 
     @Test("requireAdmin uses admin operation type")
     func requireAdminUsesAdminOperationType() async throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
-        AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             #expect(throws: SecurityError.self) {
                 try delegate.requireAdmin(operation: "clearAll", targetType: "TestType")
             }

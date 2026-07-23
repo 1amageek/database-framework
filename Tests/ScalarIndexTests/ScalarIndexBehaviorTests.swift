@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import ScalarIndex
 
 // MARK: - Test Model
 
-struct ScalarTestUser: Persistable {
+struct ScalarIndexedUser: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ struct ScalarTestUser: Persistable {
         self.city = city
     }
 
-    static var persistableType: String { "ScalarTestUser" }
+    static var persistableType: String { "ScalarIndexedUser" }
     static var allFields: [String] { ["id", "email", "age", "city"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,57 +46,57 @@ struct ScalarTestUser: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<ScalarTestUser, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<ScalarIndexedUser, Value>) -> String {
         switch keyPath {
-        case \ScalarTestUser.id: return "id"
-        case \ScalarTestUser.email: return "email"
-        case \ScalarTestUser.age: return "age"
-        case \ScalarTestUser.city: return "city"
+        case \ScalarIndexedUser.id: return "id"
+        case \ScalarIndexedUser.email: return "email"
+        case \ScalarIndexedUser.age: return "age"
+        case \ScalarIndexedUser.city: return "city"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<ScalarTestUser>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<ScalarIndexedUser>) -> String {
         switch keyPath {
-        case \ScalarTestUser.id: return "id"
-        case \ScalarTestUser.email: return "email"
-        case \ScalarTestUser.age: return "age"
-        case \ScalarTestUser.city: return "city"
+        case \ScalarIndexedUser.id: return "id"
+        case \ScalarIndexedUser.email: return "email"
+        case \ScalarIndexedUser.age: return "age"
+        case \ScalarIndexedUser.city: return "city"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<ScalarTestUser> {
+        if let partial = keyPath as? PartialKeyPath<ScalarIndexedUser> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Scalar Index Context
 
-private struct TestContext {
+private struct ScalarIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: ScalarIndexMaintainer<ScalarTestUser>
+    let maintainer: ScalarIndexMaintainer<ScalarIndexedUser>
 
-    init(indexName: String = "ScalarTestUser_email") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(indexName: String = "ScalarIndexedUser_email") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "scalar", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         let index = Index(
             name: indexName,
-            kind: ScalarIndexKind<ScalarTestUser>(fields: [\.email]),
+            kind: ScalarIndexKind<ScalarIndexedUser>(fields: [\.email]),
             rootExpression: FieldKeyExpression(fieldName: "email"),
             subspaceKey: indexName,
-            itemTypes: Set(["ScalarTestUser"])
+            itemTypes: Set(["ScalarIndexedUser"])
         )
 
-        self.maintainer = ScalarIndexMaintainer<ScalarTestUser>(
+        self.maintainer = ScalarIndexMaintainer<ScalarIndexedUser>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -105,7 +106,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -120,10 +121,10 @@ private struct TestContext {
         }
     }
 
-    func getIndexKeys() async throws -> [[UInt8]] {
-        try await database.withTransaction { transaction -> [[UInt8]] in
+    func getIndexKeys() async throws -> [Bytes] {
+        try await database.withTransaction { transaction -> [Bytes] in
             let (begin, end) = indexSubspace.range()
-            var keys: [[UInt8]] = []
+            var keys: [Bytes] = []
             for (key, _) in try await transaction.collectRange(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
@@ -145,10 +146,10 @@ struct ScalarIndexBehaviorTests {
 
     @Test("Insert creates index entry")
     func testInsertCreatesIndexEntry() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await ScalarIndexContext()
 
-        let user = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
+        let user = ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -166,13 +167,13 @@ struct ScalarIndexBehaviorTests {
 
     @Test("Insert multiple creates multiple entries")
     func testInsertMultipleCreatesMultipleEntries() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await ScalarIndexContext()
 
         let users = [
-            ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo"),
-            ScalarTestUser(id: "user2", email: "bob@example.com", age: 30, city: "Osaka"),
-            ScalarTestUser(id: "user3", email: "charlie@example.com", age: 35, city: "Kyoto")
+            ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo"),
+            ScalarIndexedUser(id: "user2", email: "bob@example.com", age: 30, city: "Osaka"),
+            ScalarIndexedUser(id: "user3", email: "charlie@example.com", age: 35, city: "Kyoto")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -195,10 +196,10 @@ struct ScalarIndexBehaviorTests {
 
     @Test("Update with same value does not change entry count")
     func testUpdateSameValueNoChange() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await ScalarIndexContext()
 
-        let user = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
+        let user = ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -210,7 +211,7 @@ struct ScalarIndexBehaviorTests {
         }
 
         // Update with same email (different age)
-        let updatedUser = ScalarTestUser(id: "user1", email: "alice@example.com", age: 26, city: "Tokyo")
+        let updatedUser = ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 26, city: "Tokyo")
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: user,
@@ -227,10 +228,10 @@ struct ScalarIndexBehaviorTests {
 
     @Test("Update with different value replaces entry")
     func testUpdateDifferentValueReplacesEntry() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await ScalarIndexContext()
 
-        let user = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
+        let user = ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -244,7 +245,7 @@ struct ScalarIndexBehaviorTests {
         let keysBefore = try await ctx.getIndexKeys()
 
         // Update with different email
-        let updatedUser = ScalarTestUser(id: "user1", email: "alice.new@example.com", age: 25, city: "Tokyo")
+        let updatedUser = ScalarIndexedUser(id: "user1", email: "alice.new@example.com", age: 25, city: "Tokyo")
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: user,
@@ -265,10 +266,10 @@ struct ScalarIndexBehaviorTests {
 
     @Test("Delete removes index entry")
     func testDeleteRemovesIndexEntry() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await ScalarIndexContext()
 
-        let user = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
+        let user = ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -299,11 +300,11 @@ struct ScalarIndexBehaviorTests {
 
     @Test("Delete specific user among multiple")
     func testDeleteSpecificUser() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await ScalarIndexContext()
 
-        let user1 = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
-        let user2 = ScalarTestUser(id: "user2", email: "bob@example.com", age: 30, city: "Osaka")
+        let user1 = ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
+        let user2 = ScalarIndexedUser(id: "user2", email: "bob@example.com", age: 30, city: "Osaka")
 
         // Insert both
         try await ctx.database.withTransaction { transaction in
@@ -333,10 +334,10 @@ struct ScalarIndexBehaviorTests {
 
     @Test("ScanItem creates index entry")
     func testScanItemCreatesEntry() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await ScalarIndexContext()
 
-        let user = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
+        let user = ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.scanItem(
@@ -356,14 +357,14 @@ struct ScalarIndexBehaviorTests {
 
     @Test("Index entries are ordered by field value")
     func testIndexEntriesOrdered() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await ScalarIndexContext()
 
         // Insert in random order
         let users = [
-            ScalarTestUser(id: "user3", email: "charlie@example.com", age: 35, city: "Kyoto"),
-            ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo"),
-            ScalarTestUser(id: "user2", email: "bob@example.com", age: 30, city: "Osaka")
+            ScalarIndexedUser(id: "user3", email: "charlie@example.com", age: 35, city: "Kyoto"),
+            ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo"),
+            ScalarIndexedUser(id: "user2", email: "bob@example.com", age: 30, city: "Osaka")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -393,33 +394,33 @@ struct ScalarIndexBehaviorTests {
 
     @Test("Composite index with multiple fields")
     func testCompositeIndex() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "scalar", "composite", String(testId)).pack())
-        let indexSubspace = subspace.subspace("I").subspace("ScalarTestUser_city_age")
+        let indexSubspace = subspace.subspace("I").subspace("ScalarIndexedUser_city_age")
 
         let index = Index(
-            name: "ScalarTestUser_city_age",
-            kind: ScalarIndexKind<ScalarTestUser>(fields: [\.city, \.age]),
+            name: "ScalarIndexedUser_city_age",
+            kind: ScalarIndexKind<ScalarIndexedUser>(fields: [\.city, \.age]),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "city"),
                 FieldKeyExpression(fieldName: "age")
             ]),
-            subspaceKey: "ScalarTestUser_city_age",
-            itemTypes: Set(["ScalarTestUser"])
+            subspaceKey: "ScalarIndexedUser_city_age",
+            itemTypes: Set(["ScalarIndexedUser"])
         )
 
-        let maintainer = ScalarIndexMaintainer<ScalarTestUser>(
+        let maintainer = ScalarIndexMaintainer<ScalarIndexedUser>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
 
         let users = [
-            ScalarTestUser(id: "user1", email: "a@example.com", age: 25, city: "Tokyo"),
-            ScalarTestUser(id: "user2", email: "b@example.com", age: 30, city: "Tokyo"),
-            ScalarTestUser(id: "user3", email: "c@example.com", age: 25, city: "Osaka")
+            ScalarIndexedUser(id: "user1", email: "a@example.com", age: 25, city: "Tokyo"),
+            ScalarIndexedUser(id: "user2", email: "b@example.com", age: 30, city: "Tokyo"),
+            ScalarIndexedUser(id: "user3", email: "c@example.com", age: 25, city: "Osaka")
         ]
 
         try await database.withTransaction { transaction in
@@ -447,7 +448,7 @@ struct ScalarIndexBehaviorTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }

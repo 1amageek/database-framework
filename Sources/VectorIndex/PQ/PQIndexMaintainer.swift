@@ -4,8 +4,13 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 import DatabaseEngine
 import StorageKit
 import Vector
@@ -282,12 +287,12 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Remove codes
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
         let codesKey = codesSubspace.pack(id)
-        transaction.clear(key: codesKey)
+        try transaction.clear(key: codesKey)
 
         // Remove original vector
         let vectorsSubspace = subspace.subspace(SubspaceKey.vectors.rawValue)
         let vectorKey = vectorsSubspace.pack(id)
-        transaction.clear(key: vectorKey)
+        try transaction.clear(key: vectorKey)
     }
 
     /// Add entry for a vector
@@ -301,7 +306,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let vectorsSubspace = subspace.subspace(SubspaceKey.vectors.rawValue)
         let vectorKey = vectorsSubspace.pack(id)
         let vectorValue = floatArrayToBytes(vector)
-        transaction.setValue(vectorValue, for: vectorKey)
+        try transaction.setValue(vectorValue, for: vectorKey)
 
         // If trained, also store codes
         let codebooks = try await loadCodebooks(transaction: transaction)
@@ -320,7 +325,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws {
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
         let key = codesSubspace.pack(id)
-        transaction.setValue(codes, for: key)
+        try transaction.setValue(Bytes(codes), for: key)
     }
 
     /// Store codebooks
@@ -339,7 +344,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
             let key = codebooksSubspace.pack(Tuple([m]))
             let value = floatArrayToBytes(flattened)
-            transaction.setValue(value, for: key)
+            try transaction.setValue(value, for: key)
         }
     }
 
@@ -406,7 +411,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
         let encoder = JSONEncoder()
         let data = try encoder.encode(metadata)
-        transaction.setValue([UInt8](data), for: metadataKey)
+        try transaction.setValue(Bytes(data), for: metadataKey)
     }
 
     /// Load metadata
@@ -427,9 +432,8 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Extract vector from item using VectorConversion
     private func extractVector(from item: Item) throws -> [Float] {
-        let fieldValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
+        let fieldValues = try DataAccess.evaluate(
+            item: item,
             expression: index.rootExpression
         )
 
@@ -446,7 +450,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func adjustDistance(_ sqDistance: Double) -> Double {
         switch metric {
         case .euclidean:
-            return sqrt(sqDistance)
+            return DatabaseMath.squareRoot(sqDistance)
         case .cosine:
             // PQ computes squared Euclidean; for cosine, we'd need normalized vectors
             // This is an approximation
@@ -461,7 +465,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     // MARK: - Serialization Helpers
 
     /// Convert float array to bytes using VectorConversion
-    private func floatArrayToBytes(_ floats: [Float]) -> [UInt8] {
+    private func floatArrayToBytes(_ floats: [Float]) -> Bytes {
         VectorConversion.floatArrayToBytes(floats)
     }
 

@@ -1,7 +1,11 @@
 // SecurityConfiguration.swift
 // DatabaseEngine - Security configuration for DBContainer
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Security configuration

@@ -4,7 +4,11 @@
 // Reference: FDB Record Layer FDBRecordContext instrumentation
 // Provides comprehensive metrics for transaction operations.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Synchronization
 
@@ -81,7 +85,7 @@ public struct TransactionMetrics: Sendable, CustomStringConvertible {
           Scanned KVs: \(scannedKeyValueCount)
           Committed: \(committed), Rolled back: \(rolledBack)
           Retries: \(retryCount)
-          Duration: \(String(format: "%.3f", duration * 1000))ms
+          Duration: \(DatabaseTextFormatting.fixedDecimal(duration * 1000, fractionDigits: 3))ms
         """
     }
 
@@ -129,7 +133,7 @@ public struct TransactionMetrics: Sendable, CustomStringConvertible {
 /// let metrics = instrumented.metrics
 /// metrics.export(to: storeTimer)
 /// ```
-public final class InstrumentedTransaction: @unchecked Sendable {
+public final class InstrumentedTransaction: Sendable {
     // MARK: - Properties
 
     /// The underlying transaction
@@ -234,8 +238,8 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     // MARK: - Write Operations
 
     /// Set a value (metrics recorded as pending until commit)
-    public func setValue(_ value: Bytes, for key: Bytes) {
-        transaction.setValue(value, for: key)
+    public func setValue(_ value: Bytes, for key: Bytes) throws {
+        try transaction.setValue(value, for: key)
 
         // Record as pending (only finalized on commit)
         pendingWrites.withLock { pending in
@@ -245,8 +249,8 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     }
 
     /// Clear a key (metrics recorded as pending until commit)
-    public func clear(key: Bytes) {
-        transaction.clear(key: key)
+    public func clear(key: Bytes) throws {
+        try transaction.clear(key: key)
 
         pendingWrites.withLock { pending in
             pending.count += 1
@@ -255,8 +259,8 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     }
 
     /// Clear a range (metrics recorded as pending until commit)
-    public func clearRange(beginKey: Bytes, endKey: Bytes) {
-        transaction.clearRange(beginKey: beginKey, endKey: endKey)
+    public func clearRange(beginKey: Bytes, endKey: Bytes) throws {
+        try transaction.clearRange(beginKey: beginKey, endKey: endKey)
 
         pendingWrites.withLock { pending in
             pending.count += 1
@@ -265,8 +269,12 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     }
 
     /// Perform an atomic operation
-    public func atomicOp(key: Bytes, param: Bytes, mutationType: MutationType) {
-        transaction.atomicOp(key: key, param: param, mutationType: mutationType)
+    public func atomicOp(
+        key: Bytes,
+        param: Bytes,
+        mutationType: MutationType
+    ) throws {
+        try transaction.atomicOp(key: key, param: param, mutationType: mutationType)
 
         pendingWrites.withLock { pending in
             pending.count += 1
@@ -329,10 +337,8 @@ public final class InstrumentedTransaction: @unchecked Sendable {
         }
     }
 
-    /// Cancel the transaction
-    public func cancel() {
-        transaction.cancel()
-
+    /// Record cancellation completed by the external transaction runner.
+    func recordExternalCancellation() {
         state.withLock { state in
             state.rolledBack = true
             state.endTime = Date()
@@ -363,8 +369,8 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     }
 
     /// Set read version
-    public func setReadVersion(_ version: Int64) {
-        transaction.setReadVersion(version)
+    public func setReadVersion(_ version: Int64) throws {
+        try transaction.setReadVersion(version)
     }
 
     /// Get committed version
@@ -420,7 +426,7 @@ extension StorageEngine {
     /// - Returns: Tuple of (operation result, transaction metrics)
     public func withInstrumentedTransaction<T: Sendable>(
         timer: StoreTimer? = nil,
-        _ operation: @Sendable (InstrumentedTransaction) async throws -> T
+        _ operation: @escaping @Sendable (InstrumentedTransaction) async throws -> T
     ) async throws -> (result: T, metrics: TransactionMetrics) {
         let retryCount = Mutex<Int>(0)
         let current = Mutex<InstrumentedTransaction?>(nil)
@@ -433,7 +439,7 @@ extension StorageEngine {
                 retryCount.withLock { $0 += 1 }
             },
             onCancel: { _ in
-                current.withLock { $0 }?.cancel()
+                current.withLock { $0 }?.recordExternalCancellation()
             },
             onCommitSuccess: { _, commitNanos in
                 current.withLock { $0 }?.recordExternalCommit(commitNanos: commitNanos)
@@ -613,13 +619,13 @@ public struct AggregatedMetricsSummary: Sendable, CustomStringConvertible {
         """
         AggregatedMetrics:
           Transactions: \(totalTransactions) (success: \(successfulCommits), rollback: \(totalRollbacks))
-          Success rate: \(String(format: "%.1f%%", successRate * 100))
+          Success rate: \(DatabaseTextFormatting.fixedDecimal(successRate * 100, fractionDigits: 1))%
           Total retries: \(totalRetries)
-          Reads: \(totalReads) (avg: \(String(format: "%.1f", avgReadsPerTransaction))/tx)
-          Writes: \(totalWrites) (avg: \(String(format: "%.1f", avgWritesPerTransaction))/tx)
+          Reads: \(totalReads) (avg: \(DatabaseTextFormatting.fixedDecimal(avgReadsPerTransaction, fractionDigits: 1))/tx)
+          Writes: \(totalWrites) (avg: \(DatabaseTextFormatting.fixedDecimal(avgWritesPerTransaction, fractionDigits: 1))/tx)
           Bytes read: \(totalBytesRead), Bytes written: \(totalBytesWritten)
           Range scans: \(totalRangeScans), Empty scans: \(totalEmptyScans)
-          Duration: avg=\(String(format: "%.2f", avgDurationMs))ms, min=\(String(format: "%.2f", minDurationMs))ms, max=\(String(format: "%.2f", maxDurationMs))ms
+          Duration: avg=\(DatabaseTextFormatting.fixedDecimal(avgDurationMs, fractionDigits: 2))ms, min=\(DatabaseTextFormatting.fixedDecimal(minDurationMs, fractionDigits: 2))ms, max=\(DatabaseTextFormatting.fixedDecimal(maxDurationMs, fractionDigits: 2))ms
         """
     }
 }

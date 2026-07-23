@@ -10,7 +10,13 @@
 // - Supports merging for distributed computation
 // - Memory: ~10KB per instance (compression=100)
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseMath
+import StorageKit
 
 // MARK: - TDigest
 
@@ -23,17 +29,17 @@ import Foundation
 ///
 /// **Usage**:
 /// ```swift
-/// var digest = TDigest(compression: 100)
+/// var digest = try TDigest(compression: 100)
 ///
 /// // Add values
 /// for value in measurements {
-///     digest.add(value)
+///     try digest.add(value)
 /// }
 ///
 /// // Query quantiles
-/// let median = digest.quantile(0.5)
-/// let p99 = digest.quantile(0.99)
-/// let p999 = digest.quantile(0.999)
+/// let median = try digest.quantile(0.5)
+/// let p99 = try digest.quantile(0.99)
+/// let p999 = try digest.quantile(0.999)
 /// ```
 ///
 /// **Accuracy**:
@@ -42,9 +48,12 @@ import Foundation
 /// - Compression parameter controls accuracy vs memory trade-off
 ///
 /// **Limitations**:
-/// - Add-only: Cannot remove values once added
+/// - A digest instance is add-only; delete-capable indexes retain exact
+///   membership and rebuild an affected digest transactionally.
 /// - Approximate: Results are estimates, not exact values
-public struct TDigest: Sendable, Codable, Equatable {
+public struct TDigest: Sendable, Equatable {
+    public static let supportedCompression = 1.0...1_000.0
+    public static let maximumEncodedBytes = 100_000
 
     // MARK: - Centroid
 
@@ -53,23 +62,23 @@ public struct TDigest: Sendable, Codable, Equatable {
     /// Each centroid has:
     /// - mean: The weighted average of values in this cluster
     /// - weight: The total count of values represented
-    public struct Centroid: Sendable, Codable, Equatable, Comparable {
-        public var mean: Double
-        public var weight: Int64
+    private struct Centroid: Sendable, Equatable, Comparable {
+        var mean: Double
+        var weight: Int64
 
-        public init(mean: Double, weight: Int64 = 1) {
+        init(mean: Double, weight: Int64 = 1) {
             self.mean = mean
             self.weight = weight
         }
 
         /// Add a value to this centroid, updating the weighted mean
-        public mutating func add(_ value: Double, weight: Int64 = 1) {
+        mutating func add(_ value: Double, weight: Int64 = 1) {
             let totalWeight = self.weight + weight
             self.mean = (self.mean * Double(self.weight) + value * Double(weight)) / Double(totalWeight)
             self.weight = totalWeight
         }
 
-        public static func < (lhs: Centroid, rhs: Centroid) -> Bool {
+        static func < (lhs: Centroid, rhs: Centroid) -> Bool {
             lhs.mean < rhs.mean
         }
     }
@@ -110,7 +119,21 @@ public struct TDigest: Sendable, Codable, Equatable {
     ///   - 50: Lower memory, less accuracy
     ///   - 100: Balanced (recommended)
     ///   - 200: Higher accuracy, more memory
-    public init(compression: Double = 100) {
+    public init() {
+        self.init(validatedCompression: 100)
+    }
+
+    public init(
+        compression: Double
+    ) throws(TDigestError) {
+        guard compression.isFinite,
+              Self.supportedCompression.contains(compression) else {
+            throw .invalidCompression(compression)
+        }
+        self.init(validatedCompression: compression)
+    }
+
+    private init(validatedCompression compression: Double) {
         self.compression = compression
         self.centroids = []
         self.totalWeight = 0
@@ -133,13 +156,7 @@ public struct TDigest: Sendable, Codable, Equatable {
     /// The derivative k'(q) is large near q=0 and q=1, meaning small
     /// changes in q correspond to large changes in k, forcing small centroids.
     private func k(_ q: Double) -> Double {
-        compression / 2.0 * (asin(2.0 * q - 1.0) / .pi + 0.5)
-    }
-
-    /// Inverse scale function: given k, return q
-    private func kInverse(_ k: Double) -> Double {
-        let normalized = 2.0 * k / compression - 0.5
-        return (sin(normalized * .pi) + 1.0) / 2.0
+        compression / 2.0 * (DatabaseMath.arcSine(2.0 * q - 1.0) / .pi + 0.5)
     }
 
     // MARK: - Add Values
@@ -149,9 +166,20 @@ public struct TDigest: Sendable, Codable, Equatable {
     /// - Parameters:
     ///   - value: The value to add
     ///   - weight: The weight of the value (default: 1)
-    public mutating func add(_ value: Double, weight: Int64 = 1) {
-        guard weight > 0 else { return }
-        guard value.isFinite else { return }
+    public mutating func add(
+        _ value: Double,
+        weight: Int64 = 1
+    ) throws(TDigestError) {
+        guard weight > 0 else {
+            throw .invalidWeight(weight)
+        }
+        guard value.isFinite else {
+            throw .invalidValue(value)
+        }
+        let (_, overflow) = count.addingReportingOverflow(weight)
+        guard !overflow else {
+            throw .weightOverflow
+        }
 
         // Update min/max
         min = Swift.min(min, value)
@@ -169,9 +197,11 @@ public struct TDigest: Sendable, Codable, Equatable {
     /// Add multiple values at once
     ///
     /// - Parameter values: Array of values to add
-    public mutating func addAll(_ values: [Double]) {
+    public mutating func addAll<Values: Sequence>(
+        _ values: Values
+    ) throws(TDigestError) where Values.Element == Double {
         for value in values {
-            add(value)
+            try add(value)
         }
     }
 
@@ -242,88 +272,67 @@ public struct TDigest: Sendable, Codable, Equatable {
     /// The t-digest provides higher accuracy at extreme quantiles (near 0 or 1)
     /// compared to the middle. This is ideal for monitoring use cases where
     /// p99 and p999 latencies are most important.
-    public mutating func quantile(_ q: Double) -> Double {
+    public mutating func quantile(
+        _ q: Double
+    ) throws(TDigestError) -> Double {
+        guard q.isFinite, (0.0...1.0).contains(q) else {
+            throw .invalidQuantile(q)
+        }
         // Ensure buffer is processed
         if !buffer.isEmpty {
             compress()
         }
 
         guard !centroids.isEmpty else {
-            return .nan
+            throw .emptyDigest
         }
-
-        // Clamp q to valid range
-        let q = Swift.max(0, Swift.min(1, q))
 
         // Edge cases
         if q == 0 { return min }
         if q == 1 { return max }
         if centroids.count == 1 { return centroids[0].mean }
 
-        // Target weight position
+        // Interpolate between centroid centers. The endpoints are anchored at
+        // the exact minimum and maximum, keeping the result monotonic and
+        // bounded even when a tail centroid represents multiple observations.
         let targetWeight = q * Double(totalWeight)
-
-        // Find the centroid containing the target weight using interpolation
-        var weightSoFar: Double = 0
-
-        for i in 0..<centroids.count {
-            let centroid = centroids[i]
-            let centroidWeight = Double(centroid.weight)
-
-            // Weight range for this centroid: [weightSoFar, weightSoFar + centroidWeight]
-            // But we consider the centroid's mean to be at the center of its weight
-            let leftWeight = weightSoFar
-            let rightWeight = weightSoFar + centroidWeight
-
-            // Check if target is in this centroid's range
-            if targetWeight <= rightWeight {
-                // Interpolate within this centroid
-                if i == 0 {
-                    // First centroid: interpolate between min and centroid mean
-                    let ratio = (targetWeight - leftWeight) / centroidWeight
-                    return min + ratio * (centroid.mean - min) * 2.0
-                } else if i == centroids.count - 1 {
-                    // Last centroid: interpolate between centroid mean and max
-                    let ratio = (targetWeight - leftWeight) / centroidWeight
-                    return centroid.mean + ratio * (max - centroid.mean) * 2.0
-                } else {
-                    // Middle centroid: interpolate between adjacent centroids
-                    let prevCentroid = centroids[i - 1]
-                    let prevMidWeight = weightSoFar - Double(prevCentroid.weight) / 2.0
-                    let curMidWeight = weightSoFar + centroidWeight / 2.0
-
-                    if targetWeight < weightSoFar + centroidWeight / 2.0 {
-                        // Left half: interpolate from previous centroid
-                        let ratio = (targetWeight - prevMidWeight) / (curMidWeight - prevMidWeight)
-                        return prevCentroid.mean + ratio * (centroid.mean - prevCentroid.mean)
-                    } else {
-                        // Right half: interpolate to next centroid
-                        if i + 1 < centroids.count {
-                            let nextCentroid = centroids[i + 1]
-                            let nextMidWeight = curMidWeight + centroidWeight / 2.0 + Double(nextCentroid.weight) / 2.0
-                            let ratio = (targetWeight - curMidWeight) / (nextMidWeight - curMidWeight)
-                            return centroid.mean + ratio * (nextCentroid.mean - centroid.mean)
-                        }
-                    }
-                }
-
-                return centroid.mean
-            }
-
-            weightSoFar = rightWeight
+        var previous = centroids[0]
+        var previousCenter = Double(previous.weight) / 2.0
+        if targetWeight <= previousCenter {
+            let ratio = targetWeight / previousCenter
+            return min + ratio * (previous.mean - min)
         }
 
-        return max
+        var cumulativeWeight = Double(previous.weight)
+        for centroid in centroids.dropFirst() {
+            let center = cumulativeWeight + Double(centroid.weight) / 2.0
+            if targetWeight <= center {
+                let ratio = (targetWeight - previousCenter)
+                    / (center - previousCenter)
+                return previous.mean
+                    + ratio * (centroid.mean - previous.mean)
+            }
+            cumulativeWeight += Double(centroid.weight)
+            previous = centroid
+            previousCenter = center
+        }
+
+        let finalWeight = Double(totalWeight)
+        let ratio = (targetWeight - previousCenter)
+            / (finalWeight - previousCenter)
+        return previous.mean + ratio * (max - previous.mean)
     }
 
     /// Get multiple quantiles efficiently
     ///
     /// - Parameter quantiles: Array of quantiles to compute
     /// - Returns: Dictionary mapping each quantile to its estimated value
-    public mutating func quantiles(_ quantiles: [Double]) -> [Double: Double] {
+    public mutating func quantiles(
+        _ quantiles: [Double]
+    ) throws(TDigestError) -> [Double: Double] {
         var result: [Double: Double] = [:]
         for q in quantiles {
-            result[q] = quantile(q)
+            result[q] = try quantile(q)
         }
         return result
     }
@@ -332,46 +341,55 @@ public struct TDigest: Sendable, Codable, Equatable {
     ///
     /// - Parameter value: The value to find the quantile of
     /// - Returns: Estimated quantile (0 to 1)
-    public mutating func cdf(_ value: Double) -> Double {
+    public mutating func cdf(
+        _ value: Double
+    ) throws(TDigestError) -> Double {
+        guard value.isFinite else {
+            throw .invalidValue(value)
+        }
         // Ensure buffer is processed
         if !buffer.isEmpty {
             compress()
         }
 
         guard !centroids.isEmpty else {
-            return .nan
+            throw .emptyDigest
         }
 
         if value < min { return 0 }
         if value > max { return 1 }
-        if centroids.count == 1 {
-            return value <= centroids[0].mean ? 0.5 : 0.5
-        }
-
-        var weightBelow: Double = 0
-
-        for i in 0..<centroids.count {
-            let centroid = centroids[i]
-
-            if value < centroid.mean {
-                // Value is before this centroid
-                if i == 0 {
-                    // Interpolate between min and first centroid
-                    let ratio = (value - min) / (centroid.mean - min)
-                    return ratio * Double(centroid.weight) / 2.0 / Double(totalWeight)
-                } else {
-                    // Interpolate between previous and current centroid
-                    let prev = centroids[i - 1]
-                    let ratio = (value - prev.mean) / (centroid.mean - prev.mean)
-                    let partialWeight = Double(prev.weight) / 2.0 + ratio * (Double(centroid.weight) / 2.0 + Double(prev.weight) / 2.0)
-                    return (weightBelow - Double(prev.weight) / 2.0 + partialWeight) / Double(totalWeight)
-                }
+        let total = Double(totalWeight)
+        var previous = centroids[0]
+        var previousCenter = Double(previous.weight) / 2.0
+        if value <= previous.mean {
+            guard previous.mean > min else {
+                return previousCenter / total
             }
-
-            weightBelow += Double(centroid.weight)
+            let ratio = (value - min) / (previous.mean - min)
+            return ratio * previousCenter / total
         }
 
-        return 1.0
+        var cumulativeWeight = Double(previous.weight)
+        for centroid in centroids.dropFirst() {
+            let center = cumulativeWeight + Double(centroid.weight) / 2.0
+            if value <= centroid.mean {
+                guard centroid.mean > previous.mean else {
+                    return center / total
+                }
+                let ratio = (value - previous.mean)
+                    / (centroid.mean - previous.mean)
+                let interpolatedCenter = previousCenter
+                    + ratio * (center - previousCenter)
+                return interpolatedCenter / total
+            }
+            cumulativeWeight += Double(centroid.weight)
+            previous = centroid
+            previousCenter = center
+        }
+
+        guard max > previous.mean else { return 1 }
+        let ratio = (value - previous.mean) / (max - previous.mean)
+        return (previousCenter + ratio * (total - previousCenter)) / total
     }
 
     // MARK: - Merge
@@ -381,7 +399,19 @@ public struct TDigest: Sendable, Codable, Equatable {
     /// This allows combining digests from distributed computation.
     ///
     /// - Parameter other: The digest to merge
-    public mutating func merge(with other: TDigest) {
+    public mutating func merge(
+        with other: TDigest
+    ) throws(TDigestError) {
+        guard compression == other.compression else {
+            throw .compressionMismatch(
+                expected: compression,
+                actual: other.compression
+            )
+        }
+        let (_, overflow) = count.addingReportingOverflow(other.count)
+        guard !overflow else {
+            throw .weightOverflow
+        }
         // Update min/max
         min = Swift.min(min, other.min)
         max = Swift.max(max, other.max)
@@ -398,14 +428,16 @@ public struct TDigest: Sendable, Codable, Equatable {
     ///
     /// - Parameter digests: Array of digests to merge
     /// - Returns: Combined digest
-    public static func merge(_ digests: [TDigest]) -> TDigest {
+    public static func merge(
+        _ digests: [TDigest]
+    ) throws(TDigestError) -> TDigest {
         guard !digests.isEmpty else {
             return TDigest()
         }
 
         var result = digests[0]
         for i in 1..<digests.count {
-            result.merge(with: digests[i])
+            try result.merge(with: digests[i])
         }
         return result
     }
@@ -436,135 +468,189 @@ public struct TDigest: Sendable, Codable, Equatable {
 
     // MARK: - Serialization
 
-    /// Encode the digest to binary data
+    /// Encodes one strict v1 binary frame directly into final `Bytes` storage.
     ///
-    /// Format: [compression: Float64][totalWeight: Int64][min: Float64][max: Float64]
-    ///         [centroidCount: UInt32][[mean: Float64][weight: Int64]]...
-    public func encode() -> Data {
-        // Ensure we have a compressed state for encoding
+    /// Format: `TDG1`, compression, total weight, min, max, centroid count,
+    /// followed by `(mean, weight)` centroid pairs. All numbers are little-endian.
+    public func encodeBytes() throws(TDigestError) -> Bytes {
         var copy = self
         if !copy.buffer.isEmpty {
             copy.compress()
         }
+        try copy.validatePersistentState()
 
-        var data = Data()
-        data.reserveCapacity(36 + copy.centroids.count * 16)
-
-        // Helper to append values in little-endian format
-        func appendDouble(_ value: Double) {
-            var bits = value.bitPattern.littleEndian
-            withUnsafeBytes(of: &bits) { data.append(contentsOf: $0) }
+        let headerByteCount = 40
+        let maximumCentroids =
+            (Self.maximumEncodedBytes - headerByteCount) / 16
+        guard copy.centroids.count <= maximumCentroids else {
+            throw .centroidLimitExceeded(maximumCentroids)
         }
+        let byteCount = headerByteCount + copy.centroids.count * 16
 
-        func appendInt64(_ value: Int64) {
-            var le = value.littleEndian
-            withUnsafeBytes(of: &le) { data.append(contentsOf: $0) }
+        return Bytes.copying(count: byteCount) { destination in
+            destination[0] = 0x54
+            destination[1] = 0x44
+            destination[2] = 0x47
+            destination[3] = 0x01
+            writeTDigestUInt64(
+                copy.compression.bitPattern,
+                to: destination,
+                at: 4
+            )
+            writeTDigestUInt64(
+                UInt64(bitPattern: copy.totalWeight),
+                to: destination,
+                at: 12
+            )
+            writeTDigestUInt64(copy.min.bitPattern, to: destination, at: 20)
+            writeTDigestUInt64(copy.max.bitPattern, to: destination, at: 28)
+            writeTDigestUInt32(
+                UInt32(copy.centroids.count),
+                to: destination,
+                at: 36
+            )
+
+            var offset = headerByteCount
+            for centroid in copy.centroids {
+                writeTDigestUInt64(
+                    centroid.mean.bitPattern,
+                    to: destination,
+                    at: offset
+                )
+                writeTDigestUInt64(
+                    UInt64(bitPattern: centroid.weight),
+                    to: destination,
+                    at: offset + 8
+                )
+                offset += 16
+            }
         }
-
-        func appendUInt32(_ value: UInt32) {
-            var le = value.littleEndian
-            withUnsafeBytes(of: &le) { data.append(contentsOf: $0) }
-        }
-
-        // Header
-        appendDouble(compression)
-        appendInt64(copy.totalWeight)
-        appendDouble(copy.min)
-        appendDouble(copy.max)
-
-        // Centroid count
-        appendUInt32(UInt32(copy.centroids.count))
-
-        // Centroids
-        for centroid in copy.centroids {
-            appendDouble(centroid.mean)
-            appendInt64(centroid.weight)
-        }
-
-        return data
     }
 
-    /// Decode a digest from binary data
-    ///
-    /// - Parameter data: Binary data from `encode()`
-    /// - Returns: Decoded TDigest
-    public static func decode(from data: Data) -> TDigest? {
-        guard data.count >= 36 else { return nil }  // Minimum header size
-
-        var offset = 0
-
-        // Helper to read values safely (handles alignment)
-        func readDouble() -> Double? {
-            guard offset + 8 <= data.count else { return nil }
-            let bytes = data.subdata(in: offset..<offset+8)
-            offset += 8
-            return bytes.withUnsafeBytes { ptr -> Double in
-                var bits: UInt64 = 0
-                withUnsafeMutableBytes(of: &bits) { dest in
-                    _ = ptr.copyBytes(to: dest)
-                }
-                return Double(bitPattern: UInt64(littleEndian: bits))
-            }
+    /// Decodes a strict v1 binary frame from borrowed `Bytes` storage.
+    /// Scalar reads are unaligned loads; no `Data` or scalar sub-buffers are made.
+    public static func decode(
+        from bytes: Bytes
+    ) throws(TDigestError) -> TDigest {
+        let headerByteCount = 40
+        guard bytes.count >= headerByteCount else {
+            throw .invalidByteCount(
+                expected: headerByteCount,
+                actual: bytes.count
+            )
+        }
+        guard bytes[0] == 0x54,
+              bytes[1] == 0x44,
+              bytes[2] == 0x47,
+              bytes[3] == 0x01 else {
+            throw .invalidHeader
         }
 
-        func readInt64() -> Int64? {
-            guard offset + 8 <= data.count else { return nil }
-            let bytes = data.subdata(in: offset..<offset+8)
-            offset += 8
-            return bytes.withUnsafeBytes { ptr -> Int64 in
-                var value: Int64 = 0
-                withUnsafeMutableBytes(of: &value) { dest in
-                    _ = ptr.copyBytes(to: dest)
-                }
-                return Int64(littleEndian: value)
-            }
+        let compression = Double(
+            bitPattern: readTDigestUInt64(bytes, at: 4)
+        )
+        guard compression.isFinite,
+              Self.supportedCompression.contains(compression) else {
+            throw .invalidCompression(compression)
+        }
+        let totalWeight = Int64(
+            bitPattern: readTDigestUInt64(bytes, at: 12)
+        )
+        let minimum = Double(
+            bitPattern: readTDigestUInt64(bytes, at: 20)
+        )
+        let maximum = Double(
+            bitPattern: readTDigestUInt64(bytes, at: 28)
+        )
+        let encodedCentroidCount = readTDigestUInt32(bytes, at: 36)
+        let maximumCentroids =
+            (Self.maximumEncodedBytes - headerByteCount) / 16
+        guard encodedCentroidCount <= UInt32(maximumCentroids),
+              let centroidCount = Int(exactly: encodedCentroidCount) else {
+            throw .centroidLimitExceeded(maximumCentroids)
+        }
+        let expectedByteCount = headerByteCount + centroidCount * 16
+        guard bytes.count == expectedByteCount else {
+            throw .invalidByteCount(
+                expected: expectedByteCount,
+                actual: bytes.count
+            )
         }
 
-        func readUInt32() -> UInt32? {
-            guard offset + 4 <= data.count else { return nil }
-            let bytes = data.subdata(in: offset..<offset+4)
-            offset += 4
-            return bytes.withUnsafeBytes { ptr -> UInt32 in
-                var value: UInt32 = 0
-                withUnsafeMutableBytes(of: &value) { dest in
-                    _ = ptr.copyBytes(to: dest)
-                }
-                return UInt32(littleEndian: value)
-            }
-        }
-
-        // Read header
-        guard let compression = readDouble(),
-              let totalWeight = readInt64(),
-              let minVal = readDouble(),
-              let maxVal = readDouble(),
-              let centroidCount = readUInt32() else {
-            return nil
-        }
-
-        // Verify data size
-        let expectedSize = 36 + Int(centroidCount) * 16
-        guard data.count >= expectedSize else { return nil }
-
-        // Read centroids
         var centroids: [Centroid] = []
-        centroids.reserveCapacity(Int(centroidCount))
-
+        centroids.reserveCapacity(centroidCount)
+        var offset = headerByteCount
         for _ in 0..<centroidCount {
-            guard let mean = readDouble(),
-                  let weight = readInt64() else {
-                return nil
-            }
-            centroids.append(Centroid(mean: mean, weight: weight))
+            centroids.append(
+                Centroid(
+                    mean: Double(
+                        bitPattern: readTDigestUInt64(bytes, at: offset)
+                    ),
+                    weight: Int64(
+                        bitPattern: readTDigestUInt64(bytes, at: offset + 8)
+                    )
+                )
+            )
+            offset += 16
         }
 
-        var digest = TDigest(compression: compression)
+        var digest = try TDigest(compression: compression)
         digest.centroids = centroids
         digest.totalWeight = totalWeight
-        digest.min = minVal
-        digest.max = maxVal
-
+        digest.min = minimum
+        digest.max = maximum
+        try digest.validatePersistentState()
         return digest
+    }
+
+    private func validatePersistentState() throws(TDigestError) {
+        guard compression.isFinite,
+              Self.supportedCompression.contains(compression) else {
+            throw .invalidCompression(compression)
+        }
+        if centroids.isEmpty {
+            guard totalWeight == 0 else {
+                throw .invalidTotalWeight(totalWeight)
+            }
+            guard min == .infinity, max == -.infinity else {
+                throw .invalidBounds
+            }
+            return
+        }
+        guard totalWeight > 0 else {
+            throw .invalidTotalWeight(totalWeight)
+        }
+        guard min.isFinite, max.isFinite, min <= max else {
+            throw .invalidBounds
+        }
+
+        var calculatedWeight: Int64 = 0
+        var previousMean = -Double.infinity
+        for (index, centroid) in centroids.enumerated() {
+            guard centroid.mean.isFinite,
+                  centroid.mean >= min,
+                  centroid.mean <= max,
+                  centroid.weight > 0 else {
+                throw .invalidCentroid(index: index)
+            }
+            guard centroid.mean >= previousMean else {
+                throw .unsortedCentroids
+            }
+            let (updatedWeight, overflow) = calculatedWeight.addingReportingOverflow(
+                centroid.weight
+            )
+            guard !overflow else {
+                throw .weightOverflow
+            }
+            calculatedWeight = updatedWeight
+            previousMean = centroid.mean
+        }
+        guard calculatedWeight == totalWeight else {
+            throw .weightMismatch(
+                expected: totalWeight,
+                actual: calculatedWeight
+            )
+        }
     }
 
     // MARK: - Equatable
@@ -596,5 +682,55 @@ extension TDigest: CustomDebugStringConvertible {
         TDigest(compression: \(compression), count: \(count), centroids: \(centroidCount), \
         min: \(min), max: \(max), memory: ~\(estimatedMemoryBytes) bytes)
         """
+    }
+}
+
+private func writeTDigestUInt64(
+    _ value: UInt64,
+    to destination: UnsafeMutableRawBufferPointer,
+    at offset: Int
+) {
+    var littleEndian = value.littleEndian
+    withUnsafeBytes(of: &littleEndian) { source in
+        let target = UnsafeMutableRawBufferPointer(
+            rebasing: destination[offset..<(offset + 8)]
+        )
+        target.copyMemory(from: source)
+    }
+}
+
+private func writeTDigestUInt32(
+    _ value: UInt32,
+    to destination: UnsafeMutableRawBufferPointer,
+    at offset: Int
+) {
+    var littleEndian = value.littleEndian
+    withUnsafeBytes(of: &littleEndian) { source in
+        let target = UnsafeMutableRawBufferPointer(
+            rebasing: destination[offset..<(offset + 4)]
+        )
+        target.copyMemory(from: source)
+    }
+}
+
+private func readTDigestUInt64(_ bytes: Bytes, at offset: Int) -> UInt64 {
+    bytes.withUnsafeBytes { source in
+        UInt64(
+            littleEndian: source.loadUnaligned(
+                fromByteOffset: offset,
+                as: UInt64.self
+            )
+        )
+    }
+}
+
+private func readTDigestUInt32(_ bytes: Bytes, at offset: Int) -> UInt32 {
+    bytes.withUnsafeBytes { source in
+        UInt32(
+            littleEndian: source.loadUnaligned(
+                fromByteOffset: offset,
+                as: UInt32.self
+            )
+        )
     }
 }

@@ -4,7 +4,11 @@
 // Reference: Samet, H. "Foundations of Multidimensional and Metric Data Structures", 2006
 // Algorithm: Best-First Search with Cell Pruning
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit

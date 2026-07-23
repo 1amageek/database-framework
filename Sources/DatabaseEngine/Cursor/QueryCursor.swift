@@ -3,7 +3,11 @@
 //
 // Reference: FDB Record Layer RecordCursor
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 import Synchronization
@@ -40,7 +44,7 @@ import Synchronization
 /// ```
 ///
 /// **Reference**: FDB Record Layer RecordCursor
-public final class QueryCursor<T: Persistable & Codable>: @unchecked Sendable {
+public final class QueryCursor<T: Persistable & Codable>: Sendable {
 
     // MARK: - Properties
 
@@ -50,7 +54,7 @@ public final class QueryCursor<T: Persistable & Codable>: @unchecked Sendable {
     private let state: Mutex<CursorState>
 
     /// Plan fingerprint for token validation
-    private let planFingerprint: [UInt8]
+    private let planFingerprint: Bytes
 
     // MARK: - State
 
@@ -82,10 +86,7 @@ public final class QueryCursor<T: Persistable & Codable>: @unchecked Sendable {
         self.batchSize = batchSize
 
         // Compute plan fingerprint
-        let sortFields = query.sortDescriptors.map { desc -> String in
-            // Extract field name from KeyPath
-            String(describing: desc.keyPath)
-        }
+        let sortFields = query.sortDescriptors.map(\.fieldName)
         self.planFingerprint = PlanFingerprint.compute(
             operatorDescription: String(describing: T.self),
             indexNames: T.indexDescriptors.map { $0.name },
@@ -141,7 +142,7 @@ public final class QueryCursor<T: Persistable & Codable>: @unchecked Sendable {
         }
 
         if let nextCont = nextContinuation {
-            return .more(items: items, continuation: nextCont.toToken())
+            return .more(items: items, continuation: try nextCont.toToken())
         } else {
             return .done(items: items, reason: stopReason ?? .sourceExhausted)
         }

@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -19,10 +20,10 @@ private struct BenchmarkContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: GraphIndexMaintainer<BenchmarkEdge>
-    let strategy: GraphIndexStrategy
+    let strategy: PropertyGraphIndexStrategy
 
-    init(strategy: GraphIndexStrategy = .adjacency) async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(strategy: PropertyGraphIndexStrategy = .adjacency) async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("bench", "graph", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace("edges")
@@ -61,7 +62,7 @@ private struct BenchmarkContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }
@@ -176,7 +177,7 @@ struct GraphIndexPerformanceTests {
 
     @Test("Bulk insert performance - adjacency strategy")
     func testBulkInsertAdjacency() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(strategy: .adjacency)
 
         let edges = generateSocialGraph(nodeCount: 50, avgDegree: 4)
@@ -214,7 +215,7 @@ struct GraphIndexPerformanceTests {
 
     @Test("Bulk insert performance - tripleStore strategy")
     func testBulkInsertTripleStore() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(strategy: .tripleStore)
 
         let edges = generateSocialGraph(nodeCount: 50, avgDegree: 4)
@@ -252,7 +253,7 @@ struct GraphIndexPerformanceTests {
 
     @Test("Bulk insert performance - hexastore strategy")
     func testBulkInsertHexastore() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(strategy: .hexastore)
 
         let edges = generateSocialGraph(nodeCount: 50, avgDegree: 4)
@@ -292,7 +293,7 @@ struct GraphIndexPerformanceTests {
 
     @Test("Outgoing neighbors query performance")
     func testOutgoingNeighborsQuery() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(strategy: .adjacency)
 
         // Insert edges: user0 follows user1-9
@@ -344,7 +345,7 @@ struct GraphIndexPerformanceTests {
 
     @Test("Incoming neighbors query performance")
     func testIncomingNeighborsQuery() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(strategy: .adjacency)
 
         // Insert edges: user1-9 follow user0
@@ -398,9 +399,13 @@ struct GraphIndexPerformanceTests {
 
     @Test("Strategy comparison - write cost")
     func testStrategyWriteCost() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
 
-        let strategies: [GraphIndexStrategy] = [.adjacency, .tripleStore, .hexastore]
+        let strategies: [PropertyGraphIndexStrategy] = [
+            .adjacency,
+            .tripleStore,
+            .hexastore,
+        ]
         let edgeCount = 100
 
         for strategy in strategies {
@@ -437,7 +442,7 @@ struct GraphIndexPerformanceTests {
 
     @Test("Update performance")
     func testUpdatePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(strategy: .adjacency)
 
         // Insert 50 edges
@@ -487,7 +492,7 @@ struct GraphIndexPerformanceTests {
 
     @Test("Delete performance")
     func testDeletePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(strategy: .adjacency)
 
         // Insert 50 edges
@@ -533,7 +538,7 @@ struct GraphIndexPerformanceTests {
 
     @Test("GraphTraverser 1-hop performance")
     func testTraverser1Hop() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(strategy: .adjacency)
 
         // Insert star graph: user0 follows user1-20
@@ -551,16 +556,21 @@ struct GraphIndexPerformanceTests {
             }
         }
 
-        let traverser = GraphTraverser<BenchmarkEdge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace
-        )
-
         var neighborCount = 0
         let (_, durationMs) = try await measure {
             neighborCount = 0
-            for try await _ in traverser.neighbors(from: "user0", label: "follows", direction: .outgoing) {
-                neighborCount += 1
+            try await ctx.database.withTransaction { transaction in
+                let traverser = try GraphTraverser(
+                    snapshot: GraphReadSnapshot(transaction: transaction),
+                    subspace: ctx.indexSubspace
+                )
+                for try await _ in traverser.neighbors(
+                    from: .identifier("user0"),
+                    edgeLabel: .identifier("follows"),
+                    direction: .outgoing
+                ) {
+                    neighborCount += 1
+                }
             }
         }
 
@@ -573,7 +583,7 @@ struct GraphIndexPerformanceTests {
 
     @Test("GraphTraverser multi-hop performance")
     func testTraverserMultiHop() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(strategy: .adjacency)
 
         // Create chain: user0 → user1 → user2 → ... → user9
@@ -596,16 +606,24 @@ struct GraphIndexPerformanceTests {
             }
         }
 
-        let traverser = GraphTraverser<BenchmarkEdge>(
-            database: ctx.database,
-            subspace: ctx.indexSubspace
-        )
-
         var nodeCount = 0
         let (_, durationMs) = try await measure {
             nodeCount = 0
-            for try await _ in traverser.traverse(from: "user0", maxDepth: 3, label: "follows") {
-                nodeCount += 1
+            try await ctx.database.withTransaction { transaction in
+                let traverser = try GraphTraverser(
+                    snapshot: GraphReadSnapshot(transaction: transaction),
+                    subspace: ctx.indexSubspace,
+                    configuration: GraphTraverserConfiguration(
+                        maximumDepth: 3,
+                        maximumNodes: 10_000
+                    )
+                )
+                for try await _ in traverser.traverse(
+                    from: .identifier("user0"),
+                    edgeLabel: .identifier("follows")
+                ) {
+                    nodeCount += 1
+                }
             }
         }
 
@@ -620,7 +638,7 @@ struct GraphIndexPerformanceTests {
 
     @Test("Scale test - 500 edges")
     func testScale500Edges() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(strategy: .adjacency)
 
         let edges = generateSocialGraph(nodeCount: 100, avgDegree: 5)

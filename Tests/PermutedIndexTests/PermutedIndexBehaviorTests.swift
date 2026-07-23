@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Permuted
 import TestSupport
 @testable import DatabaseEngine
@@ -14,7 +15,7 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct TestLocation: Persistable {
+struct GeographicLocation: Persistable {
     typealias ID = String
 
     var id: String
@@ -29,7 +30,7 @@ struct TestLocation: Persistable {
         self.name = name
     }
 
-    static var persistableType: String { "TestLocation" }
+    static var persistableType: String { "GeographicLocation" }
     static var allFields: [String] { ["id", "country", "city", "name"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -46,54 +47,54 @@ struct TestLocation: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestLocation, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<GeographicLocation, Value>) -> String {
         switch keyPath {
-        case \TestLocation.id: return "id"
-        case \TestLocation.country: return "country"
-        case \TestLocation.city: return "city"
-        case \TestLocation.name: return "name"
+        case \GeographicLocation.id: return "id"
+        case \GeographicLocation.country: return "country"
+        case \GeographicLocation.city: return "city"
+        case \GeographicLocation.name: return "name"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestLocation>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<GeographicLocation>) -> String {
         switch keyPath {
-        case \TestLocation.id: return "id"
-        case \TestLocation.country: return "country"
-        case \TestLocation.city: return "city"
-        case \TestLocation.name: return "name"
+        case \GeographicLocation.id: return "id"
+        case \GeographicLocation.country: return "country"
+        case \GeographicLocation.city: return "city"
+        case \GeographicLocation.name: return "name"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestLocation> {
+        if let partial = keyPath as? PartialKeyPath<GeographicLocation> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Permuted Index Context
 
-private struct TestContext {
+private struct PermutedIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: PermutedIndexMaintainer<TestLocation>
-    let kind: PermutedIndexKind<TestLocation>
+    let maintainer: PermutedIndexMaintainer<GeographicLocation>
+    let kind: PermutedIndexKind<GeographicLocation>
 
     /// Creates a test context with a permutation that reorders (country, city, name) to (city, country, name)
-    init(permutation: Permutation? = nil, indexName: String = "TestLocation_compound") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(permutation: Permutation? = nil, indexName: String = "GeographicLocation_compound") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "permuted", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         // Default permutation: [1, 0, 2] - (city, country, name)
         let perm = permutation ?? (try! Permutation(indices: [1, 0, 2]))
-        self.kind = PermutedIndexKind<TestLocation>(
-            fields: [\TestLocation.country, \TestLocation.city, \TestLocation.name],
+        self.kind = PermutedIndexKind<GeographicLocation>(
+            fields: [\GeographicLocation.country, \GeographicLocation.city, \GeographicLocation.name],
             permutation: perm
         )
 
@@ -107,10 +108,10 @@ private struct TestContext {
                 FieldKeyExpression(fieldName: "name")
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["TestLocation"])
+            itemTypes: Set(["GeographicLocation"])
         )
 
-        self.maintainer = PermutedIndexMaintainer<TestLocation>(
+        self.maintainer = PermutedIndexMaintainer<GeographicLocation>(
             index: index,
             permutation: perm,
             subspace: indexSubspace,
@@ -121,7 +122,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -170,10 +171,10 @@ struct PermutedIndexBehaviorTests {
 
     @Test("Insert creates permuted key entry")
     func testInsertCreatesPermutedKeyEntry() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
-        let location = TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
+        let location = GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -191,13 +192,13 @@ struct PermutedIndexBehaviorTests {
 
     @Test("Multiple inserts create multiple entries")
     func testMultipleInserts() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
         let locations = [
-            TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A"),
-            TestLocation(id: "loc2", country: "Japan", city: "Osaka", name: "Station B"),
-            TestLocation(id: "loc3", country: "USA", city: "New York", name: "Station C")
+            GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A"),
+            GeographicLocation(id: "loc2", country: "Japan", city: "Osaka", name: "Station B"),
+            GeographicLocation(id: "loc3", country: "USA", city: "New York", name: "Station C")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -220,10 +221,10 @@ struct PermutedIndexBehaviorTests {
 
     @Test("Delete removes permuted key entry")
     func testDeleteRemovesEntry() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
-        let location = TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
+        let location = GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -256,10 +257,10 @@ struct PermutedIndexBehaviorTests {
 
     @Test("Update changes permuted key")
     func testUpdateChangesKey() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
-        let location = TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
+        let location = GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -271,7 +272,7 @@ struct PermutedIndexBehaviorTests {
         }
 
         // Update city
-        let updatedLocation = TestLocation(id: "loc1", country: "Japan", city: "Osaka", name: "Station A")
+        let updatedLocation = GeographicLocation(id: "loc1", country: "Japan", city: "Osaka", name: "Station A")
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: location,
@@ -298,15 +299,15 @@ struct PermutedIndexBehaviorTests {
 
     @Test("scanByPrefix finds entries by permuted prefix")
     func testScanByPrefixFindsEntries() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
         // Permutation is [1, 0, 2]: (city, country, name)
         let locations = [
-            TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A"),
-            TestLocation(id: "loc2", country: "Japan", city: "Tokyo", name: "Station B"),
-            TestLocation(id: "loc3", country: "USA", city: "Tokyo", name: "Station C"),
-            TestLocation(id: "loc4", country: "Japan", city: "Osaka", name: "Station D")
+            GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A"),
+            GeographicLocation(id: "loc2", country: "Japan", city: "Tokyo", name: "Station B"),
+            GeographicLocation(id: "loc3", country: "USA", city: "Tokyo", name: "Station C"),
+            GeographicLocation(id: "loc4", country: "Japan", city: "Osaka", name: "Station D")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -332,12 +333,12 @@ struct PermutedIndexBehaviorTests {
 
     @Test("scanByPrefix with empty prefix returns all")
     func testScanByPrefixEmptyReturnsAll() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
         let locations = [
-            TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "A"),
-            TestLocation(id: "loc2", country: "USA", city: "New York", name: "B")
+            GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "A"),
+            GeographicLocation(id: "loc2", country: "USA", city: "New York", name: "B")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -360,14 +361,14 @@ struct PermutedIndexBehaviorTests {
 
     @Test("scanByExactMatch finds entries with exact values")
     func testScanByExactMatchFindsEntries() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
         // Permutation is [1, 0, 2]: (city, country, name)
         let locations = [
-            TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A"),
-            TestLocation(id: "loc2", country: "Japan", city: "Tokyo", name: "Station B"),
-            TestLocation(id: "loc3", country: "Japan", city: "Tokyo", name: "Station A")  // Same permuted key, different ID
+            GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A"),
+            GeographicLocation(id: "loc2", country: "Japan", city: "Tokyo", name: "Station B"),
+            GeographicLocation(id: "loc3", country: "Japan", city: "Tokyo", name: "Station A")  // Same permuted key, different ID
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -389,8 +390,8 @@ struct PermutedIndexBehaviorTests {
 
     @Test("scanByExactMatch throws for wrong field count")
     func testScanByExactMatchThrowsForWrongFieldCount() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
         await #expect(throws: PermutedIndexError.self) {
             _ = try await ctx.scanByExactMatch(values: ["Tokyo", "Japan"])  // Only 2 values, need 3
@@ -403,12 +404,12 @@ struct PermutedIndexBehaviorTests {
 
     @Test("scanAll returns all entries with permuted fields")
     func testScanAllReturnsAllEntries() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
         let locations = [
-            TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "A"),
-            TestLocation(id: "loc2", country: "USA", city: "NY", name: "B")
+            GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "A"),
+            GeographicLocation(id: "loc2", country: "USA", city: "NY", name: "B")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -450,8 +451,8 @@ struct PermutedIndexBehaviorTests {
 
     @Test("toOriginalOrder converts permuted values back")
     func testToOriginalOrderConvertsBack() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
         // Permutation is [1, 0, 2]: original (country, city, name) -> permuted (city, country, name)
         let permutedValues: [any TupleElement] = ["Tokyo", "Japan", "Station A"]
@@ -471,12 +472,12 @@ struct PermutedIndexBehaviorTests {
 
     @Test("ScanItem adds permuted entry")
     func testScanItemAddsPermutedEntry() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PermutedIndexContext()
 
         let locations = [
-            TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "A"),
-            TestLocation(id: "loc2", country: "USA", city: "NY", name: "B")
+            GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "A"),
+            GeographicLocation(id: "loc2", country: "USA", city: "NY", name: "B")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -499,11 +500,11 @@ struct PermutedIndexBehaviorTests {
 
     @Test("Different permutation orders fields differently")
     func testDifferentPermutationOrdersFieldsDifferently() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         // Use permutation [2, 0, 1]: (name, country, city)
-        let ctx = try await TestContext(permutation: try! Permutation(indices: [2, 0, 1]))
+        let ctx = try await PermutedIndexContext(permutation: try! Permutation(indices: [2, 0, 1]))
 
-        let location = TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
+        let location = GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -524,11 +525,11 @@ struct PermutedIndexBehaviorTests {
 
     @Test("Identity permutation maintains original order")
     func testIdentityPermutationMaintainsOrder() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         // Use identity permutation [0, 1, 2]: (country, city, name)
-        let ctx = try await TestContext(permutation: Permutation.identity(size: 3))
+        let ctx = try await PermutedIndexContext(permutation: Permutation.identity(size: 3))
 
-        let location = TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
+        let location = GeographicLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(

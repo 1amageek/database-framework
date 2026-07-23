@@ -1,7 +1,11 @@
 // TransactionContextProtocol.swift
 // DatabaseEngine - Protocol for transactional operations
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 
@@ -52,7 +56,7 @@ public protocol TransactionContextProtocol: Sendable {
     /// - Throws: SecurityError if access is denied, or other errors on failure
     func get<T: Persistable>(
         _ type: T.Type,
-        id: any TupleElement,
+        id: T.ID,
         snapshot: Bool
     ) async throws -> T?
 
@@ -68,7 +72,7 @@ public protocol TransactionContextProtocol: Sendable {
     /// - Throws: SecurityError if access is denied for any model
     func getMany<T: Persistable>(
         _ type: T.Type,
-        ids: [any TupleElement],
+        ids: [T.ID],
         snapshot: Bool
     ) async throws -> [T]
 
@@ -102,7 +106,7 @@ public protocol TransactionContextProtocol: Sendable {
     ///   - type: The Persistable type
     ///   - id: The model's identifier
     /// - Throws: SecurityError if access is denied, or other errors on failure
-    func delete<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws
+    func delete<T: Persistable>(_ type: T.Type, id: T.ID) async throws
 
     // MARK: - Raw Access
 
@@ -119,7 +123,7 @@ public extension TransactionContextProtocol {
     /// Get a model with default snapshot = false
     func get<T: Persistable>(
         _ type: T.Type,
-        id: any TupleElement
+        id: T.ID
     ) async throws -> T? {
         try await get(type, id: id, snapshot: false)
     }
@@ -127,7 +131,7 @@ public extension TransactionContextProtocol {
     /// Get many models with default snapshot = false
     func getMany<T: Persistable>(
         _ type: T.Type,
-        ids: [any TupleElement]
+        ids: [T.ID]
     ) async throws -> [T] {
         try await getMany(type, ids: ids, snapshot: false)
     }

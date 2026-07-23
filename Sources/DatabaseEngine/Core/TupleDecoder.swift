@@ -3,7 +3,11 @@
 //
 // Single responsibility: Convert TupleElement to Swift types for index operations.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 
 // MARK: - TupleDecoder
@@ -16,7 +20,7 @@ import StorageKit
 /// **Type Mapping**:
 /// | TupleElement | Decodable Types |
 /// |--------------|-----------------|
-/// | Int64 | Int64, Int, Int32, Int16, Int8 (range check) |
+/// | Int64/UInt64 | Signed and unsigned integer types (range checked) |
 /// | Double | Double, Float |
 /// | String | String |
 /// | Bool | Bool, also Int64 0/1 |
@@ -46,6 +50,15 @@ public struct TupleDecoder: Sendable {
     public static func decodeInt64(_ element: any TupleElement) throws -> Int64 {
         if let v = element as? Int64 { return v }
         if let v = element as? Int { return Int64(v) }
+        if let v = element as? UInt64 {
+            guard let exact = Int64(exactly: v) else {
+                throw TupleDecodingError.unsignedIntegerOverflow(
+                    value: v,
+                    targetType: "Int64"
+                )
+            }
+            return exact
+        }
         // Numeric coercion from floating point (exact integers only)
         // Symmetric with decodeDouble accepting Int64→Double
         if let v = element as? Double {
@@ -123,6 +136,101 @@ public struct TupleDecoder: Sendable {
         return Int8(i64)
     }
 
+    // MARK: - Unsigned Integer Decoding
+
+    /// Decode as UInt64 without passing through a signed or floating value.
+    public static func decodeUInt64(_ element: any TupleElement) throws -> UInt64 {
+        if let value = element as? UInt64 { return value }
+        if let value = element as? Int64 {
+            guard let exact = UInt64(exactly: value) else {
+                throw TupleDecodingError.integerOverflow(
+                    value: value,
+                    targetType: "UInt64"
+                )
+            }
+            return exact
+        }
+        if let value = element as? Int {
+            guard let exact = UInt64(exactly: value) else {
+                throw TupleDecodingError.integerOverflow(
+                    value: Int64(value),
+                    targetType: "UInt64"
+                )
+            }
+            return exact
+        }
+        if let value = element as? Double {
+            guard value.isFinite, let exact = UInt64(exactly: value) else {
+                throw TupleDecodingError.typeMismatch(
+                    expected: "UInt64 (exact)",
+                    actual: "Double(\(value))"
+                )
+            }
+            return exact
+        }
+        if let value = element as? Float {
+            guard value.isFinite, let exact = UInt64(exactly: value) else {
+                throw TupleDecodingError.typeMismatch(
+                    expected: "UInt64 (exact)",
+                    actual: "Float(\(value))"
+                )
+            }
+            return exact
+        }
+        throw TupleDecodingError.typeMismatch(
+            expected: "UInt64",
+            actual: String(describing: type(of: element))
+        )
+    }
+
+    /// Decode as UInt with a platform-width range check.
+    public static func decodeUInt(_ element: any TupleElement) throws -> UInt {
+        let value = try decodeUInt64(element)
+        guard let exact = UInt(exactly: value) else {
+            throw TupleDecodingError.unsignedIntegerOverflow(
+                value: value,
+                targetType: "UInt"
+            )
+        }
+        return exact
+    }
+
+    /// Decode as UInt32 with a range check.
+    public static func decodeUInt32(_ element: any TupleElement) throws -> UInt32 {
+        let value = try decodeUInt64(element)
+        guard let exact = UInt32(exactly: value) else {
+            throw TupleDecodingError.unsignedIntegerOverflow(
+                value: value,
+                targetType: "UInt32"
+            )
+        }
+        return exact
+    }
+
+    /// Decode as UInt16 with a range check.
+    public static func decodeUInt16(_ element: any TupleElement) throws -> UInt16 {
+        let value = try decodeUInt64(element)
+        guard let exact = UInt16(exactly: value) else {
+            throw TupleDecodingError.unsignedIntegerOverflow(
+                value: value,
+                targetType: "UInt16"
+            )
+        }
+        return exact
+    }
+
+    /// Decode as UInt8 with a range check.
+    public static func decodeUInt8(_ element: any TupleElement) throws -> UInt8 {
+        let value = try decodeUInt64(element)
+        guard let exact = UInt8(exactly: value) else {
+            throw TupleDecodingError.unsignedIntegerOverflow(
+                value: value,
+                targetType: "UInt8"
+            )
+        }
+        return exact
+    }
+
     // MARK: - Floating Point Decoding
 
     /// Decode as Double
@@ -188,18 +296,24 @@ public struct TupleDecoder: Sendable {
     /// - Returns: Data value
     /// - Throws: TupleDecodingError on type mismatch
     public static func decodeData(_ element: any TupleElement) throws -> Data {
-        if let v = element as? [UInt8] { return Data(v) }
+        if let value = element as? Bytes {
+            // Data is the requested Foundation ownership boundary; materializing
+            // independent storage prevents a borrowed tuple slice from escaping.
+            return Data(value)
+        }
         throw TupleDecodingError.typeMismatch(expected: "Data", actual: String(describing: type(of: element)))
     }
 
-    /// Decode as [UInt8]
+    /// Decode as owned storage bytes
     ///
     /// - Parameter element: TupleElement to decode
-    /// - Returns: Byte array
+    /// - Returns: Owned byte value
     /// - Throws: TupleDecodingError on type mismatch
-    public static func decodeBytes(_ element: any TupleElement) throws -> [UInt8] {
-        if let v = element as? [UInt8] { return v }
-        throw TupleDecodingError.typeMismatch(expected: "[UInt8]", actual: String(describing: type(of: element)))
+    public static func decodeBytes(_ element: any TupleElement) throws -> Bytes {
+        if let value = element as? Bytes {
+            return value
+        }
+        throw TupleDecodingError.typeMismatch(expected: "Bytes", actual: String(describing: type(of: element)))
     }
 
     // MARK: - UUID Decoding
@@ -247,6 +361,16 @@ public struct TupleDecoder: Sendable {
             return try decodeInt16(element) as! T
         case is Int8.Type:
             return try decodeInt8(element) as! T
+        case is UInt64.Type:
+            return try decodeUInt64(element) as! T
+        case is UInt.Type:
+            return try decodeUInt(element) as! T
+        case is UInt32.Type:
+            return try decodeUInt32(element) as! T
+        case is UInt16.Type:
+            return try decodeUInt16(element) as! T
+        case is UInt8.Type:
+            return try decodeUInt8(element) as! T
         case is Double.Type:
             return try decodeDouble(element) as! T
         case is Float.Type:
@@ -257,7 +381,7 @@ public struct TupleDecoder: Sendable {
             return try decodeBool(element) as! T
         case is Data.Type:
             return try decodeData(element) as! T
-        case is [UInt8].Type:
+        case is Bytes.Type:
             return try decodeBytes(element) as! T
         case is UUID.Type:
             return try decodeUUID(element) as! T
@@ -268,26 +392,20 @@ public struct TupleDecoder: Sendable {
         }
     }
 
-    /// Decode as a specified type, returning nil on failure
-    ///
-    /// - Parameters:
-    ///   - element: TupleElement to decode
-    ///   - type: Target type
-    /// - Returns: Decoded value or nil
-    public static func decodeOrNil<T>(_ element: any TupleElement, as type: T.Type) -> T? {
-        try? decode(element, as: type)
-    }
 }
 
 // MARK: - TupleDecodingError
 
 /// Errors that can occur during tuple element decoding
-public enum TupleDecodingError: Error, Sendable, CustomStringConvertible {
+public enum TupleDecodingError: Error, Sendable, Equatable, CustomStringConvertible {
     /// Element type does not match expected type
     case typeMismatch(expected: String, actual: String)
 
     /// Integer value exceeds target type range
     case integerOverflow(value: Int64, targetType: String)
+
+    /// Unsigned integer value exceeds target type range
+    case unsignedIntegerOverflow(value: UInt64, targetType: String)
 
     /// Target type is not supported for decoding
     case unsupportedType(String)
@@ -301,6 +419,8 @@ public enum TupleDecodingError: Error, Sendable, CustomStringConvertible {
             return "Type mismatch: expected \(expected), got \(actual)"
         case .integerOverflow(let value, let targetType):
             return "Integer overflow: \(value) cannot fit in \(targetType)"
+        case .unsignedIntegerOverflow(let value, let targetType):
+            return "Unsigned integer overflow: \(value) cannot fit in \(targetType)"
         case .unsupportedType(let type):
             return "Unsupported type for decoding: \(type)"
         case .invalidFormat(let message):

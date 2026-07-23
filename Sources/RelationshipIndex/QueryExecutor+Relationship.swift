@@ -1,333 +1,274 @@
-// QueryExecutor+Relationship.swift
-// RelationshipIndex - Relationship loading extension for QueryExecutor
-//
-// Provides joining() and executeWithRelations() for relationship queries.
-
-import Foundation
 import Core
-import Relationship
 import DatabaseEngine
-import StorageKit
+import DatabaseValue
+import Relationship
 
-// MARK: - RelationshipQueryExecutor
-
-/// Executor for queries with relationship loading
-///
-/// Created by calling `joining()` on a `QueryExecutor`.
-/// Use `execute()` to return `[Snapshot<T>]` with loaded relationships.
-///
-/// **Usage**:
-/// ```swift
-/// let orders = try await context.fetch(Order.self)
-///     .joining(\.customerID, as: Customer.self)
-///     .execute()
-///
-/// for order in orders {
-///     let customer = order.ref(Customer.self, \.customerID)
-///     print(customer?.name)
-/// }
-/// ```
-public struct RelationshipQueryExecutor<T: Persistable>: Sendable {
+/// Executes a model query and typed relationship joins in one transaction.
+public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
     private let context: FDBContext
-    internal var query: Query<T>
+    package var query: Query<Model>
+    private var joins: [RelationshipJoin<Model>]
 
-    /// Relationship joins to load
-    private var joins: [RelationshipJoin]
-
-    /// Initialize with context and query
-    public init(context: FDBContext, query: Query<T>) {
+    public init(
+        context: FDBContext,
+        query: Query<Model>
+    ) {
         self.context = context
         self.query = query
         self.joins = []
     }
 
-    // MARK: - Fluent API (Delegating to Query)
-
-    /// Add a filter predicate
-    public func `where`(_ predicate: DatabaseEngine.Predicate<T>) -> RelationshipQueryExecutor<T> {
+    public func `where`(
+        _ predicate: DatabaseEngine.Predicate<Model>
+    ) -> RelationshipQueryExecutor<Model> {
         var copy = self
         copy.query = query.where(predicate)
         return copy
     }
 
-    /// Add sort order (ascending)
-    public func orderBy<V: Comparable & Sendable>(_ keyPath: KeyPath<T, V>) -> RelationshipQueryExecutor<T> {
+    public func orderBy<Value: Comparable & Sendable>(
+        _ keyPath: KeyPath<Model, Value>
+    ) -> RelationshipQueryExecutor<Model> {
         var copy = self
         copy.query = query.orderBy(keyPath)
         return copy
     }
 
-    /// Add sort order with direction
-    public func orderBy<V: Comparable & Sendable>(_ keyPath: KeyPath<T, V>, _ order: DatabaseEngine.SortOrder) -> RelationshipQueryExecutor<T> {
+    public func orderBy<Value: Comparable & Sendable>(
+        _ keyPath: KeyPath<Model, Value>,
+        _ order: DatabaseEngine.SortOrder
+    ) -> RelationshipQueryExecutor<Model> {
         var copy = self
         copy.query = query.orderBy(keyPath, order)
         return copy
     }
 
-    /// Set maximum number of results
-    public func limit(_ count: Int) -> RelationshipQueryExecutor<T> {
+    public func limit(_ count: Int) -> RelationshipQueryExecutor<Model> {
         var copy = self
         copy.query = query.limit(count)
         return copy
     }
 
-    /// Set number of results to skip
-    public func offset(_ count: Int) -> RelationshipQueryExecutor<T> {
+    public func offset(_ count: Int) -> RelationshipQueryExecutor<Model> {
         var copy = self
         copy.query = query.offset(count)
         return copy
     }
 
-    // MARK: - Joining
-
-    /// Join a to-one relationship (optional FK field)
-    ///
-    /// - Parameters:
-    ///   - keyPath: KeyPath to the optional FK field
-    ///   - relatedType: The type of the related item
-    /// - Returns: Executor with the join added
-    public func joining<R: Persistable>(
-        _ keyPath: KeyPath<T, String?>,
-        as relatedType: R.Type
-    ) -> RelationshipQueryExecutor<T> {
+    public func cachePolicy(
+        _ policy: CachePolicy
+    ) -> RelationshipQueryExecutor<Model> {
         var copy = self
-        copy.joins.append(RelationshipJoin(
-            fieldName: T.fieldName(for: keyPath),
-            relatedTypeName: R.persistableType,
-            isToMany: false,
-            fieldType: .optionalString
-        ))
+        copy.query = query.cachePolicy(policy)
         return copy
     }
 
-    /// Join a to-one relationship (required FK field)
-    ///
-    /// - Parameters:
-    ///   - keyPath: KeyPath to the required FK field
-    ///   - relatedType: The type of the related item
-    /// - Returns: Executor with the join added
-    public func joining<R: Persistable>(
-        _ keyPath: KeyPath<T, String>,
-        as relatedType: R.Type
-    ) -> RelationshipQueryExecutor<T> {
+    public func partition<Value: Sendable & Equatable & FieldValueConvertible>(
+        _ keyPath: KeyPath<Model, Value>,
+        equals value: Value
+    ) -> RelationshipQueryExecutor<Model> {
         var copy = self
-        copy.joins.append(RelationshipJoin(
-            fieldName: T.fieldName(for: keyPath),
-            relatedTypeName: R.persistableType,
-            isToMany: false,
-            fieldType: .requiredString
-        ))
+        copy.query = query.partition(keyPath, equals: value)
         return copy
     }
 
-    /// Join a to-many relationship (FK array field)
-    ///
-    /// - Parameters:
-    ///   - keyPath: KeyPath to the FK array field
-    ///   - relatedType: The type of the related items
-    /// - Returns: Executor with the join added
-    public func joining<R: Persistable>(
-        _ keyPath: KeyPath<T, [String]>,
-        as relatedType: R.Type
-    ) -> RelationshipQueryExecutor<T> {
-        var copy = self
-        copy.joins.append(RelationshipJoin(
-            fieldName: T.fieldName(for: keyPath),
-            relatedTypeName: R.persistableType,
-            isToMany: true,
-            fieldType: .stringArray
-        ))
-        return copy
+    public func joining<Related: Persistable>(
+        _ keyPath: KeyPath<Model, DatabaseReference<Related>?>
+    ) throws -> RelationshipQueryExecutor<Model> {
+        try appendingJoin(
+            fieldName: Model.fieldName(for: keyPath),
+            relatedType: Related.self,
+            cardinality: .optionalToOne
+        ) { models in
+            try castToOne(models, as: Related.self)
+        }
     }
 
-    // MARK: - Execute
-
-    /// Execute the query and return Snapshot results with loaded relationships
-    public func execute() async throws -> [Snapshot<T>] {
-        let executor = QueryExecutor(context: context, query: query)
-        let items = try await executor.execute()
-        return try await buildSnapshots(items: items)
+    public func joining<Related: Persistable>(
+        _ keyPath: KeyPath<Model, DatabaseReference<Related>>
+    ) throws -> RelationshipQueryExecutor<Model> {
+        try appendingJoin(
+            fieldName: Model.fieldName(for: keyPath),
+            relatedType: Related.self,
+            cardinality: .requiredToOne
+        ) { models in
+            try castToOne(models, as: Related.self)
+        }
     }
 
-    /// Execute the query and return count
+    public func joining<Related: Persistable>(
+        _ keyPath: KeyPath<Model, [DatabaseReference<Related>]>
+    ) throws -> RelationshipQueryExecutor<Model> {
+        try appendingJoin(
+            fieldName: Model.fieldName(for: keyPath),
+            relatedType: Related.self,
+            cardinality: .toMany
+        ) { models in
+            var typed: [Related] = []
+            typed.reserveCapacity(models.count)
+            for model in models {
+                guard let related = model as? Related else {
+                    throw RelationshipReferenceError.loadedTypeMismatch(
+                        expected: Related.persistableType,
+                        actual: type(of: model).persistableType
+                    )
+                }
+                typed.append(related)
+            }
+            return typed
+        }
+    }
+
+    public func execute() async throws -> [Snapshot<Model>] {
+        let joins = self.joins
+        let container = context.container
+        return try await context.withFetchedModelsInTransaction(query) {
+            models,
+            transaction in
+            guard !joins.isEmpty else {
+                return models.map { Snapshot(item: $0) }
+            }
+
+            let resolver = RelationshipReferenceResolver(schema: container.schema)
+            var referencesByModel: [[[RecordIdentity]]] = []
+            referencesByModel.reserveCapacity(models.count)
+            var orderedIdentities: [RecordIdentity] = []
+            var seenIdentities = Set<RecordIdentity>()
+
+            for model in models {
+                var modelReferences: [[RecordIdentity]] = []
+                modelReferences.reserveCapacity(joins.count)
+                for join in joins {
+                    let references = try resolver.orderedReferences(
+                        from: model,
+                        descriptor: join.descriptor
+                    )
+                    modelReferences.append(references)
+                    for identity in references where seenIdentities.insert(identity).inserted {
+                        orderedIdentities.append(identity)
+                    }
+                }
+                referencesByModel.append(modelReferences)
+            }
+
+            let handler = container.newContext().makePersistenceHandler()
+            var loadedByIdentity: [RecordIdentity: any Persistable] = [:]
+            loadedByIdentity.reserveCapacity(orderedIdentities.count)
+            for identity in orderedIdentities {
+                let resolved = try CanonicalRelationshipIdentity.resolve(
+                    identity,
+                    container: container
+                )
+                if let loaded = try await handler.load(
+                    identity.entity,
+                    id: resolved.id,
+                    partition: resolved.partition,
+                    transaction: transaction
+                ) {
+                    loadedByIdentity[identity] = loaded
+                }
+            }
+
+            var snapshots: [Snapshot<Model>] = []
+            snapshots.reserveCapacity(models.count)
+            for (modelOffset, model) in models.enumerated() {
+                var relations: [String: any Sendable] = [:]
+                for (joinOffset, join) in joins.enumerated() {
+                    let related = referencesByModel[modelOffset][joinOffset].compactMap {
+                        loadedByIdentity[$0]
+                    }
+                    if let value = try join.assemble(related) {
+                        relations[join.descriptor.propertyName] = value
+                    }
+                }
+                snapshots.append(Snapshot(item: model, relations: relations))
+            }
+            return snapshots
+        }
+    }
+
     public func count() async throws -> Int {
-        let executor = QueryExecutor(context: context, query: query)
-        return try await executor.count()
+        try await QueryExecutor(context: context, query: query).count()
     }
 
-    /// Execute the query and return first Snapshot result
-    public func first() async throws -> Snapshot<T>? {
+    public func first() async throws -> Snapshot<Model>? {
         try await limit(1).execute().first
     }
 
-    // MARK: - Private Helpers
-
-    /// Build Snapshots with loaded relationships
-    private func buildSnapshots(items: [T]) async throws -> [Snapshot<T>] {
-        guard !joins.isEmpty else {
-            return items.map { Snapshot(item: $0) }
+    private func appendingJoin<Related: Persistable>(
+        fieldName: String,
+        relatedType: Related.Type,
+        cardinality: RelationshipCardinality,
+        assemble: @escaping @Sendable ([any Persistable]) throws -> (any Sendable)?
+    ) throws -> RelationshipQueryExecutor<Model> {
+        let matching = Model.relationshipDescriptors.filter {
+            $0.propertyName == fieldName
         }
-
-        // Collect all FK values to batch load
-        var fkValuesToLoad: [String: Set<String>] = [:]  // relatedTypeName -> Set of IDs
-
-        for item in items {
-            for join in joins {
-                let ids = extractForeignKeyIds(from: item, join: join)
-                var idSet = fkValuesToLoad[join.relatedTypeName] ?? []
-                ids.forEach { idSet.insert($0) }
-                fkValuesToLoad[join.relatedTypeName] = idSet
-            }
+        guard let descriptor = matching.first, matching.count == 1 else {
+            throw RelationshipReferenceError.missingDescriptor(
+                owner: Model.persistableType,
+                field: fieldName
+            )
         }
-
-        // Batch load related items by type
-        var loadedItems: [String: [String: any Persistable]] = [:]  // typeName -> (id -> item)
-
-        for (typeName, ids) in fkValuesToLoad {
-            var itemsById: [String: any Persistable] = [:]
-            for id in ids {
-                if let item = try await context.loadItemByTypeName(typeName, id: id) {
-                    itemsById[id] = item
-                }
-            }
-            loadedItems[typeName] = itemsById
+        guard descriptor.ownerTypeName == Model.persistableType,
+              descriptor.relatedTypeName == Related.persistableType,
+              descriptor.cardinality == cardinality else {
+            throw RelationshipReferenceError.descriptorMismatch(
+                owner: Model.persistableType,
+                field: fieldName
+            )
         }
-
-        // Build Snapshots with loaded relations
-        var snapshots: [Snapshot<T>] = []
-
-        for item in items {
-            var relations: [String: any Sendable] = [:]
-
-            for join in joins {
-                guard let itemsById = loadedItems[join.relatedTypeName] else {
-                    continue
-                }
-
-                let ids = extractForeignKeyIds(from: item, join: join)
-
-                if join.isToMany {
-                    let relatedItems = ids.compactMap { itemsById[$0] }
-                    relations[join.fieldName] = relatedItems
-                } else {
-                    if let id = ids.first, let related = itemsById[id] {
-                        relations[join.fieldName] = related
-                    }
-                }
-            }
-
-            snapshots.append(Snapshot(item: item, relations: relations))
-        }
-
-        return snapshots
-    }
-
-    /// Extract foreign key IDs from an item using the join's field name
-    private func extractForeignKeyIds(from item: T, join: RelationshipJoin) -> [String] {
-        guard let value = item[dynamicMember: join.fieldName] else {
-            return []
-        }
-
-        switch join.fieldType {
-        case .stringArray:
-            return (value as? [String]) ?? []
-        case .requiredString:
-            if let id = value as? String {
-                return [id]
-            }
-            return []
-        case .optionalString:
-            // dynamicMember returns unwrapped value if present
-            if let id = value as? String {
-                return [id]
-            }
-            return []
-        }
+        var copy = self
+        copy.joins.append(
+            RelationshipJoin(
+                descriptor: descriptor,
+                assemble: assemble
+            )
+        )
+        return copy
     }
 }
 
-// MARK: - RelationshipJoin
-
-/// Describes a relationship to join
-///
-/// Uses field name strings instead of AnyKeyPath for proper Sendable compliance.
-/// Field values are accessed via Persistable's dynamicMember subscript.
-private struct RelationshipJoin: Sendable {
-    /// Field name for the FK field
-    let fieldName: String
-
-    /// Name of the related type
-    let relatedTypeName: String
-
-    /// Whether this is a To-Many relationship
-    let isToMany: Bool
-
-    /// Type of the FK field (for proper casting)
-    let fieldType: FieldType
-
-    enum FieldType: Sendable {
-        case optionalString   // String?
-        case requiredString   // String
-        case stringArray      // [String]
-    }
+private struct RelationshipJoin<Model: Persistable>: Sendable {
+    let descriptor: RelationshipDescriptor
+    let assemble: @Sendable ([any Persistable]) throws -> (any Sendable)?
 }
 
-// MARK: - QueryExecutor Extension
+private func castToOne<Related: Persistable>(
+    _ models: [any Persistable],
+    as relatedType: Related.Type
+) throws -> (any Sendable)? {
+    guard let first = models.first else {
+        return nil
+    }
+    guard models.count == 1, let related = first as? Related else {
+        throw RelationshipReferenceError.loadedTypeMismatch(
+            expected: Related.persistableType,
+            actual: type(of: first).persistableType
+        )
+    }
+    return related
+}
 
 extension QueryExecutor {
-    /// Join a to-one relationship (optional FK field)
-    ///
-    /// Converts this QueryExecutor into a RelationshipQueryExecutor that
-    /// will load the related items when executed.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let orders = try await context.fetch(Order.self)
-    ///     .joining(\.customerID, as: Customer.self)
-    ///     .execute()
-    ///
-    /// for order in orders {
-    ///     let customer = order.ref(Customer.self, \.customerID)
-    /// }
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - keyPath: KeyPath to the optional FK field
-    ///   - relatedType: The type of the related item
-    /// - Returns: RelationshipQueryExecutor with the join added
-    public func joining<R: Persistable>(
-        _ keyPath: KeyPath<T, String?>,
-        as relatedType: R.Type
-    ) -> RelationshipQueryExecutor<T> {
-        RelationshipQueryExecutor(context: context, query: query)
-            .joining(keyPath, as: relatedType)
+    public func joining<Related: Persistable>(
+        _ keyPath: KeyPath<T, DatabaseReference<Related>?>
+    ) throws -> RelationshipQueryExecutor<T> {
+        try RelationshipQueryExecutor(context: context, query: query)
+            .joining(keyPath)
     }
 
-    /// Join a to-one relationship (required FK field)
-    ///
-    /// - Parameters:
-    ///   - keyPath: KeyPath to the required FK field
-    ///   - relatedType: The type of the related item
-    /// - Returns: RelationshipQueryExecutor with the join added
-    public func joining<R: Persistable>(
-        _ keyPath: KeyPath<T, String>,
-        as relatedType: R.Type
-    ) -> RelationshipQueryExecutor<T> {
-        RelationshipQueryExecutor(context: context, query: query)
-            .joining(keyPath, as: relatedType)
+    public func joining<Related: Persistable>(
+        _ keyPath: KeyPath<T, DatabaseReference<Related>>
+    ) throws -> RelationshipQueryExecutor<T> {
+        try RelationshipQueryExecutor(context: context, query: query)
+            .joining(keyPath)
     }
 
-    /// Join a to-many relationship (FK array field)
-    ///
-    /// - Parameters:
-    ///   - keyPath: KeyPath to the FK array field
-    ///   - relatedType: The type of the related items
-    /// - Returns: RelationshipQueryExecutor with the join added
-    public func joining<R: Persistable>(
-        _ keyPath: KeyPath<T, [String]>,
-        as relatedType: R.Type
-    ) -> RelationshipQueryExecutor<T> {
-        RelationshipQueryExecutor(context: context, query: query)
-            .joining(keyPath, as: relatedType)
+    public func joining<Related: Persistable>(
+        _ keyPath: KeyPath<T, [DatabaseReference<Related>]>
+    ) throws -> RelationshipQueryExecutor<T> {
+        try RelationshipQueryExecutor(context: context, query: query)
+            .joining(keyPath)
     }
 }

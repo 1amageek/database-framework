@@ -193,6 +193,11 @@ extension MigrationStage {
         let type = isLightweight ? "lightweight" : "custom"
         return "\(type) migration: \(fromVersionIdentifier) → \(toVersionIdentifier)"
     }
+
+    /// Stable identifier used by maintenance APIs and operational logs.
+    public var identifier: String {
+        "migration:\(fromVersionIdentifier)->\(toVersionIdentifier)"
+    }
 }
 
 // MARK: - MigrationStage Factory Methods

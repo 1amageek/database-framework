@@ -5,7 +5,11 @@
 //
 // Reference: W3C OWL 2 Syntax https://www.w3.org/TR/owl2-syntax/#Ontologies
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Schema version for ontology storage format
 ///

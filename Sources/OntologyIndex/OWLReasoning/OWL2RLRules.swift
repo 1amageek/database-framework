@@ -5,7 +5,11 @@
 //
 // Reference: W3C OWL 2 RL Profile https://www.w3.org/TR/owl2-profiles/#OWL_2_RL
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// OWL 2 RL Rule identifier
 ///

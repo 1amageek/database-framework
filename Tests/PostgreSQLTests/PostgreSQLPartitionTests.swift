@@ -55,7 +55,7 @@ struct PostgreSQLPartitionMetadataTests {
     }
 }
 
-@Suite("PostgreSQL Partition Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
+@Suite("PostgreSQL Partition Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
 struct PostgreSQLPartitionTests {
 
     private func uniqueID(_ prefix: String) -> String {
@@ -64,14 +64,14 @@ struct PostgreSQLPartitionTests {
 
     private func setupContainer() async throws -> DBContainer {
         let schema = Schema([Player.self, TenantOrder.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLTestSetup.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
     }
 
     // MARK: - Save Tests
 
     @Test("Save TenantOrder extracts tenantID from model")
     func saveTenantOrderExtractsTenantID() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -98,7 +98,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Save multiple orders to different tenants")
     func saveOrdersToDifferentTenants() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -139,7 +139,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Fetch without partition throws for dynamic directory type")
     func fetchWithoutPartitionThrows() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -151,7 +151,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Fetch with partition and where clause filters within partition")
     func fetchWithWhereFiltersWithinPartition() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -184,7 +184,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Delete TenantOrder from correct partition")
     func deleteFromCorrectPartition() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -222,7 +222,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("deleteAll without partition throws for dynamic directory type")
     func deleteAllWithoutPartitionThrows() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -234,7 +234,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("deleteAll with partition deletes only from that partition")
     func deleteAllWithPartition() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -275,7 +275,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("enumerate without partition throws for dynamic directory type")
     func enumerateWithoutPartitionThrows() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -287,7 +287,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("enumerate with partition enumerates only that partition")
     func enumerateWithPartition() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -313,7 +313,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Static directory types work without partition on PostgreSQL")
     func staticDirectoryTypesWork() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -337,7 +337,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("TransactionContext set/get works for dynamic directory types on PostgreSQL")
     func transactionContextSetGetDynamicDirectory() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -362,7 +362,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("TransactionContext get throws without partition for dynamic types")
     func transactionContextGetThrowsWithoutPartition() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
 
             await #expect(throws: DirectoryPathError.self) {

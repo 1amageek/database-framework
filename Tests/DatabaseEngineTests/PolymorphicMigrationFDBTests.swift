@@ -9,6 +9,7 @@ import TestHeartbeat
 import TestSupport
 @testable import Core
 @testable import DatabaseEngine
+import DatabaseRuntime
 
 protocol FDBPolymorphicMigrationDocumentV1: Polymorphable {
     var id: String { get }
@@ -18,8 +19,8 @@ protocol FDBPolymorphicMigrationDocumentV1: Polymorphable {
 extension FDBPolymorphicMigrationDocumentV1 {
     public static var polymorphableType: String { "FDBPolymorphicMigrationDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("polymorphic_migration_fdb_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("polymorphic_migration_fdb_shared")]
     }
 }
 
@@ -41,8 +42,8 @@ protocol FDBPolymorphicMigrationDocumentV4: Polymorphable {
 extension FDBPolymorphicMigrationDocumentV2 {
     public static var polymorphableType: String { "FDBPolymorphicMigrationDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("polymorphic_migration_fdb_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("polymorphic_migration_fdb_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -64,16 +65,16 @@ extension FDBPolymorphicMigrationDocumentV2 {
 extension FDBPolymorphicMigrationDocumentV3 {
     public static var polymorphableType: String { "FDBPolymorphicMigrationDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("polymorphic_migration_fdb_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("polymorphic_migration_fdb_shared")]
     }
 }
 
 extension FDBPolymorphicMigrationDocumentV4 {
     public static var polymorphableType: String { "FDBPolymorphicMigrationDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("polymorphic_migration_fdb_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("polymorphic_migration_fdb_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -271,13 +272,14 @@ enum FDBPolymorphicRebuildMigrationPlan: SchemaMigrationPlan {
 struct PolymorphicMigrationFDBTests {
     @Test("FDB migration backfills added polymorphic indexes and keeps them maintained")
     func fdbMigrationBackfillsAddedPolymorphicIndexesAndKeepsThemMaintained() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await Self.makeSystemPriorityEngine()
             try await Self.clearState(in: engine)
 
             let initialContainer = try await DBContainer(
                 for: FDBPolymorphicMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -296,6 +298,7 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV2.self,
                 migrationPlan: FDBPolymorphicMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             try await migratedContainer.migrateIfNeeded()
@@ -303,6 +306,7 @@ struct PolymorphicMigrationFDBTests {
             let verificationContainer = try await DBContainer(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let verificationContext = verificationContainer.newContext()
@@ -351,13 +355,14 @@ struct PolymorphicMigrationFDBTests {
 
     @Test("FDB migration removes polymorphic index data and disables index state")
     func fdbMigrationRemovesPolymorphicIndexDataAndDisablesIndexState() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await Self.makeSystemPriorityEngine()
             try await Self.clearState(in: engine)
 
             let initialContainer = try await DBContainer(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -380,6 +385,7 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV3.self,
                 migrationPlan: FDBPolymorphicRemovalMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             try await migratedContainer.migrateIfNeeded()
@@ -417,13 +423,14 @@ struct PolymorphicMigrationFDBTests {
 
     @Test("FDB custom migration rebuilds corrupted polymorphic indexes")
     func fdbCustomMigrationRebuildsCorruptedPolymorphicIndexes() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await Self.makeSystemPriorityEngine()
             try await Self.clearState(in: engine)
 
             let initialContainer = try await DBContainer(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -454,6 +461,7 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV4.self,
                 migrationPlan: FDBPolymorphicRebuildMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             try await migratedContainer.migrateIfNeeded()
@@ -479,8 +487,8 @@ struct PolymorphicMigrationFDBTests {
     }
 
     private static func makeSystemPriorityEngine() async throws -> any StorageEngine {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let engine = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let database = FDBSystemPriorityDatabase(wrapping: engine.database)
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
@@ -493,7 +501,7 @@ struct PolymorphicMigrationFDBTests {
             ["_metadata"],
         ] {
             do {
-                try await database.directoryService.remove(path: path)
+                try await database.removeDirectory(path: path)
             } catch {
             }
         }
@@ -503,7 +511,7 @@ struct PolymorphicMigrationFDBTests {
                 FDBPolymorphicMigrationArticleV1.persistableType,
                 FDBPolymorphicMigrationReportV1.persistableType,
             ] {
-                transaction.clear(key: Tuple(["_schema", typeName]).pack())
+                try transaction.clear(key: Tuple(["_schema", typeName]).pack())
             }
         }
     }
@@ -564,7 +572,7 @@ struct PolymorphicMigrationFDBTests {
         let range = indexSubspace.range()
 
         try await container.engine.withTransaction { transaction in
-            transaction.clearRange(beginKey: range.begin, endKey: range.end)
+            try transaction.clearRange(beginKey: range.begin, endKey: range.end)
         }
     }
 
@@ -576,8 +584,8 @@ struct PolymorphicMigrationFDBTests {
             identifier: FDBPolymorphicMigrationArticleV2.polymorphableType
         )
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let stateManager = IndexStateManager(container: container, subspace: groupSubspace)
-        return try await stateManager.state(of: indexName)
+        let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
+        return try await lifecycleStore.state(of: indexName)
     }
 }
 #endif

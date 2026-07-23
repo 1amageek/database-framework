@@ -5,7 +5,11 @@
 //
 // This module implements strategy selection for IN-Join operations.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 

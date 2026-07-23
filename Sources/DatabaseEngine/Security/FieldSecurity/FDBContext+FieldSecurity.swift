@@ -1,7 +1,11 @@
 // FDBContext+FieldSecurity.swift
 // DatabaseEngine - FDBContext extension for field-level security
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import StorageKit
 
@@ -36,7 +40,7 @@ extension FDBContext {
     ///   - type: The Persistable type
     /// - Returns: The masked item, or nil if not found
     public func modelSecure<T: Persistable>(
-        for id: some TupleElement,
+        for id: T.ID,
         as type: T.Type
     ) async throws -> T? {
         guard let item = try await model(for: id, as: type) else {
@@ -53,7 +57,7 @@ extension FDBContext {
     ///   - path: The partition path
     /// - Returns: The masked item, or nil if not found
     public func modelSecure<T: Persistable>(
-        for id: some TupleElement,
+        for id: T.ID,
         as type: T.Type,
         partition path: DirectoryPath<T>
     ) async throws -> T? {

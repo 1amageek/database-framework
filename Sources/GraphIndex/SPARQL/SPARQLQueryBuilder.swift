@@ -3,9 +3,14 @@
 //
 // Fluent builder for constructing SPARQL-like graph queries.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
+import DatabaseWire
 import Graph
 import QueryIR
 
@@ -38,10 +43,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     // MARK: - Configuration
 
     private let queryContext: IndexQueryContext
-    private let fromFieldName: String
-    private let edgeFieldName: String
-    private let toFieldName: String
-    private let graphFieldName: String?
+    private let selection: RDFDatasetIndexSelection?
 
     // MARK: - Query State
 
@@ -56,16 +58,10 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
 
     internal init(
         queryContext: IndexQueryContext,
-        fromFieldName: String,
-        edgeFieldName: String,
-        toFieldName: String,
-        graphFieldName: String? = nil
+        selection: RDFDatasetIndexSelection?
     ) {
         self.queryContext = queryContext
-        self.fromFieldName = fromFieldName
-        self.edgeFieldName = edgeFieldName
-        self.toFieldName = toFieldName
-        self.graphFieldName = graphFieldName
+        self.selection = selection
         self.graphPattern = .basic([])
         self.projectedVariables = nil
         self.limitCount = nil
@@ -198,10 +194,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         // Create a fresh builder for the optional part
         var optionalBuilder = SPARQLQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: fromFieldName,
-            edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName,
-            graphFieldName: graphFieldName
+            selection: selection
         )
         optionalBuilder = configure(optionalBuilder)
 
@@ -229,10 +222,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
 
         var unionBuilder = SPARQLQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: fromFieldName,
-            edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName,
-            graphFieldName: graphFieldName
+            selection: selection
         )
         unionBuilder = configure(unionBuilder)
 
@@ -345,10 +335,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     public func groupBy(_ variables: [String]) -> SPARQLGroupedQueryBuilder<T> {
         SPARQLGroupedQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: fromFieldName,
-            edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName,
-            graphFieldName: graphFieldName,
+            selection: selection,
             sourcePattern: graphPattern,
             groupVariables: variables
         )
@@ -430,41 +417,31 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     /// 3. Projection (SELECT)
     /// 4. DISTINCT
     /// 5. OFFSET / LIMIT (Slice)
-    public func execute() async throws -> SPARQLResult {
-        guard !fromFieldName.isEmpty else {
+    public func execute(
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+    ) async throws -> SPARQLResult {
+        guard offsetCount >= 0, limitCount.map({ $0 >= 0 }) ?? true else {
+            throw SPARQLQueryError.invalidPagination
+        }
+        guard let selection else {
             throw SPARQLQueryError.indexNotConfigured
         }
 
-        if graphPattern.isEmpty {
-            throw SPARQLQueryError.noPatterns
-        }
-
-        // Resolve index metadata from T.self
-        var indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
-        if let graphFieldName {
-            let g = graphFieldName.replacingOccurrences(of: ".", with: "_")
-            indexName += "_\(g)"
-        }
-        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
-              let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
-            throw SPARQLQueryError.indexNotFound(indexName)
-        }
-
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
+        let indexSubspace = typeSubspace.subspace(selection.indexName)
+        let source = try RDFDatasetSource(
+            entityName: T.persistableType,
+            selection: selection,
+            indexSubspace: indexSubspace
+        )
 
         let executor = SPARQLQueryExecutor(
             database: queryContext.context.container.engine,
-            indexSubspace: indexSubspace,
-            strategy: kind.strategy,
-            fromFieldName: fromFieldName,
-            edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName,
-            graphFieldName: kind.graphField,
-            storedFieldNames: indexDescriptor.storedFieldNames
+            sources: [source]
         )
+        let workMeter = DatabaseWorkMeter(budget: budget)
 
-        let allVariables = graphPattern.variables
+        let allVariables = graphPattern.outputVariables
         let projection = projectedVariables ?? Array(allVariables).sorted()
 
         let startTime = MonotonicClock.now()
@@ -476,22 +453,33 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         var (bindings, stats) = try await executor.execute(
             pattern: graphPattern,
             limit: needsAllResults ? nil : limitCount,
-            offset: needsAllResults ? 0 : offsetCount
+            offset: needsAllResults ? 0 : offsetCount,
+            workMeter: workMeter
         )
 
         // Step 2: ORDER BY (before projection, per W3C Section 15)
         if hasOrderBy {
-            bindings = BindingSorter.sort(bindings, by: sortKeys)
+            bindings = try BindingSorter.sort(
+                bindings,
+                by: sortKeys,
+                workMeter: workMeter
+            )
         }
 
         // Step 3: Projection (SELECT)
         let projectionSet = Set(projection)
-        var projected = bindings.map { $0.project(projectionSet) }
+        var projected = try bindings.map { binding in
+            try workMeter.consume(at: .projection)
+            return binding.project(projectionSet)
+        }
 
         // Step 4: DISTINCT
         if isDistinct {
             var seen = Set<VariableBinding>()
-            projected = projected.filter { seen.insert($0).inserted }
+            projected = try projected.filter { binding in
+                try workMeter.consume(at: .deduplication)
+                return seen.insert(binding).inserted
+            }
         }
 
         // Step 5: OFFSET / LIMIT (Slice)
@@ -508,8 +496,18 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         stats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
         let resultCount = projected.count
-        let isComplete = limitCount == nil || resultCount < limitCount!
-        let limitReason: SPARQLLimitReason? = (limitCount != nil && resultCount >= limitCount!) ? .explicitLimit : nil
+        let reachedLimit = limitCount.map { resultCount >= $0 } ?? false
+        let isComplete = !reachedLimit
+        let limitReason: SPARQLLimitReason? = reachedLimit ? .explicitLimit : nil
+        guard let outputRows = UInt32(exactly: resultCount) else {
+            throw DatabaseWorkLimitError.maximumRows(
+                stage: .resultMaterialization,
+                consumed: workMeter.consumedRows,
+                requested: UInt32.max,
+                maximum: budget.maximumRows
+            )
+        }
+        try workMeter.recordOutputRows(outputRows)
 
         return SPARQLResult(
             bindings: projected,
@@ -521,16 +519,20 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     }
 
     /// Execute and return just the first result (or nil)
-    public func first() async throws -> VariableBinding? {
-        try await limit(1).execute().bindings.first
+    public func first(
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+    ) async throws -> VariableBinding? {
+        try await limit(1).execute(budget: budget).bindings.first
     }
 
     /// Execute and return count of results
     ///
     /// Note: This executes the full query. For large result sets,
     /// consider using a limit or estimating cardinality.
-    public func count() async throws -> Int {
-        try await execute().count
+    public func count(
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+    ) async throws -> Int {
+        try await execute(budget: budget).count
     }
 
     /// Check if any results exist
@@ -542,7 +544,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
 
     /// Get all variables in the query
     public var variables: Set<String> {
-        graphPattern.variables
+        graphPattern.outputVariables
     }
 
     /// Get the graph pattern (for debugging/inspection)
@@ -597,11 +599,11 @@ extension SPARQLQueryBuilder {
         _ subject: QueryIR.SPARQLTerm,
         _ predicate: QueryIR.SPARQLTerm,
         _ object: QueryIR.SPARQLTerm
-    ) -> Self {
+    ) throws -> Self {
         `where`(
-            ExecutionTerm(subject),
-            ExecutionTerm(predicate),
-            ExecutionTerm(object)
+            try ExecutionTerm(validating: subject),
+            try ExecutionTerm(validating: predicate),
+            try ExecutionTerm(validating: object)
         )
     }
 
@@ -616,7 +618,10 @@ extension SPARQLQueryBuilder {
     /// ```
     public func filter(_ expression: QueryIR.Expression) -> Self {
         filter(.custom { binding in
-            ExpressionEvaluator.evaluateAsBoolean(expression, binding: binding)
+            try ExpressionEvaluator.evaluateAsBoolean(
+                expression,
+                binding: binding
+            )
         })
     }
 }
@@ -626,32 +631,24 @@ extension SPARQLQueryBuilder {
 extension ExecutionTerm {
 
     /// Convert a QueryIR.SPARQLTerm to an ExecutionTerm
-    public init(_ sparqlTerm: QueryIR.SPARQLTerm) {
+    public init(validating sparqlTerm: QueryIR.SPARQLTerm) throws {
         switch sparqlTerm {
         case .variable(let name):
-            self = .variable(name.hasPrefix("?") ? name : "?\(name)")
+            self = .variable("?\(name)")
         case .iri(let value):
-            self = .value(.string(value))
-        case .prefixedName(let prefix, let local):
-            self = .value(.string("\(prefix):\(local)"))
+            self = .value(.rdfTerm(.iri(value)))
         case .literal(let lit):
-            self = .value(lit.toSPARQLFieldValue())
+            self = .value(try lit.toSPARQLFieldValue())
         case .blankNode(let id):
-            self = .value(.string("_:\(id)"))
-        case .quotedTriple(let s, let p, let o):
-            // RDF-star: preserve structure as ExecutionTerm.quotedTriple
-            self = .quotedTriple(
-                subject: ExecutionTerm(s),
-                predicate: ExecutionTerm(p),
-                object: ExecutionTerm(o)
+            self = .value(.rdfTerm(.blankNode(id)))
+        case .tripleTerm(let s, let p, let o):
+            self = .tripleTerm(
+                subject: try ExecutionTerm(validating: s),
+                predicate: try ExecutionTerm(validating: p),
+                object: try ExecutionTerm(validating: o)
             )
-        case .reifiedTriple(let s, let p, let o, _):
-            // Reified triple: use quoted triple representation
-            self = .quotedTriple(
-                subject: ExecutionTerm(s),
-                predicate: ExecutionTerm(p),
-                object: ExecutionTerm(o)
-            )
+        case .reifiedTriple:
+            throw GraphPatternConversionError.reifiedTripleRequiresPatternContext
         }
     }
 }

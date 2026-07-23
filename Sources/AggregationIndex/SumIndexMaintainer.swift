@@ -1,10 +1,13 @@
 // SumIndexMaintainer.swift
 // AggregationIndex - Index maintainer for SUM aggregation
 //
-// Maintains sums using atomic FDB operations for thread-safe updates.
-// Type-safe: Integer types stored as Int64, floating-point as scaled Int64.
+// Maintains sums and membership counts transactionally.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -13,33 +16,39 @@ import StorageKit
 ///
 /// **Type-Safe Design**:
 /// - `Value` type parameter preserves numeric type at compile time
-/// - Integer types (Int, Int64, Int32): Stored as Int64 bytes (precision preserved)
-/// - Floating-point types (Float, Double): Stored as scaled fixed-point Int64
+/// - Signed integer sums are stored as Int64.
+/// - Unsigned integer sums are stored as UInt64.
+/// - Floating-point sums use a persistent two-component Neumaier accumulator.
 ///
 /// **Functionality**:
 /// - Maintain sums of numeric values grouped by field values
-/// - Atomic add/subtract operations
+/// - Checked add/remove/replace operations in one storage transaction
 /// - Efficient GROUP BY SUM queries
 ///
 /// **Index Structure**:
 /// ```
-/// Key: [indexSubspace][groupValue1][groupValue2]...
-/// Value: Int64 (8 bytes little-endian) for integers, scaled Int64 for floats
+/// Key: [indexSubspace][groupValue1][groupValue2]...["sum"]
+/// Value: scalar storage selected by the declared value type
+///
+/// Key: [indexSubspace][groupValue1][groupValue2]...["count"]
+/// Value: positive Int64 membership count
 /// ```
 ///
 /// **Expression Structure**:
 /// The index expression must produce: [grouping_fields..., sum_field]
 /// - All fields except the last are grouping keys
 /// - The last field is the value to sum
-public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & Sendable>: NumericAggregationMaintainer {
+public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: NumericAggregationMaintainer {
     // MARK: - Properties
 
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
-    public var isFloatingPointValue: Bool {
-        NumericValueExtractor.isFloatingPoint(Value.self)
+    public var numericStorageKind: AggregationNumericStorageKind {
+        get throws {
+            try NumericValueExtractor.storageKind(Value.self)
+        }
     }
 
     // MARK: - Initialization
@@ -72,31 +81,15 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         id: Tuple,
         transaction: any Transaction
     ) async throws {
-        // Sparse index: if any field value is nil, skip indexing
-        let allValues: [any TupleElement]
-        do {
-            allValues = try evaluateIndexFields(from: item)
-        } catch DataAccessError.nilValueCannotBeIndexed {
-            // Sparse index: nil values are not included in sum
+        guard let data = try extractAggregationData(from: item) else {
             return
         }
 
-        guard allValues.count >= 2,
-              let valueElement = allValues.last else {
-            throw IndexError.invalidConfiguration(
-                "Sum index requires at least 2 fields: [grouping_fields..., sum_field]"
-            )
-        }
-
-        let groupingValues = Array(allValues.dropLast())
-
-        let sumKey = try buildGroupingKey(groupingValues)
-        let numericValue = try NumericValueExtractor.extractNumeric(from: valueElement, as: Value.self)
-
-        try await atomicAdd(
-            key: sumKey,
-            int64Value: numericValue.int64,
-            doubleValue: numericValue.double,
+        try await mutateNumericAggregate(
+            sumKey: data.sumKey,
+            countKey: data.countKey,
+            removing: nil,
+            adding: data.numericValue,
             transaction: transaction
         )
     }
@@ -104,47 +97,71 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
     /// Compute expected index keys for this item
     ///
     /// **Sparse index behavior**:
-    /// If any field value is nil, returns an empty array.
+    /// A null aggregate value returns an empty array. Nullable grouping values
+    /// remain canonical group-key components.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [Bytes] {
-        // Sparse index: if any field value is nil, no index entry
-        let allValues: [any TupleElement]
-        do {
-            allValues = try evaluateIndexFields(from: item)
-        } catch DataAccessError.nilValueCannotBeIndexed {
+        guard let data = try extractAggregationData(from: item) else {
             return []
         }
-        guard allValues.count >= 2 else { return [] }
-
-        let groupingValues = Array(allValues.dropLast())
-        return [try buildGroupingKey(groupingValues)]
+        return [data.sumKey, data.countKey]
     }
 
     // MARK: - Query Methods
 
-    /// Get the sum for a specific grouping
+    /// Get the canonical typed sum for a specific grouping.
     ///
     /// - Parameters:
     ///   - groupingValues: The grouping key values
     ///   - transaction: The transaction to use
-    /// - Returns: The sum as Double (0.0 if no entries)
+    /// - Returns: The exact sum, or `nil` when the group has no indexed values.
     public func getSum(
         groupingValues: [any TupleElement],
         transaction: any Transaction
-    ) async throws -> Double {
-        let sumKey = try buildGroupingKey(groupingValues)
-
-        guard let bytes = try await transaction.getValue(for: sumKey) else {
-            return 0.0
+    ) async throws -> FieldValue? {
+        let sumKey = try buildSumKey(groupingValues: groupingValues)
+        let countKey = try buildCountKey(groupingValues: groupingValues)
+        let sumBytes = try await transaction.getValue(
+            for: sumKey,
+            snapshot: true
+        )
+        let countBytes = try await transaction.getValue(
+            for: countKey,
+            snapshot: true
+        )
+        guard sumBytes != nil || countBytes != nil else {
+            return nil
         }
+        guard let sumBytes, let countBytes else {
+            throw IndexError.invalidStructure(
+                "Sum index requires both sum and count entries"
+            )
+        }
+        let count = try readInt64Value(countBytes)
+        guard count > 0 else {
+            throw IndexError.invalidStructure("Sum index count must be positive")
+        }
+        return try readStoredNumericValue(sumBytes).fieldValue
+    }
 
-        return readNumericValue(bytes)
+    /// Get a lossless Double view of the sum for a specific grouping.
+    public func getSumAsDouble(
+        groupingValues: [any TupleElement],
+        transaction: any Transaction
+    ) async throws -> Double? {
+        guard let sum = try await getSum(
+            groupingValues: groupingValues,
+            transaction: transaction
+        ) else {
+            return nil
+        }
+        return try exactDouble(from: sum)
     }
 
     /// Maximum number of keys to scan for safety (prevents DoS on large indexes)
-    private var maxScanKeys: Int { 100_000 }
+    private var maxScanGroups: Int { 100_000 }
 
     /// Get all sums in this index
     ///
@@ -152,65 +169,124 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
     ///
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of (groupingValues, sum) tuples
-    public func getAllSums(
+    public func getAllSumsAsDouble(
         transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], sum: Double)] {
+        let exactResults = try await getAllSums(transaction: transaction)
         var results: [(grouping: [any TupleElement], sum: Double)] = []
+        results.reserveCapacity(exactResults.count)
+        for result in exactResults {
+            results.append((
+                grouping: result.grouping,
+                sum: try exactDouble(from: result.sum)
+            ))
+        }
+        return results
+    }
 
-        let sequence = try await scanAllEntries(transaction: transaction)
-        var scannedKeys = 0
-        for (key, value) in sequence {
-            guard subspace.contains(key) else { break }
+    public func getAllSums(
+        transaction: any Transaction
+    ) async throws -> [(grouping: [any TupleElement], sum: FieldValue)] {
+        var groupingByIdentity: [Bytes: [any TupleElement]] = [:]
+        var sums: [Bytes: FieldValue] = [:]
+        var counts: [Bytes: Int64] = [:]
+        let range = subspace.range()
+        var scannedEntries = 0
+        var scannedBytes = 0
 
-            // Resource limit
-            scannedKeys += 1
-            if scannedKeys >= maxScanKeys { break }
+        try await transaction.forEachInRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
+            limit: (maxScanGroups * 2) + 1,
+            snapshot: true,
+            streamingMode: .iterator
+        ) { key, value in
+            scannedEntries += 1
+            guard scannedEntries <= maxScanGroups * 2 else {
+                throw AggregationStorageError.scanLimitExceeded(
+                    maxScanGroups
+                )
+            }
+            scannedBytes = try checkedAggregationScannedBytes(
+                scannedBytes,
+                adding: key.count + value.count
+            )
 
-            let keyTuple = try subspace.unpack(key)
-            // Avoid pack/unpack cycle: convert Tuple to array directly
-            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
-            let sum = readNumericValue(value)
-
-            results.append((grouping: elements, sum: sum))
+            let decodedKey = try decodeAggregationStorageKey(key, in: subspace)
+            let identity = decodedKey.groupingIdentity
+            guard decodedKey.groupingElements.count
+                    == index.rootExpression.columnCount - 1 else {
+                throw IndexError.invalidStructure(
+                    "Sum index key has an invalid grouping field count"
+                )
+            }
+            if groupingByIdentity[identity] == nil {
+                guard groupingByIdentity.count < maxScanGroups else {
+                    throw AggregationStorageError.scanLimitExceeded(
+                        maxScanGroups
+                    )
+                }
+                groupingByIdentity[identity] = decodedKey.groupingElements
+            }
+            switch decodedKey.marker {
+            case "sum":
+                sums[identity] = try readStoredNumericValue(value).fieldValue
+            case "count":
+                let count = try readInt64Value(value)
+                guard count > 0 else {
+                    throw IndexError.invalidStructure("Sum index count must be positive")
+                }
+                counts[identity] = count
+            default:
+                throw IndexError.invalidStructure(
+                    "Sum index key has an unknown value marker: \(decodedKey.marker)"
+                )
+            }
         }
 
+        var results: [(grouping: [any TupleElement], sum: FieldValue)] = []
+        results.reserveCapacity(sums.count)
+        for (identity, sum) in sums {
+            guard let grouping = groupingByIdentity[identity], counts[identity] != nil else {
+                throw IndexError.invalidStructure("Sum index value is missing its count")
+            }
+            results.append((grouping: grouping, sum: sum))
+        }
+        for identity in counts.keys where sums[identity] == nil {
+            throw IndexError.invalidStructure("Sum index count is missing its value")
+        }
         return results
     }
 
     // MARK: - Private Helpers
 
     private struct AggregationData {
-        let groupingKey: Bytes
-        let int64Value: Int64?
-        let doubleValue: Double?
+        let sumKey: Bytes
+        let countKey: Bytes
+        let numericValue: AggregationNumericValue
     }
 
     /// Extract aggregation data from an item
     ///
-    /// **Sparse index behavior**:
-    /// If any field value is nil, returns nil (no aggregation data).
+    /// A null aggregate value contributes nothing. Null grouping fields remain
+    /// canonical group values and are never treated as sparse-index exclusions.
     private func extractAggregationData(from item: Item?) throws -> AggregationData? {
         guard let item = item else { return nil }
-
-        // Sparse index: if any field value is nil, skip aggregation
-        let allValues: [any TupleElement]
-        do {
-            allValues = try evaluateIndexFields(from: item)
-        } catch DataAccessError.nilValueCannotBeIndexed {
+        guard let fields = try AggregationFieldExtractor.contribution(
+            from: item,
+            index: index
+        ) else {
             return nil
         }
-        guard allValues.count >= 2,
-              let valueElement = allValues.last else { return nil }
-
-        let groupingValues = Array(allValues.dropLast())
-
-        let groupingKey = try buildGroupingKey(groupingValues)
-        let numericValue = try NumericValueExtractor.extractNumeric(from: valueElement, as: Value.self)
+        let numericValue = try NumericValueExtractor.extractNumeric(
+            from: fields.value,
+            as: Value.self
+        )
 
         return AggregationData(
-            groupingKey: groupingKey,
-            int64Value: numericValue.int64,
-            doubleValue: numericValue.double
+            sumKey: try buildSumKey(groupingValues: fields.grouping),
+            countKey: try buildCountKey(groupingValues: fields.grouping),
+            numericValue: numericValue
         )
     }
 
@@ -220,49 +296,86 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         transaction: any Transaction
     ) async throws {
         switch (oldData, newData) {
-        case let (.some(old), .some(new)) where old.groupingKey == new.groupingKey:
-            // Same group: apply delta only
-            if isFloatingPointValue {
-                let delta = (new.doubleValue ?? 0) - (old.doubleValue ?? 0)
-                if delta != 0 {
-                    try await atomicAddDouble(key: new.groupingKey, value: delta, transaction: transaction)
-                }
-            } else {
-                let delta = (new.int64Value ?? 0) - (old.int64Value ?? 0)
-                if delta != 0 {
-                    try await atomicAddInt64(key: new.groupingKey, value: delta, transaction: transaction)
-                }
-            }
+        case let (.some(old), .some(new))
+            where old.sumKey == new.sumKey
+                && old.numericValue == new.numericValue:
+            break
 
-        case let (.some(old), .some(new)):
-            // Different groups: subtract from old, add to new
-            if isFloatingPointValue {
-                try await atomicAddDouble(key: old.groupingKey, value: -(old.doubleValue ?? 0), transaction: transaction)
-                try await atomicAddDouble(key: new.groupingKey, value: new.doubleValue ?? 0, transaction: transaction)
-            } else {
-                try await atomicAddInt64(key: old.groupingKey, value: -(old.int64Value ?? 0), transaction: transaction)
-                try await atomicAddInt64(key: new.groupingKey, value: new.int64Value ?? 0, transaction: transaction)
-            }
-
-        case let (nil, .some(new)):
-            // Insert: add to new group
-            try await atomicAdd(
-                key: new.groupingKey,
-                int64Value: new.int64Value,
-                doubleValue: new.doubleValue,
+        case let (.some(old), .some(new))
+            where old.sumKey == new.sumKey:
+            try await mutateNumericAggregate(
+                sumKey: new.sumKey,
+                countKey: new.countKey,
+                removing: old.numericValue,
+                adding: new.numericValue,
                 transaction: transaction
             )
 
+        case let (.some(old), .some(new)):
+            try await remove(old, transaction: transaction)
+            try await insert(new, transaction: transaction)
+
+        case let (nil, .some(new)):
+            try await insert(new, transaction: transaction)
+
         case let (.some(old), nil):
-            // Delete: subtract from old group
-            if isFloatingPointValue {
-                try await atomicAddDouble(key: old.groupingKey, value: -(old.doubleValue ?? 0), transaction: transaction)
-            } else {
-                try await atomicAddInt64(key: old.groupingKey, value: -(old.int64Value ?? 0), transaction: transaction)
-            }
+            try await remove(old, transaction: transaction)
 
         case (nil, nil):
             break
+        }
+    }
+
+    private func insert(
+        _ data: AggregationData,
+        transaction: any Transaction
+    ) async throws {
+        try await mutateNumericAggregate(
+            sumKey: data.sumKey,
+            countKey: data.countKey,
+            removing: nil,
+            adding: data.numericValue,
+            transaction: transaction
+        )
+    }
+
+    private func remove(
+        _ data: AggregationData,
+        transaction: any Transaction
+    ) async throws {
+        try await mutateNumericAggregate(
+            sumKey: data.sumKey,
+            countKey: data.countKey,
+            removing: data.numericValue,
+            adding: nil,
+            transaction: transaction
+        )
+    }
+
+    private func buildSumKey<Elements: Collection>(
+        groupingValues: Elements
+    ) throws -> Bytes where Elements.Element == any TupleElement {
+        try validateGroupingCount(groupingValues.count)
+        let key = subspace.pack(elements: groupingValues, appending: "sum")
+        try validateKeySize(key)
+        return key
+    }
+
+    private func buildCountKey<Elements: Collection>(
+        groupingValues: Elements
+    ) throws -> Bytes where Elements.Element == any TupleElement {
+        try validateGroupingCount(groupingValues.count)
+        let key = subspace.pack(elements: groupingValues, appending: "count")
+        try validateKeySize(key)
+        return key
+    }
+
+    private func validateGroupingCount(_ count: Int) throws {
+        guard index.rootExpression.columnCount >= 1,
+              count == index.rootExpression.columnCount - 1 else {
+            throw IndexError.invalidArgument(
+                "Grouping value count does not match sum index '\(index.name)'"
+            )
         }
     }
 }

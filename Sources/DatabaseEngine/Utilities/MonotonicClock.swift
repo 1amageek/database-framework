@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 internal struct MonotonicTimestamp: Sendable {
     fileprivate let instant: ContinuousClock.Instant

@@ -4,7 +4,11 @@
 // Analyzes FilterExpression to separate pushable filters (early evaluation)
 // from complex filters (post-scan evaluation).
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import Graph
 import DatabaseEngine
@@ -128,7 +132,7 @@ struct FilterAnalyzer: Sendable {
             // Complex logical operations - cannot decompose
             return ([], expr)
 
-        case .custom, .customWithVariables:
+        case .custom, .customWithVariables, .query:
             // Arbitrary logic - cannot analyze
             return ([], expr)
 

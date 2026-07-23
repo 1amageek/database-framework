@@ -9,7 +9,10 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseRuntime
+import DatabaseValue
 import Graph
+import QueryIR
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -24,15 +27,14 @@ typealias PropertyPath = GraphIndex.ExecutionPropertyPath
 struct AdvancedPathEdge {
     #Directory<AdvancedPathEdge>("property_path_advanced", "edges")
     var id: String = UUID().uuidString
-    var from: String = ""
-    var relationship: String = ""
-    var to: String = ""
+    var from: DatabaseRDFTerm = .iri("https://example.invalid/node/default-from")
+    var relationship: DatabaseRDFTerm = .iri("https://example.invalid/property/default")
+    var to: DatabaseRDFTerm = .iri("https://example.invalid/node/default-to")
 
-    #Index(GraphIndexKind<AdvancedPathEdge>(
-        from: \.from,
-        edge: \.relationship,
-        to: \.to,
-        strategy: .tripleStore
+    #Index(RDFQuadIndexKind<AdvancedPathEdge>(
+        subject: \.from,
+        predicate: \.relationship,
+        object: \.to
     ))
 }
 
@@ -42,21 +44,32 @@ struct AdvancedPathEdge {
 struct PropertyPathAdvancedTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Helpers
 
     private func uniqueID(_ prefix: String) -> String {
-        "\(prefix)-\(UUID().uuidString.prefix(8))"
+        "https://example.invalid/node/\(prefix)-\(UUID().uuidString.prefix(8))"
+    }
+
+    private func predicateIRI(_ localName: String) throws -> DatabaseRDFPredicateIRI {
+        try DatabaseRDFPredicateIRI("https://example.invalid/property/\(localName)")
+    }
+
+    private func uniquePredicate(_ prefix: String) throws -> DatabaseRDFPredicateIRI {
+        try DatabaseRDFPredicateIRI(
+            "https://example.invalid/property/\(prefix)-\(UUID().uuidString.prefix(8))"
+        )
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([AdvancedPathEdge.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
@@ -68,12 +81,58 @@ struct PropertyPathAdvancedTests {
         try await context.save()
     }
 
-    private func makeEdge(from: String, relationship: String, to: String) -> AdvancedPathEdge {
+    private func makeEdge(
+        from: String,
+        relationship: DatabaseRDFPredicateIRI,
+        to: String
+    ) -> AdvancedPathEdge {
         var edge = AdvancedPathEdge()
-        edge.from = from
-        edge.relationship = relationship
-        edge.to = to
+        edge.from = .iri(from)
+        edge.relationship = relationship.term
+        edge.to = .iri(to)
         return edge
+    }
+
+    private func iriTerm(_ value: String) -> ExecutionTerm {
+        .value(.rdfTerm(.iri(value)))
+    }
+
+    private func iriValue(
+        _ binding: VariableBinding,
+        for variable: String
+    ) -> String? {
+        guard case .rdfTerm(.iri(let value)) = binding[variable] else {
+            return nil
+        }
+        return value
+    }
+
+    private func makeExecutor(
+        container: DBContainer,
+        context: FDBContext,
+        configuration: ExecutionPropertyPathConfiguration
+    ) async throws -> SPARQLQueryExecutor {
+        let selections = try AdvancedPathEdge.indexDescriptors.compactMap(
+            RDFDatasetIndexSelection.init(descriptor:)
+        )
+        guard selections.count == 1 else {
+            throw SPARQLQueryError.indexNotConfigured
+        }
+        let selection = selections[0]
+        let queryContext = IndexQueryContext(context: context)
+        let typeSubspace = try await queryContext.indexSubspace(
+            for: AdvancedPathEdge.self
+        )
+        let source = try RDFDatasetSource(
+            entityName: AdvancedPathEdge.persistableType,
+            selection: selection,
+            indexSubspace: typeSubspace.subspace(selection.indexName)
+        )
+        return SPARQLQueryExecutor(
+            database: container.engine,
+            sources: [source],
+            propertyPathConfiguration: configuration
+        )
     }
 
     // MARK: - Negated Property Set Tests
@@ -91,10 +150,10 @@ struct PropertyPathAdvancedTests {
         let bob = uniqueID("Bob")
         let carol = uniqueID("Carol")
         let dave = uniqueID("Dave")
-        let knowsPred = uniqueID("knows")
-        let hatesPred = uniqueID("hates")
-        let likesPred = uniqueID("likes")
-        let worksPred = uniqueID("worksWith")
+        let knowsPred = try uniquePredicate("knows")
+        let hatesPred = try uniquePredicate("hates")
+        let likesPred = try uniquePredicate("likes")
+        let worksPred = try uniquePredicate("worksWith")
 
         let edges = [
             makeEdge(from: alice, relationship: knowsPred, to: bob),
@@ -108,12 +167,18 @@ struct PropertyPathAdvancedTests {
         // Negated property set: exclude knows and hates
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(alice, path: .negatedPropertySet([knowsPred, hatesPred]), "?target")
+            .wherePath(
+                iriTerm(alice),
+                path: .negatedPropertySet(
+                    try PropertyPathNegatedSet(forward: [knowsPred, hatesPred])
+                ),
+                .variable("?target")
+            )
             .execute()
 
         // Should only find targets via likes and worksWith
         #expect(result.count == 2)
-        let targets = result.bindings.compactMap { $0.string("?target") }
+        let targets = result.bindings.compactMap { iriValue($0, for: "?target") }
         #expect(targets.contains(dave))  // via likes
         #expect(targets.contains(bob))   // via worksWith
     }
@@ -126,8 +191,8 @@ struct PropertyPathAdvancedTests {
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
-        let knowsPred = uniqueID("knows")
-        let likesPred = uniqueID("likes")
+        let knowsPred = try uniquePredicate("knows")
+        let likesPred = try uniquePredicate("likes")
 
         let edges = [
             makeEdge(from: alice, relationship: knowsPred, to: bob),
@@ -139,7 +204,13 @@ struct PropertyPathAdvancedTests {
         // Negated property set that excludes all edges
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(alice, path: .negatedPropertySet([knowsPred, likesPred]), "?target")
+            .wherePath(
+                iriTerm(alice),
+                path: .negatedPropertySet(
+                    try PropertyPathNegatedSet(forward: [knowsPred, likesPred])
+                ),
+                .variable("?target")
+            )
             .execute()
 
         #expect(result.isEmpty)
@@ -161,7 +232,7 @@ struct PropertyPathAdvancedTests {
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
         let carol = uniqueID("Carol")
-        let parentPred = uniqueID("parent")
+        let parentPred = try uniquePredicate("parent")
 
         let edges = [
             makeEdge(from: alice, relationship: parentPred, to: bob),
@@ -173,12 +244,16 @@ struct PropertyPathAdvancedTests {
         // One or more path to find ancestors
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(alice, path: .oneOrMore(.iri(parentPred)), "?ancestor")
+            .wherePath(
+                iriTerm(alice),
+                path: .oneOrMore(.iri(parentPred)),
+                .variable("?ancestor")
+            )
             .execute()
 
         // Filter out Alice (won't appear with + anyway, but test the path)
         #expect(result.count == 2)
-        let ancestors = result.bindings.compactMap { $0.string("?ancestor") }
+        let ancestors = result.bindings.compactMap { iriValue($0, for: "?ancestor") }
         #expect(!ancestors.contains(alice))
         #expect(ancestors.contains(bob))
         #expect(ancestors.contains(carol))
@@ -199,8 +274,8 @@ struct PropertyPathAdvancedTests {
         let n2 = uniqueID("N2")
         let n3 = uniqueID("N3")
         let n4 = uniqueID("N4")
-        let predA = uniqueID("a")
-        let predB = uniqueID("b")
+        let predA = try uniquePredicate("a")
+        let predB = try uniquePredicate("b")
 
         // N1 -a-> N2 -b-> N3 -b-> N4
         let edges = [
@@ -217,11 +292,11 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(n1, path: complexPath, "?target")
+            .wherePath(iriTerm(n1), path: complexPath, .variable("?target"))
             .execute()
 
         // Zero-or-more includes N1 itself (zero repetitions)
-        let targets = result.bindings.compactMap { $0.string("?target") }
+        let targets = result.bindings.compactMap { iriValue($0, for: "?target") }
         #expect(targets.contains(n1))  // Zero repetitions: start node
         // After one iteration of (a/b+): N1 -a-> N2 -b-> N3 and N2 -b-> N3 -b-> N4
         #expect(targets.contains(n3))  // One iteration: a then b (one hop)
@@ -240,7 +315,7 @@ struct PropertyPathAdvancedTests {
         let n3 = uniqueID("N3")
         let n4 = uniqueID("N4")
         let n5 = uniqueID("N5")
-        let linkPred = uniqueID("link")
+        let linkPred = try uniquePredicate("link")
 
         // Linear chain: N0 -> N1 -> N2 -> N3 -> N4 -> N5
         let edges = [
@@ -256,10 +331,14 @@ struct PropertyPathAdvancedTests {
         // Transitive closure: link+ - one or more hops
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(n0, path: .oneOrMore(.iri(linkPred)), "?target")
+            .wherePath(
+                iriTerm(n0),
+                path: .oneOrMore(.iri(linkPred)),
+                .variable("?target")
+            )
             .execute()
 
-        let targets = result.bindings.compactMap { $0.string("?target") }
+        let targets = result.bindings.compactMap { iriValue($0, for: "?target") }
         // Should find exactly all 5 reachable nodes (N1-N5), not N0 itself (oneOrMore excludes start)
         #expect(targets.count == 5)
         #expect(targets.contains(n1))
@@ -283,7 +362,7 @@ struct PropertyPathAdvancedTests {
         let n1 = uniqueID("N1")
         let n2 = uniqueID("N2")
         let n3 = uniqueID("N3")
-        let linkPred = uniqueID("link")
+        let linkPred = try uniquePredicate("link")
 
         // Create a cycle: N1 -> N2 -> N3 -> N1
         let edges = [
@@ -297,13 +376,17 @@ struct PropertyPathAdvancedTests {
         // Transitive closure with cycle - should not loop infinitely
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(n1, path: .oneOrMore(.iri(linkPred)), "?target")
+            .wherePath(
+                iriTerm(n1),
+                path: .oneOrMore(.iri(linkPred)),
+                .variable("?target")
+            )
             .execute()
 
         // With cycle detection, should visit each node at most once
         // N2 at depth 1, N3 at depth 2, N1 at depth 3 (cycle back to start)
         // Each unique node should appear
-        let targets = result.bindings.compactMap { $0.string("?target") }
+        let targets = result.bindings.compactMap { iriValue($0, for: "?target") }
         #expect(targets.contains(n2))
         #expect(targets.contains(n3))
         #expect(targets.contains(n1))  // Can reach N1 via cycle
@@ -315,7 +398,7 @@ struct PropertyPathAdvancedTests {
 
         let context = container.newContext()
 
-        let linkPred = uniqueID("link")
+        let linkPred = try uniquePredicate("link")
         let basePrefix = uniqueID("N")
 
         // Create a linear chain of 20 nodes
@@ -329,11 +412,161 @@ struct PropertyPathAdvancedTests {
         // One or more from start
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath("\(basePrefix)-0", path: .oneOrMore(.iri(linkPred)), "?target")
+            .wherePath(
+                iriTerm("\(basePrefix)-0"),
+                path: .oneOrMore(.iri(linkPred)),
+                .variable("?target")
+            )
             .execute()
 
         // Should find all 20 nodes (N1 through N20)
         #expect(result.count == 20)
+    }
+
+    @Test("Expression depth limit rejects the whole property-path evaluation")
+    func testExpressionDepthLimitRejectsPartialSuccess() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+        let start = uniqueID("ExpressionDepthStart")
+        let target = uniqueID("ExpressionDepthTarget")
+        let predicate = try uniquePredicate("expression-depth")
+        try await insertEdges(
+            [makeEdge(from: start, relationship: predicate, to: target)],
+            context: context
+        )
+
+        let executor = try await makeExecutor(
+            container: container,
+            context: context,
+            configuration: ExecutionPropertyPathConfiguration(
+                maximumExpressionDepth: 1,
+                maximumTraversalDepth: 10,
+                maximumResults: 10
+            )
+        )
+        let pattern = ExecutionPattern.propertyPath(
+            subject: iriTerm(start),
+            path: .oneOrMore(.inverse(.inverse(.iri(predicate)))),
+            object: .variable("?target")
+        )
+
+        do {
+            _ = try await executor.execute(
+                pattern: pattern,
+                limit: nil,
+                offset: 0,
+                workMeter: DatabaseWorkMeter(budget: .init())
+            )
+            Issue.record("Expected the expression depth limit to reject the query")
+        } catch let error as SPARQLQueryError {
+            guard case .propertyPathExpressionDepthLimitExceeded(let maximum) = error else {
+                Issue.record("Unexpected SPARQL error: \(error)")
+                return
+            }
+            #expect(maximum == 1)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test("Traversal depth limit rejects a reachable result prefix")
+    func testTraversalDepthLimitRejectsPartialSuccess() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+        let start = uniqueID("TraversalDepthStart")
+        let middle = uniqueID("TraversalDepthMiddle")
+        let end = uniqueID("TraversalDepthEnd")
+        let predicate = try uniquePredicate("traversal-depth")
+        try await insertEdges(
+            [
+                makeEdge(from: start, relationship: predicate, to: middle),
+                makeEdge(from: middle, relationship: predicate, to: end),
+            ],
+            context: context
+        )
+
+        let executor = try await makeExecutor(
+            container: container,
+            context: context,
+            configuration: ExecutionPropertyPathConfiguration(
+                maximumExpressionDepth: 10,
+                maximumTraversalDepth: 1,
+                maximumResults: 10
+            )
+        )
+        let pattern = ExecutionPattern.propertyPath(
+            subject: iriTerm(start),
+            path: .oneOrMore(.iri(predicate)),
+            object: .variable("?target")
+        )
+
+        do {
+            _ = try await executor.execute(
+                pattern: pattern,
+                limit: nil,
+                offset: 0,
+                workMeter: DatabaseWorkMeter(budget: .init())
+            )
+            Issue.record("Expected the traversal depth limit to reject the query")
+        } catch let error as SPARQLQueryError {
+            guard case .propertyPathTraversalDepthLimitExceeded(let maximum) = error else {
+                Issue.record("Unexpected SPARQL error: \(error)")
+                return
+            }
+            #expect(maximum == 1)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test("Result limit rejects a property-path result prefix")
+    func testResultLimitRejectsPartialSuccess() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+        let start = uniqueID("ResultLimitStart")
+        let first = uniqueID("ResultLimitFirst")
+        let second = uniqueID("ResultLimitSecond")
+        let predicate = try uniquePredicate("result-limit")
+        try await insertEdges(
+            [
+                makeEdge(from: start, relationship: predicate, to: first),
+                makeEdge(from: start, relationship: predicate, to: second),
+            ],
+            context: context
+        )
+
+        let executor = try await makeExecutor(
+            container: container,
+            context: context,
+            configuration: ExecutionPropertyPathConfiguration(
+                maximumExpressionDepth: 10,
+                maximumTraversalDepth: 10,
+                maximumResults: 1
+            )
+        )
+        let pattern = ExecutionPattern.propertyPath(
+            subject: iriTerm(start),
+            path: .oneOrMore(.iri(predicate)),
+            object: .variable("?target")
+        )
+
+        do {
+            _ = try await executor.execute(
+                pattern: pattern,
+                limit: nil,
+                offset: 0,
+                workMeter: DatabaseWorkMeter(budget: .init())
+            )
+            Issue.record("Expected the result limit to reject the query")
+        } catch let error as SPARQLQueryError {
+            guard case .propertyPathResultLimitExceeded(let maximum) = error else {
+                Issue.record("Unexpected SPARQL error: \(error)")
+                return
+            }
+            #expect(maximum == 1)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
     }
 
     // MARK: - Inverse Path with Quantifier Tests
@@ -351,7 +584,7 @@ struct PropertyPathAdvancedTests {
         let child1 = uniqueID("Child1")
         let child2 = uniqueID("Child2")
         let grandchild = uniqueID("Grandchild")
-        let parentPred = uniqueID("parent")
+        let parentPred = try uniquePredicate("parent")
 
         // Edges represent "X parent Y" (X is child of Y)
         let edges = [
@@ -366,10 +599,14 @@ struct PropertyPathAdvancedTests {
         // Semantically: find ?d where (?d, parent+, Root) exists
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(root, path: .inverse(.oneOrMore(.iri(parentPred))), "?descendant")
+            .wherePath(
+                iriTerm(root),
+                path: .inverse(.oneOrMore(.iri(parentPred))),
+                .variable("?descendant")
+            )
             .execute()
 
-        let descendants = result.bindings.compactMap { $0.string("?descendant") }
+        let descendants = result.bindings.compactMap { iriValue($0, for: "?descendant") }
         #expect(descendants.contains(child1))
         #expect(descendants.contains(child2))
         #expect(descendants.contains(grandchild))
@@ -384,7 +621,7 @@ struct PropertyPathAdvancedTests {
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
         let carol = uniqueID("Carol")
-        let knowsPred = uniqueID("knows")
+        let knowsPred = try uniquePredicate("knows")
 
         // Bob knows Alice, Carol knows Bob
         let edges = [
@@ -397,10 +634,14 @@ struct PropertyPathAdvancedTests {
         // ^knows* from Alice: find who can reach Alice via inverse knows
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(alice, path: .inverse(.zeroOrMore(.iri(knowsPred))), "?person")
+            .wherePath(
+                iriTerm(alice),
+                path: .inverse(.zeroOrMore(.iri(knowsPred))),
+                .variable("?person")
+            )
             .execute()
 
-        let persons = result.bindings.compactMap { $0.string("?person") }
+        let persons = result.bindings.compactMap { iriValue($0, for: "?person") }
         // Zero hops: Alice itself
         // One hop inverse: Bob (Bob knows Alice)
         // Two hops inverse: Carol (Carol knows Bob knows Alice)
@@ -424,10 +665,10 @@ struct PropertyPathAdvancedTests {
         let mid2 = uniqueID("Mid2")
         let end1 = uniqueID("End1")
         let end2 = uniqueID("End2")
-        let predA = uniqueID("a")
-        let predB = uniqueID("b")
-        let predC = uniqueID("c")
-        let predD = uniqueID("d")
+        let predA = try uniquePredicate("a")
+        let predB = try uniquePredicate("b")
+        let predC = try uniquePredicate("c")
+        let predD = try uniquePredicate("d")
 
         let edges = [
             makeEdge(from: start, relationship: predA, to: mid1),
@@ -446,10 +687,10 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(start, path: path, "?end")
+            .wherePath(iriTerm(start), path: path, .variable("?end"))
             .execute()
 
-        let ends = result.bindings.compactMap { $0.string("?end") }
+        let ends = result.bindings.compactMap { iriValue($0, for: "?end") }
         #expect(ends.contains(end1))  // via a/c
         #expect(ends.contains(end2))  // via b/d
     }
@@ -467,10 +708,10 @@ struct PropertyPathAdvancedTests {
         let mid2 = uniqueID("Mid2")
         let end1 = uniqueID("End1")
         let end2 = uniqueID("End2")
-        let predA = uniqueID("a")
-        let predB = uniqueID("b")
-        let predC = uniqueID("c")
-        let predD = uniqueID("d")
+        let predA = try uniquePredicate("a")
+        let predB = try uniquePredicate("b")
+        let predC = try uniquePredicate("c")
+        let predD = try uniquePredicate("d")
 
         let edges = [
             makeEdge(from: start, relationship: predA, to: mid1),
@@ -489,39 +730,53 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(start, path: path, "?end")
+            .wherePath(iriTerm(start), path: path, .variable("?end"))
             .execute()
 
-        let ends = result.bindings.compactMap { $0.string("?end") }
+        let ends = result.bindings.compactMap { iriValue($0, for: "?end") }
         #expect(ends.contains(end1))  // via a/b
         #expect(ends.contains(end2))  // via c/d
     }
 
     // MARK: - Zero-Length Path Tests
 
-    @Test("Zero-length path (zeroOrMore with no matches)")
+    @Test("Zero-length path for a graph node with no matching edge")
     func testZeroLengthPath() async throws {
         // SPARQL: SELECT ?x WHERE { :node :link* ?x }
-        // :node itself should be in the result even if no edges exist
+        // :node itself should be in the result when it occurs in the active graph,
+        // even if no edge matches :link.
 
         let container = try await setupContainer()
 
         let context = container.newContext()
 
         let node = uniqueID("Node")
-        let linkPred = uniqueID("link")
+        let unrelatedTarget = uniqueID("UnrelatedTarget")
+        let linkPred = try uniquePredicate("link")
+        let unrelatedPred = try uniquePredicate("unrelated")
 
-        // No edges from node
-        let edges: [AdvancedPathEdge] = []
-        try await insertEdges(edges, context: context)
+        try await insertEdges(
+            [
+                makeEdge(
+                    from: node,
+                    relationship: unrelatedPred,
+                    to: unrelatedTarget
+                ),
+            ],
+            context: context
+        )
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(node, path: .zeroOrMore(.iri(linkPred)), "?target")
+            .wherePath(
+                iriTerm(node),
+                path: .zeroOrMore(.iri(linkPred)),
+                .variable("?target")
+            )
             .execute()
 
         // Should include node itself (zero hops)
-        let targets = result.bindings.compactMap { $0.string("?target") }
+        let targets = result.bindings.compactMap { iriValue($0, for: "?target") }
         #expect(targets.contains(node))
     }
 
@@ -533,7 +788,7 @@ struct PropertyPathAdvancedTests {
 
         let node = uniqueID("Node")
         let target = uniqueID("Target")
-        let linkPred = uniqueID("link")
+        let linkPred = try uniquePredicate("link")
 
         let edges = [
             makeEdge(from: node, relationship: linkPred, to: target),
@@ -543,10 +798,14 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(node, path: .zeroOrMore(.iri(linkPred)), "?x")
+            .wherePath(
+                iriTerm(node),
+                path: .zeroOrMore(.iri(linkPred)),
+                .variable("?x")
+            )
             .execute()
 
-        let targets = result.bindings.compactMap { $0.string("?x") }
+        let targets = result.bindings.compactMap { iriValue($0, for: "?x") }
         #expect(targets.contains(node))    // Zero hops
         #expect(targets.contains(target))  // One hop
     }
@@ -559,7 +818,7 @@ struct PropertyPathAdvancedTests {
 
         let context = container.newContext()
 
-        let linkPred = uniqueID("link")
+        let linkPred = try uniquePredicate("link")
         let prefix = uniqueID("N")
 
         // Create a graph with 100 nodes in a binary tree structure
@@ -580,7 +839,11 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath("\(prefix)-0", path: .oneOrMore(.iri(linkPred)), "?descendant")
+            .wherePath(
+                iriTerm("\(prefix)-0"),
+                path: .oneOrMore(.iri(linkPred)),
+                .variable("?descendant")
+            )
             .execute()
 
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
@@ -600,7 +863,7 @@ struct PropertyPathAdvancedTests {
 
         let context = container.newContext()
 
-        let linkPred = uniqueID("link")
+        let linkPred = try uniquePredicate("link")
         let prefix = uniqueID("N")
 
         // Create a graph with high branching factor
@@ -622,7 +885,11 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(root, path: .oneOrMore(.iri(linkPred)), "?target")
+            .wherePath(
+                iriTerm(root),
+                path: .oneOrMore(.iri(linkPred)),
+                .variable("?target")
+            )
             .execute()
 
         // Should find 10 (level 1) + 50 (level 2) = 60 nodes
@@ -633,146 +900,176 @@ struct PropertyPathAdvancedTests {
 
     @Test("PropertyPath description serialization")
     func testPropertyPathSerialization() throws {
+        let knows = try predicateIRI("knows")
+        let parent = try predicateIRI("parent")
+        let lives = try predicateIRI("lives")
+        let likes = try predicateIRI("likes")
+        let link = try predicateIRI("link")
+        let hates = try predicateIRI("hates")
+
         // Simple IRI
-        let simple = PropertyPath.iri("http://example.org/knows")
-        #expect(simple.description == "http://example.org/knows")
+        let simple = PropertyPath.iri(knows)
+        #expect(simple.description == knows.rawValue)
 
         // Inverse
-        let inverse = PropertyPath.inverse(.iri("http://example.org/parent"))
-        #expect(inverse.description == "^http://example.org/parent")
+        let inverse = PropertyPath.inverse(.iri(parent))
+        #expect(inverse.description == "^\(parent.rawValue)")
 
         // Sequence
         let sequence = PropertyPath.sequence(
-            .iri("http://example.org/knows"),
-            .iri("http://example.org/lives")
+            .iri(knows),
+            .iri(lives)
         )
-        #expect(sequence.description == "http://example.org/knows/http://example.org/lives")
+        #expect(sequence.description == "\(knows.rawValue)/\(lives.rawValue)")
 
         // Alternative
         let alternative = PropertyPath.alternative(
-            .iri("http://example.org/knows"),
-            .iri("http://example.org/likes")
+            .iri(knows),
+            .iri(likes)
         )
-        #expect(alternative.description == "http://example.org/knows|http://example.org/likes")
+        #expect(alternative.description == "\(knows.rawValue)|\(likes.rawValue)")
 
         // Quantifiers
-        let zeroOrMore = PropertyPath.zeroOrMore(.iri("http://example.org/link"))
-        #expect(zeroOrMore.description == "http://example.org/link*")
+        let zeroOrMore = PropertyPath.zeroOrMore(.iri(link))
+        #expect(zeroOrMore.description == "\(link.rawValue)*")
 
-        let oneOrMore = PropertyPath.oneOrMore(.iri("http://example.org/link"))
-        #expect(oneOrMore.description == "http://example.org/link+")
+        let oneOrMore = PropertyPath.oneOrMore(.iri(link))
+        #expect(oneOrMore.description == "\(link.rawValue)+")
 
-        let zeroOrOne = PropertyPath.zeroOrOne(.iri("http://example.org/link"))
-        #expect(zeroOrOne.description == "http://example.org/link?")
+        let zeroOrOne = PropertyPath.zeroOrOne(.iri(link))
+        #expect(zeroOrOne.description == "\(link.rawValue)?")
 
         // Negation
-        let negation = PropertyPath.negatedPropertySet(["http://example.org/knows", "http://example.org/hates"])
+        let negation = PropertyPath.negatedPropertySet(
+            try PropertyPathNegatedSet(forward: [knows, hates])
+        )
         #expect(negation.description.contains("!"))
     }
 
     @Test("PropertyPath complexity estimate")
     func testPropertyPathComplexity() throws {
+        let test = try predicateIRI("test")
+        let a = try predicateIRI("a")
+        let b = try predicateIRI("b")
+        let c = try predicateIRI("c")
+
         // Simple IRI: cost = 1
-        #expect(PropertyPath.iri("test").complexityEstimate == 1)
+        #expect(PropertyPath.iri(test).complexityEstimate == 1)
 
         // Negated property set: cost = 10 (requires scanning all edges)
-        #expect(PropertyPath.negatedPropertySet(["a", "b"]).complexityEstimate == 10)
+        #expect(
+            PropertyPath.negatedPropertySet(
+                try PropertyPathNegatedSet(forward: [a, b])
+            ).complexityEstimate == 10
+        )
 
         // Inverse: inner + 1
-        #expect(PropertyPath.inverse(.iri("test")).complexityEstimate == 2)
+        #expect(PropertyPath.inverse(.iri(test)).complexityEstimate == 2)
 
         // Sequence: sum of parts (1 + 1 = 2)
-        let sequence = PropertyPath.sequence(.iri("a"), .iri("b"))
+        let sequence = PropertyPath.sequence(.iri(a), .iri(b))
         #expect(sequence.complexityEstimate == 2)
 
         // Alternative: sum of parts (1 + 1 = 2)
-        let alternative = PropertyPath.alternative(.iri("a"), .iri("b"))
+        let alternative = PropertyPath.alternative(.iri(a), .iri(b))
         #expect(alternative.complexityEstimate == 2)
 
         // Recursive paths: inner * 100
-        #expect(PropertyPath.oneOrMore(.iri("test")).complexityEstimate == 100)
-        #expect(PropertyPath.zeroOrMore(.iri("test")).complexityEstimate == 100)
+        #expect(PropertyPath.oneOrMore(.iri(test)).complexityEstimate == 100)
+        #expect(PropertyPath.zeroOrMore(.iri(test)).complexityEstimate == 100)
 
         // ZeroOrOne: inner + 1
-        #expect(PropertyPath.zeroOrOne(.iri("test")).complexityEstimate == 2)
+        #expect(PropertyPath.zeroOrOne(.iri(test)).complexityEstimate == 2)
 
         // Complex nested: zeroOrMore(sequence(a, alternative(b, oneOrMore(c))))
         // = (1 + (1 + 1*100)) * 100 = 10200
         let complex = PropertyPath.zeroOrMore(
-            .sequence(.iri("a"), .alternative(.iri("b"), .oneOrMore(.iri("c"))))
+            .sequence(.iri(a), .alternative(.iri(b), .oneOrMore(.iri(c))))
         )
         #expect(complex.complexityEstimate == 10200)
     }
 
     @Test("PropertyPath normalization")
     func testPropertyPathNormalization() throws {
+        let test = try predicateIRI("test")
+        let a = try predicateIRI("a")
+        let b = try predicateIRI("b")
+        let c = try predicateIRI("c")
+        let d = try predicateIRI("d")
+        let x = try predicateIRI("x")
+        let y = try predicateIRI("y")
+        let z = try predicateIRI("z")
+
         // Double inverse should normalize to original
-        let doubleInverse = PropertyPath.inverse(.inverse(.iri("test")))
-        #expect(doubleInverse.normalized() == .iri("test"))
+        let doubleInverse = PropertyPath.inverse(.inverse(.iri(test)))
+        #expect(doubleInverse.normalized() == .iri(test))
 
         // Triple inverse should normalize to single inverse
-        let tripleInverse = PropertyPath.inverse(.inverse(.inverse(.iri("test"))))
-        #expect(tripleInverse.normalized() == .inverse(.iri("test")))
+        let tripleInverse = PropertyPath.inverse(.inverse(.inverse(.iri(test))))
+        #expect(tripleInverse.normalized() == .inverse(.iri(test)))
 
         // Non-inverse paths stay the same
-        let sequence = PropertyPath.sequence(.iri("a"), .iri("b"))
+        let sequence = PropertyPath.sequence(.iri(a), .iri(b))
         #expect(sequence.normalized() == sequence)
 
         // Alternative flattening: left-associative → right-associative
         // (a|b)|c should normalize to a|(b|c)
         let leftAssoc = PropertyPath.alternative(
-            .alternative(.iri("a"), .iri("b")),
-            .iri("c")
+            .alternative(.iri(a), .iri(b)),
+            .iri(c)
         )
         let rightAssoc = PropertyPath.alternative(
-            .iri("a"),
-            .alternative(.iri("b"), .iri("c"))
+            .iri(a),
+            .alternative(.iri(b), .iri(c))
         )
         #expect(leftAssoc.normalized() == rightAssoc)
 
         // Nested alternatives: ((a|b)|(c|d)) → a|(b|(c|d))
         let nested = PropertyPath.alternative(
-            .alternative(.iri("a"), .iri("b")),
-            .alternative(.iri("c"), .iri("d"))
+            .alternative(.iri(a), .iri(b)),
+            .alternative(.iri(c), .iri(d))
         )
         let nestedExpected = PropertyPath.alternative(
-            .iri("a"),
+            .iri(a),
             .alternative(
-                .iri("b"),
-                .alternative(.iri("c"), .iri("d"))
+                .iri(b),
+                .alternative(.iri(c), .iri(d))
             )
         )
         #expect(nested.normalized() == nestedExpected)
 
         // Already right-associative stays the same
         let alreadyRight = PropertyPath.alternative(
-            .iri("x"),
-            .alternative(.iri("y"), .iri("z"))
+            .iri(x),
+            .alternative(.iri(y), .iri(z))
         )
         #expect(alreadyRight.normalized() == alreadyRight)
 
         // Inverse over sequence: ^(a/b) = (^b)/(^a)
-        let inverseSeq = PropertyPath.inverse(.sequence(.iri("a"), .iri("b")))
-        let expectedInverseSeq = PropertyPath.sequence(.inverse(.iri("b")), .inverse(.iri("a")))
+        let inverseSeq = PropertyPath.inverse(.sequence(.iri(a), .iri(b)))
+        let expectedInverseSeq = PropertyPath.sequence(.inverse(.iri(b)), .inverse(.iri(a)))
         #expect(inverseSeq.normalized() == expectedInverseSeq)
 
         // Inverse over alternative: ^(a|b) = (^a)|(^b)
-        let inverseAlt = PropertyPath.inverse(.alternative(.iri("a"), .iri("b")))
-        let expectedInverseAlt = PropertyPath.alternative(.inverse(.iri("a")), .inverse(.iri("b")))
+        let inverseAlt = PropertyPath.inverse(.alternative(.iri(a), .iri(b)))
+        let expectedInverseAlt = PropertyPath.alternative(.inverse(.iri(a)), .inverse(.iri(b)))
         #expect(inverseAlt.normalized() == expectedInverseAlt)
     }
 
     @Test("PropertyPath allIRIs extraction")
     func testPropertyPathAllIRIs() throws {
+        let a = try predicateIRI("a")
+        let b = try predicateIRI("b")
+        let c = try predicateIRI("c")
         let path = PropertyPath.sequence(
-            .alternative(.iri("a"), .iri("b")),
-            .oneOrMore(.inverse(.iri("c")))
+            .alternative(.iri(a), .iri(b)),
+            .oneOrMore(.inverse(.iri(c)))
         )
 
         let iris = path.allIRIs
-        #expect(iris.contains("a"))
-        #expect(iris.contains("b"))
-        #expect(iris.contains("c"))
+        #expect(iris.contains(a))
+        #expect(iris.contains(b))
+        #expect(iris.contains(c))
         #expect(iris.count == 3)
     }
 
@@ -791,7 +1088,7 @@ struct PropertyPathAdvancedTests {
         let a = uniqueID("A")
         let b = uniqueID("B")
         let c = uniqueID("C")
-        let link = uniqueID("link")
+        let link = try uniquePredicate("link")
 
         let edges = [
             makeEdge(from: a, relationship: link, to: b),
@@ -801,10 +1098,14 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath("?person", path: .oneOrMore(.iri(link)), c)
+            .wherePath(
+                .variable("?person"),
+                path: .oneOrMore(.iri(link)),
+                iriTerm(c)
+            )
             .execute()
 
-        let persons = Set(result.bindings.compactMap { $0.string("?person") })
+        let persons = Set(result.bindings.compactMap { iriValue($0, for: "?person") })
         // Both A and B can reach C
         #expect(persons.contains(a), "A should reach C via 2 hops")
         #expect(persons.contains(b), "B should reach C via 1 hop")
@@ -824,7 +1125,7 @@ struct PropertyPathAdvancedTests {
         let b = uniqueID("B")
         let c = uniqueID("C")
         let d = uniqueID("D")
-        let link = uniqueID("link")
+        let link = try uniquePredicate("link")
 
         let edges = [
             makeEdge(from: a, relationship: link, to: b),
@@ -835,10 +1136,14 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath("?x", path: .oneOrMore(.iri(link)), d)
+            .wherePath(
+                .variable("?x"),
+                path: .oneOrMore(.iri(link)),
+                iriTerm(d)
+            )
             .execute()
 
-        let xs = Set(result.bindings.compactMap { $0.string("?x") })
+        let xs = Set(result.bindings.compactMap { iriValue($0, for: "?x") })
         #expect(xs.contains(a), "A reaches D via A→B→D")
         #expect(xs.contains(b), "B reaches D via B→D")
         #expect(xs.contains(c), "C reaches D via C→D")
@@ -857,7 +1162,7 @@ struct PropertyPathAdvancedTests {
         let a = uniqueID("A")
         let b = uniqueID("B")
         let c = uniqueID("C")
-        let link = uniqueID("link")
+        let link = try uniquePredicate("link")
 
         let edges = [
             makeEdge(from: a, relationship: link, to: b),
@@ -867,10 +1172,14 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(a, path: .oneOrMore(.iri(link)), "?target")
+            .wherePath(
+                iriTerm(a),
+                path: .oneOrMore(.iri(link)),
+                .variable("?target")
+            )
             .execute()
 
-        let targets = Set(result.bindings.compactMap { $0.string("?target") })
+        let targets = Set(result.bindings.compactMap { iriValue($0, for: "?target") })
         #expect(targets.contains(b), "B is reachable from A")
         #expect(targets.contains(c), "C is reachable from A via B")
         #expect(targets.count == 2)
@@ -891,7 +1200,7 @@ struct PropertyPathAdvancedTests {
         let a = uniqueID("A")
         let b = uniqueID("B")
         let c = uniqueID("C")
-        let link = uniqueID("link")
+        let link = try uniquePredicate("link")
 
         let edges = [
             makeEdge(from: a, relationship: link, to: b),
@@ -901,12 +1210,19 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath("?s", path: .oneOrMore(.iri(link)), "?o")
+            .wherePath(
+                .variable("?s"),
+                path: .oneOrMore(.iri(link)),
+                .variable("?o")
+            )
             .execute()
 
         // Collect all (subject, object) pairs
         let pairs = result.bindings.compactMap { binding -> (String, String)? in
-            guard let s = binding.string("?s"), let o = binding.string("?o") else { return nil }
+            guard let s = iriValue(binding, for: "?s"),
+                  let o = iriValue(binding, for: "?o") else {
+                return nil
+            }
             return (s, o)
         }
 
@@ -919,8 +1235,8 @@ struct PropertyPathAdvancedTests {
 
         // Verify no result has ?s missing
         for binding in result.bindings {
-            #expect(binding.string("?s") != nil, "Every result must have ?s bound")
-            #expect(binding.string("?o") != nil, "Every result must have ?o bound")
+            #expect(iriValue(binding, for: "?s") != nil, "Every result must have ?s bound")
+            #expect(iriValue(binding, for: "?o") != nil, "Every result must have ?o bound")
         }
     }
 
@@ -937,7 +1253,7 @@ struct PropertyPathAdvancedTests {
         let b = uniqueID("B")
         let c = uniqueID("C")
         let d = uniqueID("D")
-        let link = uniqueID("link")
+        let link = try uniquePredicate("link")
 
         let edges = [
             makeEdge(from: a, relationship: link, to: b),
@@ -949,11 +1265,18 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath("?s", path: .oneOrMore(.iri(link)), "?o")
+            .wherePath(
+                .variable("?s"),
+                path: .oneOrMore(.iri(link)),
+                .variable("?o")
+            )
             .execute()
 
         let pairs = result.bindings.compactMap { binding -> (String, String)? in
-            guard let s = binding.string("?s"), let o = binding.string("?o") else { return nil }
+            guard let s = iriValue(binding, for: "?s"),
+                  let o = iriValue(binding, for: "?o") else {
+                return nil
+            }
             return (s, o)
         }
         let pairSet = Set(pairs.map { "\($0.0)|\($0.1)" })
@@ -968,7 +1291,7 @@ struct PropertyPathAdvancedTests {
 
         // Verify no result has ?s missing
         for binding in result.bindings {
-            #expect(binding.string("?s") != nil, "Every result must have ?s bound")
+            #expect(iriValue(binding, for: "?s") != nil, "Every result must have ?s bound")
         }
     }
 
@@ -984,7 +1307,7 @@ struct PropertyPathAdvancedTests {
         let a = uniqueID("A")
         let b = uniqueID("B")
         let c = uniqueID("C")
-        let link = uniqueID("link")
+        let link = try uniquePredicate("link")
 
         let edges = [
             makeEdge(from: a, relationship: link, to: b),
@@ -994,7 +1317,11 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(a, path: .oneOrMore(.iri(link)), c)
+            .wherePath(
+                iriTerm(a),
+                path: .oneOrMore(.iri(link)),
+                iriTerm(c)
+            )
             .execute()
 
         // A can reach C → at least one result (empty binding since both are bound)

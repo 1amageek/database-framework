@@ -36,7 +36,7 @@ struct PGProduct: Equatable {
     var name: String = ""
 }
 
-@Suite("PostgreSQL Scalar Index Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
+@Suite("PostgreSQL Scalar Index Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
 struct PostgreSQLScalarIndexTests {
 
     private func uniqueID(_ prefix: String) -> String {
@@ -45,19 +45,19 @@ struct PostgreSQLScalarIndexTests {
 
     private func setupUserContainer() async throws -> DBContainer {
         let schema = Schema([PGUser.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLTestSetup.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
     }
 
     private func setupProductContainer() async throws -> DBContainer {
         let schema = Schema([PGProduct.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLTestSetup.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
     }
 
     // MARK: - Basic Index CRUD
 
     @Test("Insert and fetch by indexed field")
     func insertAndFetchByIndex() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
@@ -84,7 +84,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Update indexed field")
     func updateIndexedField() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
@@ -123,7 +123,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Delete removes index entry")
     func deleteRemovesIndex() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
@@ -159,7 +159,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Unique index prevents duplicate values")
     func uniqueIndexPreventsDuplicates() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
@@ -190,7 +190,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Fetch by range on indexed field")
     func fetchByRange() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
@@ -221,7 +221,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Composite index: category + price")
     func compositeIndex() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupProductContainer()
             let context = container.newContext()
 
@@ -255,7 +255,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Non-unique index allows multiple entries")
     func nonUniqueIndexMultipleEntries() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupUserContainer()
             let context = container.newContext()
 

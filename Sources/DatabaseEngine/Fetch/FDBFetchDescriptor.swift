@@ -1,5 +1,10 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseValue
 
 // MARK: - Query
 
@@ -64,6 +69,11 @@ public struct Query<T: Persistable>: Sendable {
     /// pushed-down predicate — silent fallback to a full scan is forbidden.
     public var forcedIndex: IndexHint?
 
+    /// Request-scoped execution accounting used by canonical server reads.
+    /// Native typed queries leave this unset unless a higher-level runtime
+    /// explicitly supplies a bounded execution context.
+    var executionWorkMeter: DatabaseWorkMeter?
+
     /// Initialize an empty query
     public init() {
         self.predicates = []
@@ -73,6 +83,7 @@ public struct Query<T: Persistable>: Sendable {
         self.partitionBinding = nil
         self.cachePolicy = .server
         self.forcedIndex = nil
+        self.executionWorkMeter = nil
     }
 
     // MARK: - Fluent API
@@ -197,7 +208,7 @@ public struct Query<T: Persistable>: Sendable {
 /// Restricts index selection during a fetch to a specific named index.
 ///
 /// Set on `Query<T>.forcedIndex` when a higher layer (typically the canonical
-/// `SelectQuery` bridge) has already chosen the index to use. The fetch path
+/// `SelectQuery` planner) has already chosen the index to use. The fetch path
 /// honors the hint strictly: if the named index does not exist or cannot serve
 /// the pushed-down predicate, it raises an error rather than silently falling
 /// back to a full table scan.
@@ -287,9 +298,9 @@ public indirect enum Predicate<T: Persistable>: Sendable {
 /// captures a `@Sendable` closure that evaluates the comparison without any allocation.
 /// Falls back to `FieldReader` when the closure is unavailable (e.g., after type erasure
 /// in QueryRewriter/DNFConverter).
-public struct FieldComparison<T: Persistable>: @unchecked Sendable, Hashable {
-    /// The field's KeyPath (type-erased)
-    public let keyPath: AnyKeyPath
+public struct FieldComparison<T: Persistable>: Sendable, Hashable {
+    /// The canonical field name used by planning and type-erased evaluation.
+    public let fieldName: String
 
     /// The comparison operator
     public let op: ComparisonOperator
@@ -299,44 +310,102 @@ public struct FieldComparison<T: Persistable>: @unchecked Sendable, Hashable {
 
     /// Zero-copy evaluation closure, captured at construction time
     /// when typed KeyPath and value are available.
-    /// Excluded from Hashable identity (keyPath + op + value suffice).
+    /// Excluded from Hashable identity (field name + operator + value suffice).
     private let _evaluate: (@Sendable (T) -> Bool)?
 
-    /// Create a field comparison with FieldValue (type-erased path)
+    /// Typed field access retained across predicate rewrites.
+    private let _readValue: (@Sendable (T) -> FieldValue)?
+
+    /// Create a field comparison with a canonical field name.
     ///
     /// Used by QueryRewriter/DNFConverter after type erasure.
     /// Optionally accepts an evaluate closure for zero-copy evaluation.
-    public init(keyPath: AnyKeyPath, op: ComparisonOperator, value: FieldValue, evaluate: (@Sendable (T) -> Bool)? = nil) {
-        self.keyPath = keyPath
+    public init(
+        fieldName: String,
+        op: ComparisonOperator,
+        value: FieldValue,
+        evaluate: (@Sendable (T) -> Bool)? = nil
+    ) {
+        self.fieldName = fieldName
         self.op = op
         self.value = value
         self._evaluate = evaluate
+        self._readValue = nil
     }
 
     /// Create a field comparison from FieldValueConvertible
     ///
     /// Optionally accepts an evaluate closure for zero-copy evaluation.
     /// The operator overloads pass a typed closure; direct callers may omit it.
-    public init<V: FieldValueConvertible>(keyPath: KeyPath<T, V>, op: ComparisonOperator, value: V, evaluate: (@Sendable (T) -> Bool)? = nil) {
-        self.keyPath = keyPath
+    public init<V: FieldValueConvertible>(
+        keyPath: KeyPath<T, V>,
+        op: ComparisonOperator,
+        value: V,
+        evaluate: (@Sendable (T) -> Bool)? = nil
+    ) {
+        nonisolated(unsafe) let fieldKeyPath = keyPath
+        self.fieldName = T.fieldName(for: keyPath)
         self.op = op
         self.value = value.toFieldValue()
         self._evaluate = evaluate
+        self._readValue = { model in
+            model[keyPath: fieldKeyPath].toFieldValue()
+        }
+    }
+
+    /// Create a comparison for a non-optional field and a canonical comparison value.
+    public init<V: Sendable>(
+        keyPath: KeyPath<T, V>,
+        op: ComparisonOperator,
+        value: FieldValue,
+        evaluate: (@Sendable (T) -> Bool)? = nil
+    ) {
+        nonisolated(unsafe) let fieldKeyPath = keyPath
+        self.fieldName = T.fieldName(for: keyPath)
+        self.op = op
+        self.value = value
+        self._evaluate = evaluate
+        self._readValue = { model in
+            FieldValue(model[keyPath: fieldKeyPath]) ?? .null
+        }
+    }
+
+    /// Create a comparison for an optional field and a canonical comparison value.
+    public init<V: Sendable>(
+        keyPath: KeyPath<T, V?>,
+        op: ComparisonOperator,
+        value: FieldValue,
+        evaluate: (@Sendable (T) -> Bool)? = nil
+    ) {
+        nonisolated(unsafe) let fieldKeyPath = keyPath
+        self.fieldName = T.fieldName(for: keyPath)
+        self.op = op
+        self.value = value
+        self._evaluate = evaluate
+        self._readValue = { model in
+            guard let fieldValue = model[keyPath: fieldKeyPath] else {
+                return .null
+            }
+            return FieldValue(fieldValue) ?? .null
+        }
     }
 
     /// Create a nil comparison (isNil/isNotNil)
     ///
     /// Captures a zero-copy closure for nil checks.
     public init<V: Sendable>(keyPath: KeyPath<T, V?>, op: ComparisonOperator) {
-        self.keyPath = keyPath
+        self.fieldName = T.fieldName(for: keyPath)
         self.op = op
         self.value = .null
-        nonisolated(unsafe) let kp = keyPath
+        nonisolated(unsafe) let fieldKeyPath = keyPath
+        self._readValue = { model in
+            model[keyPath: fieldKeyPath] == nil ? .null : .bool(true)
+        }
         switch op {
         case .isNil:
-            self._evaluate = { model in model[keyPath: kp] == nil }
+            self._evaluate = { model in model[keyPath: fieldKeyPath] == nil }
         case .isNotNil:
-            self._evaluate = { model in model[keyPath: kp] != nil }
+            self._evaluate = { model in model[keyPath: fieldKeyPath] != nil }
         default:
             self._evaluate = nil
         }
@@ -345,16 +414,45 @@ public struct FieldComparison<T: Persistable>: @unchecked Sendable, Hashable {
     /// Create an IN comparison
     ///
     /// Optionally accepts an evaluate closure for zero-copy evaluation.
-    public init<V: FieldValueConvertible>(keyPath: KeyPath<T, V>, values: [V], evaluate: (@Sendable (T) -> Bool)? = nil) {
-        self.keyPath = keyPath
+    public init<V: FieldValueConvertible>(
+        keyPath: KeyPath<T, V>,
+        values: [V],
+        evaluate: (@Sendable (T) -> Bool)? = nil
+    ) {
+        nonisolated(unsafe) let fieldKeyPath = keyPath
+        self.fieldName = T.fieldName(for: keyPath)
         self.op = .in
         self.value = .array(values.map { $0.toFieldValue() })
         self._evaluate = evaluate
+        self._readValue = { model in
+            model[keyPath: fieldKeyPath].toFieldValue()
+        }
     }
 
-    /// Get the field name using Persistable's fieldName method
-    public var fieldName: String {
-        T.fieldName(for: keyPath)
+    /// Rebuild a comparison while retaining its typed field accessor.
+    func replacing(
+        op: ComparisonOperator,
+        value: FieldValue? = nil
+    ) -> FieldComparison<T> {
+        FieldComparison(
+            fieldName: fieldName,
+            op: op,
+            value: value ?? self.value,
+            readValue: _readValue
+        )
+    }
+
+    private init(
+        fieldName: String,
+        op: ComparisonOperator,
+        value: FieldValue,
+        readValue: (@Sendable (T) -> FieldValue)?
+    ) {
+        self.fieldName = fieldName
+        self.op = op
+        self.value = value
+        self._evaluate = nil
+        self._readValue = readValue
     }
 
     // MARK: - Evaluation
@@ -375,17 +473,16 @@ public struct FieldComparison<T: Persistable>: @unchecked Sendable, Hashable {
     /// Handles all comparison operators including string operations.
     /// Used when typed closure is unavailable (type-erased paths from QueryRewriter/DNFConverter).
     private func evaluateViaFieldReader(_ model: T) -> Bool {
-        let raw = FieldReader.read(from: model, keyPath: keyPath, fieldName: fieldName)
-        return evaluateRawValue(raw)
+        let fieldValue = _readValue?(model)
+            ?? FieldReader.readFieldValue(from: model, fieldName: fieldName)
+        return evaluateFieldValue(fieldValue)
     }
 
     /// Core comparison logic for raw values
     ///
     /// Converts raw value to FieldValue and evaluates comparison operator.
     /// Handles all comparison operators including string operations.
-    private func evaluateRawValue(_ raw: Any?) -> Bool {
-        let modelFieldValue = raw.flatMap { FieldValue($0) } ?? .null
-
+    private func evaluateFieldValue(_ modelFieldValue: FieldValue) -> Bool {
         // Handle nil check operators first
         // NOTE: Cannot use `raw == nil` because PartialKeyPath path returns
         // Optional<V>.none boxed in Any (.some(Any(Optional.none))), not nil.
@@ -415,23 +512,29 @@ public struct FieldComparison<T: Persistable>: @unchecked Sendable, Hashable {
         case .greaterThanOrEqual:
             return value.isLessThan(modelFieldValue) || modelFieldValue.isEqual(to: value)
         case .contains:
-            if let str = raw as? String, let substr = value.stringValue {
-                return str.contains(substr)
+            if let str = modelFieldValue.stringValue,
+               let substr = value.stringValue {
+                return DatabaseText.contains(substr, in: str)
             }
             return false
         case .hasPrefix:
-            if let str = raw as? String, let prefix = value.stringValue {
+            if let str = modelFieldValue.stringValue,
+               let prefix = value.stringValue {
                 return str.hasPrefix(prefix)
             }
             return false
         case .hasSuffix:
-            if let str = raw as? String, let suffix = value.stringValue {
+            if let str = modelFieldValue.stringValue,
+               let suffix = value.stringValue {
                 return str.hasSuffix(suffix)
             }
             return false
-        case .in:
+        case .in, .notIn:
             if let arrayValues = value.arrayValue {
-                return arrayValues.contains { modelFieldValue.isEqual(to: $0) }
+                let contains = arrayValues.contains {
+                    modelFieldValue.isEqual(to: $0)
+                }
+                return op == .in ? contains : !contains
             }
             return false
         case .isNil, .isNotNil:
@@ -442,21 +545,18 @@ public struct FieldComparison<T: Persistable>: @unchecked Sendable, Hashable {
     // MARK: - Hashable
 
     public func hash(into hasher: inout Hasher) {
-        // _evaluate is excluded — identity is (keyPath, op, value)
-        hasher.combine(keyPath)
+        // Evaluation closures are excluded from semantic identity.
+        hasher.combine(fieldName)
         hasher.combine(op)
         hasher.combine(value)
     }
 
     public static func == (lhs: FieldComparison<T>, rhs: FieldComparison<T>) -> Bool {
-        lhs.keyPath == rhs.keyPath && lhs.op == rhs.op && lhs.value == rhs.value
+        lhs.fieldName == rhs.fieldName
+            && lhs.op == rhs.op
+            && lhs.value == rhs.value
     }
 }
-
-// MARK: - ComparisonOperator
-
-@_exported import enum DatabaseClientProtocol.ComparisonOperator
-
 
 // MARK: - SortDescriptor
 
@@ -465,9 +565,9 @@ public struct FieldComparison<T: Persistable>: @unchecked Sendable, Hashable {
 /// **Zero-copy comparison**: When constructed with a typed KeyPath, captures
 /// a `@Sendable` comparator closure. Falls back to `FieldReader` + `FieldValue.compare`
 /// when the closure is unavailable.
-public struct SortDescriptor<T: Persistable>: @unchecked Sendable {
-    /// The field's KeyPath (type-erased)
-    public let keyPath: AnyKeyPath
+public struct SortDescriptor<T: Persistable>: Sendable {
+    /// The canonical field name used by planning and type-erased comparison.
+    public let fieldName: String
 
     /// Sort order
     public let order: SortOrder
@@ -476,53 +576,29 @@ public struct SortDescriptor<T: Persistable>: @unchecked Sendable {
     /// Returns raw comparison (ascending order); caller applies sort direction.
     private let _compare: (@Sendable (T, T) -> ComparisonResult)?
 
-    /// Explicit field name override.
-    ///
-    /// Set by `init(fieldName:order:)` when the sort descriptor is reconstructed
-    /// from a type-erased source (e.g., QueryIR bridge) and the `keyPath` is a
-    /// placeholder. When non-nil, takes precedence over the keyPath-derived name.
-    private let _overrideFieldName: String?
-
     /// Create a sort descriptor with zero-copy comparison
     public init<V: Comparable & Sendable>(keyPath: KeyPath<T, V>, order: SortOrder = .ascending) {
-        self.keyPath = keyPath
+        self.fieldName = T.fieldName(for: keyPath)
         self.order = order
-        self._overrideFieldName = nil
-        nonisolated(unsafe) let kp = keyPath
+        nonisolated(unsafe) let fieldKeyPath = keyPath
         self._compare = { lhs, rhs in
-            let l = lhs[keyPath: kp]
-            let r = rhs[keyPath: kp]
+            let l = lhs[keyPath: fieldKeyPath]
+            let r = rhs[keyPath: fieldKeyPath]
             if l < r { return .orderedAscending }
             if l > r { return .orderedDescending }
             return .orderedSame
         }
     }
 
-    /// Internal init without closure (for type-erased contexts)
-    init(keyPath: AnyKeyPath, order: SortOrder) {
-        self.keyPath = keyPath
-        self.order = order
-        self._compare = nil
-        self._overrideFieldName = nil
-    }
-
-    /// Create a sort descriptor from a field name (for QueryIR bridges).
+    /// Create a sort descriptor from a QueryIR field name.
     ///
     /// Used when the sort key originates from a canonical/erased source and a typed
     /// KeyPath is unavailable. Comparison falls back to FieldReader, reading strictly
-    /// by `fieldName` (the stored `keyPath` is a harmless placeholder that is NOT
-    /// used for value access in this mode).
+    /// by `fieldName`.
     init(fieldName: String, order: SortOrder) {
-        self.keyPath = \T.id as AnyKeyPath
+        self.fieldName = fieldName
         self.order = order
         self._compare = nil
-        self._overrideFieldName = fieldName
-    }
-
-    /// Get the field name using Persistable's fieldName method,
-    /// preferring the explicit override set for QueryIR-bridged descriptors.
-    public var fieldName: String {
-        _overrideFieldName ?? T.fieldName(for: keyPath)
     }
 
     // MARK: - Comparison
@@ -558,16 +634,8 @@ public struct SortDescriptor<T: Persistable>: @unchecked Sendable {
     private func compareViaFieldReader(_ lhs: T, _ rhs: T) -> ComparisonResult {
         let lhsField: FieldValue
         let rhsField: FieldValue
-        if let overrideName = _overrideFieldName {
-            // keyPath is a placeholder in this mode — read strictly by field name.
-            lhsField = FieldReader.readFieldValue(from: lhs, fieldName: overrideName)
-            rhsField = FieldReader.readFieldValue(from: rhs, fieldName: overrideName)
-        } else {
-            let lhsRaw = FieldReader.read(from: lhs, keyPath: keyPath, fieldName: fieldName)
-            let rhsRaw = FieldReader.read(from: rhs, keyPath: keyPath, fieldName: fieldName)
-            lhsField = lhsRaw.flatMap { FieldValue($0) } ?? .null
-            rhsField = rhsRaw.flatMap { FieldValue($0) } ?? .null
-        }
+        lhsField = FieldReader.readFieldValue(from: lhs, fieldName: fieldName)
+        rhsField = FieldReader.readFieldValue(from: rhs, fieldName: fieldName)
 
         // Null sorts first in raw (ascending) comparison
         if case .null = lhsField, case .null = rhsField { return .orderedSame }
@@ -579,7 +647,7 @@ public struct SortDescriptor<T: Persistable>: @unchecked Sendable {
 }
 
 /// Sort order
-public enum SortOrder: String, Sendable {
+public enum SortOrder: String, Sendable, Hashable {
     case ascending
     case descending
 }
@@ -684,7 +752,7 @@ extension KeyPath where Root: Persistable, Value == String {
         nonisolated(unsafe) let kp = self
         return .comparison(FieldComparison(
             keyPath: self, op: .contains, value: substring,
-            evaluate: { $0[keyPath: kp].contains(substring) }
+            evaluate: { DatabaseText.contains(substring, in: $0[keyPath: kp]) }
         ))
     }
 
@@ -715,7 +783,10 @@ extension KeyPath where Root: Persistable, Value == String? {
         nonisolated(unsafe) let kp = self
         return .comparison(FieldComparison(
             keyPath: self, op: .contains, value: .string(substring),
-            evaluate: { $0[keyPath: kp]?.contains(substring) ?? false }
+            evaluate: { value in
+                guard let field = value[keyPath: kp] else { return false }
+                return DatabaseText.contains(substring, in: field)
+            }
         ))
     }
 
@@ -910,7 +981,7 @@ public struct QueryExecutor<T: Persistable>: Sendable {
     public func explain(hints: QueryHints = .default) throws -> PlanExplanation {
         let planner = QueryPlanner<T>(
             indexes: T.indexDescriptors,
-            statistics: DefaultStatisticsProvider(),
+            statistics: HeuristicStatisticsProvider(),
             costModel: .default
         )
         let plan: QueryPlan<T> = try planner.plan(query: query, hints: hints)
@@ -945,7 +1016,7 @@ public struct QueryExecutor<T: Persistable>: Sendable {
     public func plan(hints: QueryHints = .default) throws -> QueryPlan<T> {
         let planner = QueryPlanner<T>(
             indexes: T.indexDescriptors,
-            statistics: DefaultStatisticsProvider(),
+            statistics: HeuristicStatisticsProvider(),
             costModel: .default
         )
         return try planner.plan(query: query, hints: hints)

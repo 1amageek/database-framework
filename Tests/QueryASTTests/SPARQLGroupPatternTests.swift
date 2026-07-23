@@ -24,8 +24,15 @@ private func parsePattern(_ sparql: String) throws -> GraphPattern {
 
 /// Extract triples from a .basic pattern
 private func extractTriples(_ pattern: GraphPattern) -> [TriplePattern]? {
-    if case .basic(let triples) = pattern { return triples }
-    return nil
+    guard case .basic(let basicGraphPattern) = pattern else {
+        return nil
+    }
+    do {
+        return try basicGraphPattern.triplePatterns()
+    } catch {
+        Issue.record("Expected a triple-only basic graph pattern: \(error)")
+        return nil
+    }
 }
 
 // MARK: - Group 1: Bug Reproduction Tests
@@ -76,17 +83,71 @@ struct SPARQLGroupPatternBugTests {
             """
         let pattern = try parsePattern(sparql)
 
-        // Structure: join(filter(basic, expr), basic)
-        guard case .join(let filtered, let trailing) = pattern else {
-            Issue.record("Expected .join, got: \(pattern)")
+        // FILTER applies to the completed group and does not split adjacent
+        // triples into separate basic graph patterns.
+        guard case .filter(let base, _) = pattern else {
+            Issue.record("Expected .filter, got: \(pattern)")
             return
         }
-        guard case .filter(let base, _) = filtered else {
-            Issue.record("Expected .filter, got: \(filtered)")
+        guard let triples = extractTriples(base) else {
+            Issue.record("Expected one .basic pattern, got: \(base)")
             return
         }
-        #expect(extractTriples(base) != nil)
-        #expect(extractTriples(trailing) != nil)
+        #expect(triples.count == 2)
+    }
+
+    @Test("FILTER can reference a variable bound by a following triple")
+    func testFilterSeesFollowingTripleBinding() throws {
+        let sparql = """
+            SELECT * WHERE {
+                ?s <urn:p> ?x .
+                FILTER(?y = 1) .
+                ?s <urn:q> ?y
+            }
+            """
+        let pattern = try parsePattern(sparql)
+
+        guard case .filter(let base, let expression) = pattern else {
+            Issue.record("Expected .filter, got: \(pattern)")
+            return
+        }
+        guard let triples = extractTriples(base) else {
+            Issue.record("Expected one .basic pattern, got: \(base)")
+            return
+        }
+        #expect(triples.count == 2)
+        guard case .equal(.variable(let variable), .literal(.int(1))) = expression else {
+            Issue.record("Expected ?y = 1, got: \(expression)")
+            return
+        }
+        #expect(variable.name == "y")
+    }
+
+    @Test("FILTER preserves one blank-node label scope across adjacent triples")
+    func testFilterPreservesBlankNodeLabelScope() throws {
+        let sparql = """
+            SELECT * WHERE {
+                _:shared <urn:p> ?x .
+                FILTER(?x = ?x) .
+                _:shared <urn:q> ?y
+            }
+            """
+        let pattern = try parsePattern(sparql)
+
+        guard case .filter(let base, _) = pattern else {
+            Issue.record("Expected .filter, got: \(pattern)")
+            return
+        }
+        guard let triples = extractTriples(base), triples.count == 2 else {
+            Issue.record("Expected one two-triple .basic pattern, got: \(base)")
+            return
+        }
+        guard case .blankNode(let firstLabel) = triples[0].subject,
+              case .blankNode(let secondLabel) = triples[1].subject else {
+            Issue.record("Expected both subjects to be blank-node labels")
+            return
+        }
+        #expect(firstLabel == secondLabel)
     }
 
     @Test("UNION dot Triples — dot after UNION consumed")
@@ -591,13 +652,13 @@ struct SPARQLComplexPatternTests {
             """
         let pattern = try parsePattern(sparql)
 
-        // Structure: minus(filter(optional(basic, basic), expr), basic)
-        guard case .minus(let filtered, _) = pattern else {
-            Issue.record("Expected .minus at top, got: \(pattern)")
+        // FILTER applies after the completed group, including MINUS.
+        guard case .filter(let filtered, _) = pattern else {
+            Issue.record("Expected .filter at top, got: \(pattern)")
             return
         }
-        guard case .filter(let optPat, _) = filtered else {
-            Issue.record("Expected .filter, got: \(filtered)")
+        guard case .minus(let optPat, _) = filtered else {
+            Issue.record("Expected .minus, got: \(filtered)")
             return
         }
         guard case .optional(_, _) = optPat else {
@@ -669,8 +730,7 @@ struct SPARQLEdgeCaseTests {
             return
         }
         #expect(triples.count == 1)
-        // Parser stores 'a' as prefixedName — full IRI expansion happens at execution time
-        #expect(triples[0].predicate == .prefixedName(prefix: "rdf", local: "type"))
+        #expect(triples[0].predicate == .iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"))
     }
 
     @Test("UNION without surrounding triples")

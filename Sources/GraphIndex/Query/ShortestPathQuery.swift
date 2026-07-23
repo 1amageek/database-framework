@@ -3,7 +3,11 @@
 //
 // Provides FDBContext extension and fluent query builder for shortest path queries.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -43,42 +47,44 @@ public struct ShortestPathEntryPoint<T: Persistable>: Sendable {
         _ from: KeyPath<T, V1>,
         _ edge: KeyPath<T, V2>,
         _ to: KeyPath<T, V3>
-    ) -> ShortestPathQueryBuilder<T> {
-        let fromField = T.fieldName(for: from)
-        let edgeField = T.fieldName(for: edge)
-        let toField = T.fieldName(for: to)
+    ) throws -> ShortestPathQueryBuilder<T> {
+        let declaration = try PropertyGraphIndexResolver.exact(
+            signature: PropertyGraphIndexSignature(
+                sourceFieldName: T.fieldName(for: from),
+                labelFieldName: T.fieldName(for: edge),
+                targetFieldName: T.fieldName(for: to)
+            ),
+            for: T.self,
+            in: queryContext
+        )
         return ShortestPathQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: fromField,
-            edgeFieldName: edgeField,
-            toFieldName: toField
+            index: declaration
+        )
+    }
+
+    /// Select an entity-owned graph index by its exact declared name.
+    public func index(named indexName: String) throws -> ShortestPathQueryBuilder<T> {
+        ShortestPathQueryBuilder(
+            queryContext: queryContext,
+            index: try PropertyGraphIndexResolver.exact(
+                named: indexName,
+                for: T.self,
+                in: queryContext
+            )
         )
     }
 
     /// Use the default graph index (first GraphIndexKind found)
     ///
     /// - Returns: Shortest path query builder configured with the default index
-    public func defaultIndex() -> ShortestPathQueryBuilder<T> {
-        let descriptor = T.indexDescriptors.first { desc in
-            desc.kindIdentifier == GraphIndexKind<T>.identifier
-        }
-
-        guard let desc = descriptor,
-              let kind = desc.kind as? GraphIndexKind<T> else {
-            // Return a builder that will fail on execute
-            return ShortestPathQueryBuilder(
-                queryContext: queryContext,
-                fromFieldName: "",
-                edgeFieldName: "",
-                toFieldName: ""
-            )
-        }
-
+    public func defaultIndex() throws -> ShortestPathQueryBuilder<T> {
         return ShortestPathQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: kind.fromField,
-            edgeFieldName: kind.edgeField,
-            toFieldName: kind.toField
+            index: try PropertyGraphIndexResolver.unique(
+                for: T.self,
+                in: queryContext
+            )
         )
     }
 }
@@ -118,9 +124,7 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
     // MARK: - Properties
 
     private let queryContext: IndexQueryContext
-    private let fromFieldName: String
-    private let edgeFieldName: String
-    private let toFieldName: String
+    private let index: DeclaredPropertyGraphIndex
 
     private var sourceNode: String?
     private var targetNode: String?
@@ -134,14 +138,10 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
 
     internal init(
         queryContext: IndexQueryContext,
-        fromFieldName: String,
-        edgeFieldName: String,
-        toFieldName: String
+        index: DeclaredPropertyGraphIndex
     ) {
         self.queryContext = queryContext
-        self.fromFieldName = fromFieldName
-        self.edgeFieldName = edgeFieldName
-        self.toFieldName = toFieldName
+        self.index = index
     }
 
     // MARK: - Fluent Configuration
@@ -238,11 +238,7 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: ShortestPathResult containing the path or nil if not connected
     /// - Throws: ShortestPathQueryError if configuration is invalid
-    public func execute() async throws -> ShortestPathResult<T> {
-        guard !fromFieldName.isEmpty else {
-            throw ShortestPathQueryError.indexNotConfigured
-        }
-
+    public func execute() async throws -> ShortestPathResult {
         guard let source = sourceNode else {
             throw ShortestPathQueryError.missingSource
         }
@@ -251,7 +247,11 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
             throw ShortestPathQueryError.missingTarget
         }
 
-        let indexSubspace = try await getIndexSubspace()
+        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
+            index,
+            for: T.self,
+            in: queryContext
+        )
 
         let config = ShortestPathConfiguration(
             maxDepth: configMaxDepth,
@@ -260,28 +260,27 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
             maxNodesExplored: configMaxNodes
         )
 
-        let finder = ShortestPathFinder<T>(
-            database: queryContext.context.container.engine,
-            subspace: indexSubspace,
-            configuration: config
-        )
+        return try await queryContext.withTransaction { transaction in
+            let finder = ShortestPathFinder(
+                snapshot: GraphReadSnapshot(transaction: transaction),
+                subspace: resolvedIndex.indexSubspace,
+                strategy: resolvedIndex.metadata.strategy,
+                configuration: config
+            )
 
-        return try await finder.findShortestPath(
-            from: source,
-            to: target,
-            edgeLabel: edgeLabelFilter
-        )
+            return try await finder.findShortestPath(
+                from: .identifier(source),
+                to: .identifier(target),
+                edgeLabel: edgeLabelFilter.map(GraphIdentity.identifier)
+            )
+        }
     }
 
     /// Find all shortest paths (when multiple exist)
     ///
     /// - Returns: AllShortestPathsResult containing all shortest paths
     /// - Throws: ShortestPathQueryError if configuration is invalid
-    public func executeAll() async throws -> AllShortestPathsResult<T> {
-        guard !fromFieldName.isEmpty else {
-            throw ShortestPathQueryError.indexNotConfigured
-        }
-
+    public func executeAll() async throws -> AllShortestPathsResult {
         guard let source = sourceNode else {
             throw ShortestPathQueryError.missingSource
         }
@@ -290,7 +289,11 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
             throw ShortestPathQueryError.missingTarget
         }
 
-        let indexSubspace = try await getIndexSubspace()
+        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
+            index,
+            for: T.self,
+            in: queryContext
+        )
 
         let config = ShortestPathConfiguration(
             maxDepth: configMaxDepth,
@@ -299,18 +302,21 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
             maxNodesExplored: configMaxNodes
         )
 
-        let finder = ShortestPathFinder<T>(
-            database: queryContext.context.container.engine,
-            subspace: indexSubspace,
-            configuration: config
-        )
+        return try await queryContext.withTransaction { transaction in
+            let finder = ShortestPathFinder(
+                snapshot: GraphReadSnapshot(transaction: transaction),
+                subspace: resolvedIndex.indexSubspace,
+                strategy: resolvedIndex.metadata.strategy,
+                configuration: config
+            )
 
-        return try await finder.findAllShortestPaths(
-            from: source,
-            to: target,
-            edgeLabel: edgeLabelFilter,
-            maxDepth: configMaxDepth
-        )
+            return try await finder.findAllShortestPaths(
+                from: .identifier(source),
+                to: .identifier(target),
+                edgeLabel: edgeLabelFilter.map(GraphIdentity.identifier),
+                maxDepth: configMaxDepth
+            )
+        }
     }
 
     /// Check if source and target are connected
@@ -332,18 +338,6 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
         return result.distance.map { Int($0) }
     }
 
-    // MARK: - Private Methods
-
-    private func getIndexSubspace() async throws -> Subspace {
-        let indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
-
-        guard let _ = queryContext.schema.indexDescriptor(named: indexName) else {
-            throw ShortestPathQueryError.indexNotFound(indexName)
-        }
-
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        return typeSubspace.subspace(indexName)
-    }
 }
 
 // MARK: - FDBContext Extension

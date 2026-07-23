@@ -1,7 +1,11 @@
 // ScoredResult.swift
 // DatabaseEngine - Fusion query result type
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Scored search result from fusion queries

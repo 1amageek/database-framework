@@ -8,6 +8,7 @@ import PostgreSQLStorage
 @testable import ScalarIndex
 import TestSupport
 import TestHeartbeat
+import DatabaseRuntime
 
 @Persistable(type: "PGSchemaEvolutionUser")
 struct PGSchemaEvolutionUserV1 {
@@ -122,15 +123,15 @@ enum PGCustomMigrationPlan: SchemaMigrationPlan {
     }
 }
 
-@Suite("Schema Evolution Migration PostgreSQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
+@Suite("Schema Evolution Migration PostgreSQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
 struct SchemaEvolutionMigrationPostgreSQLTests {
     @Test("Lightweight migration keeps existing PostgreSQL data readable end-to-end")
     func lightweightMigrationPreservesExistingDataEndToEnd() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            try await PostgreSQLTestSetup.shared.cleanAllData()
-            let engine = try await PostgreSQLTestSetup.shared.engine
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let initialContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGSchemaEvolutionSchemaV1.makeSchema()
             )
             let initialContext = initialContainer.newContext()
@@ -144,11 +145,12 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let migratedContainer = try await DBContainer(
                 for: PGSchemaEvolutionSchemaV2.self,
                 migrationPlan: PGAppendOnlyMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
             )
             try await migratedContainer.migrateIfNeeded()
 
-            let verificationContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGSchemaEvolutionSchemaV2.makeSchema()
             )
             let migratedContext = verificationContainer.newContext()
@@ -166,9 +168,9 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
 
     @Test("SchemaRegistry accepts append-only fields on PostgreSQL")
     func schemaRegistryAcceptsAppendOnlyFields() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            try await PostgreSQLTestSetup.shared.cleanAllData()
-            let engine = try await PostgreSQLTestSetup.shared.engine
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let registry = SchemaRegistry(database: engine)
 
             try await registry.persist(Schema([PGSchemaEvolutionUserV1.self]))
@@ -183,9 +185,9 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
 
     @Test("SchemaRegistry rejects reordered fields on PostgreSQL")
     func schemaRegistryRejectsReorderedFields() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            try await PostgreSQLTestSetup.shared.cleanAllData()
-            let engine = try await PostgreSQLTestSetup.shared.engine
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let registry = SchemaRegistry(database: engine)
             let typeName = PGSchemaEvolutionUserV1.persistableType
 
@@ -216,12 +218,12 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
 
     @Test("Custom migration persists breaking schema changes on PostgreSQL")
     func customMigrationPersistsBreakingSchemaChanges() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            try await PostgreSQLTestSetup.shared.cleanAllData()
-            let engine = try await PostgreSQLTestSetup.shared.engine
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let seededID = "pg-breaking-\(UUID().uuidString)"
 
-            let initialContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGMigrationSchemaV1.makeSchema()
             )
             let initialContext = initialContainer.newContext()
@@ -234,7 +236,8 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let migratedContainer = try await DBContainer(
                 for: PGMigrationSchemaV2.self,
                 migrationPlan: PGCustomMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -247,7 +250,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             #expect(entity?.fieldMapByName["email"]?.fieldNumber == 3)
             #expect(entity?.fieldMapByName["name"] == nil)
 
-            let verificationContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGMigrationSchemaV2.makeSchema()
             )
             let migratedUsers = try await verificationContainer.newContext()
@@ -263,11 +266,11 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
 
     @Test("Custom migration transforms PostgreSQL data end-to-end")
     func customMigrationTransformsDataEndToEnd() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
-            try await PostgreSQLTestSetup.shared.cleanAllData()
-            let engine = try await PostgreSQLTestSetup.shared.engine
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+            let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let initialContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGMigrationSchemaV1.makeSchema()
             )
             let initialContext = initialContainer.newContext()
@@ -286,11 +289,12 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let migratedContainer = try await DBContainer(
                 for: PGMigrationSchemaV2.self,
                 migrationPlan: PGCustomMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
             )
             try await migratedContainer.migrateIfNeeded()
 
-            let verificationContainer = try await PostgreSQLTestSetup.shared.makeContainer(
+            let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGMigrationSchemaV2.makeSchema()
             )
             let migratedContext = verificationContainer.newContext()

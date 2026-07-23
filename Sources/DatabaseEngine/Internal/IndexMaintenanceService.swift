@@ -7,10 +7,14 @@
 // - Diff-based index updates (via IndexMaintainer protocol)
 // - Uniqueness constraint checking (delegated to IndexMaintainer where applicable)
 //
-// **Design**: Uses IndexKindMaintainable protocol bridge pattern to delegate
-// index maintenance to specialized IndexMaintainer implementations for each index type.
+// Uses the IndexMaintainerFactory contract to delegate maintenance to the
+// provider registered for each index type.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 import Logging
@@ -20,13 +24,7 @@ import Logging
 /// **Responsibilities**:
 /// - Coordinate index maintenance across all index types
 /// - Manage index state checks (skip disabled indexes)
-/// - Bridge IndexDescriptor to IndexMaintainer via IndexKindMaintainable protocol
-///
-/// **Design Pattern**:
-/// Uses the protocol bridge pattern from CLAUDE.md:
-/// ```
-/// IndexKind (metadata) → IndexKindMaintainable (bridge) → IndexMaintainer (runtime)
-/// ```
+/// - Resolve an IndexDescriptor through the IndexMaintainerFactory contract.
 ///
 /// This ensures all index types (Vector, FullText, Graph, Scalar, Aggregation, etc.)
 /// are maintained correctly via their specialized IndexMaintainer implementations.
@@ -35,29 +33,32 @@ import Logging
 /// - Record serialization/deserialization (DataAccess)
 /// - Transaction management (Database)
 /// - Directory resolution (DBContainer)
-/// - Index state persistence (IndexStateManager)
+/// - Index state persistence (IndexLifecycleStore)
 internal final class IndexMaintenanceService: Sendable {
 
     // MARK: - Properties
 
-    private let indexStateManager: IndexStateManager
+    private let indexLifecycleStore: IndexLifecycleStore
     private let violationTracker: UniquenessViolationTracker
     private let indexSubspace: Subspace
     private let logger: Logger
     private let configurations: [any IndexConfiguration]
+    private let maintainerProviders: IndexMaintainerProviderRegistry
 
     // MARK: - Initialization
 
     init(
-        indexStateManager: IndexStateManager,
+        indexLifecycleStore: IndexLifecycleStore,
         violationTracker: UniquenessViolationTracker,
         indexSubspace: Subspace,
+        maintainerProviders: IndexMaintainerProviderRegistry,
         configurations: [any IndexConfiguration] = [],
         logger: Logger? = nil
     ) {
-        self.indexStateManager = indexStateManager
+        self.indexLifecycleStore = indexLifecycleStore
         self.violationTracker = violationTracker
         self.indexSubspace = indexSubspace
+        self.maintainerProviders = maintainerProviders
         self.configurations = configurations
         self.logger = logger ?? Logger(label: "com.fdb.index.maintenance")
     }
@@ -66,7 +67,7 @@ internal final class IndexMaintenanceService: Sendable {
 
     /// Update indexes for a model change (typed)
     ///
-    /// Uses IndexKindMaintainable protocol to delegate index maintenance to
+    /// Uses IndexMaintainerFactory protocol to delegate index maintenance to
     /// the appropriate IndexMaintainer for each index type.
     ///
     /// - Parameters:
@@ -86,7 +87,7 @@ internal final class IndexMaintenanceService: Sendable {
 
         // Batch fetch all index states for performance
         let indexNames = indexDescriptors.map(\.name)
-        let indexStates = try await indexStateManager.states(of: indexNames, transaction: transaction)
+        let indexStates = try await indexLifecycleStore.states(of: indexNames, transaction: transaction)
 
         for descriptor in indexDescriptors {
             // Check if index should be maintained based on its state
@@ -99,55 +100,43 @@ internal final class IndexMaintenanceService: Sendable {
 
             let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
 
-            // Use IndexKindMaintainable protocol bridge pattern
-            // This ensures all index types are handled correctly by their specialized IndexMaintainer
-            if let maintainable = descriptor.kind as? any IndexKindMaintainable {
-                // Build Index from IndexDescriptor
-                let index = Self.buildIndex(from: descriptor, persistableType: T.persistableType)
-                let idExpression = FieldKeyExpression(fieldName: "id")
-
-                // Create the appropriate IndexMaintainer via protocol bridge
-                let maintainer: any IndexMaintainer<T> = try maintainable.makeIndexMaintainer(
+            let index = Self.buildIndex(
+                from: descriptor,
+                persistableType: T.persistableType
+            )
+            let idExpression = FieldKeyExpression(fieldName: "id")
+            let maintainer: any IndexMaintainer<T> = try maintainerProviders
+                .makeIndexMaintainer(
                     index: index,
                     subspace: indexSubspaceForIndex,
                     idExpression: idExpression,
                     configurations: configurations
                 )
 
-                // Check uniqueness constraint for inserts (newModel != nil)
-                if descriptor.isUnique, let newModel = newModel {
-                    try await checkUniquenessConstraint(
-                        descriptor: descriptor,
-                        model: newModel,
-                        id: id,
-                        oldModel: oldModel,
-                        state: state,
-                        indexSubspace: indexSubspaceForIndex,
-                        transaction: transaction
-                    )
-                }
-
-                // Delegate to IndexMaintainer
-                try await maintainer.updateIndex(
-                    oldItem: oldModel,
-                    newItem: newModel,
+            if descriptor.isUnique, let newModel = newModel {
+                try await checkUniquenessConstraint(
+                    descriptor: descriptor,
+                    model: newModel,
+                    id: id,
+                    oldModel: oldModel,
+                    state: state,
+                    indexSubspace: indexSubspaceForIndex,
                     transaction: transaction
                 )
-            } else {
-                // Fallback for IndexKinds that don't conform to IndexKindMaintainable
-                // This should not happen for well-implemented indexes
-                let kindIdentifier = type(of: descriptor.kind).identifier
-                logger.warning(
-                    "IndexKind '\(kindIdentifier)' does not conform to IndexKindMaintainable. Index '\(descriptor.name)' will not be maintained. Please add IndexKindMaintainable conformance to the IndexKind."
-                )
             }
+
+            try await maintainer.updateIndex(
+                oldItem: oldModel,
+                newItem: newModel,
+                transaction: transaction
+            )
         }
     }
 
     /// Update indexes for type-erased models
     ///
     /// For batch operations where type information is erased.
-    /// Uses IndexKindMaintainable protocol bridge pattern.
+    /// Resolves the runtime model type through the IndexMaintainerFactory contract.
     ///
     /// **Note**: This method uses existential types and is less efficient than the typed version.
     /// For polymorphic operations, the typed `updateIndexes<T>()` is preferred when possible.
@@ -196,7 +185,7 @@ internal final class IndexMaintenanceService: Sendable {
 
         // Batch fetch all index states for performance
         let indexNames = indexDescriptors.map(\.name)
-        let indexStates = try await indexStateManager.states(of: indexNames, transaction: transaction)
+        let indexStates = try await indexLifecycleStore.states(of: indexNames, transaction: transaction)
 
         for descriptor in indexDescriptors {
             // Check if index should be maintained based on its state
@@ -208,49 +197,36 @@ internal final class IndexMaintenanceService: Sendable {
 
             let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
 
-            // Use IndexKindMaintainable protocol bridge pattern
-            if let maintainable = descriptor.kind as? any IndexKindMaintainable {
-                // Build Index from IndexDescriptor
-                let index = Self.buildIndex(
-                    from: descriptor,
-                    persistableType: logicalTypeName ?? modelType.persistableType
-                )
-                let idExpression: KeyExpression = logicalTypeName == nil
-                    ? FieldKeyExpression(fieldName: "id")
-                    : TupleKeyExpression(value: id)
+            let index = Self.buildIndex(
+                from: descriptor,
+                persistableType: logicalTypeName ?? modelType.persistableType
+            )
+            let idExpression: KeyExpression = logicalTypeName == nil
+                ? FieldKeyExpression(fieldName: "id")
+                : TupleKeyExpression(value: id)
 
-                // Check uniqueness constraint for inserts (newModel != nil)
-                // or updates where the indexed value changes
-                if descriptor.isUnique, let newModel = newModel {
-                    try await checkUniquenessConstraintUntyped(
-                        descriptor: descriptor,
-                        model: newModel,
-                        id: id,
-                        oldModel: oldModel,
-                        state: state,
-                        indexSubspace: indexSubspaceForIndex,
-                        transaction: transaction
-                    )
-                }
-
-                // Create maintainer and update index using type-erased helper
-                try await Self.updateIndexWithMaintainable(
-                    maintainable: maintainable,
-                    index: index,
-                    subspace: indexSubspaceForIndex,
-                    idExpression: idExpression,
-                    configurations: configurations,
+            if descriptor.isUnique, let newModel = newModel {
+                try await checkUniquenessConstraintUntyped(
+                    descriptor: descriptor,
+                    model: newModel,
+                    id: id,
                     oldModel: oldModel,
-                    newModel: newModel,
+                    state: state,
+                    indexSubspace: indexSubspaceForIndex,
                     transaction: transaction
                 )
-            } else {
-                // Fallback for IndexKinds that don't conform to IndexKindMaintainable
-                let kindIdentifier = type(of: descriptor.kind).identifier
-                logger.warning(
-                    "IndexKind '\(kindIdentifier)' does not conform to IndexKindMaintainable. Index '\(descriptor.name)' will not be maintained."
-                )
             }
+
+            try await Self.updateIndexWithProvider(
+                maintainerProviders: maintainerProviders,
+                index: index,
+                subspace: indexSubspaceForIndex,
+                idExpression: idExpression,
+                configurations: configurations,
+                oldModel: oldModel,
+                newModel: newModel,
+                transaction: transaction
+            )
         }
     }
 
@@ -259,7 +235,7 @@ internal final class IndexMaintenanceService: Sendable {
     /// Build Index from IndexDescriptor
     ///
     /// Creates an Index object from an IndexDescriptor, constructing the rootExpression
-    /// from the keyPaths. This is used to bridge IndexDescriptor (compile-time metadata)
+    /// from the keyPaths. This converts IndexDescriptor metadata
     /// with IndexMaintainer (runtime execution).
     ///
     /// - Parameters:
@@ -269,23 +245,10 @@ internal final class IndexMaintenanceService: Sendable {
     private static func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> Index {
         let rootExpression = KeyExpressionFactory.from(keyPaths: descriptor.fieldNames)
 
-        if descriptor.keyPaths.isEmpty {
-            return Index(
-                name: descriptor.name,
-                kind: descriptor.kind,
-                rootExpression: rootExpression,
-                subspaceKey: descriptor.name,
-                itemTypes: Set([persistableType]),
-                isUnique: descriptor.isUnique,
-                storedFieldNames: descriptor.storedFieldNames
-            )
-        }
-
         return Index(
             name: descriptor.name,
             kind: descriptor.kind,
             rootExpression: rootExpression,
-            keyPaths: descriptor.keyPaths,
             subspaceKey: descriptor.name,
             itemTypes: Set([persistableType]),
             isUnique: descriptor.isUnique,
@@ -293,12 +256,12 @@ internal final class IndexMaintenanceService: Sendable {
         )
     }
 
-    /// Type-erased helper for updating index with IndexKindMaintainable
+    /// Type-erased helper for updating an index through its registered provider.
     ///
     /// This method handles the type erasure required for `updateIndexesUntyped`.
     /// Uses _openExistential for runtime type dispatch from existential to concrete type.
-    private static func updateIndexWithMaintainable(
-        maintainable: any IndexKindMaintainable,
+    private static func updateIndexWithProvider(
+        maintainerProviders: IndexMaintainerProviderRegistry,
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
@@ -317,15 +280,15 @@ internal final class IndexMaintenanceService: Sendable {
             return
         }
 
-        // Use _openExistential to dispatch to the concrete type
-        // This unwraps the existential and calls the generic helper with the concrete type
-        func helper<T: Persistable>(_ type: T.Type) async throws {
-            let maintainer: any IndexMaintainer<T> = try maintainable.makeIndexMaintainer(
-                index: index,
-                subspace: subspace,
-                idExpression: idExpression,
-                configurations: configurations
-            )
+        // Dispatch the runtime model type to its registered index maintainer.
+        func updateConcreteIndex<T: Persistable>(_ type: T.Type) async throws {
+            let maintainer: any IndexMaintainer<T> = try maintainerProviders
+                .makeIndexMaintainer(
+                    index: index,
+                    subspace: subspace,
+                    idExpression: idExpression,
+                    configurations: configurations
+                )
 
             // Safe cast - we derived modelType from the models so types will match
             let typedOld = oldModel as? T
@@ -338,7 +301,7 @@ internal final class IndexMaintenanceService: Sendable {
             )
         }
 
-        try await _openExistential(modelType, do: helper)
+        try await _openExistential(modelType, do: updateConcreteIndex)
     }
 
     /// Type-erased uniqueness constraint check
@@ -356,7 +319,9 @@ internal final class IndexMaintenanceService: Sendable {
     ) async throws {
         let modelType = type(of: model)
 
-        func helper<T: Persistable>(_ type: T.Type) async throws {
+        func checkConcreteUniquenessConstraint<T: Persistable>(
+            _ type: T.Type
+        ) async throws {
             guard let typedModel = model as? T else { return }
             let typedOld = oldModel as? T
 
@@ -371,7 +336,10 @@ internal final class IndexMaintenanceService: Sendable {
             )
         }
 
-        try await _openExistential(modelType, do: helper)
+        try await _openExistential(
+            modelType,
+            do: checkConcreteUniquenessConstraint
+        )
     }
 
     // MARK: - Static Utilities
@@ -392,7 +360,7 @@ internal final class IndexMaintenanceService: Sendable {
         values: [any TupleElement],
         id: Tuple,
         keyPathCount: Int
-    ) -> [[UInt8]] {
+    ) -> [Bytes] {
         let isSingleFieldArrayIndex = keyPathCount == 1 && values.count > 1
 
         if isSingleFieldArrayIndex {
@@ -416,8 +384,14 @@ internal final class IndexMaintenanceService: Sendable {
     ///   - model: The model to extract values from
     ///   - keyPaths: KeyPaths defining which fields to extract
     /// - Returns: Array of extracted values as TupleElements
-    static func extractIndexValues(from model: any Persistable, keyPaths: [AnyKeyPath]) throws -> [any TupleElement] {
-        try DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)
+    static func extractIndexValues(
+        from model: any Persistable,
+        fieldNames: [String]
+    ) throws -> [any TupleElement] {
+        try DataAccess.evaluate(
+            item: model,
+            expression: KeyExpressionFactory.from(keyPaths: fieldNames)
+        )
     }
 
     /// Extract ID as Tuple from model
@@ -430,13 +404,7 @@ internal final class IndexMaintenanceService: Sendable {
     /// conform to `Codable` (required by `Persistable.ID`). The ID is always a single
     /// `TupleElement` (e.g., String, Int64) which is wrapped in a `Tuple` for key building.
     static func extractIDTuple(from model: any Persistable) throws -> Tuple {
-        let id = model.id
-        let typeName = type(of: model).persistableType
-        if let element = id as? any TupleElement {
-            return Tuple([element])
-        } else {
-            throw IndexMaintenanceError.invalidID(type: typeName)
-        }
+        try model.recordIdentifierTuple()
     }
 
     // MARK: - Private: Helpers
@@ -470,7 +438,10 @@ internal final class IndexMaintenanceService: Sendable {
         transaction: any Transaction
     ) async throws {
         // Extract index values from the new model
-        let values = try Self.extractIndexValues(from: model, keyPaths: descriptor.keyPaths)
+        let values = try Self.extractIndexValues(
+            from: model,
+            fieldNames: descriptor.fieldNames
+        )
         logger.trace("checkUniquenessConstraint: index=\(descriptor.name), values=\(values), state=\(state)")
         guard !values.isEmpty else {
             return
@@ -478,8 +449,7 @@ internal final class IndexMaintenanceService: Sendable {
 
         // Detect array field: single keyPath but multiple values
         // This matches the logic in buildIndexKeys() and ScalarIndexMaintainer
-        let keyPathCount = descriptor.keyPaths.count
-        let isArrayField = keyPathCount == 1 && values.count > 1
+        let isArrayField = descriptor.fieldNames.count == 1 && values.count > 1
 
         if isArrayField {
             // Array field: check each element separately
@@ -537,18 +507,18 @@ internal final class IndexMaintenanceService: Sendable {
         rangeEnd.append(0xFF)
 
         var existingEntryFound = false
-        var existingPrimaryKey: [UInt8]? = nil
+        var existingPrimaryKey: Bytes?
 
         for (key, _) in try await transaction.collectRange(from: .firstGreaterOrEqual(rangeBegin), to: .firstGreaterOrEqual(rangeEnd), limit: 2, snapshot: false) {
             // Parse the key to extract the primary key (last element after value tuple)
-            let keyTuple: Tuple? = (try? Tuple.unpack(from: key)).map { Tuple($0) }
+            let keyTuple = Tuple(try Tuple.unpack(from: key))
 
             // Skip if this is the same record (update case)
             // Uses Tuple equality which is type-agnostic (compares encoded bytes)
             // This supports all TupleElement ID types: String, Int64, UUID, etc.
             if let oldModel = oldModel {
                 let oldId = try Self.extractIDTuple(from: oldModel)
-                if let keyTuple = keyTuple, keyTuple.count >= oldId.count {
+                if keyTuple.count >= oldId.count {
                     // Extract ID portion from the END of the key tuple
                     // Key structure: [subspace prefix][values...][id...]
                     // The ID is always the last oldId.count elements
@@ -580,9 +550,13 @@ internal final class IndexMaintenanceService: Sendable {
 
         // Parse the existing primary key from the index entry
         let existingId: Tuple
-        if let existingKey = existingPrimaryKey,
-           let elements = try? Tuple.unpack(from: existingKey),
-           elements.count > values.count {
+        if let existingKey = existingPrimaryKey {
+            let elements = try Tuple.unpack(from: existingKey)
+            guard elements.count > values.count else {
+                throw IndexMaintenanceError.corruptedIndexKey(
+                    indexName: descriptor.name
+                )
+            }
             let keyTuple = Tuple(elements)
             // Extract ID elements from the end of the key tuple
             var idElements: [any TupleElement] = []
@@ -593,7 +567,9 @@ internal final class IndexMaintenanceService: Sendable {
             }
             existingId = Tuple(idElements)
         } else {
-            existingId = Tuple(["unknown"])
+            throw IndexMaintenanceError.corruptedIndexKey(
+                indexName: descriptor.name
+            )
         }
 
         switch state {
@@ -630,11 +606,14 @@ internal final class IndexMaintenanceService: Sendable {
 /// Errors from IndexMaintenanceService
 enum IndexMaintenanceError: Error, CustomStringConvertible {
     case invalidID(type: String)
+    case corruptedIndexKey(indexName: String)
 
     var description: String {
         switch self {
         case .invalidID(let type):
             return "IndexMaintenanceError: ID for '\(type)' must conform to TupleElement"
+        case .corruptedIndexKey(let indexName):
+            return "IndexMaintenanceError: Index '\(indexName)' contains a malformed key"
         }
     }
 }

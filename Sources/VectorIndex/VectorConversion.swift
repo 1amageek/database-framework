@@ -7,7 +7,12 @@
 // Reference: Consolidates duplicate conversion logic from
 // FlatVectorIndexMaintainer, HNSWIndexMaintainer, IVFIndexMaintainer, PQIndexMaintainer
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseMath
 import StorageKit
 import DatabaseEngine
 
@@ -28,38 +33,6 @@ import DatabaseEngine
 public struct VectorConversion: Sendable {
 
     private init() {}
-
-    // MARK: - TupleElement to Vector
-
-    /// Convert TupleElement array to Float vector
-    ///
-    /// - Parameter elements: Array of TupleElements
-    /// - Returns: Float vector
-    public static func tupleToVector(_ elements: [any TupleElement]) -> [Float] {
-        var vector: [Float] = []
-        vector.reserveCapacity(elements.count)
-        for element in elements {
-            if let f = TypeConversion.asFloat(element) {
-                vector.append(f)
-            }
-            // Skip unsupported types silently
-        }
-        return vector
-    }
-
-    /// Convert Tuple to Float vector
-    ///
-    /// - Parameter tuple: Tuple containing vector elements
-    /// - Returns: Float vector
-    public static func tupleToVector(_ tuple: Tuple) -> [Float] {
-        var elements: [any TupleElement] = []
-        for i in 0..<tuple.count {
-            if let element = tuple[i] {
-                elements.append(element)
-            }
-        }
-        return tupleToVector(elements)
-    }
 
     // MARK: - Vector to Tuple
 
@@ -84,23 +57,35 @@ public struct VectorConversion: Sendable {
     public static func extractFloatArray(from fieldValues: [any TupleElement]) throws -> [Float] {
         var floatArray: [Float] = []
         for element in fieldValues {
-            if let array = element as? [Float] {
-                floatArray.append(contentsOf: array)
-            } else if let array = element as? [Float32] {
-                floatArray.append(contentsOf: array.map { Float($0) })
-            } else if let array = element as? [Double] {
-                floatArray.append(contentsOf: array.map { Float($0) })
-            } else if let f = element as? Float {
-                floatArray.append(f)
-            } else if let d = element as? Double {
-                floatArray.append(Float(d))
+            if let tuple = element as? Tuple {
+                for index in 0..<tuple.count {
+                    try appendNumeric(
+                        try tuple.element(at: index),
+                        to: &floatArray
+                    )
+                }
             } else {
-                throw VectorIndexError.invalidArgument(
-                    "Vector field must contain numeric values, got: \(type(of: element))"
-                )
+                try appendNumeric(element, to: &floatArray)
             }
         }
         return floatArray
+    }
+
+    private static func appendNumeric(
+        _ element: any TupleElement,
+        to values: inout [Float]
+    ) throws {
+        if let f = element as? Float {
+            values.append(f)
+        } else if let d = element as? Double {
+            values.append(Float(d))
+        } else if let integer = element as? Int64 {
+            values.append(Float(integer))
+        } else {
+            throw VectorIndexError.invalidArgument(
+                "Vector field must contain numeric values, got: \(type(of: element))"
+            )
+        }
     }
 
     // MARK: - Byte Conversion
@@ -109,35 +94,34 @@ public struct VectorConversion: Sendable {
     ///
     /// - Parameter floats: Float array
     /// - Returns: Byte array
-    public static func floatArrayToBytes(_ floats: [Float]) -> [UInt8] {
-        var bytes = [UInt8](repeating: 0, count: floats.count * MemoryLayout<Float>.stride)
+    public static func floatArrayToBytes(_ floats: [Float]) -> Bytes {
+        let byteCount = floats.count * MemoryLayout<Float>.stride
         guard !floats.isEmpty else {
-            return bytes
+            return Bytes()
         }
-
+        return Bytes.copying(count: byteCount) { output in
 #if _endian(little)
-        bytes.withUnsafeMutableBytes { output in
             floats.withUnsafeBufferPointer { input in
                 output.copyMemory(from: UnsafeRawBufferPointer(input))
             }
-        }
 #else
-        for index in floats.indices {
-            var value = floats[index].bitPattern.littleEndian
-            withUnsafeBytes(of: &value) { source in
+            for index in floats.indices {
+                let value = floats[index].bitPattern
                 let offset = index * MemoryLayout<Float>.stride
-                bytes.replaceSubrange(offset..<(offset + MemoryLayout<Float>.stride), with: source)
+                output[offset] = UInt8(truncatingIfNeeded: value)
+                output[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+                output[offset + 2] = UInt8(truncatingIfNeeded: value >> 16)
+                output[offset + 3] = UInt8(truncatingIfNeeded: value >> 24)
             }
-        }
 #endif
-        return bytes
+        }
     }
 
     /// Convert bytes to Float array (little-endian)
     ///
     /// - Parameter bytes: Byte array
     /// - Returns: Float array
-    public static func bytesToFloatArray(_ bytes: [UInt8]) -> [Float] {
+    public static func bytesToFloatArray(_ bytes: Bytes) -> [Float] {
         let count = bytes.count / MemoryLayout<Float>.stride
         var floats = [Float](repeating: 0, count: count)
         guard count > 0 else {
@@ -170,7 +154,7 @@ public struct VectorConversion: Sendable {
     /// Decode a Float array from a validated little-endian binary payload.
     ///
     /// Maintainers should use this method when reading persisted vector payloads.
-    public static func decodeFloatArray(_ bytes: [UInt8], expectedCount: Int) throws -> [Float] {
+    public static func decodeFloatArray(_ bytes: Bytes, expectedCount: Int) throws -> [Float] {
         guard bytes.count == expectedCount * 4 else {
             throw VectorIndexError.invalidStructure(
                 "Vector payload length \(bytes.count) does not match expected dimension \(expectedCount)"
@@ -180,40 +164,23 @@ public struct VectorConversion: Sendable {
     }
 
     /// Convert UInt64 to bytes (little-endian)
-    public static func uint64ToBytes(_ value: UInt64) -> [UInt8] {
-        withUnsafeBytes(of: value.littleEndian) { Array($0) }
+    public static func uint64ToBytes(_ value: UInt64) -> Bytes {
+        ByteConversion.uint64ToBytes(value)
     }
 
     /// Convert bytes to UInt64 (little-endian)
-    public static func bytesToUInt64(_ bytes: [UInt8]) -> UInt64 {
-        guard bytes.count == 8 else { return 0 }
-        return UInt64(bytes[0])
-            | (UInt64(bytes[1]) << 8)
-            | (UInt64(bytes[2]) << 16)
-            | (UInt64(bytes[3]) << 24)
-            | (UInt64(bytes[4]) << 32)
-            | (UInt64(bytes[5]) << 40)
-            | (UInt64(bytes[6]) << 48)
-            | (UInt64(bytes[7]) << 56)
+    public static func bytesToUInt64(_ bytes: Bytes) throws -> UInt64 {
+        try ByteConversion.bytesToUInt64(bytes)
     }
 
     /// Convert Int64 to bytes (little-endian)
-    public static func int64ToBytes(_ value: Int64) -> [UInt8] {
-        withUnsafeBytes(of: value.littleEndian) { Array($0) }
+    public static func int64ToBytes(_ value: Int64) -> Bytes {
+        ByteConversion.int64ToBytes(value)
     }
 
     /// Convert bytes to Int64 (little-endian)
-    public static func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
-        guard bytes.count >= 8 else { return 0 }
-        let value = UInt64(bytes[0])
-            | (UInt64(bytes[1]) << 8)
-            | (UInt64(bytes[2]) << 16)
-            | (UInt64(bytes[3]) << 24)
-            | (UInt64(bytes[4]) << 32)
-            | (UInt64(bytes[5]) << 40)
-            | (UInt64(bytes[6]) << 48)
-            | (UInt64(bytes[7]) << 56)
-        return Int64(bitPattern: value)
+    public static func bytesToInt64(_ bytes: Bytes) throws -> Int64 {
+        try ByteConversion.bytesToInt64(bytes)
     }
 }
 
@@ -233,8 +200,8 @@ extension VectorConversion {
             }
         }
 
-        let norm1 = sqrt(Double(values.lhsNormSquared))
-        let norm2 = sqrt(Double(values.rhsNormSquared))
+        let norm1 = DatabaseMath.squareRoot(Double(values.lhsNormSquared))
+        let norm2 = DatabaseMath.squareRoot(Double(values.rhsNormSquared))
         guard norm1 > 0 && norm2 > 0 else { return 2.0 }
         let cosineSimilarity = Double(values.dotProduct) / (norm1 * norm2)
         return 1.0 - cosineSimilarity
@@ -249,7 +216,7 @@ extension VectorConversion {
                 squaredDistance(lhs, rhs)
             }
         }
-        return sqrt(Double(sumSquares))
+        return DatabaseMath.squareRoot(Double(sumSquares))
     }
 
     /// Calculate Euclidean distance squared (faster than sqrt for comparisons)

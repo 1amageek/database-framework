@@ -4,7 +4,11 @@
 // Reference: Hormann, K. & Agathos, A. "The Point in Polygon Problem for Arbitrary Polygons",
 // Computational Geometry, 2001
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import DatabaseEngine
 import Geospatial
 

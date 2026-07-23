@@ -14,7 +14,11 @@
 //   - Detect transitive properties for BFS optimization (F-3)
 //   - Check functional property hints for cardinality estimation (F-4)
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Graph
 
 import OntologyIndex
@@ -46,6 +50,13 @@ public struct OntologyContext: Sendable {
     /// Pre-computed role hierarchy for property expansion
     private let roleHierarchy: RoleHierarchy
 
+    /// Immutable direction-aware physical scan closure for every known role.
+    /// It is built at runtime bootstrap so request execution performs no
+    /// ontology Set traversal or closure allocation.
+    private let entailedPropertyScans: [
+        String: [OntologyEntailedPropertyScan]
+    ]
+
     /// Initialize from an OWL ontology
     ///
     /// Eagerly computes transitive closures for all role hierarchies.
@@ -53,6 +64,9 @@ public struct OntologyContext: Sendable {
         var rh = RoleHierarchy(ontology: ontology)
         rh.ensureClosuresComputed()
         self.roleHierarchy = rh
+        self.entailedPropertyScans = Self.makeEntailedPropertyScans(
+            roleHierarchy: rh
+        )
     }
 
     /// Initialize from a pre-built role hierarchy
@@ -62,6 +76,9 @@ public struct OntologyContext: Sendable {
         var rh = roleHierarchy
         rh.ensureClosuresComputed()
         self.roleHierarchy = rh
+        self.entailedPropertyScans = Self.makeEntailedPropertyScans(
+            roleHierarchy: rh
+        )
     }
 
     /// Get all sub-properties of a property (transitive closure)
@@ -118,6 +135,110 @@ public struct OntologyContext: Sendable {
     public func expandedProperties(of propertyIRI: String) -> Set<String> {
         var result = Set<String>([propertyIRI])
         result.formUnion(subProperties(of: propertyIRI))
+        return result
+    }
+
+    /// Returns a deterministic direction-aware closure for a known ontology
+    /// property. Unknown properties return `nil` and require one direct scan.
+    func knownEntailedPropertyScans(
+        of propertyIRI: String
+    ) -> [OntologyEntailedPropertyScan]? {
+        entailedPropertyScans[propertyIRI]
+    }
+
+    private static func makeEntailedPropertyScans(
+        roleHierarchy: RoleHierarchy
+    ) -> [String: [OntologyEntailedPropertyScan]] {
+        var roleUniverse = roleHierarchy.allRoles
+        var discoveredRole = true
+        while discoveredRole {
+            discoveredRole = false
+            let currentRoles = roleUniverse
+            for role in currentRoles {
+                guard let inverse = roleHierarchy.inverse(of: role) else {
+                    continue
+                }
+                if roleUniverse.insert(inverse).inserted {
+                    discoveredRole = true
+                }
+            }
+        }
+
+        let orderedRoles = roleUniverse.sorted()
+        var result: [String: [OntologyEntailedPropertyScan]] = [:]
+        result.reserveCapacity(orderedRoles.count)
+
+        for requestedRole in orderedRoles {
+            let initial = OntologyEntailedPropertyScan(
+                predicateIRI: requestedRole,
+                isInverse: false
+            )
+            var closure: [OntologyEntailedPropertyScan] = [initial]
+            var seen: Set<OntologyEntailedPropertyScan> = [initial]
+            var cursor = 0
+
+            while cursor < closure.count {
+                let current = closure[cursor]
+                cursor += 1
+                var candidates: [OntologyEntailedPropertyScan] = []
+
+                for subrole in roleHierarchy
+                    .subRolesPrecomputed(of: current.predicateIRI)
+                    .sorted() {
+                    candidates.append(
+                        OntologyEntailedPropertyScan(
+                            predicateIRI: subrole,
+                            isInverse: current.isInverse
+                        )
+                    )
+                }
+
+                if let inverse = roleHierarchy.inverse(
+                    of: current.predicateIRI
+                ) {
+                    candidates.append(
+                        OntologyEntailedPropertyScan(
+                            predicateIRI: inverse,
+                            isInverse: !current.isInverse
+                        )
+                    )
+                }
+
+                for reverseDeclaredRole in orderedRoles {
+                    guard roleHierarchy.inverse(of: reverseDeclaredRole)
+                            == current.predicateIRI else {
+                        continue
+                    }
+                    candidates.append(
+                        OntologyEntailedPropertyScan(
+                            predicateIRI: reverseDeclaredRole,
+                            isInverse: !current.isInverse
+                        )
+                    )
+                }
+
+                if roleHierarchy.isSymmetric(current.predicateIRI) {
+                    candidates.append(
+                        OntologyEntailedPropertyScan(
+                            predicateIRI: current.predicateIRI,
+                            isInverse: !current.isInverse
+                        )
+                    )
+                }
+
+                candidates.sort { lhs, rhs in
+                    if lhs.predicateIRI != rhs.predicateIRI {
+                        return lhs.predicateIRI < rhs.predicateIRI
+                    }
+                    return !lhs.isInverse && rhs.isInverse
+                }
+                for candidate in candidates {
+                    guard seen.insert(candidate).inserted else { continue }
+                    closure.append(candidate)
+                }
+            }
+            result[requestedRole] = closure
+        }
         return result
     }
 }

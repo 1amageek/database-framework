@@ -7,6 +7,7 @@ import Testing
 import TestHeartbeat
 import Foundation
 import Core
+import DatabaseValue
 @testable import DatabaseEngine
 
 // MARK: - Test Models
@@ -139,7 +140,7 @@ private struct UnprotectedItem: Persistable {
 }
 
 /// Simple auth context for testing
-private struct TestAuth: AuthContext {
+private struct AuthenticatedUserContext: AuthContext {
     let userID: String
     var roles: Set<String> = []
 }
@@ -152,7 +153,7 @@ struct FilterByGetAccessTests {
     // A1: Only owner's items pass through
     @Test("filterByGetAccess returns only items owned by current user")
     func ownerOnlyPassThrough() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
@@ -162,7 +163,7 @@ struct FilterByGetAccessTests {
             OwnedItem(ownerID: "alice", name: "Alice's second item"),
         ]
 
-        let filtered = AuthContextKey.$current.withValue(TestAuth(userID: "alice")) {
+        let filtered = AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "alice")) {
             delegate.filterByGetAccess(items)
         }
 
@@ -173,7 +174,7 @@ struct FilterByGetAccessTests {
     // A2: All items denied when unauthenticated
     @Test("filterByGetAccess returns empty array when unauthenticated")
     func allDeniedWhenUnauthenticated() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
@@ -191,7 +192,7 @@ struct FilterByGetAccessTests {
     // A3: Admin passes all items through
     @Test("filterByGetAccess returns all items for admin")
     func adminBypassesFilter() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true, adminRoles: ["admin"])
         )
 
@@ -201,7 +202,7 @@ struct FilterByGetAccessTests {
             OwnedItem(ownerID: "carol", name: "Carol's item"),
         ]
 
-        let filtered = AuthContextKey.$current.withValue(TestAuth(userID: "admin-user", roles: ["admin"])) {
+        let filtered = AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "admin-user", roles: ["admin"])) {
             delegate.filterByGetAccess(items)
         }
 
@@ -211,7 +212,7 @@ struct FilterByGetAccessTests {
     // A4: No SecurityPolicy + strict:false → all items pass
     @Test("filterByGetAccess returns all items when SecurityPolicy not implemented and strict is false")
     func noSecurityPolicyNonStrict() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: false)
         )
 
@@ -220,7 +221,7 @@ struct FilterByGetAccessTests {
             UnprotectedItem(name: "Item 2"),
         ]
 
-        let filtered = AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        let filtered = AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             delegate.filterByGetAccess(items)
         }
 
@@ -230,7 +231,7 @@ struct FilterByGetAccessTests {
     // A5: No SecurityPolicy + strict:true → all items denied
     @Test("filterByGetAccess returns empty array when SecurityPolicy not implemented and strict is true")
     func noSecurityPolicyStrict() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
@@ -239,7 +240,7 @@ struct FilterByGetAccessTests {
             UnprotectedItem(name: "Item 2"),
         ]
 
-        let filtered = AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        let filtered = AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             delegate.filterByGetAccess(items)
         }
 
@@ -247,7 +248,7 @@ struct FilterByGetAccessTests {
     }
 }
 
-// MARK: - Category B: DefaultSecurityDelegate LIST+GET Integration Tests
+// MARK: - Category B: RequestSecurityPolicyDelegate LIST+GET Integration Tests
 
 @Suite("Security Filtering - LIST+GET Integration", .serialized, .heartbeat)
 struct ListGetIntegrationTests {
@@ -255,7 +256,7 @@ struct ListGetIntegrationTests {
     // B1: evaluateList succeeds, then filterByGetAccess filters by owner
     @Test("LIST passes then GET filters by owner")
     func listPassGetFilters() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
@@ -265,7 +266,7 @@ struct ListGetIntegrationTests {
             OwnedItem(ownerID: "carol", name: "Carol"),
         ]
 
-        let result = AuthContextKey.$current.withValue(TestAuth(userID: "alice")) {
+        let result = AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "alice")) {
             // Step 1: LIST evaluation (should succeed for authenticated user)
             do {
                 try delegate.evaluateList(
@@ -290,7 +291,7 @@ struct ListGetIntegrationTests {
     // B3: LIST denied → SecurityError
     @Test("LIST denied throws SecurityError")
     func listDeniedThrows() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
@@ -310,12 +311,12 @@ struct ListGetIntegrationTests {
     func countDoesNotFilter() throws {
         // Verify the delegate protocol has no count-specific method
         // Count operations only evaluate LIST, which is correct behavior
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         // LIST should succeed for authenticated user
-        try AuthContextKey.$current.withValue(TestAuth(userID: "alice")) {
+        try AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "alice")) {
             try delegate.evaluateList(
                 type: OwnedItem.self,
                 limit: nil,
@@ -329,14 +330,14 @@ struct ListGetIntegrationTests {
     // B6: Single GET (fetch by ID) throws on denial (not filter)
     @Test("Single GET throws SecurityError on denial")
     func singleGetThrowsOnDenial() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         let item = OwnedItem(ownerID: "alice", name: "Alice's item")
 
         // Bob trying to GET Alice's item → throws
-        AuthContextKey.$current.withValue(TestAuth(userID: "bob")) {
+        AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "bob")) {
             #expect(throws: SecurityError.self) {
                 try delegate.evaluateGet(item)
             }
@@ -346,13 +347,13 @@ struct ListGetIntegrationTests {
     // B6 complement: Single GET succeeds for owner
     @Test("Single GET succeeds for resource owner")
     func singleGetSucceedsForOwner() throws {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         let item = OwnedItem(ownerID: "alice", name: "Alice's item")
 
-        try AuthContextKey.$current.withValue(TestAuth(userID: "alice")) {
+        try AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "alice")) {
             try delegate.evaluateGet(item)
         }
     }
@@ -386,13 +387,13 @@ struct SecurityErrorDiagnosticTests {
     // D1: GET denial includes userID
     @Test("GET denial SecurityError includes userID")
     func getDenialIncludesUserID() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         let item = OwnedItem(ownerID: "alice", name: "Alice's item")
 
-        AuthContextKey.$current.withValue(TestAuth(userID: "bob")) {
+        AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "bob")) {
             do {
                 try delegate.evaluateGet(item)
                 Issue.record("Should have thrown SecurityError")
@@ -410,7 +411,7 @@ struct SecurityErrorDiagnosticTests {
     // D2: LIST denial includes targetType
     @Test("LIST denial SecurityError includes targetType")
     func listDenialIncludesTargetType() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
@@ -434,13 +435,13 @@ struct SecurityErrorDiagnosticTests {
     // D3: Strict mode error mentions SecurityPolicy
     @Test("Strict mode error reason contains SecurityPolicy")
     func strictModeErrorMentionsSecurityPolicy() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
         let item = UnprotectedItem(name: "Test")
 
-        AuthContextKey.$current.withValue(TestAuth(userID: "user1")) {
+        AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "user1")) {
             do {
                 try delegate.evaluateGet(item)
                 Issue.record("Should have thrown SecurityError")
@@ -497,7 +498,7 @@ struct SecurityEdgeCaseTests {
     // E1: Security disabled → no filtering
     @Test("Security disabled returns all items without filtering")
     func securityDisabledNoFiltering() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .disabled
         )
 
@@ -514,7 +515,7 @@ struct SecurityEdgeCaseTests {
     // E2: Admin bypasses all filtering
     @Test("Admin role bypasses GET filtering completely")
     func adminBypassesFiltering() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true, adminRoles: ["admin"])
         )
 
@@ -524,7 +525,7 @@ struct SecurityEdgeCaseTests {
             OwnedItem(ownerID: "carol", name: "Carol"),
         ]
 
-        let filtered = AuthContextKey.$current.withValue(TestAuth(userID: "superadmin", roles: ["admin"])) {
+        let filtered = AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "superadmin", roles: ["admin"])) {
             delegate.filterByGetAccess(items)
         }
 
@@ -534,7 +535,7 @@ struct SecurityEdgeCaseTests {
     // E3: No auth + strict:false + no SecurityPolicy → all items pass
     @Test("No auth with non-strict mode and no SecurityPolicy returns all items")
     func noAuthNonStrictNoPolicy() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: false)
         )
 
@@ -552,11 +553,11 @@ struct SecurityEdgeCaseTests {
     // E4: Empty array input
     @Test("filterByGetAccess handles empty array")
     func emptyArrayHandled() {
-        let delegate = DefaultSecurityDelegate(
+        let delegate = RequestSecurityPolicyDelegate(
             configuration: .enabled(strict: true)
         )
 
-        let filtered: [OwnedItem] = AuthContextKey.$current.withValue(TestAuth(userID: "alice")) {
+        let filtered: [OwnedItem] = AuthContextKey.$current.withValue(AuthenticatedUserContext(userID: "alice")) {
             delegate.filterByGetAccess([])
         }
 

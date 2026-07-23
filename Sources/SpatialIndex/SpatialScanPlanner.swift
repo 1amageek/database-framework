@@ -1,8 +1,13 @@
 // SpatialScanPlanner.swift
 // SpatialIndex - Backend-independent scan planning for spatial encodings
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 import DatabaseEngine
 import Geospatial
 
@@ -103,7 +108,10 @@ internal enum SpatialScanPlanner {
     ) -> (minLat: Double, minLon: Double, maxLat: Double, maxLon: Double) {
         let radiusKm = radiusMeters / 1000.0
         let latDelta = radiusKm / 111.0
-        let longitudeScale = max(cos(center.latitude * .pi / 180.0), 0.000001)
+        let longitudeScale = max(
+            DatabaseMath.cosine(center.latitude * .pi / 180.0),
+            0.000001
+        )
         let lonDelta = radiusKm / (111.0 * longitudeScale)
 
         return (

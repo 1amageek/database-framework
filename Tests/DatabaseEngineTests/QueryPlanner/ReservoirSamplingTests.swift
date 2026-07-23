@@ -199,7 +199,7 @@ struct ReservoirSamplingTests {
     // MARK: - Histogram Building
 
     @Test("Reservoir should build histogram from numeric samples")
-    func testBuildHistogramNumeric() {
+    func testBuildHistogramNumeric() throws {
         var sampler = ReservoirSampling<Int>(reservoirSize: 1000)
 
         // Add uniformly distributed values
@@ -207,7 +207,7 @@ struct ReservoirSamplingTests {
             sampler.add(i % 100)  // Values 0-99
         }
 
-        let histogram = sampler.buildHistogram(bucketCount: 10)
+        let histogram = try sampler.buildHistogram(bucketCount: 10)
 
         #expect(!histogram.isEmpty)
         #expect(histogram.count <= 10)

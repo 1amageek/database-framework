@@ -7,44 +7,45 @@ import Testing
 import TestHeartbeat
 import Foundation
 import Core
+import DatabaseValue
 @testable import DatabaseEngine
 @testable import Core
 
 // MARK: - Test Structures
 
 /// Test address structure (nested type)
-struct TestAddress: Sendable, Codable {
+struct MailingAddress: Sendable, Codable {
     var street: String
     var city: String
     var zipCode: String
 }
 
 /// Test profile structure (deeply nested)
-struct TestProfile: Sendable, Codable {
+struct UserProfile: Sendable, Codable {
     var bio: String
     var website: String
 }
 
 /// Test user with nested address
 @Persistable
-struct TestUserWithAddress {
+struct UserWithAddress {
     var email: String
     var name: String
-    var address: TestAddress
+    var address: MailingAddress
 }
 
 /// Test user with deeply nested profile
 @Persistable
-struct TestUserWithProfile {
+struct UserWithProfile {
     var email: String
     var name: String
-    var profile: TestProfile
-    var address: TestAddress
+    var profile: UserProfile
+    var address: MailingAddress
 }
 
 /// Simple test user without nested fields
 @Persistable
-struct TestSimpleUser {
+struct SimpleUser {
     var email: String
     var name: String
     var age: Int64
@@ -59,7 +60,7 @@ struct DataAccessTests {
 
     @Test("extractField extracts simple string field")
     func testExtractSimpleStringField() throws {
-        let user = TestSimpleUser(email: "test@example.com", name: "Test User", age: 30)
+        let user = SimpleUser(email: "test@example.com", name: "Test User", age: 30)
 
         let values = try DataAccess.extractField(from: user, keyPath: "email")
 
@@ -69,7 +70,7 @@ struct DataAccessTests {
 
     @Test("extractField extracts simple integer field")
     func testExtractSimpleIntegerField() throws {
-        let user = TestSimpleUser(email: "test@example.com", name: "Test User", age: 30)
+        let user = SimpleUser(email: "test@example.com", name: "Test User", age: 30)
 
         let values = try DataAccess.extractField(from: user, keyPath: "age")
 
@@ -79,7 +80,7 @@ struct DataAccessTests {
 
     @Test("extractField throws for non-existent field")
     func testExtractNonExistentField() throws {
-        let user = TestSimpleUser(email: "test@example.com", name: "Test User", age: 30)
+        let user = SimpleUser(email: "test@example.com", name: "Test User", age: 30)
 
         #expect(throws: DataAccessError.self) {
             _ = try DataAccess.extractField(from: user, keyPath: "nonExistent")
@@ -90,8 +91,8 @@ struct DataAccessTests {
 
     @Test("extractField extracts nested field with dot notation")
     func testExtractNestedField() throws {
-        let address = TestAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
-        let user = TestUserWithAddress(email: "test@example.com", name: "Test User", address: address)
+        let address = MailingAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
+        let user = UserWithAddress(email: "test@example.com", name: "Test User", address: address)
 
         let values = try DataAccess.extractField(from: user, keyPath: "address.city")
 
@@ -101,8 +102,8 @@ struct DataAccessTests {
 
     @Test("extractField extracts all nested fields")
     func testExtractAllNestedFields() throws {
-        let address = TestAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
-        let user = TestUserWithAddress(email: "test@example.com", name: "Test User", address: address)
+        let address = MailingAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
+        let user = UserWithAddress(email: "test@example.com", name: "Test User", address: address)
 
         let streetValues = try DataAccess.extractField(from: user, keyPath: "address.street")
         let cityValues = try DataAccess.extractField(from: user, keyPath: "address.city")
@@ -115,8 +116,8 @@ struct DataAccessTests {
 
     @Test("extractField throws for non-existent nested field")
     func testExtractNonExistentNestedField() throws {
-        let address = TestAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
-        let user = TestUserWithAddress(email: "test@example.com", name: "Test User", address: address)
+        let address = MailingAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
+        let user = UserWithAddress(email: "test@example.com", name: "Test User", address: address)
 
         #expect(throws: DataAccessError.self) {
             _ = try DataAccess.extractField(from: user, keyPath: "address.nonExistent")
@@ -125,7 +126,7 @@ struct DataAccessTests {
 
     @Test("extractField throws for invalid nested path")
     func testExtractInvalidNestedPath() throws {
-        let user = TestSimpleUser(email: "test@example.com", name: "Test User", age: 30)
+        let user = SimpleUser(email: "test@example.com", name: "Test User", age: 30)
 
         // email is not a struct, so email.something should fail
         #expect(throws: DataAccessError.self) {
@@ -137,7 +138,7 @@ struct DataAccessTests {
 
     @Test("evaluate simple FieldKeyExpression")
     func testEvaluateSimpleFieldExpression() throws {
-        let user = TestSimpleUser(email: "test@example.com", name: "Test User", age: 30)
+        let user = SimpleUser(email: "test@example.com", name: "Test User", age: 30)
         let expr = FieldKeyExpression(fieldName: "email")
 
         let values = try DataAccess.evaluate(item: user, expression: expr)
@@ -148,8 +149,8 @@ struct DataAccessTests {
 
     @Test("evaluate NestExpression for nested field")
     func testEvaluateNestExpression() throws {
-        let address = TestAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
-        let user = TestUserWithAddress(email: "test@example.com", name: "Test User", address: address)
+        let address = MailingAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
+        let user = UserWithAddress(email: "test@example.com", name: "Test User", address: address)
 
         // Build NestExpression: address.city
         let childExpr = FieldKeyExpression(fieldName: "city")
@@ -163,8 +164,8 @@ struct DataAccessTests {
 
     @Test("evaluate ConcatenateKeyExpression with nested field")
     func testEvaluateConcatenateWithNested() throws {
-        let address = TestAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
-        let user = TestUserWithAddress(email: "test@example.com", name: "Test User", address: address)
+        let address = MailingAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
+        let user = UserWithAddress(email: "test@example.com", name: "Test User", address: address)
 
         // Build: [email, address.city]
         let emailExpr = FieldKeyExpression(fieldName: "email")
@@ -183,8 +184,8 @@ struct DataAccessTests {
 
     @Test("evaluate KeyExpression created from factory")
     func testEvaluateFactoryCreatedExpression() throws {
-        let address = TestAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
-        let user = TestUserWithAddress(email: "test@example.com", name: "Test User", address: address)
+        let address = MailingAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
+        let user = UserWithAddress(email: "test@example.com", name: "Test User", address: address)
 
         // Use factory to create expression from dot notation
         let expr = KeyExpressionFactory.from(dotNotation: "address.city")
@@ -197,8 +198,8 @@ struct DataAccessTests {
 
     @Test("evaluate composite index expression with nested fields")
     func testEvaluateCompositeIndexExpression() throws {
-        let address = TestAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
-        let user = TestUserWithAddress(email: "test@example.com", name: "Test User", address: address)
+        let address = MailingAddress(street: "123 Main St", city: "San Francisco", zipCode: "94102")
+        let user = UserWithAddress(email: "test@example.com", name: "Test User", address: address)
 
         // Build composite index: [address.city, address.zipCode]
         let expr = KeyExpressionFactory.from(keyPaths: ["address.city", "address.zipCode"])

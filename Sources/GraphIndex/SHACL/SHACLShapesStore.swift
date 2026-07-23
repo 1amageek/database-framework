@@ -7,7 +7,11 @@
 // Reference: W3C SHACL §2.1 (Shapes Graph)
 // https://www.w3.org/TR/shacl/#shapes-graph
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Graph
 
@@ -60,7 +64,7 @@ struct SHACLShapesStore: Sendable {
     ) throws {
         let data = try JSONEncoder().encode(graph)
         let key = graphKey(graph.iri)
-        transaction.setValue(Array(data), for: key)
+        try transaction.setValue(Bytes(data), for: key)
     }
 
     // MARK: - Get
@@ -100,10 +104,16 @@ struct SHACLShapesStore: Sendable {
 
         var iris: [String] = []
         for (key, _) in stream {
-            if let tuple = try? graphsSubspace.unpack(key),
-               let iri = tuple[0] as? String {
-                iris.append(iri)
+            let tuple = try graphsSubspace.unpack(key)
+            guard tuple.count == 1,
+                  let iri = tuple[0] as? String else {
+                throw StorageError(
+                    code: .dataCorruption,
+                    operation: .read,
+                    message: "SHACL shapes graph key has an invalid tuple layout"
+                )
             }
+            iris.append(iri)
         }
         return iris
     }
@@ -118,9 +128,9 @@ struct SHACLShapesStore: Sendable {
     func delete(
         iri: String,
         transaction: any Transaction
-    ) {
+    ) throws {
         let key = graphKey(iri)
-        transaction.clear(key: key)
+        try transaction.clear(key: key)
     }
 
     /// Delete all shapes graphs
@@ -128,8 +138,8 @@ struct SHACLShapesStore: Sendable {
     /// - Parameter transaction: The FDB transaction
     func deleteAll(
         transaction: any Transaction
-    ) {
+    ) throws {
         let (beginKey, endKey) = graphsSubspace.range()
-        transaction.clearRange(beginKey: beginKey, endKey: endKey)
+        try transaction.clearRange(beginKey: beginKey, endKey: endKey)
     }
 }

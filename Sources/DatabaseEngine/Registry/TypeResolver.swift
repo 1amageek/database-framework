@@ -1,10 +1,14 @@
 // TypeResolver.swift
 // DatabaseEngine - Type resolution from Schema
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
-/// Resolves type names to Schema.Entity and finds graph indexes
+/// Resolves persisted type names to schema entities.
 ///
 /// Used by SPARQLFunctionRewriter to dynamically resolve types
 /// from SQL SPARQL() function calls.
@@ -13,7 +17,6 @@ import Core
 /// ```swift
 /// let resolver = TypeResolver(schema: container.schema)
 /// let entity = try resolver.resolve(typeName: "RDFTriple")
-/// let graphIndex = try resolver.findGraphIndex(for: entity)
 /// ```
 public struct TypeResolver: Sendable {
     private let schema: Schema
@@ -35,20 +38,5 @@ public struct TypeResolver: Sendable {
             throw SPARQLFunctionError.typeNotFound(typeName)
         }
         return entity
-    }
-
-    /// Find graph index descriptor for an entity
-    ///
-    /// - Parameter entity: The entity to search
-    /// - Returns: First graph index descriptor found
-    /// - Throws: `SPARQLFunctionError.graphIndexNotFound` if no graph index exists
-    public func findGraphIndex(for entity: Schema.Entity) throws -> IndexDescriptor {
-        // indexDescriptors is [IndexDescriptor], find first graph index
-        for descriptor in entity.indexDescriptors {
-            if type(of: descriptor.kind).identifier == "graph" {
-                return descriptor
-            }
-        }
-        throw SPARQLFunctionError.graphIndexNotFound(entity.name)
     }
 }

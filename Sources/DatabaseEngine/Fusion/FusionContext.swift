@@ -1,7 +1,11 @@
 // FusionContext.swift
 // DatabaseEngine - TaskLocal context for FusionQuery initialization
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// TaskLocal storage for IndexQueryContext during fusion query building

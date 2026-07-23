@@ -1,9 +1,14 @@
 // IndexSearcher.swift
 // QueryPlanner - Index search abstraction
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
+import DatabaseMath
 #if canImport(Accelerate)
 import Accelerate
 #endif
@@ -364,8 +369,8 @@ public struct ScalarIndexSearcher: IndexSearcher {
     ///
     /// Key structure: [subspace]/[fieldValue1]/[fieldValue2]/.../[primaryKey]
     private func parseIndexEntry(
-        key: [UInt8],
-        value: [UInt8],
+        key: Bytes,
+        value: Bytes,
         subspace: Subspace
     ) throws -> IndexEntry {
         // Unpack key relative to subspace
@@ -397,19 +402,10 @@ public struct ScalarIndexSearcher: IndexSearcher {
         }
         let itemID = Tuple(idElements)
 
-        // Parse stored values from value (for covering indexes) as Tuple
-        let storedValues: Tuple
-        if !value.isEmpty {
-            let valueElements = try Tuple.unpack(from: value)
-            storedValues = Tuple(valueElements)
-        } else {
-            storedValues = Tuple()
-        }
-
         return IndexEntry(
             itemID: itemID,
             keyValues: keyValues,
-            storedValues: storedValues
+            coveringValue: value
         )
     }
 }
@@ -495,9 +491,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
             var postings: [PostingEntry] = []
 
             for try await (key, value) in reader.scanSubspace(termSubspace) {
-                guard let keyTuple = try? termSubspace.unpack(key) else {
-                    continue
-                }
+                let keyTuple = try termSubspace.unpack(key)
 
                 // Build primary key
                 var idElements: [any TupleElement] = []
@@ -509,7 +503,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
                 let packedID = Tuple(idElements).pack()
 
                 // Parse term frequency and positions from value
-                let (termFreq, positions) = parsePostingValue(value)
+                let (termFreq, positions) = try parsePostingValue(value)
 
                 postings.append(PostingEntry(
                     packedID: packedID,
@@ -560,7 +554,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
             let entry = IndexEntry(
                 itemID: itemID,
                 keyValues: Tuple(normalizedTerms.map { $0 as any TupleElement }),
-                storedValues: Tuple(),
+                coveringValue: [],
                 score: doc.score
             )
             results.append(entry)
@@ -577,14 +571,14 @@ public struct FullTextIndexSearcher: IndexSearcher {
 
     /// Posting entry with term frequency and positions
     private struct PostingEntry {
-        let packedID: [UInt8]
+        let packedID: Bytes
         let termFreq: Int
         let positions: [Int]
     }
 
     /// Document with BM25 score
     private struct ScoredDocument {
-        let packedID: [UInt8]
+        let packedID: Bytes
         var score: Double
     }
 
@@ -632,7 +626,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
 
     /// Load document length for a specific document
     private func loadDocLength(
-        packedID: [UInt8],
+        packedID: Bytes,
         from metaSubspace: Subspace,
         using reader: StorageReader
     ) async throws -> Int {
@@ -653,39 +647,53 @@ public struct FullTextIndexSearcher: IndexSearcher {
     }
 
     /// Parse posting value to extract term frequency and positions
-    private func parsePostingValue(_ value: [UInt8]) -> (termFreq: Int, positions: [Int]) {
+    private func parsePostingValue(
+        _ value: Bytes
+    ) throws -> (termFreq: Int, positions: [Int]) {
         guard !value.isEmpty else {
-            return (1, []) // Legacy: no value means tf=1
+            throw IndexSearchError.invalidValueFormat(
+                message: "Full-text posting value is empty"
+            )
         }
 
-        do {
-            let elements = try Tuple.unpack(from: value)
-            guard !elements.isEmpty else {
-                return (1, [])
-            }
-
-            // First element is term frequency
-            var termFreq = 1
-            if let tf = elements.first as? Int64 {
-                termFreq = Int(tf)
-            } else if let tf = elements.first as? Int {
-                termFreq = tf
-            }
-
-            // Remaining elements are positions
-            var positions: [Int] = []
-            for i in 1..<elements.count {
-                if let pos = elements[i] as? Int64 {
-                    positions.append(Int(pos))
-                } else if let pos = elements[i] as? Int {
-                    positions.append(pos)
-                }
-            }
-
-            return (termFreq, positions)
-        } catch {
-            return (1, [])
+        let elements = try Tuple.unpack(from: value)
+        guard let first = elements.first else {
+            throw IndexSearchError.invalidValueFormat(
+                message: "Full-text posting tuple is empty"
+            )
         }
+        let termFreq: Int
+        if let value = first as? Int64, let exact = Int(exactly: value) {
+            termFreq = exact
+        } else if let value = first as? Int {
+            termFreq = value
+        } else {
+            throw IndexSearchError.invalidValueFormat(
+                message: "Full-text term frequency is not an integer"
+            )
+        }
+        guard termFreq > 0 else {
+            throw IndexSearchError.invalidValueFormat(
+                message: "Full-text term frequency must be positive"
+            )
+        }
+
+        var positions: [Int] = []
+        positions.reserveCapacity(max(0, elements.count - 1))
+        for index in 1..<elements.count {
+            let element = elements[index]
+            if let value = element as? Int64,
+               let exact = Int(exactly: value) {
+                positions.append(exact)
+            } else if let value = element as? Int {
+                positions.append(value)
+            } else {
+                throw IndexSearchError.invalidValueFormat(
+                    message: "Full-text position is not an integer"
+                )
+            }
+        }
+        return (termFreq, positions)
     }
 
     /// Intersect posting lists with BM25 scoring (shortest-first optimization)
@@ -704,7 +712,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
         guard let first = sorted.first else { return [] }
 
         // Build initial candidate set from shortest list
-        var candidates: [ArraySlice<UInt8>: ScoredDocument] = [:]
+        var candidates: [Bytes: ScoredDocument] = [:]
         let idf = calculateIDF(docFreq: first.postings.count, totalDocs: stats.totalDocs)
 
         for posting in first.postings {
@@ -719,12 +727,15 @@ public struct FullTextIndexSearcher: IndexSearcher {
                 avgDocLength: stats.avgDocLength,
                 idf: idf
             )
-            candidates[posting.packedID[...]] = ScoredDocument(packedID: posting.packedID, score: score)
+            candidates[posting.packedID] = ScoredDocument(
+                packedID: posting.packedID,
+                score: score
+            )
         }
 
         // Intersect with remaining lists
         for termPosting in sorted.dropFirst() {
-            let postingSet = Set(termPosting.postings.map { $0.packedID[...] })
+            let postingSet = Set(termPosting.postings.map(\.packedID))
             let idf = calculateIDF(docFreq: termPosting.postings.count, totalDocs: stats.totalDocs)
 
             // Remove candidates not in this posting list
@@ -732,7 +743,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
 
             // Add scores for matched documents
             for posting in termPosting.postings {
-                if var doc = candidates[posting.packedID[...]] {
+                if var doc = candidates[posting.packedID] {
                     let docLength = try await loadDocLength(
                         packedID: posting.packedID,
                         from: metaSubspace,
@@ -745,7 +756,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
                         idf: idf
                     )
                     doc.score += score
-                    candidates[posting.packedID[...]] = doc
+                    candidates[posting.packedID] = doc
                 }
             }
 
@@ -763,7 +774,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
         metaSubspace: Subspace,
         reader: StorageReader
     ) async throws -> [ScoredDocument] {
-        var documents: [ArraySlice<UInt8>: ScoredDocument] = [:]
+        var documents: [Bytes: ScoredDocument] = [:]
 
         for termPosting in termPostings {
             let idf = calculateIDF(docFreq: termPosting.postings.count, totalDocs: stats.totalDocs)
@@ -781,11 +792,14 @@ public struct FullTextIndexSearcher: IndexSearcher {
                     idf: idf
                 )
 
-                if var doc = documents[posting.packedID[...]] {
+                if var doc = documents[posting.packedID] {
                     doc.score += score
-                    documents[posting.packedID[...]] = doc
+                    documents[posting.packedID] = doc
                 } else {
-                    documents[posting.packedID[...]] = ScoredDocument(packedID: posting.packedID, score: score)
+                    documents[posting.packedID] = ScoredDocument(
+                        packedID: posting.packedID,
+                        score: score
+                    )
                 }
             }
         }
@@ -819,20 +833,23 @@ public struct FullTextIndexSearcher: IndexSearcher {
         )
 
         // Build position map for phrase checking
-        var positionsByDoc: [ArraySlice<UInt8>: [[Int]]] = [:]
+        var positionsByDoc: [Bytes: [[Int]]] = [:]
         for (termIndex, termPosting) in termPostings.enumerated() {
             for posting in termPosting.postings {
-                if positionsByDoc[posting.packedID[...]] == nil {
-                    positionsByDoc[posting.packedID[...]] = Array(repeating: [], count: termPostings.count)
+                if positionsByDoc[posting.packedID] == nil {
+                    positionsByDoc[posting.packedID] = Array(
+                        repeating: [],
+                        count: termPostings.count
+                    )
                 }
-                positionsByDoc[posting.packedID[...]]![termIndex] = posting.positions
+                positionsByDoc[posting.packedID]![termIndex] = posting.positions
             }
         }
 
         // Filter to documents with consecutive positions
         var results: [ScoredDocument] = []
         for doc in intersected {
-            guard let positions = positionsByDoc[doc.packedID[...]] else { continue }
+            guard let positions = positionsByDoc[doc.packedID] else { continue }
 
             // Check if positions form a phrase (consecutive)
             if hasConsecutivePositions(positions) {
@@ -872,7 +889,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
     private func calculateIDF(docFreq: Int, totalDocs: Int) -> Double {
         let n = Double(totalDocs)
         let df = Double(max(docFreq, 1))
-        return log((n - df + 0.5) / (df + 0.5) + 1)
+        return DatabaseMath.naturalLogarithm((n - df + 0.5) / (df + 0.5) + 1)
     }
 
     /// Calculate BM25 term score
@@ -966,14 +983,10 @@ public struct VectorIndexSearcher: IndexSearcher {
 
         for try await (key, value) in reader.scanSubspace(subspace) {
             // Parse primary key from key
-            guard let keyTuple = try? subspace.unpack(key) else {
-                continue // Skip corrupt entries
-            }
+            let keyTuple = try subspace.unpack(key)
 
             // Parse vector from value
-            guard let vector = try? parseVector(from: value) else {
-                continue // Skip corrupt entries
-            }
+            let vector = try parseVector(from: value)
 
             // Calculate distance using SIMD
             let distance = calculateDistanceSIMD(query.queryVector, vector)
@@ -995,7 +1008,7 @@ public struct VectorIndexSearcher: IndexSearcher {
             let entry = IndexEntry(
                 itemID: itemID,
                 keyValues: Tuple(),
-                storedValues: Tuple(),
+                coveringValue: [],
                 score: distance
             )
 
@@ -1008,7 +1021,7 @@ public struct VectorIndexSearcher: IndexSearcher {
     }
 
     /// Parse a vector from stored bytes
-    private func parseVector(from bytes: [UInt8]) throws -> [Float] {
+    private func parseVector(from bytes: Bytes) throws -> [Float] {
         let elements = try Tuple.unpack(from: bytes)
 
         var vector: [Float] = []
@@ -1056,7 +1069,7 @@ public struct VectorIndexSearcher: IndexSearcher {
         var sumOfSquares: Float = 0
         vDSP_svesq(diff, 1, &sumOfSquares, count)
 
-        return Double(sqrtf(sumOfSquares))
+        return Double(DatabaseMath.squareRoot(sumOfSquares))
 #else
         let count = min(a.count, b.count)
         guard count > 0 else { return 0 }
@@ -1086,7 +1099,7 @@ public struct VectorIndexSearcher: IndexSearcher {
         vDSP_svesq(a, 1, &normASquared, count)
         vDSP_svesq(b, 1, &normBSquared, count)
 
-        let denom = sqrtf(normASquared) * sqrtf(normBSquared)
+        let denom = DatabaseMath.squareRoot(normASquared) * DatabaseMath.squareRoot(normBSquared)
         if denom == 0 { return 1.0 }
 
         let similarity = dotProd / denom
@@ -1284,7 +1297,7 @@ public struct SpatialIndexSearcher: IndexSearcher {
         let coveringCells = getCoveringCells(for: query.constraint.type)
 
         // Collect matching entries from each covering cell
-        var seenIDs: Set<[UInt8]> = []
+        var seenIDs: Set<Bytes> = []
         var results: [IndexEntry] = []
 
         for cellCode in coveringCells {
@@ -1293,9 +1306,7 @@ public struct SpatialIndexSearcher: IndexSearcher {
 
             for try await (key, _) in reader.scanSubspace(cellSubspace) {
                 // Extract primary key from key
-                guard let keyTuple = try? cellSubspace.unpack(key) else {
-                    continue
-                }
+                let keyTuple = try cellSubspace.unpack(key)
 
                 // Build item ID tuple
                 var idElements: [any TupleElement] = []
@@ -1316,7 +1327,7 @@ public struct SpatialIndexSearcher: IndexSearcher {
                 let entry = IndexEntry(
                     itemID: itemID,
                     keyValues: Tuple(),
-                    storedValues: Tuple()
+                    coveringValue: []
                 )
                 results.append(entry)
 
@@ -1337,7 +1348,7 @@ public struct SpatialIndexSearcher: IndexSearcher {
             // Approximate with bounding box cells
             let earthRadiusMeters = 6_371_000.0
             let latDelta = radiusMeters / earthRadiusMeters * (180.0 / .pi)
-            let lonDelta = radiusMeters / (earthRadiusMeters * cos(center.latitude * .pi / 180.0)) * (180.0 / .pi)
+            let lonDelta = radiusMeters / (earthRadiusMeters * DatabaseMath.cosine(center.latitude * .pi / 180.0)) * (180.0 / .pi)
             return getCellsForBox(
                 minLat: center.latitude - latDelta,
                 minLon: center.longitude - lonDelta,

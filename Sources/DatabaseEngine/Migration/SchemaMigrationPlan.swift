@@ -220,7 +220,7 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
     /// storage subspace between source and target, data would orphan
     /// silently. Promote the stage to `.custom` and copy the data
     /// explicitly (see `MigrationContext.enumerate` / `batchUpdate` /
-    /// `purgeLegacyStorage`).
+    /// `purgeSourceSchemaStorage`).
     case lightweightDirectoryChange(
         entityNames: [String],
         from: Schema.Version,
@@ -235,6 +235,21 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
 
     /// Cyclic migration path detected
     case cyclicMigrationPath(from: Schema.Version, to: Schema.Version)
+
+    /// Rows exist even though no committed schema version owns them.
+    case unversionedStoreContainsRecords(entity: String)
+
+    /// The requested target differs from the schema compiled into this runtime.
+    case targetVersionDoesNotMatchCompiledSchema(
+        requested: Schema.Version,
+        compiled: Schema.Version
+    )
+
+    /// Stored data requires migration but this container has no migration plan.
+    case missingMigrationPlan(
+        current: Schema.Version,
+        target: Schema.Version
+    )
 
     public var description: String {
         switch self {
@@ -270,6 +285,18 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
 
         case .cyclicMigrationPath(let from, let to):
             return "Cyclic migration path detected from \(from) to \(to)"
+
+        case .unversionedStoreContainsRecords(let entity):
+            return "Entity '\(entity)' contains records but the database has no committed schema version"
+
+        case .targetVersionDoesNotMatchCompiledSchema(
+            let requested,
+            let compiled
+        ):
+            return "Migration target \(requested) does not match compiled schema \(compiled)"
+
+        case .missingMigrationPlan(let current, let target):
+            return "Migration from \(current) to \(target) requires a compiled migration plan"
         }
     }
 }

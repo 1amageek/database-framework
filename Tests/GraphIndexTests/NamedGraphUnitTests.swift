@@ -3,8 +3,7 @@
 // Unit tests for Named Graph (Quad) support
 //
 // Layer 1: Pure logic tests (no FDB required)
-// Tests ExecutionTriple/ExecutionPattern/GraphIndexKind
-// for correct Named Graph modeling.
+// Tests the SPARQL graph algebra and GraphIndexKind metadata.
 //
 // NOTE: GraphPatternConverter tests are in Database module scope,
 // not GraphIndex. They belong in a Database-level test target.
@@ -13,254 +12,214 @@ import Testing
 import TestHeartbeat
 import Foundation
 import Core
+import DatabaseValue
 import Graph
 import QueryIR
 @testable import GraphIndex
 
-// MARK: - ExecutionTriple Named Graph Tests
+// MARK: - Canonical ExecutionTriple Tests
 
-@Suite("ExecutionTriple Named Graph Tests", .heartbeat)
-struct ExecutionTripleNamedGraphTests {
+@Suite("Canonical ExecutionTriple Tests", .heartbeat)
+struct CanonicalExecutionTripleTests {
 
-    @Test("Triple with graph stores graph term")
-    func testTripleWithGraphStoresGraphTerm() {
+    private let alice: ExecutionTerm = .value(
+        .rdfTerm(.iri("https://example.com/people/alice"))
+    )
+    private let knows: ExecutionTerm = .value(
+        .rdfTerm(.iri("https://example.com/vocabulary/knows"))
+    )
+    private let bob: ExecutionTerm = .value(
+        .rdfTerm(.iri("https://example.com/people/bob"))
+    )
+
+    @Test("Triple stores canonical RDF terms")
+    func testTripleStoresCanonicalRDFTerms() {
         let triple = ExecutionTriple(
-            subject: .value("Alice"),
-            predicate: .value("knows"),
-            object: .value("Bob"),
-            graph: .value("g1")
+            subject: alice,
+            predicate: knows,
+            object: bob
         )
-        #expect(triple.graph == .value("g1"))
-        #expect(triple.subject == .value("Alice"))
-        #expect(triple.predicate == .value("knows"))
-        #expect(triple.object == .value("Bob"))
+
+        #expect(triple.subject == alice)
+        #expect(triple.predicate == knows)
+        #expect(triple.object == bob)
+        #expect(triple.isFullyBound)
     }
 
-    @Test("Triple without graph has nil graph")
-    func testTripleWithoutGraphHasNilGraph() {
-        let triple = ExecutionTriple("?s", "?p", "?o")
-        #expect(triple.graph == nil)
-    }
-
-    @Test("Graph variable included in variables")
-    func testGraphVariableIncludedInVariables() {
-        let triple = ExecutionTriple(
-            subject: .variable("?s"),
-            predicate: .value("knows"),
-            object: .variable("?o"),
-            graph: .variable("?g")
-        )
-        let vars = triple.variables
-        #expect(vars.contains("?g"))
-        #expect(vars.contains("?s"))
-        #expect(vars.contains("?o"))
-        #expect(vars.count == 3)
-    }
-
-    @Test("Graph bound value not in variables")
-    func testGraphBoundValueNotInVariables() {
+    @Test("Triple variables contain only subject predicate and object variables")
+    func testTripleVariablesContainOnlyTriplePositions() {
         let triple = ExecutionTriple(
             subject: .variable("?s"),
-            predicate: .value("knows"),
-            object: .variable("?o"),
-            graph: .value("g1")
+            predicate: knows,
+            object: .variable("?o")
         )
-        let vars = triple.variables
-        #expect(!vars.contains("g1"))
-        #expect(vars.count == 2)
+
+        #expect(triple.variables == Set(["?s", "?o"]))
     }
 
-    @Test("withGraph sets graph term")
-    func testWithGraphSetsGraphTerm() {
-        let original = ExecutionTriple("?s", "knows", "?o")
-        #expect(original.graph == nil)
-
-        let withGraph = original.withGraph(.value("g1"))
-        #expect(withGraph.graph == .value("g1"))
-        #expect(withGraph.subject == original.subject)
-        #expect(withGraph.predicate == original.predicate)
-        #expect(withGraph.object == original.object)
-    }
-
-    @Test("Substitute replaces graph variable")
-    func testSubstituteReplacesGraphVariable() {
+    @Test("Substitution preserves canonical RDF values")
+    func testSubstitutionPreservesCanonicalRDFValues() {
         let triple = ExecutionTriple(
             subject: .variable("?s"),
-            predicate: .value("knows"),
-            object: .variable("?o"),
-            graph: .variable("?g")
+            predicate: knows,
+            object: .variable("?o")
         )
-        var binding = VariableBinding()
-        binding = binding.binding("?g", to: "socialGraph")
+        let binding = VariableBinding()
+            .binding("?s", to: .rdfTerm(.iri("https://example.com/people/alice")))
+            .binding("?o", to: .rdfTerm(.iri("https://example.com/people/bob")))
 
         let substituted = triple.substitute(binding)
-        #expect(substituted.graph == .value("socialGraph"))
-        #expect(substituted.subject == .variable("?s"))
-    }
 
-    @Test("Substitute preserves graph value")
-    func testSubstitutePreservesGraphValue() {
-        let triple = ExecutionTriple(
-            subject: .variable("?s"),
-            predicate: .value("knows"),
-            object: .variable("?o"),
-            graph: .value("g1")
-        )
-        var binding = VariableBinding()
-        binding = binding.binding("?s", to: "Alice")
-
-        let substituted = triple.substitute(binding)
-        #expect(substituted.graph == .value("g1"))
-        #expect(substituted.subject == .value("Alice"))
-    }
-
-    @Test("Description with graph includes GRAPH prefix")
-    func testDescriptionWithGraph() {
-        let triple = ExecutionTriple(
-            subject: .variable("?s"),
-            predicate: .value("knows"),
-            object: .variable("?o"),
-            graph: .value("g1")
-        )
-        #expect(triple.description.contains("GRAPH"))
-    }
-
-    @Test("Description without graph omits GRAPH")
-    func testDescriptionWithoutGraph() {
-        let triple = ExecutionTriple("?s", "knows", "?o")
-        #expect(!triple.description.contains("GRAPH"))
-    }
-
-    @Test("Equality with same graph")
-    func testEqualityWithSameGraph() {
-        let a = ExecutionTriple(
-            subject: .value("Alice"), predicate: .value("knows"),
-            object: .value("Bob"), graph: .value("g1")
-        )
-        let b = ExecutionTriple(
-            subject: .value("Alice"), predicate: .value("knows"),
-            object: .value("Bob"), graph: .value("g1")
-        )
-        #expect(a == b)
-    }
-
-    @Test("Inequality with different graph")
-    func testInequalityWithDifferentGraph() {
-        let a = ExecutionTriple(
-            subject: .value("Alice"), predicate: .value("knows"),
-            object: .value("Bob"), graph: .value("g1")
-        )
-        let b = ExecutionTriple(
-            subject: .value("Alice"), predicate: .value("knows"),
-            object: .value("Bob"), graph: .value("g2")
-        )
-        #expect(a != b)
+        #expect(substituted.subject == alice)
+        #expect(substituted.predicate == knows)
+        #expect(substituted.object == bob)
+        #expect(substituted.isFullyBound)
     }
 }
 
-// MARK: - ExecutionPattern withGraph Tests
+// MARK: - ExecutionPattern Named Graph Tests
 
 @Suite("ExecutionPattern Named Graph Tests", .heartbeat)
 struct ExecutionPatternNamedGraphTests {
 
-    private let graphTerm: ExecutionTerm = .value("g1")
+    private let knows: ExecutionTerm = .value(
+        .rdfTerm(.iri("https://example.com/vocabulary/knows"))
+    )
+    private let name: ExecutionTerm = .value(
+        .rdfTerm(.iri("https://example.com/vocabulary/name"))
+    )
 
-    private func extractAllGraphs(from pattern: ExecutionPattern) -> [ExecutionTerm?] {
-        pattern.allExecutionTriples.map { $0.graph }
+    private func graphName(_ component: String) throws -> RDFGraphName {
+        try RDFGraphName(iri: "https://example.com/graphs/\(component)")
     }
 
-    @Test("withGraph propagates to basic pattern")
-    func testWithGraphPropagatesToBasic() {
-        let pattern = ExecutionPattern.basic([
-            ExecutionTriple("?s", "knows", "?o"),
-            ExecutionTriple("?s", "name", "?name"),
+    @Test("Named graph scopes a basic graph pattern")
+    func testNamedGraphScopesBasicPattern() throws {
+        let graph = try graphName("social")
+        let basic = ExecutionPattern.basic([
+            ExecutionTriple(
+                subject: .variable("?s"),
+                predicate: knows,
+                object: .variable("?o")
+            ),
         ])
-        let result = pattern.withGraph(graphTerm)
-        let graphs = extractAllGraphs(from: result)
-        #expect(graphs.allSatisfy { $0 == graphTerm })
-        #expect(graphs.count == 2)
+        let pattern = ExecutionPattern.graph(.named(graph), basic)
+
+        #expect(pattern == .graph(.named(graph), basic))
+        #expect(pattern.outputVariables == Set(["?s", "?o"]))
+        #expect(pattern.requiredOutputVariables == Set(["?s", "?o"]))
+        #expect(pattern.patternCount == 1)
+        #expect(pattern.description.contains("GRAPH"))
     }
 
-    @Test("withGraph propagates to join")
-    func testWithGraphPropagatesToJoin() {
-        let left = ExecutionPattern.basic([ExecutionTriple("?s", "knows", "?o")])
-        let right = ExecutionPattern.basic([ExecutionTriple("?o", "name", "?name")])
-        let pattern = ExecutionPattern.join(left, right)
-        let result = pattern.withGraph(graphTerm)
-        let graphs = extractAllGraphs(from: result)
-        #expect(graphs.allSatisfy { $0 == graphTerm })
-        #expect(graphs.count == 2)
+    @Test("Graph variable is part of the algebra binding domain")
+    func testGraphVariableIsPartOfBindingDomain() {
+        let basic = ExecutionPattern.basic([
+            ExecutionTriple(
+                subject: .variable("?s"),
+                predicate: knows,
+                object: .variable("?o")
+            ),
+        ])
+        let pattern = ExecutionPattern.graph(.variable("?g"), basic)
+
+        #expect(pattern.outputVariables == Set(["?g", "?s", "?o"]))
+        #expect(pattern.requiredOutputVariables == Set(["?g", "?s", "?o"]))
+        #expect(pattern.description.contains("?g"))
     }
 
-    @Test("withGraph propagates to optional")
-    func testWithGraphPropagatesToOptional() {
-        let left = ExecutionPattern.basic([ExecutionTriple("?s", "knows", "?o")])
-        let right = ExecutionPattern.basic([ExecutionTriple("?s", "email", "?email")])
-        let pattern = ExecutionPattern.optional(left, right)
-        let result = pattern.withGraph(graphTerm)
-        let graphs = extractAllGraphs(from: result)
-        #expect(graphs.allSatisfy { $0 == graphTerm })
-        #expect(graphs.count == 2)
+    @Test("Graph scopes a composed algebra subtree")
+    func testGraphScopesComposedAlgebraSubtree() throws {
+        let graph = try graphName("social")
+        let left = ExecutionPattern.basic([
+            ExecutionTriple(
+                subject: .variable("?s"),
+                predicate: knows,
+                object: .variable("?o")
+            ),
+        ])
+        let right = ExecutionPattern.basic([
+            ExecutionTriple(
+                subject: .variable("?o"),
+                predicate: name,
+                object: .variable("?name")
+            ),
+        ])
+        let joined = ExecutionPattern.join(left, right)
+        let pattern = ExecutionPattern.graph(.named(graph), joined)
+
+        guard case .graph(.named(let actualGraph), let scopedPattern) = pattern else {
+            Issue.record("Expected a named graph algebra node")
+            return
+        }
+        #expect(actualGraph == graph)
+        #expect(scopedPattern == joined)
+        #expect(pattern.patternCount == 2)
     }
 
-    @Test("withGraph propagates to union")
-    func testWithGraphPropagatesToUnion() {
-        let left = ExecutionPattern.basic([ExecutionTriple("?s", "knows", "?o")])
-        let right = ExecutionPattern.basic([ExecutionTriple("?s", "follows", "?o")])
-        let pattern = ExecutionPattern.union(left, right)
-        let result = pattern.withGraph(graphTerm)
-        let graphs = extractAllGraphs(from: result)
-        #expect(graphs.allSatisfy { $0 == graphTerm })
-        #expect(graphs.count == 2)
-    }
-
-    @Test("withGraph propagates to filter")
-    func testWithGraphPropagatesToFilter() {
-        let inner = ExecutionPattern.basic([ExecutionTriple("?s", "age", "?age")])
-        let pattern = ExecutionPattern.filter(inner, .numeric("?age", ">=", 18))
-        let result = pattern.withGraph(graphTerm)
-        let graphs = extractAllGraphs(from: result)
-        #expect(graphs.allSatisfy { $0 == graphTerm })
-    }
-
-    @Test("withGraph propagates to minus")
-    func testWithGraphPropagatesToMinus() {
-        let left = ExecutionPattern.basic([ExecutionTriple("?s", "knows", "?o")])
-        let right = ExecutionPattern.basic([ExecutionTriple("?s", "blocks", "?o")])
-        let pattern = ExecutionPattern.minus(left, right)
-        let result = pattern.withGraph(graphTerm)
-        let graphs = extractAllGraphs(from: result)
-        #expect(graphs.allSatisfy { $0 == graphTerm })
-        #expect(graphs.count == 2)
-    }
-
-    @Test("withGraph propagates to groupBy")
-    func testWithGraphPropagatesToGroupBy() {
-        let inner = ExecutionPattern.basic([ExecutionTriple("?s", "type", "?type")])
-        let pattern = ExecutionPattern.groupBy(inner, groupVariables: ["?type"], aggregates: [], having: nil)
-        let result = pattern.withGraph(graphTerm)
-        let graphs = extractAllGraphs(from: result)
-        #expect(graphs.allSatisfy { $0 == graphTerm })
-    }
-
-    @Test("withGraph does not affect propertyPath")
-    func testWithGraphDoesNotAffectPropertyPath() {
-        let pattern = ExecutionPattern.propertyPath(
+    @Test("Graph scope applies to property paths")
+    func testGraphScopeAppliesToPropertyPaths() throws {
+        let graph = try graphName("social")
+        let propertyPath = ExecutionPattern.propertyPath(
             subject: .variable("?s"),
-            path: .iri("knows"),
+            path: .oneOrMore(
+                .iri(
+                    try DatabaseRDFPredicateIRI(
+                        "https://example.com/vocabulary/knows"
+                    )
+                )
+            ),
             object: .variable("?o")
         )
-        let result = pattern.withGraph(graphTerm)
-        // propertyPath has no triples, so allExecutionTriples is empty
-        let triples = result.allExecutionTriples
-        #expect(triples.isEmpty)
-        // Verify the pattern structure is preserved
-        if case .propertyPath(let s, _, let o) = result {
-            #expect(s == .variable("?s"))
-            #expect(o == .variable("?o"))
-        } else {
-            Issue.record("Expected propertyPath case")
+        let pattern = ExecutionPattern.graph(.named(graph), propertyPath)
+
+        #expect(pattern == .graph(.named(graph), propertyPath))
+        #expect(pattern.outputVariables == Set(["?s", "?o"]))
+        #expect(pattern.patternCount == 1)
+    }
+
+    @Test("Distinct graph names produce distinct algebra")
+    func testDistinctGraphNamesProduceDistinctAlgebra() throws {
+        let socialGraph = try graphName("social")
+        let archiveGraph = try graphName("archive")
+        let basic = ExecutionPattern.basic([
+            ExecutionTriple(
+                subject: .variable("?s"),
+                predicate: knows,
+                object: .variable("?o")
+            ),
+        ])
+
+        #expect(
+            ExecutionPattern.graph(.named(socialGraph), basic)
+                != ExecutionPattern.graph(.named(archiveGraph), basic)
+        )
+    }
+
+    @Test("Nested graph scopes remain explicit algebra nodes")
+    func testNestedGraphScopesRemainExplicit() throws {
+        let outerGraph = try graphName("outer")
+        let innerGraph = try graphName("inner")
+        let basic = ExecutionPattern.basic([
+            ExecutionTriple(
+                subject: .variable("?s"),
+                predicate: knows,
+                object: .variable("?o")
+            ),
+        ])
+        let nested = ExecutionPattern.graph(
+            .named(outerGraph),
+            .graph(.named(innerGraph), basic)
+        )
+
+        guard case .graph(.named(let actualOuter), let child) = nested,
+              case .graph(.named(let actualInner), let leaf) = child else {
+            Issue.record("Expected nested graph algebra nodes")
+            return
         }
+        #expect(actualOuter == outerGraph)
+        #expect(actualInner == innerGraph)
+        #expect(leaf == basic)
     }
 }
 
@@ -271,7 +230,7 @@ struct GraphIndexKindNamedGraphTests {
 
     @Test("fieldNames includes graph field when set")
     func testFieldNamesIncludesGraphField() {
-        let kind = GraphIndexKind<TestEdge>(
+        let kind = GraphIndexKind<GraphIndexEdge>(
             fromField: "source",
             edgeField: "label",
             toField: "target",
@@ -285,7 +244,7 @@ struct GraphIndexKindNamedGraphTests {
 
     @Test("fieldNames excludes graph when nil")
     func testFieldNamesExcludesGraphWhenNil() {
-        let kind = GraphIndexKind<TestEdge>(
+        let kind = GraphIndexKind<GraphIndexEdge>(
             fromField: "source",
             edgeField: "label",
             toField: "target",
@@ -297,7 +256,7 @@ struct GraphIndexKindNamedGraphTests {
 
     @Test("indexName includes graph field")
     func testIndexNameIncludesGraphField() {
-        let kind = GraphIndexKind<TestEdge>(
+        let kind = GraphIndexKind<GraphIndexEdge>(
             fromField: "source",
             edgeField: "label",
             toField: "target",
@@ -309,7 +268,7 @@ struct GraphIndexKindNamedGraphTests {
 
     @Test("indexName excludes graph when nil")
     func testIndexNameExcludesGraphWhenNil() {
-        let kind = GraphIndexKind<TestEdge>(
+        let kind = GraphIndexKind<GraphIndexEdge>(
             fromField: "source",
             edgeField: "label",
             toField: "target",
@@ -320,7 +279,7 @@ struct GraphIndexKindNamedGraphTests {
 
     @Test("hasGraphField is true when set")
     func testHasGraphFieldTrueWhenSet() {
-        let kind = GraphIndexKind<TestEdge>(
+        let kind = GraphIndexKind<GraphIndexEdge>(
             fromField: "source",
             edgeField: "label",
             toField: "target",
@@ -332,7 +291,7 @@ struct GraphIndexKindNamedGraphTests {
 
     @Test("hasGraphField is false when nil")
     func testHasGraphFieldFalseWhenNil() {
-        let kind = GraphIndexKind<TestEdge>(
+        let kind = GraphIndexKind<GraphIndexEdge>(
             fromField: "source",
             edgeField: "label",
             toField: "target",
@@ -343,7 +302,7 @@ struct GraphIndexKindNamedGraphTests {
 
     @Test("Codable round-trip with graph field")
     func testCodableRoundTripWithGraph() throws {
-        let original = GraphIndexKind<TestEdge>(
+        let original = GraphIndexKind<GraphIndexEdge>(
             fromField: "source",
             edgeField: "label",
             toField: "target",
@@ -351,7 +310,7 @@ struct GraphIndexKindNamedGraphTests {
             strategy: .tripleStore
         )
         let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(GraphIndexKind<TestEdge>.self, from: data)
+        let decoded = try JSONDecoder().decode(GraphIndexKind<GraphIndexEdge>.self, from: data)
         #expect(decoded.graphField == "graph")
         #expect(decoded.fromField == "source")
         #expect(decoded.edgeField == "label")
@@ -361,26 +320,26 @@ struct GraphIndexKindNamedGraphTests {
 
     @Test("Codable round-trip without graph field")
     func testCodableRoundTripWithoutGraph() throws {
-        let original = GraphIndexKind<TestEdge>(
+        let original = GraphIndexKind<GraphIndexEdge>(
             fromField: "source",
             edgeField: "label",
             toField: "target",
             strategy: .hexastore
         )
         let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(GraphIndexKind<TestEdge>.self, from: data)
+        let decoded = try JSONDecoder().decode(GraphIndexKind<GraphIndexEdge>.self, from: data)
         #expect(decoded.graphField == nil)
         #expect(decoded.strategy == .hexastore)
     }
 
     @Test("Hashable equality with same graph field")
     func testHashableEqualityWithSameGraph() {
-        let a = GraphIndexKind<TestEdge>(
+        let a = GraphIndexKind<GraphIndexEdge>(
             fromField: "source", edgeField: "label",
             toField: "target", graphField: "graph",
             strategy: .tripleStore
         )
-        let b = GraphIndexKind<TestEdge>(
+        let b = GraphIndexKind<GraphIndexEdge>(
             fromField: "source", edgeField: "label",
             toField: "target", graphField: "graph",
             strategy: .tripleStore
@@ -391,12 +350,12 @@ struct GraphIndexKindNamedGraphTests {
 
     @Test("Hashable inequality with different graph field")
     func testHashableInequalityWithDifferentGraph() {
-        let a = GraphIndexKind<TestEdge>(
+        let a = GraphIndexKind<GraphIndexEdge>(
             fromField: "source", edgeField: "label",
             toField: "target", graphField: "graph",
             strategy: .tripleStore
         )
-        let b = GraphIndexKind<TestEdge>(
+        let b = GraphIndexKind<GraphIndexEdge>(
             fromField: "source", edgeField: "label",
             toField: "target", graphField: nil,
             strategy: .tripleStore

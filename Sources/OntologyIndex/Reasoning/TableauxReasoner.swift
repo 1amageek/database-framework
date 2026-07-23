@@ -15,7 +15,11 @@
 // - Horrocks, I., & Sattler, U. (2007). "A Tableaux Decision Procedure for SHOIQ"
 // - Motik, B., Shearer, R., & Horrocks, I. (2009). "Hypertableau Reasoning for Description Logics"
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Graph
 
 // MARK: - TableauxReasoner
@@ -80,18 +84,30 @@ public final class TableauxReasoner: @unchecked Sendable {
         }
 
         public let clash: ClashInfo?
+        public let failure: OntologyReasoningFailure?
         public let statistics: Statistics
 
-        public init(status: SatisfiabilityStatus, clash: ClashInfo? = nil, statistics: Statistics) {
+        public init(
+            status: SatisfiabilityStatus,
+            clash: ClashInfo? = nil,
+            failure: OntologyReasoningFailure? = nil,
+            statistics: Statistics
+        ) {
             self.status = status
             self.clash = clash
+            self.failure = failure
             self.statistics = statistics
         }
 
         /// Convenience initializer for backward compatibility
-        public init(isSatisfiable: Bool, clash: ClashInfo? = nil, statistics: Statistics) {
+        public init(
+            isSatisfiable: Bool,
+            clash: ClashInfo? = nil,
+            statistics: Statistics
+        ) {
             self.status = isSatisfiable ? .satisfiable : .unsatisfiable
             self.clash = clash
+            self.failure = nil
             self.statistics = statistics
         }
     }
@@ -397,6 +413,12 @@ public final class TableauxReasoner: @unchecked Sendable {
                     } else {
                         return SatisfiabilityResult(isSatisfiable: false, clash: clash, statistics: stats)
                     }
+                case .failure(let failure):
+                    return SatisfiabilityResult(
+                        status: .unknown,
+                        failure: failure,
+                        statistics: stats
+                    )
                 }
             }
 
@@ -462,6 +484,7 @@ public final class TableauxReasoner: @unchecked Sendable {
         case changed
         case unchanged
         case clash(ClashInfo)
+        case failure(OntologyReasoningFailure)
     }
 
     /// Apply all deterministic rules
@@ -511,6 +534,8 @@ public final class TableauxReasoner: @unchecked Sendable {
                 return .clash(clashInfo)
             case .notApplicable:
                 break
+            case .failure(let failure):
+                return .failure(failure)
             }
 
             // Data existential — may return clash for unsatisfiable data ranges
@@ -523,6 +548,8 @@ public final class TableauxReasoner: @unchecked Sendable {
                 return .clash(clashInfo)
             case .notApplicable:
                 break
+            case .failure(let failure):
+                return .failure(failure)
             }
         }
 

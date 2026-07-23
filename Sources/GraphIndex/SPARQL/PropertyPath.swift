@@ -4,7 +4,8 @@
 // Represents property path expressions for SPARQL 1.1.
 // Reference: W3C SPARQL 1.1 Property Paths (https://www.w3.org/TR/sparql11-property-paths/)
 
-import Foundation
+import DatabaseValue
+import QueryIR
 
 /// Property path expression for SPARQL queries
 ///
@@ -14,22 +15,25 @@ import Foundation
 /// **Usage**:
 /// ```swift
 /// // Simple IRI path
-/// let knows = ExecutionPropertyPath.iri("knows")
+/// let knowsIRI = try DatabaseRDFPredicateIRI("https://example.com/knows")
+/// let knows = ExecutionPropertyPath.iri(knowsIRI)
 ///
 /// // Inverse path: ^knows
-/// let knownBy = ExecutionPropertyPath.inverse(.iri("knows"))
+/// let knownBy = ExecutionPropertyPath.inverse(knows)
 ///
 /// // Sequence path: knows/worksAt
-/// let colleagues = ExecutionPropertyPath.sequence(.iri("knows"), .iri("worksAt"))
+/// let worksAtIRI = try DatabaseRDFPredicateIRI("https://example.com/worksAt")
+/// let colleagues = ExecutionPropertyPath.sequence(knows, .iri(worksAtIRI))
 ///
 /// // Transitive closure: knows+
-/// let knowsChain = ExecutionPropertyPath.oneOrMore(.iri("knows"))
+/// let knowsChain = ExecutionPropertyPath.oneOrMore(knows)
 ///
 /// // Optional path: knows?
-/// let maybeKnows = ExecutionPropertyPath.zeroOrOne(.iri("knows"))
+/// let maybeKnows = ExecutionPropertyPath.zeroOrOne(knows)
 ///
 /// // Alternative: knows|friendOf
-/// let related = ExecutionPropertyPath.alternative(.iri("knows"), .iri("friendOf"))
+/// let friendOfIRI = try DatabaseRDFPredicateIRI("https://example.com/friendOf")
+/// let related = ExecutionPropertyPath.alternative(knows, .iri(friendOfIRI))
 /// ```
 ///
 /// **Reference**: W3C SPARQL 1.1, Section 9 (Property Paths)
@@ -49,7 +53,7 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
     /// ```sparql
     /// ?s ex:knows ?o
     /// ```
-    case iri(String)
+    case iri(DatabaseRDFPredicateIRI)
 
     /// Negated property set
     ///
@@ -57,7 +61,7 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
     /// ```sparql
     /// ?s !(ex:knows|ex:hates) ?o
     /// ```
-    case negatedPropertySet([String])
+    case negatedPropertySet(PropertyPathNegatedSet)
 
     // MARK: - Path Constructors
 
@@ -111,6 +115,9 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
     /// ```
     case zeroOrOne(ExecutionPropertyPath)
 
+    /// A validated finite or lower-bounded repetition range.
+    case range(ExecutionPropertyPath, PropertyPathRange)
+
     // MARK: - Properties
 
     /// Whether this path requires recursive/iterative evaluation
@@ -124,7 +131,7 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
             return p1.isRecursive || p2.isRecursive
         case .alternative(let p1, let p2):
             return p1.isRecursive || p2.isRecursive
-        case .zeroOrMore, .oneOrMore:
+        case .zeroOrMore, .oneOrMore, .range:
             return true
         case .zeroOrOne:
             return false
@@ -137,26 +144,57 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
         return false
     }
 
+    /// Maximum number of nested path constructors below the root expression.
+    public var nestingDepth: Int {
+        var maximum = 0
+        var pending: [(path: ExecutionPropertyPath, depth: Int)] = [(self, 0)]
+
+        while let current = pending.popLast() {
+            maximum = max(maximum, current.depth)
+            let childDepth = current.depth == Int.max
+                ? Int.max
+                : current.depth + 1
+            switch current.path {
+            case .empty, .iri, .negatedPropertySet:
+                break
+            case .inverse(let path),
+                 .zeroOrMore(let path),
+                 .oneOrMore(let path),
+                 .zeroOrOne(let path),
+                 .range(let path, _):
+                pending.append((path, childDepth))
+            case .sequence(let left, let right),
+                 .alternative(let left, let right):
+                pending.append((left, childDepth))
+                pending.append((right, childDepth))
+            }
+        }
+
+        return maximum
+    }
+
     /// Get the IRI if this is a simple path
-    public var simpleIRI: String? {
+    public var simpleIRI: DatabaseRDFPredicateIRI? {
         if case .iri(let value) = self { return value }
         return nil
     }
 
     /// All IRIs used in this path
-    public var allIRIs: Set<String> {
+    public var allIRIs: Set<DatabaseRDFPredicateIRI> {
         switch self {
         case .empty:
             return []
         case .iri(let value):
             return [value]
-        case .negatedPropertySet(let iris):
-            return Set(iris)
+        case .negatedPropertySet(let exclusions):
+            return (exclusions.forward ?? []).union(exclusions.inverse ?? [])
         case .inverse(let path):
             return path.allIRIs
         case .sequence(let p1, let p2), .alternative(let p1, let p2):
             return p1.allIRIs.union(p2.allIRIs)
         case .zeroOrMore(let path), .oneOrMore(let path), .zeroOrOne(let path):
+            return path.allIRIs
+        case .range(let path, _):
             return path.allIRIs
         }
     }
@@ -173,7 +211,7 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
     public func expandedIRIs(using context: OntologyContext) -> Set<String> {
         var result = Set<String>()
         for iri in allIRIs {
-            result.formUnion(context.expandedProperties(of: iri))
+            result.formUnion(context.expandedProperties(of: iri.rawValue))
         }
         return result
     }
@@ -197,6 +235,8 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
             return path.complexityEstimate * 100  // Unbounded iteration
         case .zeroOrOne(let path):
             return path.complexityEstimate + 1
+        case .range(let path, let bounds):
+            return path.complexityEstimate * (bounds.maximum ?? 100)
         }
     }
 
@@ -225,6 +265,16 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
             case .alternative(let p1, let p2):
                 // ^(p1|p2) = (^p1)|(^p2) — distribute inverse over alternative
                 return .alternative(.inverse(p1).normalized(), .inverse(p2).normalized())
+            case .negatedPropertySet(let exclusions):
+                return .negatedPropertySet(exclusions.reversed)
+            case .zeroOrMore(let path):
+                return .zeroOrMore(.inverse(path).normalized())
+            case .oneOrMore(let path):
+                return .oneOrMore(.inverse(path).normalized())
+            case .zeroOrOne(let path):
+                return .zeroOrOne(.inverse(path).normalized())
+            case .range(let path, let bounds):
+                return .range(.inverse(path).normalized(), bounds)
             default:
                 return .inverse(norm)
             }
@@ -265,6 +315,9 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
 
         case .zeroOrOne(let path):
             return .zeroOrOne(path.normalized())
+
+        case .range(let path, let bounds):
+            return .range(path.normalized(), bounds)
         }
     }
 }
@@ -277,9 +330,28 @@ extension ExecutionPropertyPath: CustomStringConvertible {
         case .empty:
             return "()"  // Empty path representation
         case .iri(let value):
-            return value
-        case .negatedPropertySet(let iris):
-            return "!(\(iris.joined(separator: "|")))"
+            return value.rawValue
+        case .negatedPropertySet(let exclusions):
+            var values = (exclusions.forward ?? []).sorted().map(\.rawValue)
+            values.append(contentsOf: (exclusions.inverse ?? []).sorted().map {
+                "^\($0.rawValue)"
+            })
+            if values.isEmpty {
+                switch (exclusions.forward != nil, exclusions.inverse != nil) {
+                case (true, false):
+                    return "!()"
+                case (false, true):
+                    return "!^()"
+                case (true, true):
+                    return "!(()|^())"
+                case (false, false):
+                    return "!()"
+                }
+            }
+            if values.count == 1 {
+                return "!\(values[0])"
+            }
+            return "!(\(values.joined(separator: "|")))"
         case .inverse(let path):
             return "^\(path.parenthesizedIfComplex)"
         case .sequence(let p1, let p2):
@@ -292,6 +364,9 @@ extension ExecutionPropertyPath: CustomStringConvertible {
             return "\(path.parenthesizedIfComplex)+"
         case .zeroOrOne(let path):
             return "\(path.parenthesizedIfComplex)?"
+        case .range(let path, let bounds):
+            let maximum = bounds.maximum.map(String.init) ?? ""
+            return "\(path.parenthesizedIfComplex){\(bounds.minimum),\(maximum)}"
         }
     }
 
@@ -363,36 +438,40 @@ extension ExecutionPropertyPath {
 
 /// Configuration for property path evaluation
 public struct ExecutionPropertyPathConfiguration: Sendable {
-    /// Maximum depth for recursive paths (zeroOrMore, oneOrMore)
-    ///
-    /// Default is 100 to prevent infinite loops and memory exhaustion.
-    public var maxDepth: Int
+    /// Maximum nesting depth of the property-path expression tree.
+    public let maximumExpressionDepth: Int
+
+    /// Maximum graph traversal depth for recursive paths.
+    public let maximumTraversalDepth: Int
 
     /// Whether to detect and avoid cycles
     ///
     /// When true, visited nodes are tracked to avoid infinite loops.
     /// Default is true.
-    public var detectCycles: Bool
+    public let detectCycles: Bool
 
     /// Maximum number of results per path evaluation
     ///
     /// Default is 10000.
-    public var maxResults: Int
+    public let maximumResults: Int
 
     /// Default configuration
     public static let `default` = ExecutionPropertyPathConfiguration(
-        maxDepth: 100,
+        maximumExpressionDepth: 100,
+        maximumTraversalDepth: 100,
         detectCycles: true,
-        maxResults: 10000
+        maximumResults: 10000
     )
 
     public init(
-        maxDepth: Int = 100,
+        maximumExpressionDepth: Int = 100,
+        maximumTraversalDepth: Int = 100,
         detectCycles: Bool = true,
-        maxResults: Int = 10000
+        maximumResults: Int = 10000
     ) {
-        self.maxDepth = maxDepth
+        self.maximumExpressionDepth = maximumExpressionDepth
+        self.maximumTraversalDepth = maximumTraversalDepth
         self.detectCycles = detectCycles
-        self.maxResults = maxResults
+        self.maximumResults = maximumResults
     }
 }

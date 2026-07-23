@@ -1,4 +1,3 @@
-import Foundation
 import Metrics
 
 /// Internal delegate that records data store metrics using swift-metrics
@@ -19,11 +18,6 @@ import Metrics
 /// **Usage**: Automatically used by FDBDataStore. No user configuration required.
 /// Users can configure the metrics backend via `MetricsSystem.bootstrap()`.
 final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
-    // MARK: - Singleton
-
-    /// Shared instance (singleton for efficiency)
-    static let shared = MetricsDataStoreDelegate()
-
     // MARK: - Metrics
 
     // Operation counters
@@ -51,7 +45,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
     // MARK: - Initialization
 
-    private init() {
+    init() {
         // Initialize counters
         self.saveCounter = Counter(
             label: "fdb_datastore_operations_total",
@@ -142,7 +136,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
         // Record per-type error
         Counter(
             label: "fdb_datastore_errors_total",
-            dimensions: [("operation", "save"), ("item_type", itemType), ("error_type", errorType(error))]
+            dimensions: [("operation", "save"), ("item_type", itemType), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
     }
 
@@ -165,7 +159,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
         // Record per-type error
         Counter(
             label: "fdb_datastore_errors_total",
-            dimensions: [("operation", "fetch"), ("item_type", itemType), ("error_type", errorType(error))]
+            dimensions: [("operation", "fetch"), ("item_type", itemType), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
     }
 
@@ -188,7 +182,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
         // Record per-type error
         Counter(
             label: "fdb_datastore_errors_total",
-            dimensions: [("operation", "delete"), ("item_type", itemType), ("error_type", errorType(error))]
+            dimensions: [("operation", "delete"), ("item_type", itemType), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
     }
 
@@ -206,21 +200,33 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
         // Record error type
         Counter(
             label: "fdb_datastore_errors_total",
-            dimensions: [("operation", "batch"), ("error_type", errorType(error))]
+            dimensions: [("operation", "batch"), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
     }
 
     // MARK: - Helpers
 
     /// Extract a safe error type string for metrics
-    private func errorType(_ error: Error) -> String {
+    static func metricsErrorType(for error: Error) -> String {
         // Use type name to avoid exposing sensitive error details
         let typeName = String(describing: type(of: error))
 
-        // Sanitize for metrics label (remove special characters)
-        let sanitized = typeName.replacingOccurrences(of: "[^a-zA-Z0-9_]", with: "_", options: .regularExpression)
-
-        // Limit length for label cardinality
-        return String(sanitized.prefix(50))
+        // The label contract is ASCII-only and bounded. Iterating Unicode scalars
+        // directly avoids loading a regular-expression engine for error reporting.
+        var sanitized = ""
+        sanitized.reserveCapacity(min(typeName.utf8.count, 50))
+        let underscore: Unicode.Scalar = "_"
+        var outputCount = 0
+        for scalar in typeName.unicodeScalars {
+            guard outputCount < 50 else { break }
+            switch scalar.value {
+            case 48...57, 65...90, 95, 97...122:
+                sanitized.unicodeScalars.append(scalar)
+            default:
+                sanitized.unicodeScalars.append(underscore)
+            }
+            outputCount += 1
+        }
+        return sanitized
     }
 }

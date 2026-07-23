@@ -24,6 +24,18 @@ private func parsePattern(_ sparql: String) throws -> GraphPattern {
     return pattern
 }
 
+private func requireTriplePatterns(
+    _ pattern: GraphPattern
+) throws -> [TriplePattern] {
+    guard case .basic(let basicGraphPattern) = pattern else {
+        throw SPARQLParser.ParseError.invalidSyntax(
+            message: "Expected a basic graph pattern",
+            position: 0
+        )
+    }
+    return try basicGraphPattern.triplePatterns()
+}
+
 private func parseExpression(_ sparql: String) throws -> QueryIR.Expression {
     let pattern = try parsePattern(sparql)
     func findFilter(_ p: GraphPattern) -> QueryIR.Expression? {
@@ -164,10 +176,7 @@ struct LongStringSuffixTests {
         let pattern = try parsePattern(#"""
             SELECT * WHERE { ?s ?p """hello"""@en }
             """#)
-        guard case .basic(let triples) = pattern else {
-            Issue.record("Expected .basic, got \(pattern)")
-            return
-        }
+        let triples = try requireTriplePatterns(pattern)
         #expect(triples.count == 1)
         guard case .literal(.langLiteral(let value, let lang)) = triples[0].object else {
             Issue.record("Expected langLiteral, got \(triples[0].object)")
@@ -182,10 +191,7 @@ struct LongStringSuffixTests {
         let pattern = try parsePattern("""
             SELECT * WHERE { ?s ?p '''42'''^^<http://www.w3.org/2001/XMLSchema#integer> }
             """)
-        guard case .basic(let triples) = pattern else {
-            Issue.record("Expected .basic, got \(pattern)")
-            return
-        }
+        let triples = try requireTriplePatterns(pattern)
         #expect(triples.count == 1)
         guard case .literal(.typedLiteral(let value, let datatype)) = triples[0].object else {
             Issue.record("Expected typedLiteral, got \(triples[0].object)")
@@ -200,10 +206,7 @@ struct LongStringSuffixTests {
         let pattern = try parsePattern(#"""
             SELECT * WHERE { ?s ?p """multiline text""" }
             """#)
-        guard case .basic(let triples) = pattern else {
-            Issue.record("Expected .basic")
-            return
-        }
+        let triples = try requireTriplePatterns(pattern)
         guard case .literal(.string(let value)) = triples[0].object else {
             Issue.record("Expected .string literal")
             return
@@ -222,10 +225,7 @@ struct UnicodeEscapeTests {
         let pattern = try parsePattern(#"""
             SELECT * WHERE { ?s ?p "caf\u00E9" }
             """#)
-        guard case .basic(let triples) = pattern else {
-            Issue.record("Expected .basic")
-            return
-        }
+        let triples = try requireTriplePatterns(pattern)
         guard case .literal(.string(let value)) = triples[0].object else {
             Issue.record("Expected .string literal, got \(triples[0].object)")
             return
@@ -238,10 +238,7 @@ struct UnicodeEscapeTests {
         let pattern = try parsePattern(#"""
             SELECT * WHERE { ?s ?p "hello\U0001F600" }
             """#)
-        guard case .basic(let triples) = pattern else {
-            Issue.record("Expected .basic")
-            return
-        }
+        let triples = try requireTriplePatterns(pattern)
         guard case .literal(.string(let value)) = triples[0].object else {
             Issue.record("Expected .string literal")
             return
@@ -254,10 +251,7 @@ struct UnicodeEscapeTests {
         let pattern = try parsePattern(#"""
             SELECT * WHERE { ?s ?p "\u65E5\u672C" }
             """#)
-        guard case .basic(let triples) = pattern else {
-            Issue.record("Expected .basic")
-            return
-        }
+        let triples = try requireTriplePatterns(pattern)
         guard case .literal(.string(let value)) = triples[0].object else {
             Issue.record("Expected .string literal")
             return
@@ -274,7 +268,9 @@ struct GroupByBareFunctionTests {
     @Test("GROUP BY STR(?x) — bare function call")
     func testGroupByBareFunction() throws {
         let query = try parseQuery("""
-            SELECT (COUNT(*) AS ?count) ?type WHERE { ?s a ?type } GROUP BY STR(?type)
+            SELECT (COUNT(*) AS ?count)
+            WHERE { ?s a ?type }
+            GROUP BY STR(?type)
             """)
         #expect(query.groupBy != nil)
         guard let groupBy = query.groupBy, groupBy.count == 1 else {
@@ -308,7 +304,9 @@ struct GroupByBareFunctionTests {
     @Test("GROUP BY with bracketed expression still works")
     func testGroupByBracketed() throws {
         let query = try parseQuery("""
-            SELECT ?x WHERE { ?s ?p ?x } GROUP BY (STR(?x))
+            SELECT (COUNT(*) AS ?count)
+            WHERE { ?s ?p ?x }
+            GROUP BY (STR(?x))
             """)
         #expect(query.groupBy != nil)
         #expect(query.groupBy?.count == 1)

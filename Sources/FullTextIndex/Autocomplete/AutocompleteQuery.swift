@@ -3,7 +3,6 @@
 //
 // Provides a fluent API for autocomplete/typeahead queries
 
-import Foundation
 import Core
 import DatabaseEngine
 import StorageKit
@@ -111,7 +110,10 @@ public struct AutocompleteQueryBuilder<T: Persistable>: Sendable {
             return []
         }
 
-        let normalizedPrefix = searchPrefix.lowercased().trimmingCharacters(in: .whitespaces)
+        let loweredPrefix = searchPrefix.lowercased()
+        let normalizedPrefix = String(
+            FullTextTextUtilities.trimmingWhitespace(loweredPrefix)
+        )
         guard normalizedPrefix.count >= minPrefixLength else {
             return []
         }

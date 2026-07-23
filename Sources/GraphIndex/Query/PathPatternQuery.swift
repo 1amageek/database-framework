@@ -3,7 +3,11 @@
 //
 // Provides query builder for variable-length path patterns.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -46,9 +50,7 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
     // MARK: - Properties
 
     private let queryContext: IndexQueryContext
-    private let fromFieldName: String
-    private let edgeFieldName: String
-    private let toFieldName: String
+    private let index: DeclaredPropertyGraphIndex
 
     private var sourceNode: String?
     private var targetNode: String?
@@ -61,14 +63,10 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
 
     internal init(
         queryContext: IndexQueryContext,
-        fromFieldName: String,
-        edgeFieldName: String,
-        toFieldName: String
+        index: DeclaredPropertyGraphIndex
     ) {
         self.queryContext = queryContext
-        self.fromFieldName = fromFieldName
-        self.edgeFieldName = edgeFieldName
-        self.toFieldName = toFieldName
+        self.index = index
     }
 
     // MARK: - Fluent Configuration
@@ -150,89 +148,26 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of paths matching the pattern
     /// - Throws: PathPatternQueryError if configuration is invalid
-    public func execute() async throws -> [GraphPath<T>] {
-        guard !fromFieldName.isEmpty else {
-            throw PathPatternQueryError.indexNotConfigured
-        }
-
+    public func execute() async throws -> [GraphPath] {
         guard let source = sourceNode else {
             throw PathPatternQueryError.missingSource
         }
+        try validateLimits()
 
-        let indexSubspace = try await getIndexSubspace()
-        let effectiveMax = pathLengthValue.effectiveMax(defaultLimit: 10)
-
-        // Use BFS to find all paths within the length constraint
-        var paths: [GraphPath<T>] = []
-        var visited: Set<String> = []
-        var currentPaths: [(path: [String], edges: [String])] = [([source], [])]
-
-        // BFS level by level
-        for depth in 0..<effectiveMax {
-            guard !currentPaths.isEmpty && paths.count < limitCount else { break }
-
-            var nextPaths: [(path: [String], edges: [String])] = []
-
-            // Process current level paths in batches
-            let currentNodes = Set(currentPaths.compactMap { $0.path.last })
-
-            for node in currentNodes {
-                if visited.count >= maxNodesValue { break }
-
-                let neighbors = try await getNeighbors(
-                    from: node,
-                    edgeLabel: edgeLabelFilter,
-                    indexSubspace: indexSubspace
-                )
-
-                for (neighborNode, edge) in neighbors {
-                    // Find all paths ending at this node
-                    for (path, edges) in currentPaths where path.last == node {
-                        // Skip if path already contains this node (avoid cycles)
-                        guard !path.contains(neighborNode) else { continue }
-
-                        let newPath = path + [neighborNode]
-                        let newEdges = edges + [edge]
-                        let newDepth = depth + 1
-
-                        // Check if this path matches the length constraint
-                        if pathLengthValue.matches(newDepth) {
-                            // Check target constraint if specified
-                            if let target = targetNode {
-                                if neighborNode == target {
-                                    let graphPath = GraphPath<T>(
-                                        nodeIDs: newPath,
-                                        edgeLabels: newEdges,
-                                        weights: nil
-                                    )
-                                    paths.append(graphPath)
-                                }
-                            } else {
-                                let graphPath = GraphPath<T>(
-                                    nodeIDs: newPath,
-                                    edgeLabels: newEdges,
-                                    weights: nil
-                                )
-                                paths.append(graphPath)
-                            }
-                        }
-
-                        // Continue exploring if we haven't reached max depth
-                        if newDepth < effectiveMax {
-                            nextPaths.append((newPath, newEdges))
-                        }
-
-                        if paths.count >= limitCount { break }
-                    }
-                }
-
-                visited.insert(node)
-            }
-
-            currentPaths = nextPaths
+        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
+            index,
+            for: T.self,
+            in: queryContext
+        )
+        return try await queryContext.withTransaction { transaction in
+            let snapshot = GraphReadSnapshot(transaction: transaction)
+            return try await executePaths(
+                source: .identifier(source),
+                target: targetNode.map(GraphIdentity.identifier),
+                scanner: resolvedIndex.scanner(snapshot: snapshot),
+                transaction: transaction
+            )
         }
-
-        return Array(paths.prefix(limitCount))
     }
 
     /// Execute and return just the end nodes (without full paths)
@@ -241,67 +176,26 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of node IDs at the end of matching paths
     public func executeNodes() async throws -> [String] {
-        guard !fromFieldName.isEmpty else {
-            throw PathPatternQueryError.indexNotConfigured
-        }
-
         guard let source = sourceNode else {
             throw PathPatternQueryError.missingSource
         }
+        try validateLimits()
 
-        let indexSubspace = try await getIndexSubspace()
-        let effectiveMax = pathLengthValue.effectiveMax(defaultLimit: 10)
-
-        var resultNodes: Set<String> = []
-        var visited: Set<String> = [source]
-        var currentLevel: Set<String> = [source]
-
-        // If min is 0, source itself is a result
-        if pathLengthValue.matches(0) && (targetNode == nil || targetNode == source) {
-            resultNodes.insert(source)
+        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
+            index,
+            for: T.self,
+            in: queryContext
+        )
+        let identities = try await queryContext.withTransaction { transaction in
+            let snapshot = GraphReadSnapshot(transaction: transaction)
+            return try await executeEndNodes(
+                source: .identifier(source),
+                target: targetNode.map(GraphIdentity.identifier),
+                scanner: resolvedIndex.scanner(snapshot: snapshot),
+                transaction: transaction
+            )
         }
-
-        // BFS level by level
-        for depth in 1...effectiveMax {
-            guard !currentLevel.isEmpty && resultNodes.count < limitCount else { break }
-
-            var nextLevel: Set<String> = []
-
-            for node in currentLevel {
-                if visited.count >= maxNodesValue { break }
-
-                let neighbors = try await getNeighbors(
-                    from: node,
-                    edgeLabel: edgeLabelFilter,
-                    indexSubspace: indexSubspace
-                )
-
-                for (neighborNode, _) in neighbors {
-                    guard !visited.contains(neighborNode) else { continue }
-
-                    visited.insert(neighborNode)
-                    nextLevel.insert(neighborNode)
-
-                    // Check if this depth matches the length constraint
-                    if pathLengthValue.matches(depth) {
-                        // Check target constraint if specified
-                        if let target = targetNode {
-                            if neighborNode == target {
-                                resultNodes.insert(neighborNode)
-                            }
-                        } else {
-                            resultNodes.insert(neighborNode)
-                        }
-                    }
-
-                    if resultNodes.count >= limitCount { break }
-                }
-            }
-
-            currentLevel = nextLevel
-        }
-
-        return Array(resultNodes.prefix(limitCount))
+        return try identities.map { try $0.requirePropertyGraphIdentifier() }
     }
 
     /// Count paths matching the pattern
@@ -314,93 +208,139 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
 
     // MARK: - Private Methods
 
-    private func getIndexSubspace() async throws -> Subspace {
-        let indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
-
-        guard let _ = queryContext.schema.indexDescriptor(named: indexName) else {
-            throw PathPatternQueryError.indexNotFound(indexName)
+    private func validateLimits() throws {
+        guard limitCount > 0 else {
+            throw PathPatternQueryError.invalidLimit(limitCount)
         }
-
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        return typeSubspace.subspace(indexName)
+        guard maxNodesValue > 0 else {
+            throw PathPatternQueryError.invalidMaximumNodes(maxNodesValue)
+        }
     }
 
-    private func getNeighbors(
-        from nodeID: String,
-        edgeLabel: String?,
-        indexSubspace: Subspace
-    ) async throws -> [(node: String, edge: String)] {
-        let outgoingSubspace = indexSubspace.subspace(Int64(0))
+    private func executePaths(
+        source: GraphIdentity,
+        target: GraphIdentity?,
+        scanner: GraphEdgeScanner,
+        transaction: any Transaction
+    ) async throws -> [GraphPath] {
+        typealias PartialPath = (nodes: [GraphIdentity], edges: [GraphIdentity])
+        let maximumDepth = pathLengthValue.effectiveMax(defaultLimit: 10)
+        var results: [GraphPath] = []
+        var exploredNodes: Set<GraphIdentity> = [source]
+        var currentPaths: [PartialPath] = [([source], [])]
 
-        var prefixElements: [any TupleElement] = []
-        if let label = edgeLabel {
-            prefixElements.append(label)
+        if pathLengthValue.matches(0), target == nil || target == source {
+            results.append(GraphPath(singleNode: source))
+            if results.count == limitCount { return results }
         }
-        prefixElements.append(nodeID)
+        guard maximumDepth > 0 else { return results }
 
-        // Build prefix subspace using proper Subspace API
-        let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: prefixElements)
-        let (beginKey, endKey) = prefix.range()
-
-        let hasEdgeLabel = edgeLabel != nil
-        let defaultEdge = edgeLabel ?? ""
-
-        return try await queryContext.withTransaction { transaction in
-            var results: [(node: String, edge: String)] = []
-
-            let stream = try await transaction.collectRange(
-                from: .firstGreaterOrEqual(beginKey),
-                to: .firstGreaterOrEqual(endKey),
-                snapshot: true
-            )
-
-            for (key, _) in stream {
-                let elements = try prefix.unpack(key)
-
-                guard !elements.isEmpty else { continue }
-
-                let targetIndex = elements.count - 1
-                guard let lastElement = elements[targetIndex] else { continue }
-
-                let target: String
-                if let str = lastElement as? String {
-                    target = str
-                } else {
-                    target = String(describing: lastElement)
+        for depth in 1...maximumDepth {
+            guard !currentPaths.isEmpty else { break }
+            var frontier: Set<GraphIdentity> = []
+            for path in currentPaths {
+                guard let last = path.nodes.last else {
+                    throw PathPatternQueryError.inconsistentTraversalState
                 }
-
-                let edge: String
-                if hasEdgeLabel {
-                    edge = defaultEdge
-                } else if elements.count >= 2, let edgeElement = elements[0] {
-                    if let str = edgeElement as? String {
-                        edge = str
-                    } else {
-                        edge = String(describing: edgeElement)
-                    }
-                } else {
-                    edge = ""
-                }
-
-                results.append((target, edge))
+                frontier.insert(last)
             }
+            let newFrontierNodes = frontier.subtracting(exploredNodes)
+            guard exploredNodes.count + newFrontierNodes.count <= maxNodesValue else {
+                throw PathPatternQueryError.maximumNodesReached(maxNodesValue)
+            }
+            exploredNodes.formUnion(frontier)
 
-            return results
+            var pathsBySource: [GraphIdentity: [PartialPath]] = [:]
+            for path in currentPaths {
+                guard let last = path.nodes.last else {
+                    throw PathPatternQueryError.inconsistentTraversalState
+                }
+                pathsBySource[last, default: []].append(path)
+            }
+            var nextPaths: [PartialPath] = []
+
+            for try await edge in scanner.batchScanOutgoing(
+                from: Array(frontier),
+                edgeLabel: edgeLabelFilter.map(GraphIdentity.identifier),
+                transaction: transaction
+            ) {
+                guard let sourcePaths = pathsBySource[edge.source] else {
+                    throw PathPatternQueryError.inconsistentTraversalState
+                }
+                for path in sourcePaths {
+                    guard !path.nodes.contains(edge.target) else { continue }
+                    var nodes = path.nodes
+                    nodes.append(edge.target)
+                    var labels = path.edges
+                    labels.append(edge.edgeLabel)
+
+                    if pathLengthValue.matches(depth), target == nil || target == edge.target {
+                        results.append(
+                            try GraphPath(
+                                nodeIDs: nodes,
+                                edgeLabels: labels,
+                                weights: nil
+                            )
+                        )
+                        if results.count == limitCount { return results }
+                    }
+                    if depth < maximumDepth {
+                        nextPaths.append((nodes, labels))
+                    }
+                }
+            }
+            currentPaths = nextPaths
         }
+
+        return results
     }
 
-    /// Build a nested subspace from an array of tuple elements
-    ///
-    /// Uses the proper Subspace API pattern instead of manual byte concatenation.
-    private static func buildPrefixSubspace(
-        from base: Subspace,
-        elements: [any TupleElement]
-    ) -> Subspace {
-        var result = base
-        for element in elements {
-            result = result.subspace(element)
+    private func executeEndNodes(
+        source: GraphIdentity,
+        target: GraphIdentity?,
+        scanner: GraphEdgeScanner,
+        transaction: any Transaction
+    ) async throws -> [GraphIdentity] {
+        let maximumDepth = pathLengthValue.effectiveMax(defaultLimit: 10)
+        var orderedResults: [GraphIdentity] = []
+        var resultSet: Set<GraphIdentity> = []
+        var visited: Set<GraphIdentity> = [source]
+        var currentLevel: Set<GraphIdentity> = [source]
+
+        if pathLengthValue.matches(0), target == nil || target == source {
+            orderedResults.append(source)
+            resultSet.insert(source)
+            if orderedResults.count == limitCount { return orderedResults }
         }
-        return result
+        guard maximumDepth > 0 else { return orderedResults }
+
+        for depth in 1...maximumDepth {
+            guard !currentLevel.isEmpty else { break }
+            let edges = scanner.batchScanOutgoing(
+                from: Array(currentLevel),
+                edgeLabel: edgeLabelFilter.map(GraphIdentity.identifier),
+                transaction: transaction
+            )
+            var nextLevel: Set<GraphIdentity> = []
+
+            for try await edge in edges where !visited.contains(edge.target) {
+                guard visited.count < maxNodesValue else {
+                    throw PathPatternQueryError.maximumNodesReached(maxNodesValue)
+                }
+                visited.insert(edge.target)
+                nextLevel.insert(edge.target)
+
+                if pathLengthValue.matches(depth),
+                   (target == nil || target == edge.target),
+                   resultSet.insert(edge.target).inserted {
+                    orderedResults.append(edge.target)
+                    if orderedResults.count == limitCount { return orderedResults }
+                }
+            }
+            currentLevel = nextLevel
+        }
+
+        return orderedResults
     }
 }
 
@@ -420,39 +360,41 @@ public struct PathPatternEntryPoint<T: Persistable>: Sendable {
         _ from: KeyPath<T, V1>,
         _ edge: KeyPath<T, V2>,
         _ to: KeyPath<T, V3>
-    ) -> PathPatternQueryBuilder<T> {
-        let fromField = T.fieldName(for: from)
-        let edgeField = T.fieldName(for: edge)
-        let toField = T.fieldName(for: to)
+    ) throws -> PathPatternQueryBuilder<T> {
         return PathPatternQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: fromField,
-            edgeFieldName: edgeField,
-            toFieldName: toField
+            index: try PropertyGraphIndexResolver.exact(
+                signature: PropertyGraphIndexSignature(
+                    sourceFieldName: T.fieldName(for: from),
+                    labelFieldName: T.fieldName(for: edge),
+                    targetFieldName: T.fieldName(for: to)
+                ),
+                for: T.self,
+                in: queryContext
+            )
+        )
+    }
+
+    /// Select an entity-owned graph index by its exact declared name.
+    public func index(named indexName: String) throws -> PathPatternQueryBuilder<T> {
+        PathPatternQueryBuilder(
+            queryContext: queryContext,
+            index: try PropertyGraphIndexResolver.exact(
+                named: indexName,
+                for: T.self,
+                in: queryContext
+            )
         )
     }
 
     /// Use the default graph index
-    public func defaultIndex() -> PathPatternQueryBuilder<T> {
-        let descriptor = T.indexDescriptors.first { desc in
-            desc.kindIdentifier == GraphIndexKind<T>.identifier
-        }
-
-        guard let desc = descriptor,
-              let kind = desc.kind as? GraphIndexKind<T> else {
-            return PathPatternQueryBuilder(
-                queryContext: queryContext,
-                fromFieldName: "",
-                edgeFieldName: "",
-                toFieldName: ""
-            )
-        }
-
+    public func defaultIndex() throws -> PathPatternQueryBuilder<T> {
         return PathPatternQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: kind.fromField,
-            edgeFieldName: kind.edgeField,
-            toFieldName: kind.toField
+            index: try PropertyGraphIndexResolver.unique(
+                for: T.self,
+                in: queryContext
+            )
         )
     }
 }
@@ -495,6 +437,10 @@ public enum PathPatternQueryError: Error, CustomStringConvertible {
     case indexNotConfigured
     case indexNotFound(String)
     case missingSource
+    case invalidLimit(Int)
+    case invalidMaximumNodes(Int)
+    case maximumNodesReached(Int)
+    case inconsistentTraversalState
 
     public var description: String {
         switch self {
@@ -504,6 +450,14 @@ public enum PathPatternQueryError: Error, CustomStringConvertible {
             return "Graph index not found: \(name)"
         case .missingSource:
             return "Missing source node. Use .from() to specify the source."
+        case .invalidLimit(let limit):
+            return "Path result limit must be positive: \(limit)"
+        case .invalidMaximumNodes(let maximum):
+            return "Maximum explored nodes must be positive: \(maximum)"
+        case .maximumNodesReached(let maximum):
+            return "Path traversal reached its maximum node limit: \(maximum)"
+        case .inconsistentTraversalState:
+            return "Path traversal produced an empty partial path"
         }
     }
 }

@@ -4,7 +4,12 @@
 // Reference: Robertson & Zaragoza, "The Probabilistic Relevance Framework: BM25 and Beyond"
 // Foundations and Trends in Information Retrieval, 2009
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseMath
 
 // MARK: - BM25 Statistics
 
@@ -117,7 +122,7 @@ public struct BM25Scorer: Sendable {
         let denominator = dfDouble + 0.5
 
         // Standard BM25 IDF (can be negative when df > N/2)
-        return log(numerator / denominator)
+        return DatabaseMath.naturalLogarithm(numerator / denominator)
     }
 
     // MARK: - Score Calculation

@@ -3,7 +3,11 @@
 //
 // Represents a single triple pattern (subject, predicate, object) in a query.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// A single triple pattern in a SPARQL-like query
 ///
@@ -39,35 +43,28 @@ public struct ExecutionTriple: Sendable, Hashable {
     /// Object position (or "to" in graph terminology)
     public let object: ExecutionTerm
 
-    /// Named graph position (nil = no graph constraint)
-    public let graph: ExecutionTerm?
-
     // MARK: - Initialization
 
     /// Create a triple pattern with explicit terms
     public init(
         subject: ExecutionTerm,
         predicate: ExecutionTerm,
-        object: ExecutionTerm,
-        graph: ExecutionTerm? = nil
+        object: ExecutionTerm
     ) {
         self.subject = subject
         self.predicate = predicate
         self.object = object
-        self.graph = graph
     }
 
     /// Create a triple pattern using graph terminology
     public init(
         from: ExecutionTerm,
         edge: ExecutionTerm,
-        to: ExecutionTerm,
-        graph: ExecutionTerm? = nil
+        to: ExecutionTerm
     ) {
         self.subject = from
         self.predicate = edge
         self.object = to
-        self.graph = graph
     }
 
     /// Create a triple pattern from string literals
@@ -81,20 +78,16 @@ public struct ExecutionTriple: Sendable, Hashable {
         self.subject = ExecutionTerm(stringLiteral: subject)
         self.predicate = ExecutionTerm(stringLiteral: predicate)
         self.object = ExecutionTerm(stringLiteral: object)
-        self.graph = nil
     }
 
     // MARK: - Variables
 
-    /// All named variables in this pattern (recursively collects from quotedTriple)
+    /// All named variables in this pattern, including nested triple terms.
     public var variables: Set<String> {
         var vars = Set<String>()
         Self.collectVariables(from: subject, into: &vars)
         Self.collectVariables(from: predicate, into: &vars)
         Self.collectVariables(from: object, into: &vars)
-        if let graph {
-            Self.collectVariables(from: graph, into: &vars)
-        }
         return vars
     }
 
@@ -103,7 +96,7 @@ public struct ExecutionTriple: Sendable, Hashable {
         switch term {
         case .variable(let name):
             vars.insert(name)
-        case .quotedTriple(let s, let p, let o):
+        case .tripleTerm(let s, let p, let o):
             collectVariables(from: s, into: &vars)
             collectVariables(from: p, into: &vars)
             collectVariables(from: o, into: &vars)
@@ -177,18 +170,7 @@ public struct ExecutionTriple: Sendable, Hashable {
         ExecutionTriple(
             subject: subject.substitute(binding),
             predicate: predicate.substitute(binding),
-            object: object.substitute(binding),
-            graph: graph?.substitute(binding)
-        )
-    }
-
-    /// Create a new pattern with the graph term set
-    public func withGraph(_ graphTerm: ExecutionTerm) -> ExecutionTriple {
-        ExecutionTriple(
-            subject: subject,
-            predicate: predicate,
-            object: object,
-            graph: graphTerm
+            object: object.substitute(binding)
         )
     }
 }
@@ -197,9 +179,6 @@ public struct ExecutionTriple: Sendable, Hashable {
 
 extension ExecutionTriple: CustomStringConvertible {
     public var description: String {
-        if let graph {
-            return "GRAPH \(graph) { (\(subject), \(predicate), \(object)) }"
-        }
         return "(\(subject), \(predicate), \(object))"
     }
 }

@@ -3,6 +3,7 @@ import Testing
 import Foundation
 import StorageKit
 import Core
+import DatabaseValue
 @testable import DatabaseEngine
 
 private struct TupleKeyExpressionRecord: Persistable, Codable, Sendable {

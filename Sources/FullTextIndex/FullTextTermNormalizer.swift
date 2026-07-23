@@ -1,7 +1,6 @@
 // FullTextTermNormalizer.swift
 // FullTextIndex - Shared full-text query and indexing token normalization
 
-import Foundation
 import FullText
 
 internal struct FullTextTermNormalizer: Sendable {
@@ -37,59 +36,59 @@ internal struct FullTextTermNormalizer: Sendable {
     }
 
     func truncateTerm(_ term: String) -> String {
-        let data = Data(term.utf8)
-        guard data.count > fullTextMaxTermBytes else {
+        let utf8 = term.utf8
+        guard utf8.count > fullTextMaxTermBytes else {
             return term
         }
 
-        var truncatedData = data.prefix(fullTextMaxTermBytes)
-        while !truncatedData.isEmpty {
-            if let string = String(data: truncatedData, encoding: .utf8) {
-                return string
-            }
-            truncatedData = truncatedData.dropLast()
+        var end = utf8.index(
+            utf8.startIndex,
+            offsetBy: fullTextMaxTermBytes
+        )
+        while end > utf8.startIndex,
+              utf8[end] & 0xC0 == 0x80 {
+            end = utf8.index(before: end)
         }
-        return ""
+        return String(decoding: utf8[..<end], as: UTF8.self)
     }
 
     private func simpleTokenize(_ text: String) -> [(term: String, position: Int)] {
-        let words = text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+        let normalized = text.lowercased()
+        let words = FullTextTextUtilities.tokenSlices(in: normalized)
 
         var tokens: [(String, Int)] = []
         tokens.reserveCapacity(words.count)
         var position = 0
 
-        for word in words {
-            let trimmed = word.trimmingCharacters(in: .whitespaces)
-            if trimmed.count >= minTermLength {
-                tokens.append((trimmed, position))
+        for word in words where word.count >= minTermLength {
+                tokens.append((String(word), position))
                 position += 1
-            }
         }
 
         return tokens
     }
 
     private func stemTokenize(_ text: String) -> [(term: String, position: Int)] {
-        let words = text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+        let normalized = text.lowercased()
+        let words = FullTextTextUtilities.tokenSlices(in: normalized)
 
         var tokens: [(String, Int)] = []
         tokens.reserveCapacity(words.count)
         var position = 0
 
         for word in words {
-            var stemmed = word.trimmingCharacters(in: .whitespaces)
+            var stemmed = word
 
             if stemmed.hasSuffix("ing") && stemmed.count > 5 {
-                stemmed = String(stemmed.dropLast(3))
+                stemmed = stemmed.dropLast(3)
             } else if stemmed.hasSuffix("ed") && stemmed.count > 4 {
-                stemmed = String(stemmed.dropLast(2))
+                stemmed = stemmed.dropLast(2)
             } else if stemmed.hasSuffix("s") && !stemmed.hasSuffix("ss") && stemmed.count > 3 {
-                stemmed = String(stemmed.dropLast(1))
+                stemmed = stemmed.dropLast(1)
             }
 
             if stemmed.count >= minTermLength {
-                tokens.append((stemmed, position))
+                tokens.append((String(stemmed), position))
                 position += 1
             }
         }
@@ -103,31 +102,44 @@ internal struct FullTextTermNormalizer: Sendable {
         }
 
         let lowered = text.lowercased()
-        let characters = Array(lowered)
-        guard characters.count >= ngramSize else {
+        var windowStart = lowered.startIndex
+        var windowEnd = windowStart
+        for _ in 0..<ngramSize {
+            guard windowEnd < lowered.endIndex else {
+                return []
+            }
+            windowEnd = lowered.index(after: windowEnd)
+        }
+        guard windowStart < windowEnd else {
             return []
         }
 
         var tokens: [(String, Int)] = []
-        tokens.reserveCapacity(characters.count - ngramSize + 1)
         var position = 0
 
-        for index in 0...(characters.count - ngramSize) {
-            let ngram = String(characters[index..<index + ngramSize])
-            if ngram.count >= minTermLength && !ngram.trimmingCharacters(in: .whitespaces).isEmpty {
-                tokens.append((ngram, position))
+        while true {
+            let ngram = lowered[windowStart..<windowEnd]
+            if ngram.count >= minTermLength,
+               FullTextTextUtilities.containsNonWhitespace(ngram) {
+                tokens.append((String(ngram), position))
                 position += 1
             }
+            guard windowEnd < lowered.endIndex else {
+                break
+            }
+            windowStart = lowered.index(after: windowStart)
+            windowEnd = lowered.index(after: windowEnd)
         }
 
         return tokens
     }
 
     private func keywordTokenize(_ text: String) -> [(term: String, position: Int)] {
-        let normalized = text.lowercased().trimmingCharacters(in: .whitespaces)
+        let lowered = text.lowercased()
+        let normalized = FullTextTextUtilities.trimmingWhitespace(lowered)
         guard normalized.count >= minTermLength else {
             return []
         }
-        return [(normalized, 0)]
+        return [(String(normalized), 0)]
     }
 }

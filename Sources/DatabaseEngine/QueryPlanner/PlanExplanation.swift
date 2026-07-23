@@ -1,7 +1,6 @@
 // PlanExplanation.swift
 // QueryPlanner - Human-readable plan explanation
 
-import Foundation
 import Core
 
 /// Type-erased plan information for display purposes
@@ -55,13 +54,18 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
         info.usedFields
     }
 
+    /// Text representation of the physical operator tree.
+    public var operatorTree: String {
+        info.operatorTree
+    }
+
     public var description: String {
         var lines: [String] = []
         lines.append("Query Plan:")
-        lines.append("  Estimated Cost: \(String(format: "%.2f", info.estimatedCost.totalCost))")
-        lines.append("  Index Reads: \(String(format: "%.1f", info.estimatedCost.indexReads))")
-        lines.append("  Record Fetches: \(String(format: "%.1f", info.estimatedCost.recordFetches))")
-        lines.append("  Post Filter: \(String(format: "%.1f", info.estimatedCost.postFilterCount))")
+        lines.append("  Estimated Cost: \(DatabaseTextFormatting.fixedDecimal(info.estimatedCost.totalCost, fractionDigits: 2))")
+        lines.append("  Index Reads: \(DatabaseTextFormatting.fixedDecimal(info.estimatedCost.indexReads, fractionDigits: 1))")
+        lines.append("  Record Fetches: \(DatabaseTextFormatting.fixedDecimal(info.estimatedCost.recordFetches, fractionDigits: 1))")
+        lines.append("  Post Filter: \(DatabaseTextFormatting.fixedDecimal(info.estimatedCost.postFilterCount, fractionDigits: 1))")
         lines.append("  Requires Sort: \(info.estimatedCost.requiresSort)")
         lines.append("  Ordering Satisfied: \(info.orderingSatisfied)")
         lines.append("")
@@ -145,7 +149,7 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
 
         case .filter(let filterOp):
             lines.append("\(prefix)-> Filter")
-            lines.append("\(prefix)   selectivity: \(String(format: "%.2f", filterOp.selectivity))")
+            lines.append("\(prefix)   selectivity: \(DatabaseTextFormatting.fixedDecimal(filterOp.selectivity, fractionDigits: 2))")
             lines.append(buildOperatorTree(filterOp.input, indent: indent + 3))
 
         case .sort(let sortOp):
@@ -190,13 +194,6 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
             lines.append("\(prefix)-> SpatialScan[\(spatialOp.index.name)]")
             lines.append("\(prefix)   constraint: \(describeConstraint(spatialOp.constraint))")
             lines.append("\(prefix)   est. results: \(spatialOp.estimatedResults)")
-
-        case .aggregation(let aggOp):
-            lines.append("\(prefix)-> Aggregation[\(aggOp.index.name)]")
-            lines.append("\(prefix)   type: \(aggOp.aggregationType)")
-            if !aggOp.groupByFields.isEmpty {
-                lines.append("\(prefix)   group by: \(aggOp.groupByFields.joined(separator: ", "))")
-            }
 
         case .inUnion(let inUnionOp):
             lines.append("\(prefix)-> InUnion[\(inUnionOp.index.name)]")
@@ -253,28 +250,5 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
         case .withinPolygon(let points):
             return "within polygon (\(points.count) points)"
         }
-    }
-}
-
-// MARK: - JSON Export
-
-extension PlanExplanation {
-    /// Export plan explanation as JSON for tooling
-    public func toJSON() throws -> Data {
-        let dict: [String: Any] = [
-            "estimatedCost": [
-                "total": info.estimatedCost.totalCost,
-                "indexReads": info.estimatedCost.indexReads,
-                "recordFetches": info.estimatedCost.recordFetches,
-                "postFilterCount": info.estimatedCost.postFilterCount,
-                "requiresSort": info.estimatedCost.requiresSort
-            ],
-            "usedIndexes": info.usedIndexNames.map { ["name": $0.name, "kind": $0.kind] },
-            "usedFields": Array(info.usedFields),
-            "orderingSatisfied": info.orderingSatisfied,
-            "operatorTree": info.operatorTree
-        ]
-
-        return try JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted])
     }
 }

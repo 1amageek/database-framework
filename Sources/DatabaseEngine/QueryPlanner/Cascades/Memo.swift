@@ -6,7 +6,11 @@
 //
 // Reference: Graefe, G. "The Cascades Framework for Query Optimization", 1995
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Synchronization
 
 // MARK: - Group

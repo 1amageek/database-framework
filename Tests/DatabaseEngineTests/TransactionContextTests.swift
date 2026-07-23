@@ -7,6 +7,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import Core
 
 /// Tests for TransactionContext and the new transaction API
@@ -24,8 +25,8 @@ struct TransactionContextTests {
 
     /// Test model for transaction tests
     @Persistable
-    struct TransactionTestUser {
-        #Directory<TransactionTestUser>("transaction_context_test_users")
+    struct TransactionUser {
+        #Directory<TransactionUser>("transaction_context_test_users")
         var id: String = ULID().ulidString
         var name: String
         var balance: Int
@@ -33,8 +34,8 @@ struct TransactionContextTests {
 
     /// Test model for products
     @Persistable
-    struct TransactionTestProduct {
-        #Directory<TransactionTestProduct>("transaction_context_test_products")
+    struct TransactionProduct {
+        #Directory<TransactionProduct>("transaction_context_test_products")
         var id: String = ULID().ulidString
         var name: String
         var price: Double
@@ -43,27 +44,28 @@ struct TransactionContextTests {
     // MARK: - Helper Methods
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema(
-            [TransactionTestUser.self, TransactionTestProduct.self],
+            [TransactionUser.self, TransactionProduct.self],
             version: Schema.Version(1, 0, 0)
         )
 
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.directoryService.exists(path: ["transaction_context_test_users"]) {
-            try await container.engine.directoryService.remove(path: ["transaction_context_test_users"])
+        if try await container.engine.directoryExists(path: ["transaction_context_test_users"]) {
+            try await container.engine.removeDirectory(path: ["transaction_context_test_users"])
         }
-        if try await container.engine.directoryService.exists(path: ["transaction_context_test_products"]) {
-            try await container.engine.directoryService.remove(path: ["transaction_context_test_products"])
+        if try await container.engine.directoryExists(path: ["transaction_context_test_products"]) {
+            try await container.engine.removeDirectory(path: ["transaction_context_test_products"])
         }
     }
 
@@ -73,7 +75,7 @@ struct TransactionContextTests {
     func defaultConfigurationValues() {
         let config = TransactionConfiguration.default
         #expect(config.timeout == nil)
-        #expect(config.retryLimit == 5)
+        #expect(config.maximumAttempts == 5)
         #expect(config.maxRetryDelay == 1000)
         #expect(config.priority == .default)
         #expect(config.readPriority == .normal)
@@ -85,7 +87,7 @@ struct TransactionContextTests {
     func batchConfigurationValues() {
         let config = TransactionConfiguration.batch
         #expect(config.timeout == 30_000)
-        #expect(config.retryLimit == 20)
+        #expect(config.maximumAttempts == 20)
         #expect(config.maxRetryDelay == 2000)
         #expect(config.priority == .batch)
         #expect(config.readPriority == .low)
@@ -97,7 +99,7 @@ struct TransactionContextTests {
     func systemConfigurationValues() {
         let config = TransactionConfiguration.system
         #expect(config.timeout == 2_000)
-        #expect(config.retryLimit == 5)
+        #expect(config.maximumAttempts == 5)
         #expect(config.maxRetryDelay == 1000)  // Uses default
         #expect(config.priority == .system)
         #expect(config.readPriority == .high)
@@ -107,7 +109,7 @@ struct TransactionContextTests {
     func interactiveConfigurationValues() {
         let config = TransactionConfiguration.interactive
         #expect(config.timeout == 1_000)
-        #expect(config.retryLimit == 3)
+        #expect(config.maximumAttempts == 3)
         #expect(config.maxRetryDelay == 1000)  // Uses default
         #expect(config.priority == .default)
         #expect(config.readPriority == .normal)
@@ -117,14 +119,14 @@ struct TransactionContextTests {
     func customConfiguration() {
         let config = TransactionConfiguration(
             timeout: 5000,
-            retryLimit: 8,
+            maximumAttempts: 8,
             maxRetryDelay: 500,
             priority: .batch,
             readPriority: .high,
             disableReadCache: true
         )
         #expect(config.timeout == 5000)
-        #expect(config.retryLimit == 8)
+        #expect(config.maximumAttempts == 8)
         #expect(config.maxRetryDelay == 500)
         #expect(config.priority == .batch)
         #expect(config.readPriority == .high)
@@ -139,12 +141,12 @@ struct TransactionContextTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let user = TransactionTestUser(name: "Alice", balance: 100)
+        let user = TransactionUser(name: "Alice", balance: 100)
 
         // Write and read within transaction
         try await context.withTransaction { tx in
             try await tx.set(user)
-            let fetched = try await tx.get(TransactionTestUser.self, id: user.id)
+            let fetched = try await tx.get(TransactionUser.self, id: user.id)
             #expect(fetched != nil)
             #expect(fetched?.name == "Alice")
             #expect(fetched?.balance == 100)
@@ -152,7 +154,7 @@ struct TransactionContextTests {
 
         // Verify persisted after transaction commits
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionTestUser.self, id: user.id)
+            let fetched = try await tx.get(TransactionUser.self, id: user.id)
             #expect(fetched != nil)
             #expect(fetched?.name == "Alice")
         }
@@ -164,7 +166,7 @@ struct TransactionContextTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let user = TransactionTestUser(name: "Bob", balance: 200)
+        let user = TransactionUser(name: "Bob", balance: 200)
 
         // Insert
         try await context.withTransaction { tx in
@@ -173,18 +175,18 @@ struct TransactionContextTests {
 
         // Verify exists
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionTestUser.self, id: user.id)
+            let fetched = try await tx.get(TransactionUser.self, id: user.id)
             #expect(fetched != nil)
         }
 
         // Delete
         try await context.withTransaction { tx in
-            try await tx.delete(TransactionTestUser.self, id: user.id)
+            try await tx.delete(TransactionUser.self, id: user.id)
         }
 
         // Verify deleted
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionTestUser.self, id: user.id)
+            let fetched = try await tx.get(TransactionUser.self, id: user.id)
             #expect(fetched == nil)
         }
     }
@@ -195,9 +197,9 @@ struct TransactionContextTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let user1 = TransactionTestUser(name: "User1", balance: 100)
-        let user2 = TransactionTestUser(name: "User2", balance: 200)
-        let user3 = TransactionTestUser(name: "User3", balance: 300)
+        let user1 = TransactionUser(name: "User1", balance: 100)
+        let user2 = TransactionUser(name: "User2", balance: 200)
+        let user3 = TransactionUser(name: "User3", balance: 300)
 
         // Insert
         try await context.withTransaction { tx in
@@ -209,7 +211,7 @@ struct TransactionContextTests {
         // GetMany
         try await context.withTransaction { tx in
             let users = try await tx.getMany(
-                TransactionTestUser.self,
+                TransactionUser.self,
                 ids: [user1.id, user2.id, user3.id]
             )
             #expect(users.count == 3)
@@ -218,7 +220,7 @@ struct TransactionContextTests {
         // GetMany with missing ID
         try await context.withTransaction { tx in
             let users = try await tx.getMany(
-                TransactionTestUser.self,
+                TransactionUser.self,
                 ids: [user1.id, "nonexistent", user3.id]
             )
             #expect(users.count == 2)
@@ -233,7 +235,7 @@ struct TransactionContextTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let user = TransactionTestUser(name: "SnapshotTest", balance: 500)
+        let user = TransactionUser(name: "SnapshotTest", balance: 500)
 
         // Insert
         try await context.withTransaction { tx in
@@ -244,7 +246,7 @@ struct TransactionContextTests {
         try await context.withTransaction { tx in
             // Transactional read (default)
             let transactionalRead = try await tx.get(
-                TransactionTestUser.self,
+                TransactionUser.self,
                 id: user.id,
                 snapshot: false
             )
@@ -252,7 +254,7 @@ struct TransactionContextTests {
 
             // Snapshot read
             let snapshotRead = try await tx.get(
-                TransactionTestUser.self,
+                TransactionUser.self,
                 id: user.id,
                 snapshot: true
             )
@@ -271,7 +273,7 @@ struct TransactionContextTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let user = TransactionTestUser(name: "ModifyTest", balance: 1000)
+        let user = TransactionUser(name: "ModifyTest", balance: 1000)
 
         // Insert initial value
         try await context.withTransaction { tx in
@@ -280,8 +282,8 @@ struct TransactionContextTests {
 
         // Read-modify-write
         try await context.withTransaction { tx in
-            guard var fetched = try await tx.get(TransactionTestUser.self, id: user.id) else {
-                throw TestError.userNotFound
+            guard var fetched = try await tx.get(TransactionUser.self, id: user.id) else {
+                throw TransactionContextFailure.userNotFound
             }
             fetched.balance -= 100
             try await tx.set(fetched)
@@ -289,7 +291,7 @@ struct TransactionContextTests {
 
         // Verify modification
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionTestUser.self, id: user.id)
+            let fetched = try await tx.get(TransactionUser.self, id: user.id)
             #expect(fetched?.balance == 900)
         }
     }
@@ -302,7 +304,7 @@ struct TransactionContextTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let user = TransactionTestUser(name: "BatchTest", balance: 100)
+        let user = TransactionUser(name: "BatchTest", balance: 100)
 
         // Use batch configuration
         try await context.withTransaction(configuration: .batch) { tx in
@@ -311,7 +313,7 @@ struct TransactionContextTests {
 
         // Verify
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionTestUser.self, id: user.id)
+            let fetched = try await tx.get(TransactionUser.self, id: user.id)
             #expect(fetched != nil)
         }
     }
@@ -322,7 +324,7 @@ struct TransactionContextTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let user = TransactionTestUser(name: "InteractiveTest", balance: 50)
+        let user = TransactionUser(name: "InteractiveTest", balance: 50)
 
         // Use interactive configuration
         try await context.withTransaction(configuration: .interactive) { tx in
@@ -331,7 +333,7 @@ struct TransactionContextTests {
 
         // Verify
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionTestUser.self, id: user.id)
+            let fetched = try await tx.get(TransactionUser.self, id: user.id)
             #expect(fetched != nil)
         }
     }
@@ -344,7 +346,7 @@ struct TransactionContextTests {
         try await cleanup(container: container)
         let context = container.newContext()
 
-        let user = TransactionTestUser(name: "ReturnTest", balance: 777)
+        let user = TransactionUser(name: "ReturnTest", balance: 777)
 
         try await context.withTransaction { tx in
             try await tx.set(user)
@@ -352,7 +354,7 @@ struct TransactionContextTests {
 
         // Transaction returns a value
         let balance: Int = try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionTestUser.self, id: user.id)
+            let fetched = try await tx.get(TransactionUser.self, id: user.id)
             return fetched?.balance ?? 0
         }
 
@@ -404,7 +406,7 @@ struct TransactionContextTests {
 
     // MARK: - Error Types
 
-    enum TestError: Error {
+    enum TransactionContextFailure: Error {
         case userNotFound
     }
 }

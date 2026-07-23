@@ -4,7 +4,11 @@
 // Provides a flexible way to specify path length constraints for
 // graph traversal queries, similar to Cypher's *min..max syntax.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 // MARK: - PathLength
 

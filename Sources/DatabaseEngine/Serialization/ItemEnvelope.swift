@@ -1,307 +1,369 @@
-// ItemEnvelope.swift
-// DatabaseEngine - Item envelope format for storage
-//
-// Defines the wire format for stored items, supporting both inline data
-// and external blob references for large values.
-
-import Foundation
 import StorageKit
 
-// MARK: - ItemEnvelope
-
-/// Envelope format for stored items
+/// Canonical v1 envelope for persisted database records.
 ///
-/// **Wire Format**:
-/// ```
-/// Bytes 0-3:  Magic number "ITEM" (0x49 0x54 0x45 0x4D)
-/// Byte 4:     Format version (currently 0x01)
-/// Byte 5:     Flags (inline/external)
-/// Bytes 6...: Payload (inline data) or ExternalRef (blob reference)
+/// The fixed header is encoded in network byte order:
+///
+/// ```text
+/// magic[4] | version[1] | storage[1] | encoding[1]
+/// plainByteCount[8] | storedByteCount[8] | crc32c[4] | content[n]
 /// ```
 ///
-/// **Design Goals**:
-/// - Items subspace contains only item envelopes (1 key per item)
-/// - Large values stored in separate blobs subspace
-/// - Range scans over items return consistent item envelopes
-/// - Magic number prevents misidentification of non-envelope data
+/// Inline content is the stored payload itself. External content is an
+/// eight-byte `ExternalRef`; the payload is stored under the record's blob
+/// subspace. Deserialization returns inline content as a view into the owned
+/// envelope buffer.
 public struct ItemEnvelope: Sendable, Equatable {
-    // MARK: - Constants
+    public static let magic: Bytes = [0x49, 0x54, 0x45, 0x4D]
+    public static let currentVersion: UInt8 = 1
+    public static let headerSize = 27
 
-    /// Magic number "ITEM" to identify envelope format
-    public static let magic: [UInt8] = [0x49, 0x54, 0x45, 0x4D]  // "ITEM"
+    public enum StorageKind: UInt8, Sendable, Equatable {
+        case inline = 0
+        case external = 1
+    }
 
-    /// Current format version
-    public static let currentVersion: UInt8 = 0x01
+    public enum Content: Sendable, Equatable {
+        case inline(Bytes)
+        case external(ExternalRef)
+    }
 
-    /// Header size: magic (4) + version (1) + flags (1)
-    public static let headerSize: Int = 6
-
-    /// Maximum inline payload size (90KB - leave room for FDB overhead)
-    public static let maxInlineSize: Int = 90_000
-
-    // MARK: - Properties
-
-    /// Format version
     public let version: UInt8
-
-    /// Storage flags
-    public let flags: Flags
-
-    /// Payload data (inline) or external reference
+    public let storageKind: StorageKind
+    public let encoding: ItemPayloadEncoding
+    public let plainByteCount: UInt64
+    public let storedByteCount: UInt64
+    public let checksum: UInt32
     public let content: Content
 
-    // MARK: - Initialization
-
-    /// Create an inline envelope
     public static func inline(
-        data: Bytes
-    ) -> ItemEnvelope {
-        ItemEnvelope(
+        payload: Bytes,
+        encoding: ItemPayloadEncoding,
+        plainByteCount: UInt64,
+        checksum: UInt32
+    ) throws -> ItemEnvelope {
+        let storedByteCount = UInt64(payload.count)
+        try validateEncodingSizes(
+            encoding: encoding,
+            plainByteCount: plainByteCount,
+            storedByteCount: storedByteCount
+        )
+        return ItemEnvelope(
             version: currentVersion,
-            flags: .inline,
-            content: .inline(data)
+            storageKind: .inline,
+            encoding: encoding,
+            plainByteCount: plainByteCount,
+            storedByteCount: storedByteCount,
+            checksum: checksum,
+            content: .inline(payload)
         )
     }
 
-    /// Create an external reference envelope
     public static func external(
-        ref: ExternalRef
-    ) -> ItemEnvelope {
-        ItemEnvelope(
+        reference: ExternalRef,
+        encoding: ItemPayloadEncoding,
+        plainByteCount: UInt64,
+        storedByteCount: UInt64,
+        checksum: UInt32
+    ) throws -> ItemEnvelope {
+        try validateEncodingSizes(
+            encoding: encoding,
+            plainByteCount: plainByteCount,
+            storedByteCount: storedByteCount
+        )
+        try reference.validate(storedByteCount: storedByteCount)
+        return ItemEnvelope(
             version: currentVersion,
-            flags: .external,
-            content: .external(ref)
+            storageKind: .external,
+            encoding: encoding,
+            plainByteCount: plainByteCount,
+            storedByteCount: storedByteCount,
+            checksum: checksum,
+            content: .external(reference)
         )
     }
 
-    private init(version: UInt8, flags: Flags, content: Content) {
+    private init(
+        version: UInt8,
+        storageKind: StorageKind,
+        encoding: ItemPayloadEncoding,
+        plainByteCount: UInt64,
+        storedByteCount: UInt64,
+        checksum: UInt32,
+        content: Content
+    ) {
         self.version = version
-        self.flags = flags
+        self.storageKind = storageKind
+        self.encoding = encoding
+        self.plainByteCount = plainByteCount
+        self.storedByteCount = storedByteCount
+        self.checksum = checksum
         self.content = content
     }
 
-    // MARK: - Serialization
-
-    /// Serialize envelope to bytes for storage
+    /// Produces the final persisted value in one allocation.
     public func serialize() -> Bytes {
-        var result: [UInt8] = []
-
-        // Magic
-        result.append(contentsOf: Self.magic)
-
-        // Header
-        result.append(version)
-        result.append(flags.rawValue)
-
-        // Content
+        let contentByteCount: Int
         switch content {
-        case .inline(let data):
-            result.append(contentsOf: data)
-
-        case .external(let ref):
-            result.append(contentsOf: ref.serialize())
+        case .inline(let payload):
+            contentByteCount = payload.count
+        case .external:
+            contentByteCount = ExternalRef.serializedSize
         }
 
-        return result
+        return Bytes.copying(count: Self.headerSize + contentByteCount) { output in
+            output[0] = Self.magic[0]
+            output[1] = Self.magic[1]
+            output[2] = Self.magic[2]
+            output[3] = Self.magic[3]
+            output[4] = version
+            output[5] = storageKind.rawValue
+            output[6] = encoding.rawValue
+            Self.writeUInt64(plainByteCount, to: output, at: 7)
+            Self.writeUInt64(storedByteCount, to: output, at: 15)
+            Self.writeUInt32(checksum, to: output, at: 23)
+
+            switch content {
+            case .inline(let payload):
+                payload.withUnsafeBytes { source in
+                    UnsafeMutableRawBufferPointer(
+                        rebasing: output[Self.headerSize..<output.count]
+                    ).copyMemory(from: source)
+                }
+            case .external(let reference):
+                reference.write(to: output, at: Self.headerSize)
+            }
+        }
     }
 
-    /// Deserialize envelope from stored bytes
+    /// Parses and structurally validates an envelope without copying its inline payload.
     public static func deserialize(_ bytes: Bytes) throws -> ItemEnvelope {
         guard bytes.count >= headerSize else {
             throw ItemEnvelopeError.invalidHeader
         }
-
-        // Verify magic
         guard bytes[0] == magic[0],
               bytes[1] == magic[1],
               bytes[2] == magic[2],
               bytes[3] == magic[3] else {
             throw ItemEnvelopeError.invalidMagic
         }
-
         let version = bytes[4]
         guard version == currentVersion else {
             throw ItemEnvelopeError.unsupportedVersion(version)
         }
-
-        guard let flags = Flags(rawValue: bytes[5]) else {
-            throw ItemEnvelopeError.invalidFlags(bytes[5])
+        guard let storageKind = StorageKind(rawValue: bytes[5]) else {
+            throw ItemEnvelopeError.invalidStorageKind(bytes[5])
         }
-        let payloadBytes = Array(bytes[headerSize...])
+        guard let encoding = ItemPayloadEncoding(rawValue: bytes[6]) else {
+            throw ItemEnvelopeError.unsupportedEncoding(bytes[6])
+        }
 
+        let plainByteCount = readUInt64(bytes, at: 7)
+        let storedByteCount = readUInt64(bytes, at: 15)
+        let checksum = readUInt32(bytes, at: 23)
+        try validateEncodingSizes(
+            encoding: encoding,
+            plainByteCount: plainByteCount,
+            storedByteCount: storedByteCount
+        )
+
+        let contentBytes = bytes[headerSize..<bytes.count]
         let content: Content
-        switch flags {
+        switch storageKind {
         case .inline:
-            content = .inline(payloadBytes)
-
+            guard let expectedCount = Int(exactly: storedByteCount),
+                  contentBytes.count == expectedCount else {
+                throw ItemEnvelopeError.payloadSizeMismatch(
+                    expected: storedByteCount,
+                    actual: UInt64(contentBytes.count)
+                )
+            }
+            content = .inline(contentBytes)
         case .external:
-            let ref = try ExternalRef.deserialize(payloadBytes)
-            content = .external(ref)
+            let reference = try ExternalRef.deserialize(contentBytes)
+            try reference.validate(storedByteCount: storedByteCount)
+            content = .external(reference)
         }
 
         return ItemEnvelope(
             version: version,
-            flags: flags,
+            storageKind: storageKind,
+            encoding: encoding,
+            plainByteCount: plainByteCount,
+            storedByteCount: storedByteCount,
+            checksum: checksum,
             content: content
         )
     }
 
-    /// Check if bytes represent a valid ItemEnvelope
-    /// Only checks magic number - no weak heuristics
     public static func isEnvelope(_ bytes: Bytes) -> Bool {
-        guard bytes.count >= headerSize else { return false }
-
-        // Check magic only - this is unambiguous
-        return bytes[0] == magic[0] &&
-               bytes[1] == magic[1] &&
-               bytes[2] == magic[2] &&
-               bytes[3] == magic[3]
+        bytes.count >= headerSize
+            && bytes[0] == magic[0]
+            && bytes[1] == magic[1]
+            && bytes[2] == magic[2]
+            && bytes[3] == magic[3]
     }
-}
 
-// MARK: - Flags
-
-extension ItemEnvelope {
-    /// Storage flags
-    public enum Flags: UInt8, Sendable {
-        /// Data is stored inline in this envelope
-        case inline = 0x00
-
-        /// Data is stored externally in blobs subspace
-        case external = 0x01
+    private static func validateEncodingSizes(
+        encoding: ItemPayloadEncoding,
+        plainByteCount: UInt64,
+        storedByteCount: UInt64
+    ) throws {
+        switch encoding {
+        case .identity:
+            guard plainByteCount == storedByteCount else {
+                throw ItemEnvelopeError.invalidSizeMetadata
+            }
+        }
     }
-}
 
-// MARK: - Content
-
-extension ItemEnvelope {
-    /// Envelope content: either inline data or external reference
-    public enum Content: Sendable, Equatable {
-        /// Data stored inline in this envelope
-        case inline(Bytes)
-
-        /// Reference to external blob storage
-        case external(ExternalRef)
-    }
-}
-
-// MARK: - ExternalRef
-
-extension ItemEnvelope {
-    /// Reference to externally stored blob data
-    ///
-    /// **Wire Format**:
-    /// ```
-    /// Bytes 0-7:   Total size (Int64, big-endian)
-    /// Bytes 8-11:  Chunk count (Int32, big-endian)
-    /// Bytes 12-15: Chunk size (Int32, big-endian)
-    /// ```
     public struct ExternalRef: Sendable, Equatable {
-        /// Total size of the original data
-        public let totalSize: Int64
+        public static let serializedSize = 8
 
-        /// Number of chunks
-        public let chunkCount: Int32
+        public let chunkCount: UInt32
+        public let chunkByteCount: UInt32
 
-        /// Size of each chunk (last chunk may be smaller)
-        public let chunkSize: Int32
-
-        /// Wire format size
-        public static let serializedSize: Int = 16
-
-        public init(totalSize: Int64, chunkCount: Int32, chunkSize: Int32) {
-            self.totalSize = totalSize
+        public init(
+            chunkCount: UInt32,
+            chunkByteCount: UInt32,
+            storedByteCount: UInt64
+        ) throws {
             self.chunkCount = chunkCount
-            self.chunkSize = chunkSize
+            self.chunkByteCount = chunkByteCount
+            try validate(storedByteCount: storedByteCount)
         }
 
-        /// Serialize to bytes
         public func serialize() -> Bytes {
-            var result: [UInt8] = []
-            result.reserveCapacity(Self.serializedSize)
-
-            // totalSize (8 bytes, big-endian)
-            var size = totalSize.bigEndian
-            withUnsafeBytes(of: &size) { result.append(contentsOf: $0) }
-
-            // chunkCount (4 bytes, big-endian)
-            var count = chunkCount.bigEndian
-            withUnsafeBytes(of: &count) { result.append(contentsOf: $0) }
-
-            // chunkSize (4 bytes, big-endian)
-            var cSize = chunkSize.bigEndian
-            withUnsafeBytes(of: &cSize) { result.append(contentsOf: $0) }
-
-            return result
+            Bytes.copying(count: Self.serializedSize) { output in
+                write(to: output, at: 0)
+            }
         }
 
-        /// Deserialize from bytes
         public static func deserialize(_ bytes: Bytes) throws -> ExternalRef {
-            guard bytes.count >= serializedSize else {
+            guard bytes.count == serializedSize else {
                 throw ItemEnvelopeError.invalidExternalRef
             }
-
-            let totalSize = bytes.withUnsafeBytes { ptr -> Int64 in
-                var value: Int64 = 0
-                withUnsafeMutableBytes(of: &value) { dest in
-                    _ = ptr.copyBytes(to: dest, count: 8)
-                }
-                return Int64(bigEndian: value)
-            }
-
-            let chunkCount = Array(bytes[8..<12]).withUnsafeBytes { ptr -> Int32 in
-                var value: Int32 = 0
-                withUnsafeMutableBytes(of: &value) { dest in
-                    _ = ptr.copyBytes(to: dest, count: 4)
-                }
-                return Int32(bigEndian: value)
-            }
-
-            let chunkSize = Array(bytes[12..<16]).withUnsafeBytes { ptr -> Int32 in
-                var value: Int32 = 0
-                withUnsafeMutableBytes(of: &value) { dest in
-                    _ = ptr.copyBytes(to: dest, count: 4)
-                }
-                return Int32(bigEndian: value)
-            }
-
             return ExternalRef(
-                totalSize: totalSize,
-                chunkCount: chunkCount,
-                chunkSize: chunkSize
+                uncheckedChunkCount: ItemEnvelope.readUInt32(bytes, at: 0),
+                chunkByteCount: ItemEnvelope.readUInt32(bytes, at: 4)
+            )
+        }
+
+        fileprivate init(
+            uncheckedChunkCount: UInt32,
+            chunkByteCount: UInt32
+        ) {
+            self.chunkCount = uncheckedChunkCount
+            self.chunkByteCount = chunkByteCount
+        }
+
+        fileprivate func validate(storedByteCount: UInt64) throws {
+            guard storedByteCount > 0,
+                  chunkCount > 0,
+                  chunkByteCount > 0 else {
+                throw ItemEnvelopeError.invalidExternalRef
+            }
+            let chunkBytes = UInt64(chunkByteCount)
+            let (roundedSize, overflow) = storedByteCount.addingReportingOverflow(
+                chunkBytes - 1
+            )
+            guard !overflow,
+                  UInt64(chunkCount) == roundedSize / chunkBytes else {
+                throw ItemEnvelopeError.invalidExternalRef
+            }
+        }
+
+        fileprivate func write(
+            to output: UnsafeMutableRawBufferPointer,
+            at offset: Int
+        ) {
+            ItemEnvelope.writeUInt32(chunkCount, to: output, at: offset)
+            ItemEnvelope.writeUInt32(
+                chunkByteCount,
+                to: output,
+                at: offset + 4
             )
         }
     }
+
+    private static func writeUInt64(
+        _ value: UInt64,
+        to output: UnsafeMutableRawBufferPointer,
+        at offset: Int
+    ) {
+        for index in 0..<8 {
+            output[offset + index] = UInt8(
+                truncatingIfNeeded: value >> UInt64((7 - index) * 8)
+            )
+        }
+    }
+
+    private static func writeUInt32(
+        _ value: UInt32,
+        to output: UnsafeMutableRawBufferPointer,
+        at offset: Int
+    ) {
+        for index in 0..<4 {
+            output[offset + index] = UInt8(
+                truncatingIfNeeded: value >> UInt32((3 - index) * 8)
+            )
+        }
+    }
+
+    private static func readUInt64(_ bytes: Bytes, at offset: Int) -> UInt64 {
+        var value: UInt64 = 0
+        for index in 0..<8 {
+            value = (value << 8) | UInt64(bytes[offset + index])
+        }
+        return value
+    }
+
+    private static func readUInt32(_ bytes: Bytes, at offset: Int) -> UInt32 {
+        var value: UInt32 = 0
+        for index in 0..<4 {
+            value = (value << 8) | UInt32(bytes[offset + index])
+        }
+        return value
+    }
 }
 
-// MARK: - ItemEnvelopeError
-
-/// Errors from ItemEnvelope operations
-public enum ItemEnvelopeError: Error, CustomStringConvertible, Sendable {
+public enum ItemEnvelopeError: Error, CustomStringConvertible, Sendable, Equatable {
     case invalidMagic
     case invalidHeader
     case unsupportedVersion(UInt8)
-    case invalidFlags(UInt8)
+    case invalidStorageKind(UInt8)
+    case unsupportedEncoding(UInt8)
+    case invalidSizeMetadata
     case invalidExternalRef
+    case payloadSizeMismatch(expected: UInt64, actual: UInt64)
     case chunkMissing(index: Int)
-    case sizeMismatch(expected: Int, actual: Int)
+    case chunkSizeMismatch(index: Int, expected: Int, actual: Int)
+    case checksumMismatch(expected: UInt32, actual: UInt32)
 
     public var description: String {
         switch self {
         case .invalidMagic:
-            return "Invalid item envelope: missing or incorrect magic number"
+            return "Invalid item envelope magic"
         case .invalidHeader:
             return "Invalid item envelope header"
-        case .unsupportedVersion(let v):
-            return "Unsupported item envelope version: \(v)"
-        case .invalidFlags(let f):
-            return "Invalid item envelope flags: \(f)"
+        case .unsupportedVersion(let version):
+            return "Unsupported item envelope version: \(version)"
+        case .invalidStorageKind(let kind):
+            return "Invalid item envelope storage kind: \(kind)"
+        case .unsupportedEncoding(let encoding):
+            return "Unsupported item payload encoding: \(encoding)"
+        case .invalidSizeMetadata:
+            return "Invalid item envelope size metadata"
         case .invalidExternalRef:
-            return "Invalid external reference data"
+            return "Invalid item external reference"
+        case .payloadSizeMismatch(let expected, let actual):
+            return "Item payload size mismatch: expected \(expected), got \(actual)"
         case .chunkMissing(let index):
-            return "Missing blob chunk at index \(index)"
-        case .sizeMismatch(let expected, let actual):
-            return "Size mismatch: expected \(expected) bytes, got \(actual)"
+            return "Missing item blob chunk at index \(index)"
+        case .chunkSizeMismatch(let index, let expected, let actual):
+            return "Item blob chunk \(index) size mismatch: expected \(expected), got \(actual)"
+        case .checksumMismatch(let expected, let actual):
+            return "Item checksum mismatch: expected \(expected), got \(actual)"
         }
     }
 }

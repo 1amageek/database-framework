@@ -1,7 +1,11 @@
 // CachePolicy.swift
 // DatabaseEngine - Cache policy for read operations
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Cache policy for read operations
 ///

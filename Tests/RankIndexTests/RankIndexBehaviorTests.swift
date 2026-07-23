@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Rank
 import TestSupport
 @testable import DatabaseEngine
@@ -14,7 +15,7 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct TestPlayer: Persistable {
+struct RankedPlayer: Persistable {
     typealias ID = String
 
     var id: String
@@ -27,7 +28,7 @@ struct TestPlayer: Persistable {
         self.score = score
     }
 
-    static var persistableType: String { "TestPlayer" }
+    static var persistableType: String { "RankedPlayer" }
     static var allFields: [String] { ["id", "name", "score"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -43,48 +44,48 @@ struct TestPlayer: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestPlayer, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<RankedPlayer, Value>) -> String {
         switch keyPath {
-        case \TestPlayer.id: return "id"
-        case \TestPlayer.name: return "name"
-        case \TestPlayer.score: return "score"
+        case \RankedPlayer.id: return "id"
+        case \RankedPlayer.name: return "name"
+        case \RankedPlayer.score: return "score"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestPlayer>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<RankedPlayer>) -> String {
         switch keyPath {
-        case \TestPlayer.id: return "id"
-        case \TestPlayer.name: return "name"
-        case \TestPlayer.score: return "score"
+        case \RankedPlayer.id: return "id"
+        case \RankedPlayer.name: return "name"
+        case \RankedPlayer.score: return "score"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestPlayer> {
+        if let partial = keyPath as? PartialKeyPath<RankedPlayer> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Rank Index Context
 
-private struct TestContext {
+private struct RankIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: RankIndexMaintainer<TestPlayer, Int64>
-    let kind: RankIndexKind<TestPlayer, Int64>
+    let maintainer: RankIndexMaintainer<RankedPlayer, Int64>
+    let kind: RankIndexKind<RankedPlayer, Int64>
 
-    init(indexName: String = "TestPlayer_score") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(indexName: String = "RankedPlayer_score") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = RankIndexKind<TestPlayer, Int64>(field: \.score)
+        self.kind = RankIndexKind<RankedPlayer, Int64>(field: \.score)
 
         // Expression: score
         let index = Index(
@@ -92,10 +93,10 @@ private struct TestContext {
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "score"),
             subspaceKey: indexName,
-            itemTypes: Set(["TestPlayer"])
+            itemTypes: Set(["RankedPlayer"])
         )
 
-        self.maintainer = RankIndexMaintainer<TestPlayer, Int64>(
+        self.maintainer = RankIndexMaintainer<RankedPlayer, Int64>(
             index: index,
             bucketSize: kind.bucketSize,
             subspace: indexSubspace,
@@ -106,7 +107,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -138,14 +139,14 @@ struct RankIndexBehaviorTests {
 
     @Test("Insert adds to ranking")
     func testInsertAddsToRanking() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await RankIndexContext()
 
-        let player = TestPlayer(id: "p1", name: "Alice", score: 1000)
+        let player = RankedPlayer(id: "p1", name: "Alice", score: 1000)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestPlayer?,
+                oldItem: nil as RankedPlayer?,
                 newItem: player,
                 transaction: transaction
             )
@@ -159,19 +160,19 @@ struct RankIndexBehaviorTests {
 
     @Test("Multiple inserts create leaderboard")
     func testMultipleInserts() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await RankIndexContext()
 
         let players = [
-            TestPlayer(id: "p1", name: "Alice", score: 1000),
-            TestPlayer(id: "p2", name: "Bob", score: 1500),
-            TestPlayer(id: "p3", name: "Charlie", score: 800)
+            RankedPlayer(id: "p1", name: "Alice", score: 1000),
+            RankedPlayer(id: "p2", name: "Bob", score: 1500),
+            RankedPlayer(id: "p3", name: "Charlie", score: 800)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for player in players {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestPlayer?,
+                    oldItem: nil as RankedPlayer?,
                     newItem: player,
                     transaction: transaction
                 )
@@ -188,15 +189,15 @@ struct RankIndexBehaviorTests {
 
     @Test("Delete removes from ranking")
     func testDeleteRemovesFromRanking() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await RankIndexContext()
 
-        let player = TestPlayer(id: "p1", name: "Alice", score: 1000)
+        let player = RankedPlayer(id: "p1", name: "Alice", score: 1000)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestPlayer?,
+                oldItem: nil as RankedPlayer?,
                 newItem: player,
                 transaction: transaction
             )
@@ -209,7 +210,7 @@ struct RankIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: player,
-                newItem: nil as TestPlayer?,
+                newItem: nil as RankedPlayer?,
                 transaction: transaction
             )
         }
@@ -224,22 +225,22 @@ struct RankIndexBehaviorTests {
 
     @Test("Update changes rank")
     func testUpdateChangesRank() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await RankIndexContext()
 
-        let player = TestPlayer(id: "p1", name: "Alice", score: 500)
+        let player = RankedPlayer(id: "p1", name: "Alice", score: 500)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestPlayer?,
+                oldItem: nil as RankedPlayer?,
                 newItem: player,
                 transaction: transaction
             )
         }
 
         // Update with higher score
-        let updatedPlayer = TestPlayer(id: "p1", name: "Alice", score: 1500)
+        let updatedPlayer = RankedPlayer(id: "p1", name: "Alice", score: 1500)
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: player,
@@ -261,20 +262,20 @@ struct RankIndexBehaviorTests {
 
     @Test("getTopN returns top items")
     func testGetTopNReturnsTopItems() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await RankIndexContext()
 
         let players = [
-            TestPlayer(id: "p1", name: "Low", score: 100),
-            TestPlayer(id: "p2", name: "Medium", score: 500),
-            TestPlayer(id: "p3", name: "High", score: 1000),
-            TestPlayer(id: "p4", name: "VeryHigh", score: 2000)
+            RankedPlayer(id: "p1", name: "Low", score: 100),
+            RankedPlayer(id: "p2", name: "Medium", score: 500),
+            RankedPlayer(id: "p3", name: "High", score: 1000),
+            RankedPlayer(id: "p4", name: "VeryHigh", score: 2000)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for player in players {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestPlayer?,
+                    oldItem: nil as RankedPlayer?,
                     newItem: player,
                     transaction: transaction
                 )
@@ -298,19 +299,19 @@ struct RankIndexBehaviorTests {
 
     @Test("getRank returns correct position")
     func testGetRankReturnsCorrectPosition() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await RankIndexContext()
 
         let players = [
-            TestPlayer(id: "p1", name: "Third", score: 100),
-            TestPlayer(id: "p2", name: "Second", score: 500),
-            TestPlayer(id: "p3", name: "First", score: 1000)
+            RankedPlayer(id: "p1", name: "Third", score: 100),
+            RankedPlayer(id: "p2", name: "Second", score: 500),
+            RankedPlayer(id: "p3", name: "First", score: 1000)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for player in players {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestPlayer?,
+                    oldItem: nil as RankedPlayer?,
                     newItem: player,
                     transaction: transaction
                 )
@@ -336,21 +337,21 @@ struct RankIndexBehaviorTests {
 
     @Test("Ties handled correctly")
     func testTiesHandledCorrectly() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await RankIndexContext()
 
         // Multiple players with same score
         let players = [
-            TestPlayer(id: "p1", name: "Alice", score: 1000),
-            TestPlayer(id: "p2", name: "Bob", score: 1000),
-            TestPlayer(id: "p3", name: "Charlie", score: 1000),
-            TestPlayer(id: "p4", name: "Low", score: 500)
+            RankedPlayer(id: "p1", name: "Alice", score: 1000),
+            RankedPlayer(id: "p2", name: "Bob", score: 1000),
+            RankedPlayer(id: "p3", name: "Charlie", score: 1000),
+            RankedPlayer(id: "p4", name: "Low", score: 500)
         ]
 
         try await ctx.database.withTransaction { transaction in
             for player in players {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as TestPlayer?,
+                    oldItem: nil as RankedPlayer?,
                     newItem: player,
                     transaction: transaction
                 )
@@ -375,12 +376,12 @@ struct RankIndexBehaviorTests {
 
     @Test("ScanItem adds to ranking")
     func testScanItemAddsToRanking() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await RankIndexContext()
 
         let players = [
-            TestPlayer(id: "p1", name: "Alice", score: 1000),
-            TestPlayer(id: "p2", name: "Bob", score: 500)
+            RankedPlayer(id: "p1", name: "Alice", score: 1000),
+            RankedPlayer(id: "p2", name: "Bob", score: 500)
         ]
 
         try await ctx.database.withTransaction { transaction in

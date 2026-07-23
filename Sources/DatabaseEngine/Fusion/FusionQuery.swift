@@ -1,7 +1,11 @@
 // FusionQuery.swift
 // DatabaseEngine - Protocol for fusion-compatible queries
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Protocol for queries that can participate in fusion operations
@@ -21,7 +25,7 @@ import Core
 ///     private let queryContext: IndexQueryContext
 ///     // ... other properties
 ///
-///     public func execute(candidates: Set<String>?) async throws -> [ScoredResult<T>] {
+///     public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
 ///         // Use IndexDescriptor to find index name
 ///         guard let descriptor = findIndexDescriptor() else { throw ... }
 ///         // Execute query using queryContext
@@ -45,12 +49,12 @@ public protocol FusionQuery<Item>: Sendable {
     ///
     /// - Parameter candidates: Optional set of candidate IDs to restrict results to.
     ///                         When provided, the query should only return items whose
-    ///                         ID (as string) is in this set. This enables pipeline
+    ///                         identifier is in this set. This enables pipeline
     ///                         optimization where later stages only search within
     ///                         candidates from earlier stages.
     /// - Returns: Array of scored results, sorted by score descending.
     ///            Scores should be normalized to [0, 1] where higher is better.
-    func execute(candidates: Set<String>?) async throws -> [ScoredResult<Item>]
+    func execute(candidates: Set<Item.ID>?) async throws -> [ScoredResult<Item>]
 }
 
 /// Error type for FusionQuery implementations

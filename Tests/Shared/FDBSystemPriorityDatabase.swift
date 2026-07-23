@@ -15,51 +15,51 @@ public final class FDBSystemPriorityDatabase: DatabaseProtocol, Sendable {
             try underlying.setOption(forOption: .readPriorityHigh)
         }
 
-        public func getValue(for key: FDB.Bytes, snapshot: Bool) async throws -> FDB.Bytes? {
+        public func getValue<Key: FDB.ByteSource>(
+            for key: Key,
+            snapshot: Bool
+        ) async throws -> FDB.ByteBuffer? {
             try await underlying.getValue(for: key, snapshot: snapshot)
         }
 
-        public func setValue(_ value: FDB.Bytes, for key: FDB.Bytes) {
-            underlying.setValue(value, for: key)
+        public func setValue<Value: FDB.ByteSource, Key: FDB.ByteSource>(
+            _ value: Value,
+            for key: Key
+        ) throws {
+            try underlying.setValue(value, for: key)
         }
 
-        public func clear(key: FDB.Bytes) {
-            underlying.clear(key: key)
+        public func clear<Key: FDB.ByteSource>(key: Key) throws {
+            try underlying.clear(key: key)
         }
 
-        public func clearRange(beginKey: FDB.Bytes, endKey: FDB.Bytes) {
-            underlying.clearRange(beginKey: beginKey, endKey: endKey)
+        public func clearRange<
+            Begin: FDB.ByteSource,
+            End: FDB.ByteSource
+        >(beginKey: Begin, endKey: End) throws {
+            try underlying.clearRange(beginKey: beginKey, endKey: endKey)
         }
 
-        public func getKey(selector: FDB.Selectable, snapshot: Bool) async throws -> FDB.Bytes? {
-            try await underlying.getKey(selector: selector, snapshot: snapshot)
-        }
-
-        public func getKey(selector: FDB.KeySelector, snapshot: Bool) async throws -> FDB.Bytes? {
-            try await underlying.getKey(selector: selector, snapshot: snapshot)
-        }
-
-        public func getRange(
-            beginSelector: FDB.KeySelector,
-            endSelector: FDB.KeySelector,
+        public func getKey(
+            selector: FDB.KeySelector,
             snapshot: Bool
-        ) -> FDB.AsyncKVSequence {
-            underlying.getRange(beginSelector: beginSelector, endSelector: endSelector, snapshot: snapshot)
+        ) async throws -> FDB.ByteBuffer? {
+            try await underlying.getKey(selector: selector, snapshot: snapshot)
         }
 
-        public func getRangeNative(
-            beginSelector: FDB.KeySelector,
-            endSelector: FDB.KeySelector,
+        public func readRangeBatch(
+            from begin: FDB.KeySelector,
+            to end: FDB.KeySelector,
             limit: Int,
             targetBytes: Int,
             streamingMode: FDB.StreamingMode,
             iteration: Int,
             reverse: Bool,
             snapshot: Bool
-        ) async throws -> ResultRange {
-            try await underlying.getRangeNative(
-                beginSelector: beginSelector,
-                endSelector: endSelector,
+        ) async throws -> RangeBatch {
+            try await underlying.readRangeBatch(
+                from: begin,
+                to: end,
                 limit: limit,
                 targetBytes: targetBytes,
                 streamingMode: streamingMode,
@@ -77,7 +77,7 @@ public final class FDBSystemPriorityDatabase: DatabaseProtocol, Sendable {
             underlying.cancel()
         }
 
-        public func getVersionstamp() async throws -> FDB.Bytes? {
+        public func getVersionstamp() async throws -> FDB.ByteBuffer? {
             try await underlying.getVersionstamp()
         }
 
@@ -93,15 +93,21 @@ public final class FDBSystemPriorityDatabase: DatabaseProtocol, Sendable {
             try await underlying.onError(error)
         }
 
-        public func getEstimatedRangeSizeBytes(beginKey: FDB.Bytes, endKey: FDB.Bytes) async throws -> Int {
+        public func getEstimatedRangeSizeBytes<
+            Begin: FDB.ByteSource,
+            End: FDB.ByteSource
+        >(beginKey: Begin, endKey: End) async throws -> Int {
             try await underlying.getEstimatedRangeSizeBytes(beginKey: beginKey, endKey: endKey)
         }
 
-        public func getRangeSplitPoints(
-            beginKey: FDB.Bytes,
-            endKey: FDB.Bytes,
+        public func getRangeSplitPoints<
+            Begin: FDB.ByteSource,
+            End: FDB.ByteSource
+        >(
+            beginKey: Begin,
+            endKey: End,
             chunkSize: Int
-        ) async throws -> [[UInt8]] {
+        ) async throws -> [FDB.ByteBuffer] {
             try await underlying.getRangeSplitPoints(
                 beginKey: beginKey,
                 endKey: endKey,
@@ -113,28 +119,57 @@ public final class FDBSystemPriorityDatabase: DatabaseProtocol, Sendable {
             try underlying.getCommittedVersion()
         }
 
-        public func getApproximateSize() async throws -> Int {
-            try await underlying.getApproximateSize()
+        public func approximateSize() async throws -> Int64 {
+            try await underlying.approximateSize()
         }
 
-        public func atomicOp(key: FDB.Bytes, param: FDB.Bytes, mutationType: FDB.MutationType) {
-            underlying.atomicOp(key: key, param: param, mutationType: mutationType)
+        public func atomicOp<
+            Key: FDB.ByteSource,
+            Parameter: FDB.ByteSource
+        >(
+            key: Key,
+            param: Parameter,
+            mutationType: FDB.MutationType
+        ) throws {
+            try underlying.atomicOp(
+                key: key,
+                param: param,
+                mutationType: mutationType
+            )
         }
 
-        public func addConflictRange(
-            beginKey: FDB.Bytes,
-            endKey: FDB.Bytes,
+        public func addConflictRange<
+            Begin: FDB.ByteSource,
+            End: FDB.ByteSource
+        >(
+            beginKey: Begin,
+            endKey: End,
             type: FDB.ConflictRangeType
         ) throws {
             try underlying.addConflictRange(beginKey: beginKey, endKey: endKey, type: type)
         }
 
-        public func setOption(to value: FDB.Bytes?, forOption option: FDB.TransactionOption) throws {
+        public func setOption<Value: FDB.ByteSource>(
+            to value: Value,
+            forOption option: FDB.TransactionOption
+        ) throws {
             switch option {
             case .priorityBatch, .prioritySystemImmediate, .readPriorityLow, .readPriorityHigh:
                 return
             default:
                 try underlying.setOption(to: value, forOption: option)
+            }
+        }
+
+        public func setOption(
+            forOption option: FDB.TransactionOption
+        ) throws {
+            switch option {
+            case .priorityBatch, .prioritySystemImmediate,
+                 .readPriorityLow, .readPriorityHigh:
+                return
+            default:
+                try underlying.setOption(forOption: option)
             }
         }
 
@@ -157,7 +192,7 @@ public final class FDBSystemPriorityDatabase: DatabaseProtocol, Sendable {
         }
     }
 
-    nonisolated(unsafe) private let underlying: any DatabaseProtocol
+    private let underlying: any DatabaseProtocol
 
     public init(wrapping underlying: any DatabaseProtocol) {
         self.underlying = underlying

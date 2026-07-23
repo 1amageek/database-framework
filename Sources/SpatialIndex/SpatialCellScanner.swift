@@ -3,7 +3,11 @@
 //
 // Design: Follows GraphEdgeScanner pattern for centralized scanning logic.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit

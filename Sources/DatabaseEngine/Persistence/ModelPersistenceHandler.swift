@@ -34,6 +34,7 @@ public protocol ModelPersistenceHandler: Sendable {
     ///   - transaction: The existing transaction context
     func save(
         _ model: any Persistable,
+        precondition: WritePrecondition,
         transaction: any Transaction
     ) async throws
 
@@ -44,6 +45,7 @@ public protocol ModelPersistenceHandler: Sendable {
     ///   - transaction: The existing transaction context
     func delete(
         _ model: any Persistable,
+        precondition: WritePrecondition,
         transaction: any Transaction
     ) async throws
 
@@ -57,6 +59,49 @@ public protocol ModelPersistenceHandler: Sendable {
     func load(
         _ typeName: String,
         id: Tuple,
+        partition: AnyDirectoryPath?,
         transaction: any Transaction
     ) async throws -> (any Persistable)?
+
+    /// Scan a bounded set of models within an existing transaction.
+    ///
+    /// This operation is intentionally bounded because it is used by dynamic
+    /// statement execution where the concrete Persistable type is discovered
+    /// from the compiled schema at runtime.
+    func scan(
+        _ typeName: String,
+        partition: AnyDirectoryPath?,
+        limit: Int,
+        transaction: any Transaction
+    ) async throws -> [any Persistable]
+
+    /// Validates the final transaction state after every primary mutation is visible.
+    func validateFinalState(
+        of models: [any Persistable],
+        transaction: any Transaction
+    ) async throws
+}
+
+public extension ModelPersistenceHandler {
+    func save(
+        _ model: any Persistable,
+        transaction: any Transaction
+    ) async throws {
+        try await save(model, precondition: .none, transaction: transaction)
+    }
+
+    func delete(
+        _ model: any Persistable,
+        transaction: any Transaction
+    ) async throws {
+        try await delete(model, precondition: .none, transaction: transaction)
+    }
+
+    func load(
+        _ typeName: String,
+        id: Tuple,
+        transaction: any Transaction
+    ) async throws -> (any Persistable)? {
+        try await load(typeName, id: id, partition: nil, transaction: transaction)
+    }
 }

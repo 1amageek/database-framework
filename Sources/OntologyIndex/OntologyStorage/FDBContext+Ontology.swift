@@ -5,7 +5,11 @@
 //
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Graph
 import Core
@@ -59,7 +63,7 @@ public struct OntologyContextAPI: Sendable {
     private let context: FDBContext
 
     /// Ontology subspace key prefix
-    private static let ontologyPrefix: [UInt8] = Array("O".utf8)
+    private static let ontologyPrefix = Bytes("O".utf8)
 
     // MARK: - Initialization
 
@@ -176,7 +180,7 @@ public struct OntologyContextAPI: Sendable {
     public func delete(iri: String) async throws {
         let store = store()
         try await context.indexQueryContext.withTransaction { transaction in
-            store.deleteOntology(iri, transaction: transaction)
+            try store.deleteOntology(iri, transaction: transaction)
         }
     }
 
@@ -188,7 +192,7 @@ public struct OntologyContextAPI: Sendable {
         let store = store()
         try await context.indexQueryContext.withTransaction { transaction in
             for iri in iris {
-                store.deleteOntology(iri, transaction: transaction)
+                try store.deleteOntology(iri, transaction: transaction)
             }
         }
     }

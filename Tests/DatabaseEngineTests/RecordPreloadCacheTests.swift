@@ -7,12 +7,13 @@ import Testing
 import TestHeartbeat
 import Foundation
 import Core
+import DatabaseValue
 @testable import DatabaseEngine
 
 // MARK: - Test Model
 
 @Persistable
-struct CacheTestItem: Equatable {
+struct PreloadCacheItem: Equatable {
     var id: String = UUID().uuidString
     var name: String
     var value: Int
@@ -68,8 +69,8 @@ struct RecordPreloadCacheTests {
 
     @Test("Put and get item")
     func putAndGet() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
-        let item = CacheTestItem(name: "test", value: 42)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
+        let item = PreloadCacheItem(name: "test", value: 42)
 
         cache.put(item: item, key: "key1")
         let retrieved = cache.get(key: "key1")
@@ -79,7 +80,7 @@ struct RecordPreloadCacheTests {
 
     @Test("Get missing item returns nil")
     func getMissingItem() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
 
         let result = cache.get(key: "nonexistent")
         #expect(result == nil)
@@ -87,8 +88,8 @@ struct RecordPreloadCacheTests {
 
     @Test("Contains check")
     func containsCheck() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
-        let item = CacheTestItem(name: "test", value: 42)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
+        let item = PreloadCacheItem(name: "test", value: 42)
 
         #expect(cache.contains(key: "key1") == false)
 
@@ -98,8 +99,8 @@ struct RecordPreloadCacheTests {
 
     @Test("Remove item")
     func removeItem() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
-        let item = CacheTestItem(name: "test", value: 42)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
+        let item = PreloadCacheItem(name: "test", value: 42)
 
         cache.put(item: item, key: "key1")
         let removed = cache.remove(key: "key1")
@@ -110,10 +111,10 @@ struct RecordPreloadCacheTests {
 
     @Test("Clear cache")
     func clearCache() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
 
-        cache.put(item: CacheTestItem(name: "1", value: 1), key: "key1")
-        cache.put(item: CacheTestItem(name: "2", value: 2), key: "key2")
+        cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "key1")
+        cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "key2")
 
         cache.clear()
 
@@ -124,10 +125,10 @@ struct RecordPreloadCacheTests {
 
     @Test("Update existing key")
     func updateExistingKey() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
 
-        let item1 = CacheTestItem(name: "original", value: 1)
-        let item2 = CacheTestItem(name: "updated", value: 2)
+        let item1 = PreloadCacheItem(name: "original", value: 1)
+        let item2 = PreloadCacheItem(name: "updated", value: 2)
 
         cache.put(item: item1, key: "key1")
         cache.put(item: item2, key: "key1")
@@ -145,8 +146,8 @@ struct PreloadCacheStatisticsTests {
 
     @Test("Hit and miss tracking")
     func hitMissTracking() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
-        let item = CacheTestItem(name: "test", value: 42)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
+        let item = PreloadCacheItem(name: "test", value: 42)
 
         cache.put(item: item, key: "key1")
 
@@ -163,8 +164,8 @@ struct PreloadCacheStatisticsTests {
 
     @Test("Reset statistics")
     func resetStatistics() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
-        let item = CacheTestItem(name: "test", value: 42)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
+        let item = PreloadCacheItem(name: "test", value: 42)
 
         cache.put(item: item, key: "key1")
         _ = cache.get(key: "key1")
@@ -179,11 +180,11 @@ struct PreloadCacheStatisticsTests {
 
     @Test("Entry count tracking")
     func entryCountTracking() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
 
-        cache.put(item: CacheTestItem(name: "1", value: 1), key: "key1")
-        cache.put(item: CacheTestItem(name: "2", value: 2), key: "key2")
-        cache.put(item: CacheTestItem(name: "3", value: 3), key: "key3")
+        cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "key1")
+        cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "key2")
+        cache.put(item: PreloadCacheItem(name: "3", value: 3), key: "key3")
 
         #expect(cache.statistics.entryCount == 3)
     }
@@ -200,17 +201,17 @@ struct CacheEvictionTests {
             maxEntries: 3,
             evictionPolicy: .lru
         )
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: config)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: config)
 
-        cache.put(item: CacheTestItem(name: "1", value: 1), key: "key1")
-        cache.put(item: CacheTestItem(name: "2", value: 2), key: "key2")
-        cache.put(item: CacheTestItem(name: "3", value: 3), key: "key3")
+        cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "key1")
+        cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "key2")
+        cache.put(item: PreloadCacheItem(name: "3", value: 3), key: "key3")
 
         // Access key1 to make it recently used
         _ = cache.get(key: "key1")
 
         // Add key4 - should evict key2 (least recently used)
-        cache.put(item: CacheTestItem(name: "4", value: 4), key: "key4")
+        cache.put(item: PreloadCacheItem(name: "4", value: 4), key: "key4")
 
         #expect(cache.get(key: "key1") != nil)
         #expect(cache.get(key: "key2") == nil) // Evicted
@@ -224,17 +225,17 @@ struct CacheEvictionTests {
             maxEntries: 3,
             evictionPolicy: .fifo
         )
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: config)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: config)
 
-        cache.put(item: CacheTestItem(name: "1", value: 1), key: "key1")
-        cache.put(item: CacheTestItem(name: "2", value: 2), key: "key2")
-        cache.put(item: CacheTestItem(name: "3", value: 3), key: "key3")
+        cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "key1")
+        cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "key2")
+        cache.put(item: PreloadCacheItem(name: "3", value: 3), key: "key3")
 
         // Access key1 (shouldn't matter for FIFO)
         _ = cache.get(key: "key1")
 
         // Add key4 - should evict key1 (oldest)
-        cache.put(item: CacheTestItem(name: "4", value: 4), key: "key4")
+        cache.put(item: PreloadCacheItem(name: "4", value: 4), key: "key4")
 
         #expect(cache.get(key: "key1") == nil) // Evicted (first in)
         #expect(cache.get(key: "key2") != nil)
@@ -248,11 +249,11 @@ struct CacheEvictionTests {
             maxEntries: 2,
             evictionPolicy: .lru
         )
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: config)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: config)
 
-        cache.put(item: CacheTestItem(name: "1", value: 1), key: "key1")
-        cache.put(item: CacheTestItem(name: "2", value: 2), key: "key2")
-        cache.put(item: CacheTestItem(name: "3", value: 3), key: "key3") // Causes eviction
+        cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "key1")
+        cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "key2")
+        cache.put(item: PreloadCacheItem(name: "3", value: 3), key: "key3") // Causes eviction
 
         #expect(cache.statistics.evictions >= 1)
     }
@@ -265,12 +266,12 @@ struct CacheBulkOperationsTests {
 
     @Test("Preload multiple items")
     func preloadMultipleItems() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
 
         let items = [
-            (key: "k1", item: CacheTestItem(name: "1", value: 1)),
-            (key: "k2", item: CacheTestItem(name: "2", value: 2)),
-            (key: "k3", item: CacheTestItem(name: "3", value: 3))
+            (key: "k1", item: PreloadCacheItem(name: "1", value: 1)),
+            (key: "k2", item: PreloadCacheItem(name: "2", value: 2)),
+            (key: "k3", item: PreloadCacheItem(name: "3", value: 3))
         ]
 
         cache.preload(items)
@@ -282,10 +283,10 @@ struct CacheBulkOperationsTests {
 
     @Test("Get multiple items")
     func getMultipleItems() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
 
-        cache.put(item: CacheTestItem(name: "1", value: 1), key: "k1")
-        cache.put(item: CacheTestItem(name: "2", value: 2), key: "k2")
+        cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "k1")
+        cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "k2")
 
         let results = cache.getMultiple(keys: ["k1", "k2", "k3"])
 
@@ -303,15 +304,15 @@ struct CacheGetOrFetchTests {
 
     @Test("GetOrFetch returns cached item")
     func getOrFetchReturnsCached() async throws {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
-        let item = CacheTestItem(name: "cached", value: 100)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
+        let item = PreloadCacheItem(name: "cached", value: 100)
 
         cache.put(item: item, key: "key1")
 
         var fetchCalled = false
         let result = try await cache.getOrFetch(key: "key1") {
             fetchCalled = true
-            return CacheTestItem(name: "fetched", value: 999)
+            return PreloadCacheItem(name: "fetched", value: 999)
         }
 
         #expect(fetchCalled == false)
@@ -320,12 +321,12 @@ struct CacheGetOrFetchTests {
 
     @Test("GetOrFetch calls fetch on miss")
     func getOrFetchCallsFetch() async throws {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
 
         var fetchCalled = false
         let result = try await cache.getOrFetch(key: "key1") {
             fetchCalled = true
-            return CacheTestItem(name: "fetched", value: 42)
+            return PreloadCacheItem(name: "fetched", value: 42)
         }
 
         #expect(fetchCalled == true)
@@ -334,10 +335,10 @@ struct CacheGetOrFetchTests {
 
     @Test("GetOrFetch caches fetched item")
     func getOrFetchCachesFetched() async throws {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
 
         _ = try await cache.getOrFetch(key: "key1") {
-            CacheTestItem(name: "fetched", value: 42)
+            PreloadCacheItem(name: "fetched", value: 42)
         }
 
         let cached = cache.get(key: "key1")
@@ -352,7 +353,7 @@ struct ScopedCacheTests {
 
     @Test("Scoped key generation")
     func scopedKeyGeneration() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
         let scoped = ScopedCache(cache: cache, keyPrefix: "users")
 
         #expect(scoped.scopedKey("123") == "users:123")
@@ -360,10 +361,10 @@ struct ScopedCacheTests {
 
     @Test("Scoped operations use prefix")
     func scopedOperationsUsePrefix() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
         let scoped = ScopedCache(cache: cache, keyPrefix: "users")
 
-        let item = CacheTestItem(name: "test", value: 42)
+        let item = PreloadCacheItem(name: "test", value: 42)
         scoped.put(item: item, key: "123")
 
         // Should be accessible via scoped cache
@@ -381,13 +382,13 @@ struct CacheWarmerTests {
 
     @Test("Warm from array")
     func warmFromArray() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
         let warmer = CacheWarmer(cache: cache)
 
         let items = [
-            CacheTestItem(name: "1", value: 1),
-            CacheTestItem(name: "2", value: 2),
-            CacheTestItem(name: "3", value: 3)
+            PreloadCacheItem(name: "1", value: 1),
+            PreloadCacheItem(name: "2", value: 2),
+            PreloadCacheItem(name: "3", value: 3)
         ]
 
         let count = warmer.warm(items: items) { $0.id }
@@ -398,12 +399,12 @@ struct CacheWarmerTests {
 
     @Test("Warm with custom key")
     func warmWithCustomKey() {
-        let cache = RecordPreloadCache<CacheTestItem>(configuration: .small)
+        let cache = RecordPreloadCache<PreloadCacheItem>(configuration: .small)
         let warmer = CacheWarmer(cache: cache)
 
         let items = [
-            CacheTestItem(name: "item1", value: 1),
-            CacheTestItem(name: "item2", value: 2)
+            PreloadCacheItem(name: "item1", value: 1),
+            PreloadCacheItem(name: "item2", value: 2)
         ]
 
         _ = warmer.warm(items: items) { $0.name }

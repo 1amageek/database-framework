@@ -1,8 +1,11 @@
 import Foundation
 import StorageKit
 
-/// Handler for raw FDB key-value operations
+/// Read-only handler for bounded raw key-value inspection.
 public struct RawCommands {
+    private static let defaultRangeLimit = 100
+    private static let maximumRangeLimit = 10_000
+
     private let database: any StorageEngine
     private let output: OutputFormatter
 
@@ -16,10 +19,6 @@ public struct RawCommands {
         switch command {
         case "get":
             try await get(args: args)
-        case "set":
-            try await set(args: args)
-        case "delete":
-            try await delete(args: args)
         case "range":
             try await range(args: args)
         default:
@@ -36,7 +35,10 @@ public struct RawCommands {
             throw CLIError.invalidArguments("Usage: raw get <key>")
         }
 
-        let key = encodeKey(keyString)
+        guard args.count == 1 else {
+            throw CLIError.invalidArguments("Usage: raw get <key>")
+        }
+        let key = try encodeKey(keyString)
 
         let value = try await database.withTransaction(configuration: .default) { transaction in
             try await transaction.getValue(for: key, snapshot: false)
@@ -51,42 +53,6 @@ public struct RawCommands {
         }
     }
 
-    /// Set a raw key-value
-    /// Usage: raw set <key> <value>
-    private func set(args: [String]) async throws {
-        guard args.count >= 2 else {
-            throw CLIError.invalidArguments("Usage: raw set <key> <value>")
-        }
-
-        let keyString = args[0]
-        let valueString = args.dropFirst().joined(separator: " ")
-
-        let key = encodeKey(keyString)
-        let value = Array(valueString.utf8)
-
-        try await database.withTransaction(configuration: .default) { transaction in
-            transaction.setValue(value, for: key)
-        }
-
-        output.success("Set key '\(keyString)' (\(value.count) bytes)")
-    }
-
-    /// Delete a raw key
-    /// Usage: raw delete <key>
-    private func delete(args: [String]) async throws {
-        guard let keyString = args.first else {
-            throw CLIError.invalidArguments("Usage: raw delete <key>")
-        }
-
-        let key = encodeKey(keyString)
-
-        try await database.withTransaction(configuration: .default) { transaction in
-            transaction.clear(key: key)
-        }
-
-        output.success("Deleted key '\(keyString)'")
-    }
-
     /// Scan a range of keys
     /// Usage: raw range <prefix> [limit N]
     private func range(args: [String]) async throws {
@@ -95,30 +61,37 @@ public struct RawCommands {
         }
 
         let prefixString = args[0]
-        var limit = 100
-
-        // Parse limit option
-        if args.count >= 3 && args[1].lowercased() == "limit" {
-            if let n = Int(args[2]) {
-                limit = n
+        let limit: Int
+        switch args.count {
+        case 1:
+            limit = Self.defaultRangeLimit
+        case 3:
+            guard args[1].lowercased() == "limit",
+                  let parsedLimit = Int(args[2]),
+                  (1...Self.maximumRangeLimit).contains(parsedLimit) else {
+                throw CLIError.invalidArguments(
+                    "Range limit must be between 1 and \(Self.maximumRangeLimit)"
+                )
             }
+            limit = parsedLimit
+        default:
+            throw CLIError.invalidArguments(
+                "Usage: raw range <prefix> [limit N]"
+            )
         }
-        let effectiveLimit = limit
 
-        let prefix = encodeKey(prefixString)
+        let prefix = try encodeKey(prefixString)
         let subspace = Subspace(prefix: prefix)
         let (begin, end) = subspace.range()
 
         let results: [(key: Bytes, value: Bytes)] = try await database.withTransaction(configuration: .default) { transaction in
-            var collected: [(key: Bytes, value: Bytes)] = []
-
-            let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
-            for (key, value) in sequence {
-                collected.append((key: key, value: value))
-                if collected.count >= effectiveLimit { break }
-            }
-
-            return collected
+            try await transaction.collectRange(
+                from: .firstGreaterOrEqual(begin),
+                to: .firstGreaterOrEqual(end),
+                limit: limit,
+                snapshot: true,
+                streamingMode: .small
+            )
         }
 
         if results.isEmpty {
@@ -126,7 +99,7 @@ public struct RawCommands {
         } else {
             output.info("Found \(results.count) key(s):")
             for (key, value) in results {
-                let keyDisplay = decodeKey(key, prefix: prefix)
+                let keyDisplay = decodeKey(key)
                 output.line("  \(keyDisplay) = \(value.count) bytes")
             }
         }
@@ -138,12 +111,17 @@ public struct RawCommands {
     /// Supports:
     /// - Simple strings: "mykey" -> UTF-8 bytes
     /// - Tuple format: "(\"mykey\", 123)" -> Tuple encoding
-    private func encodeKey(_ keyString: String) -> Bytes {
-        // Try tuple format first
-        if keyString.hasPrefix("(") && keyString.hasSuffix(")") {
-            if let tuple = parseTuple(keyString) {
-                return tuple.pack()
+    private func encodeKey(_ keyString: String) throws -> Bytes {
+        guard !keyString.isEmpty else {
+            throw CLIError.invalidArguments("Raw key must not be empty")
+        }
+        let startsTuple = keyString.hasPrefix("(")
+        let endsTuple = keyString.hasSuffix(")")
+        if startsTuple || endsTuple {
+            guard startsTuple && endsTuple else {
+                throw CLIError.invalidArguments("Malformed tuple key")
             }
+            return try parseTuple(keyString).pack()
         }
 
         // Default to simple UTF-8 encoding wrapped in a Tuple
@@ -151,21 +129,42 @@ public struct RawCommands {
     }
 
     /// Decode a key for display
-    private func decodeKey(_ key: Bytes, prefix: Bytes) -> String {
+    private func decodeKey(_ key: Bytes) -> String {
         do {
             let elements = try Tuple.unpack(from: key)
             let parts = elements.map { "\($0)" }
             return "(\(parts.joined(separator: ", ")))"
         } catch {
-            return String(bytes: key, encoding: .utf8) ?? "<binary>"
+            return "0x\(hexString(key))"
         }
     }
 
+    private func hexString(_ bytes: Bytes) -> String {
+        let digits = Array("0123456789abcdef".utf8)
+        var output = [UInt8](repeating: 0, count: bytes.count * 2)
+        bytes.withUnsafeBytes { source in
+            output.withUnsafeMutableBytes { destination in
+                for index in source.indices {
+                    let byte = source[index]
+                    destination[index * 2] = digits[Int(byte >> 4)]
+                    destination[index * 2 + 1] = digits[Int(byte & 0x0f)]
+                }
+            }
+        }
+        return String(decoding: output, as: UTF8.self)
+    }
+
     /// Parse a tuple string like ("key", 123, true)
-    private func parseTuple(_ tupleString: String) -> Tuple? {
+    private func parseTuple(_ tupleString: String) throws -> Tuple {
         var inner = tupleString.trimmingCharacters(in: .whitespaces)
-        guard inner.hasPrefix("(") && inner.hasSuffix(")") else { return nil }
+        guard inner.hasPrefix("(") && inner.hasSuffix(")") else {
+            throw CLIError.invalidArguments("Malformed tuple key")
+        }
         inner = String(inner.dropFirst().dropLast())
+
+        if inner.isEmpty {
+            return Tuple([])
+        }
 
         var elements: [any TupleElement] = []
         let parts = inner.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
@@ -188,8 +187,9 @@ public struct RawCommands {
                 // Bool false
                 elements.append(false)
             } else {
-                // Treat as string
-                elements.append(part)
+                throw CLIError.invalidArguments(
+                    "Unsupported tuple element '\(part)'"
+                )
             }
         }
 
@@ -204,8 +204,6 @@ extension RawCommands {
         """
         Raw Commands:
           raw get <key>               Get value for a key
-          raw set <key> <value>       Set a key-value pair
-          raw delete <key>            Delete a key
           raw range <prefix> [limit N] Scan keys with prefix
 
         Key Formats:
@@ -214,8 +212,6 @@ extension RawCommands {
 
         Examples:
           raw get mykey
-          raw set mykey hello world
-          raw delete mykey
           raw range _cli limit 50
         """
     }

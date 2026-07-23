@@ -6,7 +6,11 @@
 // Reference: OWL 2 Web Ontology Language Direct Semantics
 // https://www.w3.org/TR/owl2-direct-semantics/
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Graph
 import Synchronization
 

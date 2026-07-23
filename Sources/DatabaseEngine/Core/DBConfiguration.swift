@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 #if FOUNDATION_DB
 import FDBStorage
@@ -75,6 +79,9 @@ public struct DBConfiguration: DataStoreConfiguration, Sendable {
     /// Multiple configurations for the same index are allowed (e.g., multi-language full-text).
     public let indexConfigurations: [any IndexConfiguration]
 
+    /// Canonical physical record format for this database.
+    public let itemStorage: ItemStorageConfiguration
+
     // MARK: - Initialization
 
     /// Create database configuration
@@ -86,11 +93,13 @@ public struct DBConfiguration: DataStoreConfiguration, Sendable {
     public init(
         name: String? = nil,
         backend: StorageBackend,
-        indexConfigurations: [any IndexConfiguration] = []
+        indexConfigurations: [any IndexConfiguration] = [],
+        itemStorage: ItemStorageConfiguration = .v1
     ) {
         self.name = name
         self.backend = backend
         self.indexConfigurations = indexConfigurations
+        self.itemStorage = itemStorage
     }
 }
 
@@ -109,6 +118,6 @@ extension DBConfiguration: CustomDebugStringConvertible {
             backendDesc = "custom(\(type(of: engine)))"
         }
         let indexConfigCount = indexConfigurations.count
-        return "DBConfiguration(name: \(nameDesc), backend: \(backendDesc), indexConfigs: \(indexConfigCount))"
+        return "DBConfiguration(name: \(nameDesc), backend: \(backendDesc), indexConfigs: \(indexConfigCount), itemEncoding: \(itemStorage.encoding))"
     }
 }

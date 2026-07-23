@@ -5,7 +5,11 @@
 //
 // Reference: W3C OWL 2 Syntax https://www.w3.org/TR/owl2-syntax/#Classes
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Graph
 
 /// Stored class definition for persistent TBox storage

@@ -1,66 +1,41 @@
-// AggregateExpression.swift
-// GraphIndex - SPARQL aggregate expressions
-//
-// Represents aggregate functions for GROUP BY queries.
-//
-// Reference: W3C SPARQL 1.1, Section 11 (Aggregates)
-
-import Foundation
 import Core
+import DatabaseEngine
+import QueryIR
 
-/// Aggregate expression for SPARQL GROUP BY queries
-///
-/// **Design**: Represents aggregate functions that operate over groups of bindings.
-/// Each aggregate is applied to a specific variable or expression.
-/// Returns `FieldValue` to preserve type information in results.
-///
-/// **Usage**:
-/// ```swift
-/// // Count all members
-/// AggregateExpression.count(nil, distinct: false, alias: "total")
-///
-/// // Count distinct values
-/// AggregateExpression.count("?name", distinct: true, alias: "uniqueNames")
-///
-/// // Sum, Average, Min, Max
-/// AggregateExpression.sum("?age", alias: "totalAge")
-/// AggregateExpression.avg("?salary", alias: "avgSalary")
-/// ```
-///
-/// **Reference**: W3C SPARQL 1.1, Section 11 (Aggregates)
+/// Canonical SPARQL aggregate algebra. Aggregate operands remain QueryIR plans
+/// so every solution is evaluated by the same runtime expression semantics used
+/// by FILTER, BIND, projection, and ORDER BY.
 public enum AggregateExpression: Sendable, Hashable {
+    case count(
+        expression: SPARQLExpressionPlan?,
+        distinct: Bool,
+        alias: String
+    )
+    case sum(
+        expression: SPARQLExpressionPlan,
+        distinct: Bool,
+        alias: String
+    )
+    case avg(
+        expression: SPARQLExpressionPlan,
+        distinct: Bool,
+        alias: String
+    )
+    case min(expression: SPARQLExpressionPlan, alias: String)
+    case max(expression: SPARQLExpressionPlan, alias: String)
+    case sample(expression: SPARQLExpressionPlan, alias: String)
+    case groupConcat(
+        expression: SPARQLExpressionPlan,
+        separator: String,
+        distinct: Bool,
+        alias: String
+    )
 
-    // MARK: - Aggregate Functions
-
-    /// COUNT aggregate: count number of bindings (or non-null values if variable specified)
-    case count(variable: String?, distinct: Bool, alias: String)
-
-    /// SUM aggregate: sum numeric values
-    case sum(variable: String, alias: String)
-
-    /// AVG aggregate: average of numeric values
-    case avg(variable: String, alias: String)
-
-    /// MIN aggregate: minimum value
-    case min(variable: String, alias: String)
-
-    /// MAX aggregate: maximum value
-    case max(variable: String, alias: String)
-
-    /// SAMPLE aggregate: any single value from the group
-    case sample(variable: String, alias: String)
-
-    /// GROUP_CONCAT aggregate: concatenate all values in the group
-    case groupConcat(variable: String, separator: String, distinct: Bool, alias: String)
-
-    // MARK: - Properties
-
-    /// The output alias for this aggregate
     public var alias: String {
         switch self {
         case .count(_, _, let alias),
-             .sum(_, let alias),
-             .avg(_, let alias),
+             .sum(_, _, let alias),
+             .avg(_, _, let alias),
              .min(_, let alias),
              .max(_, let alias),
              .sample(_, let alias),
@@ -69,268 +44,656 @@ public enum AggregateExpression: Sendable, Hashable {
         }
     }
 
-    /// The input variable (nil for COUNT(*))
-    public var inputVariable: String? {
+    public var inputExpression: SPARQLExpressionPlan? {
         switch self {
-        case .count(let variable, _, _):
-            return variable
-        case .sum(let variable, _),
-             .avg(let variable, _),
-             .min(let variable, _),
-             .max(let variable, _),
-             .sample(let variable, _),
-             .groupConcat(let variable, _, _, _):
-            return variable
+        case .count(let expression, _, _):
+            return expression
+        case .sum(let expression, _, _),
+             .avg(let expression, _, _),
+             .min(let expression, _),
+             .max(let expression, _),
+             .sample(let expression, _),
+             .groupConcat(let expression, _, _, _):
+            return expression
         }
     }
 
-    /// Whether this aggregate uses DISTINCT
+    public var inputVariable: String? {
+        guard let expression = inputExpression?.expression else { return nil }
+        switch expression {
+        case .variable(let variable):
+            return Self.normalizedVariable(variable.name)
+        default:
+            return nil
+        }
+    }
+
     public var isDistinct: Bool {
         switch self {
-        case .count(_, let distinct, _):
+        case .count(_, let distinct, _),
+             .sum(_, let distinct, _),
+             .avg(_, let distinct, _),
+             .groupConcat(_, _, let distinct, _):
             return distinct
-        case .groupConcat(_, _, let distinct, _):
-            return distinct
-        default:
+        case .min, .max, .sample:
             return false
         }
     }
 
-    // MARK: - Evaluation
-
-    /// Evaluate this aggregate over a group of bindings
-    ///
-    /// - Parameter bindings: Array of variable bindings in the group
-    /// - Returns: The aggregate result as a FieldValue
-    public func evaluate(_ bindings: [VariableBinding]) -> FieldValue? {
+    /// Evaluates exactly one aggregate expression for a group. The supplied
+    /// evaluator owns query-scoped state and the caller's transaction.
+    func evaluate(
+        groupIndex: Int,
+        in partition: borrowing SPARQLGroupPartition,
+        workMeter: DatabaseWorkMeter,
+        evaluateExpression: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue
+    ) async throws -> FieldValue? {
         switch self {
-        case .count(let variable, let distinct, _):
-            return evaluateCount(bindings, variable: variable, distinct: distinct)
-
-        case .sum(let variable, _):
-            return evaluateSum(bindings, variable: variable)
-
-        case .avg(let variable, _):
-            return evaluateAvg(bindings, variable: variable)
-
-        case .min(let variable, _):
-            return evaluateMin(bindings, variable: variable)
-
-        case .max(let variable, _):
-            return evaluateMax(bindings, variable: variable)
-
-        case .sample(let variable, _):
-            return evaluateSample(bindings, variable: variable)
-
-        case .groupConcat(let variable, let separator, let distinct, _):
-            return evaluateGroupConcat(bindings, variable: variable, separator: separator, distinct: distinct)
+        case .count(let expression, let distinct, _):
+            return try await evaluateCount(
+                groupIndex: groupIndex,
+                in: partition,
+                expression: expression,
+                distinct: distinct,
+                workMeter: workMeter,
+                evaluateExpression: evaluateExpression
+            )
+        case .sum(let expression, let distinct, _):
+            return try await evaluateSum(
+                groupIndex: groupIndex,
+                in: partition,
+                expression: expression,
+                distinct: distinct,
+                workMeter: workMeter,
+                evaluateExpression: evaluateExpression
+            )
+        case .avg(let expression, let distinct, _):
+            return try await evaluateAverage(
+                groupIndex: groupIndex,
+                in: partition,
+                expression: expression,
+                distinct: distinct,
+                workMeter: workMeter,
+                evaluateExpression: evaluateExpression
+            )
+        case .min(let expression, _):
+            return try await evaluateExtremum(
+                groupIndex: groupIndex,
+                in: partition,
+                expression: expression,
+                findMinimum: true,
+                workMeter: workMeter,
+                evaluateExpression: evaluateExpression
+            )
+        case .max(let expression, _):
+            return try await evaluateExtremum(
+                groupIndex: groupIndex,
+                in: partition,
+                expression: expression,
+                findMinimum: false,
+                workMeter: workMeter,
+                evaluateExpression: evaluateExpression
+            )
+        case .sample(let expression, _):
+            return try await evaluateSample(
+                groupIndex: groupIndex,
+                in: partition,
+                expression: expression,
+                workMeter: workMeter,
+                evaluateExpression: evaluateExpression
+            )
+        case .groupConcat(
+            let expression,
+            let separator,
+            let distinct,
+            _
+        ):
+            return try await evaluateGroupConcat(
+                groupIndex: groupIndex,
+                in: partition,
+                expression: expression,
+                separator: separator,
+                distinct: distinct,
+                workMeter: workMeter,
+                evaluateExpression: evaluateExpression
+            )
         }
     }
 
-    // MARK: - Private Evaluation Methods
-
-    private func evaluateCount(_ bindings: [VariableBinding], variable: String?, distinct: Bool) -> FieldValue {
-        if let variable = variable {
-            // Count non-null values for the variable
-            let values = bindings.compactMap { $0[variable] }
-            if distinct {
-                return .int64(Int64(Set(values).count))
+    private func evaluateCount(
+        groupIndex: Int,
+        in partition: borrowing SPARQLGroupPartition,
+        expression: SPARQLExpressionPlan?,
+        distinct: Bool,
+        workMeter: DatabaseWorkMeter,
+        evaluateExpression: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue
+    ) async throws -> FieldValue {
+        var count: UInt64 = 0
+        let memberRange = partition.memberRange(at: groupIndex)
+        if let expression {
+            let distinctValues = distinct
+                ? try SPARQLRetainedFieldValueSet.make(workMeter: workMeter)
+                : nil
+            for memberIndex in memberRange {
+                try workMeter.consume(at: .aggregateInput)
+                guard let value = try await partition.withMember(
+                    at: memberIndex,
+                    { binding in
+                        try await recoverExpressionValue(
+                            expression,
+                            binding: copy binding,
+                            evaluateExpression: evaluateExpression
+                        )
+                    }
+                ) else {
+                    continue
+                }
+                if let distinctValues {
+                    try workMeter.consume(at: .deduplication)
+                    guard try distinctValues.insert(value) else { continue }
+                }
+                count = try incrementedCount(count)
             }
-            return .int64(Int64(values.count))
+        } else if distinct {
+            var distinctSolutions = try SPARQLRetainedBindingSet.make(
+                workMeter: workMeter,
+                stage: .deduplication,
+                expectedCount: memberRange.count
+            )
+            for memberIndex in memberRange {
+                try workMeter.consume(at: .aggregateInput)
+                let inserted = try await partition.withMember(
+                    at: memberIndex
+                ) { binding in
+                    try workMeter.consume(at: .deduplication)
+                    return try distinctSolutions.insert(binding)
+                }
+                guard inserted else { continue }
+                count = try incrementedCount(count)
+            }
         } else {
-            // COUNT(*) - count all bindings
-            if distinct {
-                let uniqueBindings = Set(bindings)
-                return .int64(Int64(uniqueBindings.count))
+            try workMeter.consume(
+                UInt64(memberRange.count),
+                at: .aggregateInput
+            )
+            guard let exactCount = UInt64(exactly: memberRange.count) else {
+                throw SPARQLQueryError.aggregateResultOutOfRange
             }
-            return .int64(Int64(bindings.count))
+            count = exactCount
+        }
+
+        guard count <= UInt64(Int64.max),
+              let numeric = SPARQLNumericValue(.int64(Int64(count))) else {
+            throw SPARQLQueryError.aggregateResultOutOfRange
+        }
+        do {
+            return try numeric.fieldValue()
+        } catch {
+            throw SPARQLQueryError.aggregateResultOutOfRange
         }
     }
 
-    private func evaluateSum(_ bindings: [VariableBinding], variable: String) -> FieldValue? {
-        var sum: Double = 0
+    private func evaluateSum(
+        groupIndex: Int,
+        in partition: borrowing SPARQLGroupPartition,
+        expression: SPARQLExpressionPlan,
+        distinct: Bool,
+        workMeter: DatabaseWorkMeter,
+        evaluateExpression: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue
+    ) async throws -> FieldValue {
+        var sum: SPARQLNumericValue?
+        let distinctValues = distinct
+            ? try SPARQLRetainedFieldValueSet.make(workMeter: workMeter)
+            : nil
+        for memberIndex in partition.memberRange(at: groupIndex) {
+            try workMeter.consume(at: .aggregateInput)
+            let value = try await partition.withMember(
+                at: memberIndex
+            ) { binding in
+                try await evaluateRequiredValue(
+                    expression,
+                    binding: copy binding,
+                    evaluateExpression: evaluateExpression
+                )
+            }
+            guard let numeric = SPARQLNumericValue(value) else {
+                throw SPARQLExpressionEvaluationError.typeError(
+                    "SUM requires a numeric aggregate input"
+                )
+            }
+            if let distinctValues {
+                try workMeter.consume(at: .deduplication)
+                guard try distinctValues.insert(value) else { continue }
+            }
+            do {
+                sum = try sum?.applying(.add, to: numeric) ?? numeric
+            } catch {
+                throw SPARQLQueryError.aggregateResultOutOfRange
+            }
+        }
+        guard let value = sum ?? SPARQLNumericValue(.int64(0)) else {
+            throw SPARQLQueryError.aggregateResultOutOfRange
+        }
+        do {
+            return try value.fieldValue()
+        } catch {
+            throw SPARQLQueryError.aggregateResultOutOfRange
+        }
+    }
+
+    private func evaluateAverage(
+        groupIndex: Int,
+        in partition: borrowing SPARQLGroupPartition,
+        expression: SPARQLExpressionPlan,
+        distinct: Bool,
+        workMeter: DatabaseWorkMeter,
+        evaluateExpression: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue
+    ) async throws -> FieldValue {
+        var sum: SPARQLNumericValue?
+        var count: Int64 = 0
+        let distinctValues = distinct
+            ? try SPARQLRetainedFieldValueSet.make(workMeter: workMeter)
+            : nil
+        for memberIndex in partition.memberRange(at: groupIndex) {
+            try workMeter.consume(at: .aggregateInput)
+            let value = try await partition.withMember(
+                at: memberIndex
+            ) { binding in
+                try await evaluateRequiredValue(
+                    expression,
+                    binding: copy binding,
+                    evaluateExpression: evaluateExpression
+                )
+            }
+            guard let numeric = SPARQLNumericValue(value) else {
+                throw SPARQLExpressionEvaluationError.typeError(
+                    "AVG requires a numeric aggregate input"
+                )
+            }
+            if let distinctValues {
+                try workMeter.consume(at: .deduplication)
+                guard try distinctValues.insert(value) else { continue }
+            }
+            do {
+                sum = try sum?.applying(.add, to: numeric) ?? numeric
+            } catch {
+                throw SPARQLQueryError.aggregateResultOutOfRange
+            }
+            let (next, overflow) = count.addingReportingOverflow(1)
+            guard !overflow else {
+                throw SPARQLQueryError.aggregateResultOutOfRange
+            }
+            count = next
+        }
+
+        guard count > 0, let sum,
+              let divisor = SPARQLNumericValue(.int64(count)) else {
+            guard let zero = SPARQLNumericValue(.int64(0)) else {
+                throw SPARQLQueryError.aggregateResultOutOfRange
+            }
+            do {
+                return try zero.fieldValue()
+            } catch {
+                throw SPARQLQueryError.aggregateResultOutOfRange
+            }
+        }
+        do {
+            return try sum.applying(.divide, to: divisor).fieldValue()
+        } catch {
+            throw SPARQLQueryError.aggregateResultOutOfRange
+        }
+    }
+
+    private func evaluateExtremum(
+        groupIndex: Int,
+        in partition: borrowing SPARQLGroupPartition,
+        expression: SPARQLExpressionPlan,
+        findMinimum: Bool,
+        workMeter: DatabaseWorkMeter,
+        evaluateExpression: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue
+    ) async throws -> FieldValue? {
+        var extremum: FieldValue?
+        for memberIndex in partition.memberRange(at: groupIndex) {
+            try workMeter.consume(at: .aggregateInput)
+            let value = try await partition.withMember(
+                at: memberIndex
+            ) { binding in
+                try await evaluateRequiredValue(
+                    expression,
+                    binding: copy binding,
+                    evaluateExpression: evaluateExpression
+                )
+            }
+            guard let current = extremum else {
+                extremum = value
+                continue
+            }
+            let comparison = try SPARQLTermOrdering.compare(value, current)
+            if (findMinimum && comparison == .orderedAscending)
+                || (!findMinimum && comparison == .orderedDescending) {
+                extremum = value
+            }
+        }
+        return extremum
+    }
+
+    private func evaluateSample(
+        groupIndex: Int,
+        in partition: borrowing SPARQLGroupPartition,
+        expression: SPARQLExpressionPlan,
+        workMeter: DatabaseWorkMeter,
+        evaluateExpression: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue
+    ) async throws -> FieldValue? {
+        for memberIndex in partition.memberRange(at: groupIndex) {
+            try workMeter.consume(at: .aggregateInput)
+            do {
+                let value = try await partition.withMember(
+                    at: memberIndex
+                ) { binding in
+                    try await evaluateExpression(expression, copy binding)
+                }
+                if value != .null {
+                    return value
+                }
+            } catch let error as SPARQLExpressionEvaluationError
+                where error.isSPARQLEvaluationError {
+                continue
+            }
+        }
+        return nil
+    }
+
+    private func evaluateGroupConcat(
+        groupIndex: Int,
+        in partition: borrowing SPARQLGroupPartition,
+        expression: SPARQLExpressionPlan,
+        separator: String,
+        distinct: Bool,
+        workMeter: DatabaseWorkMeter,
+        evaluateExpression: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue
+    ) async throws -> FieldValue {
+        let seen = distinct
+            ? try SPARQLRetainedFieldValueSet.make(workMeter: workMeter)
+            : nil
+        var requiredUTF8Count: UInt64 = 0
+        var result = ""
         var hasValue = false
-        for binding in bindings {
-            guard let value = binding[variable],
-                  let num = Self.numericValue(value) else { continue }
-            sum += num
+
+        for memberIndex in partition.memberRange(at: groupIndex) {
+            try workMeter.consume(at: .aggregateInput)
+            let value = try await partition.withMember(
+                at: memberIndex
+            ) { binding in
+                try await evaluateRequiredValue(
+                    expression,
+                    binding: copy binding,
+                    evaluateExpression: evaluateExpression
+                )
+            }
+            guard let lexicalForm = Self.stringValue(value) else {
+                throw SPARQLExpressionEvaluationError.typeError(
+                    "GROUP_CONCAT requires an RDF term with a lexical form"
+                )
+            }
+            if let seen {
+                try workMeter.consume(at: .deduplication)
+                guard try seen.insert(value) else { continue }
+            }
+            let separatorCount = hasValue ? separator.utf8.count : 0
+            let required = UInt64(separatorCount) + UInt64(lexicalForm.utf8.count)
+            let (next, overflow) = requiredUTF8Count.addingReportingOverflow(required)
+            guard !overflow else {
+                throw SPARQLExpressionEvaluationError.resourceLimitExceeded(
+                    stage: "GROUP_CONCAT",
+                    required: UInt64.max,
+                    maximum: UInt64(
+                        SPARQLExecutionLimits.maximumLiteralUTF8Count
+                    )
+                )
+            }
+            guard next <= SPARQLExecutionLimits.maximumLiteralUTF8Count else {
+                throw SPARQLExpressionEvaluationError.resourceLimitExceeded(
+                    stage: "GROUP_CONCAT",
+                    required: next,
+                    maximum: UInt64(
+                        SPARQLExecutionLimits.maximumLiteralUTF8Count
+                    )
+                )
+            }
+            try workMeter.consume(required, at: .resultMaterialization)
+            requiredUTF8Count = next
+            if hasValue { result.append(separator) }
+            result.append(lexicalForm)
             hasValue = true
         }
-
-        guard hasValue else { return nil }
-
-        // Return as integer if possible.
-        // Int64(exactly:) returns nil for non-integer values and values outside
-        // Int64 range, avoiding the trap that Int64(_:) causes at boundary values
-        // (Double(Int64.max) rounds to 9223372036854775808.0 > Int64.max).
-        if let intValue = Int64(exactly: sum) {
-            return .int64(intValue)
-        }
-        return .double(sum)
+        return try ExpressionEvaluator.evaluate(
+            .literal(.string(result)),
+            binding: VariableBinding()
+        )
     }
 
-    private func evaluateAvg(_ bindings: [VariableBinding], variable: String) -> FieldValue? {
-        var sum: Double = 0
-        var count = 0
-        for binding in bindings {
-            guard let value = binding[variable],
-                  let num = Self.numericValue(value) else { continue }
-            sum += num
-            count += 1
-        }
-
-        guard count > 0 else { return nil }
-
-        return .double(sum / Double(count))
-    }
-
-    private func evaluateMin(_ bindings: [VariableBinding], variable: String) -> FieldValue? {
-        let values = bindings.compactMap { $0[variable] }.map { Self.promoteToNumeric($0) }
-        return values.min()
-    }
-
-    private func evaluateMax(_ bindings: [VariableBinding], variable: String) -> FieldValue? {
-        let values = bindings.compactMap { $0[variable] }.map { Self.promoteToNumeric($0) }
-        return values.max()
-    }
-
-    // MARK: - Numeric Coercion
-
-    /// Extract numeric value from a FieldValue, with string-to-number coercion
-    ///
-    /// SPARQL semantics: SUM/AVG aggregate functions operate on numeric values.
-    /// String values that represent numbers are coerced to numeric.
-    /// Non-numeric values are skipped.
-    ///
-    /// Reference: SPARQL 1.1, Section 11.5
-    private static func numericValue(_ value: FieldValue) -> Double? {
-        switch value {
-        case .int64(let v): return Double(v)
-        case .double(let v): return v
-        case .string(let s): return Double(s)
-        default: return nil
+    private func recoverExpressionValue(
+        _ expression: SPARQLExpressionPlan,
+        binding: VariableBinding,
+        evaluateExpression: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue
+    ) async throws -> FieldValue? {
+        do {
+            let value = try await evaluateExpression(expression, binding)
+            return value == .null ? nil : value
+        } catch let error as SPARQLExpressionEvaluationError
+            where error.isSPARQLEvaluationError {
+            return nil
         }
     }
 
-    /// Promote a FieldValue to numeric if it's a numeric-looking string
-    ///
-    /// Used by MIN/MAX to ensure numeric ordering for string-stored numbers.
-    /// Non-numeric strings are left unchanged.
-    private static func promoteToNumeric(_ value: FieldValue) -> FieldValue {
-        guard case .string(let s) = value else { return value }
-        if let i = Int64(s) { return .int64(i) }
-        if let d = Double(s), d.isFinite { return .double(d) }
+    private func incrementedCount(_ count: UInt64) throws -> UInt64 {
+        let (next, overflow) = count.addingReportingOverflow(1)
+        guard !overflow else {
+            throw SPARQLQueryError.aggregateResultOutOfRange
+        }
+        return next
+    }
+
+    /// Every aggregate except COUNT evaluates its input as a regular SPARQL
+    /// expression. A local expression error makes that aggregate result an
+    /// error; the grouping operator decides whether the projection alias is
+    /// left unbound. It must not silently discard the failing solution.
+    private func evaluateRequiredValue(
+        _ expression: SPARQLExpressionPlan,
+        binding: VariableBinding,
+        evaluateExpression: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue
+    ) async throws -> FieldValue {
+        let value = try await evaluateExpression(expression, binding)
+        guard value != .null else {
+            throw SPARQLExpressionEvaluationError.typeError(
+                "aggregate input evaluated to a non-RDF null value"
+            )
+        }
         return value
     }
 
-    private func evaluateSample(_ bindings: [VariableBinding], variable: String) -> FieldValue? {
-        // Return any value (first non-null)
-        return bindings.compactMap { $0[variable] }.first
+    private static func stringValue(_ value: FieldValue) -> String? {
+        switch value {
+        case .rdfTerm(.iri(let value)):
+            return value
+        case .rdfTerm(.literal(let literal)):
+            return literal.lexicalForm
+        case .string(let value):
+            return value
+        default:
+            return nil
+        }
     }
 
-    private func evaluateGroupConcat(_ bindings: [VariableBinding], variable: String, separator: String, distinct: Bool) -> FieldValue {
-        var strings = bindings.compactMap { binding -> String? in
-            binding.string(variable)
-        }
-
-        if distinct {
-            // Preserve order while removing duplicates
-            var seen = Set<String>()
-            strings = strings.filter { seen.insert($0).inserted }
-        }
-
-        return .string(strings.joined(separator: separator))
+    private static func normalizedVariable(_ variable: String) -> String {
+        variable.first == "?" ? variable : "?\(variable)"
     }
 }
-
-// MARK: - Convenience Constructors
 
 extension AggregateExpression {
+    private static func variablePlan(
+        _ variable: String
+    ) throws -> SPARQLExpressionPlan {
+        guard variable.first == "?" else {
+            throw SPARQLQueryError.invalidVariable(variable)
+        }
+        let rawName = String(variable.dropFirst())
+        do {
+            _ = try SPARQLVariableName(rawName)
+        } catch {
+            throw SPARQLQueryError.invalidVariable(variable)
+        }
+        return try SPARQLExpressionPlan(
+            .variable(Variable(rawName))
+        )
+    }
 
-    /// Create COUNT(*) aggregate
     public static func countAll(as alias: String) -> AggregateExpression {
-        .count(variable: nil, distinct: false, alias: alias)
+        .count(expression: nil, distinct: false, alias: alias)
     }
 
-    /// Create COUNT(DISTINCT *) aggregate
     public static func countAllDistinct(as alias: String) -> AggregateExpression {
-        .count(variable: nil, distinct: true, alias: alias)
+        .count(expression: nil, distinct: true, alias: alias)
     }
 
-    /// Create COUNT(?var) aggregate
-    public static func count(_ variable: String, as alias: String) -> AggregateExpression {
-        .count(variable: variable, distinct: false, alias: alias)
+    public static func count(
+        _ variable: String,
+        as alias: String
+    ) throws -> AggregateExpression {
+        .count(
+            expression: try variablePlan(variable),
+            distinct: false,
+            alias: alias
+        )
     }
 
-    /// Create COUNT(DISTINCT ?var) aggregate
-    public static func countDistinct(_ variable: String, as alias: String) -> AggregateExpression {
-        .count(variable: variable, distinct: true, alias: alias)
+    public static func countDistinct(
+        _ variable: String,
+        as alias: String
+    ) throws -> AggregateExpression {
+        .count(
+            expression: try variablePlan(variable),
+            distinct: true,
+            alias: alias
+        )
     }
 
-    /// Create SUM(?var) aggregate
-    public static func sum(_ variable: String, as alias: String) -> AggregateExpression {
-        .sum(variable: variable, alias: alias)
+    public static func sum(
+        _ variable: String,
+        distinct: Bool = false,
+        as alias: String
+    ) throws -> AggregateExpression {
+        .sum(
+            expression: try variablePlan(variable),
+            distinct: distinct,
+            alias: alias
+        )
     }
 
-    /// Create AVG(?var) aggregate
-    public static func avg(_ variable: String, as alias: String) -> AggregateExpression {
-        .avg(variable: variable, alias: alias)
+    public static func avg(
+        _ variable: String,
+        distinct: Bool = false,
+        as alias: String
+    ) throws -> AggregateExpression {
+        .avg(
+            expression: try variablePlan(variable),
+            distinct: distinct,
+            alias: alias
+        )
     }
 
-    /// Create MIN(?var) aggregate
-    public static func min(_ variable: String, as alias: String) -> AggregateExpression {
-        .min(variable: variable, alias: alias)
+    public static func min(
+        _ variable: String,
+        as alias: String
+    ) throws -> AggregateExpression {
+        .min(expression: try variablePlan(variable), alias: alias)
     }
 
-    /// Create MAX(?var) aggregate
-    public static func max(_ variable: String, as alias: String) -> AggregateExpression {
-        .max(variable: variable, alias: alias)
+    public static func max(
+        _ variable: String,
+        as alias: String
+    ) throws -> AggregateExpression {
+        .max(expression: try variablePlan(variable), alias: alias)
     }
 
-    /// Create SAMPLE(?var) aggregate
-    public static func sample(_ variable: String, as alias: String) -> AggregateExpression {
-        .sample(variable: variable, alias: alias)
+    public static func sample(
+        _ variable: String,
+        as alias: String
+    ) throws -> AggregateExpression {
+        .sample(expression: try variablePlan(variable), alias: alias)
     }
 
-    /// Create GROUP_CONCAT(?var; separator=",") aggregate
-    public static func groupConcat(_ variable: String, separator: String = " ", as alias: String) -> AggregateExpression {
-        .groupConcat(variable: variable, separator: separator, distinct: false, alias: alias)
+    public static func groupConcat(
+        _ variable: String,
+        separator: String = " ",
+        as alias: String
+    ) throws -> AggregateExpression {
+        .groupConcat(
+            expression: try variablePlan(variable),
+            separator: separator,
+            distinct: false,
+            alias: alias
+        )
     }
 
-    /// Create GROUP_CONCAT(DISTINCT ?var; separator=",") aggregate
-    public static func groupConcatDistinct(_ variable: String, separator: String = " ", as alias: String) -> AggregateExpression {
-        .groupConcat(variable: variable, separator: separator, distinct: true, alias: alias)
+    public static func groupConcatDistinct(
+        _ variable: String,
+        separator: String = " ",
+        as alias: String
+    ) throws -> AggregateExpression {
+        .groupConcat(
+            expression: try variablePlan(variable),
+            separator: separator,
+            distinct: true,
+            alias: alias
+        )
     }
 }
-
-// MARK: - CustomStringConvertible
 
 extension AggregateExpression: CustomStringConvertible {
     public var description: String {
         switch self {
-        case .count(let variable, let distinct, let alias):
-            let distinctStr = distinct ? "DISTINCT " : ""
-            let varStr = variable ?? "*"
-            return "(COUNT(\(distinctStr)\(varStr)) AS \(alias))"
-
-        case .sum(let variable, let alias):
-            return "(SUM(\(variable)) AS \(alias))"
-
-        case .avg(let variable, let alias):
-            return "(AVG(\(variable)) AS \(alias))"
-
-        case .min(let variable, let alias):
-            return "(MIN(\(variable)) AS \(alias))"
-
-        case .max(let variable, let alias):
-            return "(MAX(\(variable)) AS \(alias))"
-
-        case .sample(let variable, let alias):
-            return "(SAMPLE(\(variable)) AS \(alias))"
-
-        case .groupConcat(let variable, let separator, let distinct, let alias):
-            let distinctStr = distinct ? "DISTINCT " : ""
-            return "(GROUP_CONCAT(\(distinctStr)\(variable); separator=\"\(separator)\") AS \(alias))"
+        case .count(let expression, let distinct, let alias):
+            return "(COUNT(\(distinct ? "DISTINCT " : "")\(expression.map { String(describing: $0.expression) } ?? "*")) AS \(alias))"
+        case .sum(let expression, let distinct, let alias):
+            return "(SUM(\(distinct ? "DISTINCT " : "")\(expression.expression)) AS \(alias))"
+        case .avg(let expression, let distinct, let alias):
+            return "(AVG(\(distinct ? "DISTINCT " : "")\(expression.expression)) AS \(alias))"
+        case .min(let expression, let alias):
+            return "(MIN(\(expression.expression)) AS \(alias))"
+        case .max(let expression, let alias):
+            return "(MAX(\(expression.expression)) AS \(alias))"
+        case .sample(let expression, let alias):
+            return "(SAMPLE(\(expression.expression)) AS \(alias))"
+        case .groupConcat(let expression, let separator, let distinct, let alias):
+            return "(GROUP_CONCAT(\(distinct ? "DISTINCT " : "")\(expression.expression); separator=\"\(separator)\") AS \(alias))"
         }
     }
 }

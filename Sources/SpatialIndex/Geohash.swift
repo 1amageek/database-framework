@@ -3,7 +3,12 @@
 //
 // Complete geohash implementation ported from fdb-record-layer.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseMath
 
 /// Geohash encoding/decoding for geographic coordinates
 ///
@@ -212,7 +217,7 @@ public enum Geohash {
         let lonDiff = maxLon - minLon
 
         let latDistanceKm = latDiff * 111.0
-        let lonDistanceKm = lonDiff * 111.0 * cos(centerLat * .pi / 180.0)
+        let lonDistanceKm = lonDiff * 111.0 * DatabaseMath.cosine(centerLat * .pi / 180.0)
 
         return max(latDistanceKm, lonDistanceKm)
     }

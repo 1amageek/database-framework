@@ -15,6 +15,7 @@ import StorageKit
 import FDBStorage
 import Core
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import TestSupport
 
 @Suite("QueryCursor Tests", .serialized, .heartbeat)
@@ -34,16 +35,16 @@ struct QueryCursorTests {
     // MARK: - Setup
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema([PaginatedUser.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
         // Use DirectoryLayer to remove the whole directory (handles old format data too)
-        try? await container.engine.directoryService.remove(path: ["test", "cursor", "users"])
+        try? await container.engine.removeDirectory(path: ["test", "cursor", "users"])
     }
 
     private func seedUsers(context: FDBContext, count: Int) async throws -> [PaginatedUser] {
@@ -65,7 +66,7 @@ struct QueryCursorTests {
 
     @Test("Cursor returns correct batch size")
     func cursorReturnsBatchSize() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -92,7 +93,7 @@ struct QueryCursorTests {
 
     @Test("Cursor respects total limit")
     func cursorRespectsLimit() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -117,7 +118,7 @@ struct QueryCursorTests {
 
     @Test("Cursor with empty result set")
     func cursorWithEmptyResults() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -137,7 +138,7 @@ struct QueryCursorTests {
 
     @Test("Stream yields all items")
     func streamYieldsAllItems() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -161,7 +162,7 @@ struct QueryCursorTests {
 
     @Test("Collect returns all items")
     func collectReturnsAllItems() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -180,7 +181,7 @@ struct QueryCursorTests {
 
     @Test("Collect respects limit")
     func collectRespectsLimit() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -202,7 +203,7 @@ struct QueryCursorTests {
 
     @Test("Statistics track items and pages correctly")
     func statisticsTrackCorrectly() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -243,7 +244,7 @@ struct QueryCursorTests {
 
     @Test("Exhausted cursor returns empty")
     func exhaustedCursorReturnsEmpty() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -270,7 +271,7 @@ struct QueryCursorTests {
 
     @Test("Batch size larger than data")
     func batchSizeLargerThanData() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -289,7 +290,7 @@ struct QueryCursorTests {
 
     @Test("Batch size of 1")
     func batchSizeOfOne() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -319,7 +320,7 @@ struct QueryCursorTests {
 
     @Test("Limit of 0 returns nothing")
     func limitOfZeroReturnsNothing() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 

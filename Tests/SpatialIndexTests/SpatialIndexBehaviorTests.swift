@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Geospatial
 import TestSupport
 @testable import DatabaseEngine
@@ -14,7 +15,7 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct TestLocation: Persistable {
+struct GeospatialLocation: Persistable {
     typealias ID = String
 
     var id: String
@@ -29,7 +30,7 @@ struct TestLocation: Persistable {
         self.longitude = longitude
     }
 
-    static var persistableType: String { "TestLocation" }
+    static var persistableType: String { "GeospatialLocation" }
     static var allFields: [String] { ["id", "name", "latitude", "longitude"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -46,56 +47,56 @@ struct TestLocation: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestLocation, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<GeospatialLocation, Value>) -> String {
         switch keyPath {
-        case \TestLocation.id: return "id"
-        case \TestLocation.name: return "name"
-        case \TestLocation.latitude: return "latitude"
-        case \TestLocation.longitude: return "longitude"
+        case \GeospatialLocation.id: return "id"
+        case \GeospatialLocation.name: return "name"
+        case \GeospatialLocation.latitude: return "latitude"
+        case \GeospatialLocation.longitude: return "longitude"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestLocation>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<GeospatialLocation>) -> String {
         switch keyPath {
-        case \TestLocation.id: return "id"
-        case \TestLocation.name: return "name"
-        case \TestLocation.latitude: return "latitude"
-        case \TestLocation.longitude: return "longitude"
+        case \GeospatialLocation.id: return "id"
+        case \GeospatialLocation.name: return "name"
+        case \GeospatialLocation.latitude: return "latitude"
+        case \GeospatialLocation.longitude: return "longitude"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestLocation> {
+        if let partial = keyPath as? PartialKeyPath<GeospatialLocation> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Spatial Index Context
 
-private struct TestContext {
+private struct SpatialIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: SpatialIndexMaintainer<TestLocation>
-    let kind: SpatialIndexKind<TestLocation>
+    let maintainer: SpatialIndexMaintainer<GeospatialLocation>
+    let kind: SpatialIndexKind<GeospatialLocation>
     let level: Int
 
     /// Create test context
     /// - Parameters:
     ///   - encoding: Spatial encoding (default: .s2)
     ///   - level: S2/Morton level (default: 10 for coarse cells, faster tests)
-    init(encoding: SpatialEncoding = .s2, level: Int = 10, indexName: String = "TestLocation_location") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(encoding: SpatialEncoding = .s2, level: Int = 10, indexName: String = "GeospatialLocation_location") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "spatial", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.level = level
 
-        self.kind = SpatialIndexKind<TestLocation>(
+        self.kind = SpatialIndexKind<GeospatialLocation>(
             latitude: \.latitude,
             longitude: \.longitude,
             encoding: encoding,
@@ -111,10 +112,10 @@ private struct TestContext {
                 FieldKeyExpression(fieldName: "longitude")
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["TestLocation"])
+            itemTypes: Set(["GeospatialLocation"])
         )
 
-        self.maintainer = SpatialIndexMaintainer<TestLocation>(
+        self.maintainer = SpatialIndexMaintainer<GeospatialLocation>(
             index: index,
             encoding: kind.encoding,
             level: kind.level,
@@ -126,7 +127,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -176,11 +177,11 @@ struct SpatialIndexBehaviorTests {
 
     @Test("Insert stores location")
     func testInsertStoresLocation() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SpatialIndexContext()
 
         // Tokyo Station
-        let location = TestLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
+        let location = GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -198,13 +199,13 @@ struct SpatialIndexBehaviorTests {
 
     @Test("Multiple locations are indexed")
     func testMultipleLocations() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SpatialIndexContext()
 
         let locations = [
-            TestLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671),
-            TestLocation(id: "shibuya", name: "Shibuya Station", latitude: 35.6580, longitude: 139.7016),
-            TestLocation(id: "shinjuku", name: "Shinjuku Station", latitude: 35.6896, longitude: 139.7006)
+            GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671),
+            GeospatialLocation(id: "shibuya", name: "Shibuya Station", latitude: 35.6580, longitude: 139.7016),
+            GeospatialLocation(id: "shinjuku", name: "Shinjuku Station", latitude: 35.6896, longitude: 139.7006)
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -227,10 +228,10 @@ struct SpatialIndexBehaviorTests {
 
     @Test("Delete removes location")
     func testDeleteRemovesLocation() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SpatialIndexContext()
 
-        let location = TestLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
+        let location = GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -263,10 +264,10 @@ struct SpatialIndexBehaviorTests {
 
     @Test("Update changes location")
     func testUpdateChangesLocation() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SpatialIndexContext()
 
-        let location = TestLocation(id: "point", name: "Original", latitude: 35.0, longitude: 139.0)
+        let location = GeospatialLocation(id: "point", name: "Original", latitude: 35.0, longitude: 139.0)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -278,7 +279,7 @@ struct SpatialIndexBehaviorTests {
         }
 
         // Update with new coordinates
-        let updatedLocation = TestLocation(id: "point", name: "Moved", latitude: 36.0, longitude: 140.0)
+        let updatedLocation = GeospatialLocation(id: "point", name: "Moved", latitude: 36.0, longitude: 140.0)
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: location,
@@ -297,11 +298,11 @@ struct SpatialIndexBehaviorTests {
 
     @Test("Radius search with small radius completes without error")
     func testRadiusSearchSmallRadius() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         // Use coarse level (8) to reduce cell count
-        let ctx = try await TestContext(level: 8)
+        let ctx = try await SpatialIndexContext(level: 8)
 
-        let location = TestLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
+        let location = GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -322,12 +323,12 @@ struct SpatialIndexBehaviorTests {
 
     @Test("Bounding box search finds locations within box")
     func testBoundingBoxSearch() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         // Use coarse level for faster test
-        let ctx = try await TestContext(level: 8)
+        let ctx = try await SpatialIndexContext(level: 8)
 
         // Insert location in Tokyo area
-        let location = TestLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
+        let location = GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -354,12 +355,12 @@ struct SpatialIndexBehaviorTests {
 
     @Test("ScanItem stores location")
     func testScanItemStoresLocation() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SpatialIndexContext()
 
         let locations = [
-            TestLocation(id: "p1", name: "Point 1", latitude: 35.0, longitude: 139.0),
-            TestLocation(id: "p2", name: "Point 2", latitude: 36.0, longitude: 140.0)
+            GeospatialLocation(id: "p1", name: "Point 1", latitude: 35.0, longitude: 139.0),
+            GeospatialLocation(id: "p2", name: "Point 2", latitude: 36.0, longitude: 140.0)
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -382,10 +383,10 @@ struct SpatialIndexBehaviorTests {
 
     @Test("Morton encoding works for 2D coordinates")
     func testMortonEncoding() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(encoding: .morton, level: 16)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SpatialIndexContext(encoding: .morton, level: 16)
 
-        let location = TestLocation(id: "test", name: "Test", latitude: 35.6812, longitude: 139.7671)
+        let location = GeospatialLocation(id: "test", name: "Test", latitude: 35.6812, longitude: 139.7671)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -403,11 +404,11 @@ struct SpatialIndexBehaviorTests {
 
     @Test("S2 encoding produces consistent cell IDs")
     func testS2EncodingConsistency() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(encoding: .s2, level: 10)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SpatialIndexContext(encoding: .s2, level: 10)
 
         // Insert same location twice (should produce same cell)
-        let location = TestLocation(id: "test", name: "Test", latitude: 35.6812, longitude: 139.7671)
+        let location = GeospatialLocation(id: "test", name: "Test", latitude: 35.6812, longitude: 139.7671)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -444,11 +445,11 @@ struct SpatialIndexBehaviorTests {
 
     @Test("Handles locations near equator")
     func testLocationNearEquator() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SpatialIndexContext()
 
         // Singapore (near equator)
-        let location = TestLocation(id: "singapore", name: "Singapore", latitude: 1.3521, longitude: 103.8198)
+        let location = GeospatialLocation(id: "singapore", name: "Singapore", latitude: 1.3521, longitude: 103.8198)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -466,11 +467,11 @@ struct SpatialIndexBehaviorTests {
 
     @Test("Handles locations near poles")
     func testLocationNearPole() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SpatialIndexContext()
 
         // Svalbard (high latitude)
-        let location = TestLocation(id: "svalbard", name: "Svalbard", latitude: 78.2232, longitude: 15.6469)
+        let location = GeospatialLocation(id: "svalbard", name: "Svalbard", latitude: 78.2232, longitude: 15.6469)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -488,13 +489,13 @@ struct SpatialIndexBehaviorTests {
 
     @Test("Handles negative coordinates")
     func testNegativeCoordinates() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await SpatialIndexContext()
 
         // Sydney, Australia (negative latitude)
-        let sydney = TestLocation(id: "sydney", name: "Sydney", latitude: -33.8688, longitude: 151.2093)
+        let sydney = GeospatialLocation(id: "sydney", name: "Sydney", latitude: -33.8688, longitude: 151.2093)
         // Rio de Janeiro (negative longitude)
-        let rio = TestLocation(id: "rio", name: "Rio", latitude: -22.9068, longitude: -43.1729)
+        let rio = GeospatialLocation(id: "rio", name: "Rio", latitude: -22.9068, longitude: -43.1729)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(oldItem: nil, newItem: sydney, transaction: transaction)

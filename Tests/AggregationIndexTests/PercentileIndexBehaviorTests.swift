@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
 // MARK: - Test Model
 
-struct PercentileTestRequest: Persistable {
+struct EndpointRequest: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ struct PercentileTestRequest: Persistable {
         self.timestamp = timestamp
     }
 
-    static var persistableType: String { "PercentileTestRequest" }
+    static var persistableType: String { "EndpointRequest" }
     static var allFields: [String] { ["id", "endpoint", "latencyMs", "timestamp"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,44 +46,44 @@ struct PercentileTestRequest: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<PercentileTestRequest, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<EndpointRequest, Value>) -> String {
         switch keyPath {
-        case \PercentileTestRequest.id: return "id"
-        case \PercentileTestRequest.endpoint: return "endpoint"
-        case \PercentileTestRequest.latencyMs: return "latencyMs"
-        case \PercentileTestRequest.timestamp: return "timestamp"
+        case \EndpointRequest.id: return "id"
+        case \EndpointRequest.endpoint: return "endpoint"
+        case \EndpointRequest.latencyMs: return "latencyMs"
+        case \EndpointRequest.timestamp: return "timestamp"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<PercentileTestRequest>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<EndpointRequest>) -> String {
         switch keyPath {
-        case \PercentileTestRequest.id: return "id"
-        case \PercentileTestRequest.endpoint: return "endpoint"
-        case \PercentileTestRequest.latencyMs: return "latencyMs"
-        case \PercentileTestRequest.timestamp: return "timestamp"
+        case \EndpointRequest.id: return "id"
+        case \EndpointRequest.endpoint: return "endpoint"
+        case \EndpointRequest.latencyMs: return "latencyMs"
+        case \EndpointRequest.timestamp: return "timestamp"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PercentileTestRequest> {
+        if let partial = keyPath as? PartialKeyPath<EndpointRequest> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Percentile Index Context
 
-private struct TestContext {
+private struct PercentileIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: PercentileIndexMaintainer<PercentileTestRequest>
+    let maintainer: PercentileIndexMaintainer<EndpointRequest>
 
-    init(indexName: String = "PercentileTestRequest_endpoint_latencyMs") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(indexName: String = "EndpointRequest_endpoint_latencyMs") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "percentile", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -90,7 +91,7 @@ private struct TestContext {
         // Expression: endpoint + latencyMs (grouping + percentile value)
         let index = Index(
             name: indexName,
-            kind: PercentileIndexKind<PercentileTestRequest, Double>(
+            kind: PercentileIndexKind<EndpointRequest, Double>(
                 groupBy: [\.endpoint],
                 value: \.latencyMs
             ),
@@ -99,10 +100,10 @@ private struct TestContext {
                 FieldKeyExpression(fieldName: "latencyMs")
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["PercentileTestRequest"])
+            itemTypes: Set(["EndpointRequest"])
         )
 
-        self.maintainer = PercentileIndexMaintainer<PercentileTestRequest>(
+        self.maintainer = PercentileIndexMaintainer<EndpointRequest>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
@@ -113,7 +114,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -156,14 +157,14 @@ struct PercentileIndexBehaviorTests {
 
     @Test("Insert adds value to TDigest")
     func testInsertAddsValue() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
-        let request = PercentileTestRequest(endpoint: "/api/users", latencyMs: 100.0)
+        let request = EndpointRequest(endpoint: "/api/users", latencyMs: 100.0)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as PercentileTestRequest?,
+                oldItem: nil as EndpointRequest?,
                 newItem: request,
                 transaction: transaction
             )
@@ -178,17 +179,17 @@ struct PercentileIndexBehaviorTests {
 
     @Test("Multiple values produce expected percentiles")
     func testMultipleValuesPercentiles() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
         // Insert latency values: 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
         let latencies = stride(from: 10.0, through: 100.0, by: 10.0)
 
         try await ctx.database.withTransaction { transaction in
             for latency in latencies {
-                let request = PercentileTestRequest(endpoint: "/api/users", latencyMs: latency)
+                let request = EndpointRequest(endpoint: "/api/users", latencyMs: latency)
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PercentileTestRequest?,
+                    oldItem: nil as EndpointRequest?,
                     newItem: request,
                     transaction: transaction
                 )
@@ -211,15 +212,15 @@ struct PercentileIndexBehaviorTests {
 
     @Test("Different groups have independent percentiles")
     func testDifferentGroupsIndependent() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
         // Fast endpoint: 10-50ms
         try await ctx.database.withTransaction { transaction in
             for latency in stride(from: 10.0, through: 50.0, by: 10.0) {
-                let request = PercentileTestRequest(endpoint: "/api/fast", latencyMs: latency)
+                let request = EndpointRequest(endpoint: "/api/fast", latencyMs: latency)
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PercentileTestRequest?,
+                    oldItem: nil as EndpointRequest?,
                     newItem: request,
                     transaction: transaction
                 )
@@ -229,9 +230,9 @@ struct PercentileIndexBehaviorTests {
         // Slow endpoint: 100-500ms
         try await ctx.database.withTransaction { transaction in
             for latency in stride(from: 100.0, through: 500.0, by: 100.0) {
-                let request = PercentileTestRequest(endpoint: "/api/slow", latencyMs: latency)
+                let request = EndpointRequest(endpoint: "/api/slow", latencyMs: latency)
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PercentileTestRequest?,
+                    oldItem: nil as EndpointRequest?,
                     newItem: request,
                     transaction: transaction
                 )
@@ -253,19 +254,19 @@ struct PercentileIndexBehaviorTests {
         try await ctx.cleanup()
     }
 
-    // MARK: - Add-Only Behavior Tests
+    // MARK: - Delete and Update Tests
 
-    @Test("Delete does NOT change percentiles (add-only)")
-    func testDeleteDoesNotChangePercentiles() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+    @Test("Delete removes the final percentile value")
+    func testDeleteRemovesFinalValue() async throws {
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
-        let request = PercentileTestRequest(endpoint: "/api/users", latencyMs: 100.0)
+        let request = EndpointRequest(endpoint: "/api/users", latencyMs: 100.0)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as PercentileTestRequest?,
+                oldItem: nil as EndpointRequest?,
                 newItem: request,
                 transaction: transaction
             )
@@ -274,40 +275,39 @@ struct PercentileIndexBehaviorTests {
         let statsBefore = try await ctx.getStatistics(for: "/api/users")
         #expect(statsBefore!.count == 1)
 
-        // Delete - TDigest is add-only, percentiles should NOT change
+        // Delete the only value.
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: request,
-                newItem: nil as PercentileTestRequest?,
+                newItem: nil as EndpointRequest?,
                 transaction: transaction
             )
         }
 
         let statsAfter = try await ctx.getStatistics(for: "/api/users")
-        // TDigest is add-only: delete does NOT remove value
-        #expect(statsAfter!.count == 1, "Count should remain 1 after delete (add-only)")
+        #expect(statsAfter == nil, "Summary should be removed after final delete")
 
         try await ctx.cleanup()
     }
 
-    @Test("Update adds new value (old value remains in TDigest)")
-    func testUpdateAddsNewValue() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+    @Test("Update replaces the old percentile value")
+    func testUpdateReplacesOldValue() async throws {
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
-        let request = PercentileTestRequest(id: "req1", endpoint: "/api/users", latencyMs: 100.0)
+        let request = EndpointRequest(id: "req1", endpoint: "/api/users", latencyMs: 100.0)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as PercentileTestRequest?,
+                oldItem: nil as EndpointRequest?,
                 newItem: request,
                 transaction: transaction
             )
         }
 
         // Update latency
-        let updatedRequest = PercentileTestRequest(id: "req1", endpoint: "/api/users", latencyMs: 200.0)
+        let updatedRequest = EndpointRequest(id: "req1", endpoint: "/api/users", latencyMs: 200.0)
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: request,
@@ -317,9 +317,8 @@ struct PercentileIndexBehaviorTests {
         }
 
         let stats = try await ctx.getStatistics(for: "/api/users")
-        // Both 100.0 (old) and 200.0 (new) should be in TDigest (add-only)
-        #expect(stats!.count == 2, "Count should be 2 after update (both old and new values)")
-        #expect(abs(stats!.min - 100.0) < 1.0, "Min should still be 100.0")
+        #expect(stats!.count == 1, "Count should remain 1 after replacement")
+        #expect(abs(stats!.min - 200.0) < 1.0, "Min should be the replacement value")
         #expect(abs(stats!.max - 200.0) < 1.0, "Max should be 200.0")
 
         try await ctx.cleanup()
@@ -329,15 +328,15 @@ struct PercentileIndexBehaviorTests {
 
     @Test("GetPercentiles returns multiple percentiles efficiently")
     func testGetMultiplePercentiles() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
         // Insert 100 values (1 to 100)
         try await ctx.database.withTransaction { transaction in
             for i in 1...100 {
-                let request = PercentileTestRequest(endpoint: "/api/users", latencyMs: Double(i))
+                let request = EndpointRequest(endpoint: "/api/users", latencyMs: Double(i))
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PercentileTestRequest?,
+                    oldItem: nil as EndpointRequest?,
                     newItem: request,
                     transaction: transaction
                 )
@@ -366,8 +365,8 @@ struct PercentileIndexBehaviorTests {
 
     @Test("GetPercentile for non-existent group returns nil")
     func testGetPercentileNonExistentReturnsNil() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
         let p50 = try await ctx.getPercentile(percentile: 0.5, for: "nonexistent")
         #expect(p50 == nil, "Percentile for non-existent group should be nil")
@@ -377,8 +376,8 @@ struct PercentileIndexBehaviorTests {
 
     @Test("GetStatistics for non-existent group returns nil")
     func testGetStatisticsNonExistentReturnsNil() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
         let stats = try await ctx.getStatistics(for: "nonexistent")
         #expect(stats == nil, "Statistics for non-existent group should be nil")
@@ -390,15 +389,15 @@ struct PercentileIndexBehaviorTests {
 
     @Test("GetCDF returns correct cumulative distribution")
     func testGetCDF() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
         // Insert values: 10, 20, 30, 40, 50
         try await ctx.database.withTransaction { transaction in
             for latency in [10.0, 20.0, 30.0, 40.0, 50.0] {
-                let request = PercentileTestRequest(endpoint: "/api/users", latencyMs: latency)
+                let request = EndpointRequest(endpoint: "/api/users", latencyMs: latency)
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PercentileTestRequest?,
+                    oldItem: nil as EndpointRequest?,
                     newItem: request,
                     transaction: transaction
                 )
@@ -424,13 +423,13 @@ struct PercentileIndexBehaviorTests {
 
     @Test("ScanItem adds to TDigest")
     func testScanItemAddsToTDigest() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
         let requests = [
-            PercentileTestRequest(endpoint: "/api/users", latencyMs: 100.0),
-            PercentileTestRequest(endpoint: "/api/users", latencyMs: 200.0),
-            PercentileTestRequest(endpoint: "/api/users", latencyMs: 300.0)
+            EndpointRequest(endpoint: "/api/users", latencyMs: 100.0),
+            EndpointRequest(endpoint: "/api/users", latencyMs: 200.0),
+            EndpointRequest(endpoint: "/api/users", latencyMs: 300.0)
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -454,8 +453,8 @@ struct PercentileIndexBehaviorTests {
 
     @Test("TDigest accuracy at extreme percentiles (p99, p99.9)")
     func testExtremePercentileAccuracy() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await PercentileIndexContext()
 
         // Insert 1000 values with heavy tail distribution
         // Most values between 50-100, a few outliers at 500-1000
@@ -463,9 +462,9 @@ struct PercentileIndexBehaviorTests {
             // 950 fast requests (50-100ms)
             for i in 0..<950 {
                 let latency = 50.0 + Double(i % 50)
-                let request = PercentileTestRequest(endpoint: "/api/users", latencyMs: latency)
+                let request = EndpointRequest(endpoint: "/api/users", latencyMs: latency)
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PercentileTestRequest?,
+                    oldItem: nil as EndpointRequest?,
                     newItem: request,
                     transaction: transaction
                 )
@@ -474,9 +473,9 @@ struct PercentileIndexBehaviorTests {
             // 50 slow requests (500-1000ms)
             for i in 0..<50 {
                 let latency = 500.0 + Double(i * 10)
-                let request = PercentileTestRequest(endpoint: "/api/users", latencyMs: latency)
+                let request = EndpointRequest(endpoint: "/api/users", latencyMs: latency)
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as PercentileTestRequest?,
+                    oldItem: nil as EndpointRequest?,
                     newItem: request,
                     transaction: transaction
                 )

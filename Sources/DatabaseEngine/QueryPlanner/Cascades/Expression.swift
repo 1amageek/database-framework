@@ -4,7 +4,11 @@
 // Reference: Graefe, G. "The Cascades Framework for Query Optimization", 1995
 // https://15721.courses.cs.cmu.edu/spring2019/papers/22-optimizer1/graefe-ieee1995.pdf
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 // MARK: - Expression Types

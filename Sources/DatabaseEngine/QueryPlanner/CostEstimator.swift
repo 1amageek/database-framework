@@ -1,8 +1,13 @@
 // CostEstimator.swift
 // QueryPlanner - Cost estimation for query plans
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 import StorageKit
 
 /// Estimates the cost of executing a query plan
@@ -57,9 +62,6 @@ public struct CostEstimator<T: Persistable> {
 
         case .spatialScan(let op):
             return estimateSpatialScan(op, analysis: analysis)
-
-        case .aggregation(let op):
-            return estimateAggregation(op, analysis: analysis)
 
         case .project(let op):
             return estimate(plan: op.input, analysis: analysis)
@@ -183,15 +185,13 @@ public struct CostEstimator<T: Persistable> {
     ) -> Bool {
         guard !analysis.sortRequirements.isEmpty else { return true }
 
-        // Get index key paths
-        let indexKeyPaths = op.index.keyPaths
+        let indexedFields = op.index.fieldNames
 
         // Check if sort requirements match index order
         for (i, sortDesc) in analysis.sortRequirements.enumerated() {
-            guard i < indexKeyPaths.count else { return false }
+            guard i < indexedFields.count else { return false }
 
-            let indexFieldName = T.fieldName(for: indexKeyPaths[i])
-            if indexFieldName != sortDesc.fieldName {
+            if indexedFields[i] != sortDesc.fieldName {
                 return false
             }
 
@@ -254,13 +254,12 @@ public struct CostEstimator<T: Persistable> {
     ) -> Bool {
         guard !analysis.sortRequirements.isEmpty else { return true }
 
-        let indexKeyPaths = op.index.keyPaths
+        let indexedFields = op.index.fieldNames
 
         for (i, sortDesc) in analysis.sortRequirements.enumerated() {
-            guard i < indexKeyPaths.count else { return false }
+            guard i < indexedFields.count else { return false }
 
-            let indexFieldName = T.fieldName(for: indexKeyPaths[i])
-            if indexFieldName != sortDesc.fieldName {
+            if indexedFields[i] != sortDesc.fieldName {
                 return false
             }
 
@@ -503,7 +502,7 @@ public struct CostEstimator<T: Persistable> {
 
         // HNSW search cost is approximately O(log(N) * ef_search)
         let totalRows = Double(statistics.estimatedRowCount(for: T.self))
-        let searchCost = log2(max(2, totalRows)) * efSearch * 0.1
+        let searchCost = DatabaseMath.binaryLogarithm(max(2, totalRows)) * efSearch * 0.1
 
         return PlanCost(
             indexReads: searchCost,
@@ -527,24 +526,6 @@ public struct CostEstimator<T: Persistable> {
             recordFetches: estimatedResults,
             postFilterCount: 0,
             requiresSort: !analysis.sortRequirements.isEmpty,
-            costModel: costModel
-        )
-    }
-
-    // MARK: - Aggregation
-
-    private func estimateAggregation(
-        _ op: AggregationOperator<T>,
-        analysis: QueryAnalysis<T>
-    ) -> PlanCost {
-        // Aggregation indexes are pre-computed, very cheap
-        let groupCount = Double(op.groupByFields.count + 1)
-
-        return PlanCost(
-            indexReads: groupCount,
-            recordFetches: 0, // No record fetches needed
-            postFilterCount: 0,
-            requiresSort: false,
             costModel: costModel
         )
     }
@@ -603,15 +584,18 @@ public struct CostEstimator<T: Persistable> {
         case .contains, .hasPrefix, .hasSuffix:
             return costModel.defaultPatternSelectivity
 
-        case .in:
+        case .in, .notIn:
             let eqSelectivity = statistics.equalitySelectivity(field: fieldName, type: T.self)
                 ?? costModel.defaultEqualitySelectivity
             // IN with n values: clamp to 1.0
             let valueCount = extractArrayCount(from: comparison.value)
-            if valueCount > 0 {
-                return min(1.0, eqSelectivity * Double(valueCount))
-            }
-            return eqSelectivity
+            let membershipSelectivity = min(
+                1.0,
+                eqSelectivity * Double(valueCount)
+            )
+            return comparison.op == .in
+                ? membershipSelectivity
+                : 1 - membershipSelectivity
 
         case .isNil:
             return statistics.nullSelectivity(field: fieldName, type: T.self)

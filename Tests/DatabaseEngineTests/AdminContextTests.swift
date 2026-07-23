@@ -7,6 +7,7 @@ import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 
 /// Tests for AdminContext directory resolution
 ///
@@ -20,18 +21,18 @@ struct AdminContextTests {
     // MARK: - Helper Types
 
     @Persistable
-    struct AdminTestEntity {
-        #Directory<AdminTestEntity>("test", "admin", "custom", "path")
+    struct AdminIndexedEntity {
+        #Directory<AdminIndexedEntity>("test", "admin", "custom", "path")
 
         var id: String = ULID().ulidString
         var value: String = ""
 
-        #Index(ScalarIndexKind<AdminTestEntity>(fields: [\.value]))
+        #Index(ScalarIndexKind<AdminIndexedEntity>(fields: [\.value]))
     }
 
     @Persistable
-    struct AdminTestEntityNoIndex {
-        #Directory<AdminTestEntityNoIndex>("test", "admin", "no", "index")
+    struct AdminUnindexedEntity {
+        #Directory<AdminUnindexedEntity>("test", "admin", "no", "index")
 
         var id: String = ULID().ulidString
         var name: String = ""
@@ -40,32 +41,29 @@ struct AdminContextTests {
     // MARK: - Helper Methods
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema([
-            AdminTestEntity.self,
-            AdminTestEntityNoIndex.self
+            AdminIndexedEntity.self,
+            AdminUnindexedEntity.self
         ], version: Schema.Version(1, 0, 0))
-
-        // Register types in IndexBuilderRegistry
-        IndexBuilderRegistry.shared.register(AdminTestEntity.self)
-        IndexBuilderRegistry.shared.register(AdminTestEntityNoIndex.self)
 
         return try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
             )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "admin"])
+        try? await container.engine.removeDirectory(path: ["test", "admin"])
     }
 
-    /// Get the first index name for AdminTestEntity from schema
+    /// Get the first index name for AdminIndexedEntity from schema
     private func getTestIndexName(from container: DBContainer) -> String? {
-        guard let entity = container.schema.entity(for: AdminTestEntity.self),
+        guard let entity = container.schema.entity(for: AdminIndexedEntity.self),
               let firstIndex = entity.indexDescriptors.first else {
             return nil
         }
@@ -76,13 +74,13 @@ struct AdminContextTests {
 
     @Test("indexStatistics uses correct directory from #Directory macro")
     func indexStatisticsUsesCorrectDirectory() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
             // Get index name from schema
             guard let indexName = getTestIndexName(from: container) else {
-                throw TestError("No index found for AdminTestEntity")
+                throw AdminIndexLookupFailure("No index found for AdminIndexedEntity")
             }
 
             // Get index statistics via AdminContext
@@ -97,7 +95,7 @@ struct AdminContextTests {
 
     @Test("rebuildIndex uses correct directory from #Directory macro")
     func rebuildIndexUsesCorrectDirectory() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -105,14 +103,14 @@ struct AdminContextTests {
 
             // Insert test data
             for i in 0..<10 {
-                let entity = AdminTestEntity(value: "value-\(i)")
+                let entity = AdminIndexedEntity(value: "value-\(i)")
                 context.insert(entity)
             }
             try await context.save()
 
             // Get index name from schema
             guard let indexName = getTestIndexName(from: container) else {
-                throw TestError("No index found for AdminTestEntity")
+                throw AdminIndexLookupFailure("No index found for AdminIndexedEntity")
             }
 
             // Rebuild index via AdminContext
@@ -130,7 +128,7 @@ struct AdminContextTests {
 
     @Test("collectionStatistics uses correct directory from #Directory macro")
     func collectionStatisticsUsesCorrectDirectory() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -138,14 +136,14 @@ struct AdminContextTests {
 
             // Insert test data
             for i in 0..<5 {
-                let entity = AdminTestEntity(value: "value-\(i)")
+                let entity = AdminIndexedEntity(value: "value-\(i)")
                 context.insert(entity)
             }
             try await context.save()
 
             // Get collection statistics via AdminContext
             let admin = container.newAdminContext()
-            let stats = try await admin.collectionStatistics(AdminTestEntity.self)
+            let stats = try await admin.collectionStatistics(AdminIndexedEntity.self)
 
             // If correct path is used, documentCount should be 5
             #expect(stats.documentCount == 5)
@@ -154,7 +152,7 @@ struct AdminContextTests {
 
     @Test("updateStatistics uses correct directory from #Directory macro")
     func updateStatisticsUsesCorrectDirectory() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -162,7 +160,7 @@ struct AdminContextTests {
 
             // Insert test data
             for i in 0..<3 {
-                let entity = AdminTestEntity(value: "value-\(i)")
+                let entity = AdminIndexedEntity(value: "value-\(i)")
                 context.insert(entity)
             }
             try await context.save()
@@ -177,13 +175,13 @@ struct AdminContextTests {
 
     @Test("allIndexStatistics uses correct directory from #Directory macro")
     func allIndexStatisticsUsesCorrectDirectory() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
             // Get index name from schema
             guard let indexName = getTestIndexName(from: container) else {
-                throw TestError("No index found for AdminTestEntity")
+                throw AdminIndexLookupFailure("No index found for AdminIndexedEntity")
             }
 
             // Get all index statistics via AdminContext
@@ -202,22 +200,22 @@ struct AdminContextTests {
 
     @Test("AdminContext and DBContainer resolve to same directory")
     func adminContextAndContainerResolveToSameDirectory() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
             // Resolve directory via DBContainer
-            let containerSubspace = try await container.resolveDirectory(for: AdminTestEntity.self)
+            let containerSubspace = try await container.resolveDirectory(for: AdminIndexedEntity.self)
 
             // Insert data and verify it's accessible
             let context = container.newContext()
-            let entity = AdminTestEntity(value: "consistency-test")
+            let entity = AdminIndexedEntity(value: "consistency-test")
             context.insert(entity)
             try await context.save()
 
             // AdminContext operations should work on the same data
             let admin = container.newAdminContext()
-            let stats = try await admin.collectionStatistics(AdminTestEntity.self)
+            let stats = try await admin.collectionStatistics(AdminIndexedEntity.self)
 
             // If paths match, documentCount should be 1
             #expect(stats.documentCount == 1)
@@ -232,7 +230,7 @@ struct AdminContextTests {
 
 // MARK: - Test Error
 
-private struct TestError: Error, CustomStringConvertible {
+private struct AdminIndexLookupFailure: Error, CustomStringConvertible {
     let message: String
 
     init(_ message: String) {

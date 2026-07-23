@@ -145,8 +145,7 @@ public struct PlanEnumerator<T: Persistable> {
     private func tryCompositeIndexPlans(analysis: QueryAnalysis<T>) -> [PlanOperator<T>] {
         var plans: [PlanOperator<T>] = []
 
-        // Find indexes with multiple key paths
-        let compositeIndexes = indexes.filter { $0.keyPaths.count > 1 }
+        let compositeIndexes = indexes.filter { $0.fieldNames.count > 1 }
 
         for index in compositeIndexes {
             guard let strategy = strategyRegistry.strategy(for: index) else { continue }
@@ -263,8 +262,7 @@ public struct PlanEnumerator<T: Persistable> {
     /// Find all indexes that could satisfy a condition
     private func findCandidateIndexes(for condition: any FieldConditionProtocol<T>) -> [IndexDescriptor] {
         indexes.filter { index in
-            guard let firstKeyPath = index.keyPaths.first else { return false }
-            return T.fieldName(for: firstKeyPath) == condition.fieldName
+            index.fieldNames.first == condition.fieldName
         }
     }
 
@@ -286,8 +284,7 @@ public struct PlanEnumerator<T: Persistable> {
         }
 
         // Prefer indexes where condition field is the first key
-        if let firstKeyPath = index.keyPaths.first,
-           T.fieldName(for: firstKeyPath) == condition.fieldName {
+        if index.fieldNames.first == condition.fieldName {
             score *= 10.0
         }
 
@@ -459,7 +456,8 @@ public struct PlanEnumerator<T: Persistable> {
         case .limit(let op):
             return planProvidesOrdering(op.input, sortRequirements: sortRequirements)
 
-        case .union, .intersection, .tableScan, .fullTextScan, .spatialScan, .aggregation, .inUnion, .inJoin:
+        case .union, .intersection, .tableScan, .fullTextScan, .spatialScan,
+             .inUnion, .inJoin:
             return false
         }
     }
@@ -471,10 +469,9 @@ public struct PlanEnumerator<T: Persistable> {
         sortRequirements: [SortDescriptor<T>]
     ) -> Bool {
         for (i, sortDesc) in sortRequirements.enumerated() {
-            guard i < index.keyPaths.count else { return false }
+            guard i < index.fieldNames.count else { return false }
 
-            let indexFieldName = T.fieldName(for: index.keyPaths[i])
-            if indexFieldName != sortDesc.fieldName {
+            if index.fieldNames[i] != sortDesc.fieldName {
                 return false
             }
 
@@ -623,7 +620,6 @@ public struct PlanEnumerator<T: Persistable> {
 
             // Analyze if index covers all required fields
             let coveringResult = analyzer.analyze(
-                query: Query<T>(),  // Empty query, we use analysis directly
                 analysis: analysis,
                 index: index
             )
@@ -682,8 +678,7 @@ public struct PlanEnumerator<T: Persistable> {
         var startComponents: [IndexScanBounds.BoundComponent] = []
         var endComponents: [IndexScanBounds.BoundComponent] = []
 
-        for (i, keyPath) in index.keyPaths.enumerated() {
-            let fieldName = T.fieldName(for: keyPath)
+        for (i, fieldName) in index.fieldNames.enumerated() {
 
             // Find condition for this key path position
             guard let condition = matchResult.satisfiedConditions.first(where: {
@@ -754,12 +749,11 @@ public struct PlanEnumerator<T: Persistable> {
         analysis: QueryAnalysis<T>
     ) -> Bool {
         guard let firstSort = analysis.sortRequirements.first,
-              let firstKeyPath = index.keyPaths.first else {
+              let firstField = index.fieldNames.first else {
             return false
         }
 
-        let indexField = T.fieldName(for: firstKeyPath)
-        if indexField == firstSort.fieldName && firstSort.order == .descending {
+        if firstField == firstSort.fieldName && firstSort.order == .descending {
             return true
         }
 

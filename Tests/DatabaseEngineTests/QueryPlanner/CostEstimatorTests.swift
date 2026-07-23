@@ -10,7 +10,7 @@ import Foundation
 @testable import ScalarIndex
 @testable import Core
 
-// Re-use QPTestUser from QueryPlannerTests.swift
+// Re-use QueryPlannerUser from QueryPlannerTests.swift
 
 @Suite("CostEstimator Tests", .heartbeat)
 struct CostEstimatorTests {
@@ -95,22 +95,22 @@ struct CostEstimatorTests {
     @Test("Index scan cheaper than table scan for selective query")
     func testIndexScanCheaperThanTableScan() throws {
         let statistics = CollectedStatisticsProvider()
-        statistics.updateTableStats(for: QPTestUser.self, rowCount: 100000, sampleSize: 10000)
+        statistics.updateTableStats(for: QueryPlannerUser.self, rowCount: 100000, sampleSize: 10000)
 
         // With index
-        let plannerWithIndex = QueryPlanner<QPTestUser>(
-            indexes: QPTestUser.indexDescriptors,
+        let plannerWithIndex = QueryPlanner<QueryPlannerUser>(
+            indexes: QueryPlannerUser.indexDescriptors,
             statistics: statistics
         )
 
         // Without index (forces table scan)
-        let plannerNoIndex = QueryPlanner<QPTestUser>(
+        let plannerNoIndex = QueryPlanner<QueryPlannerUser>(
             indexes: [],
             statistics: statistics
         )
 
-        var query = Query<QPTestUser>()
-        query = query.where(\QPTestUser.email == "unique@example.com")
+        var query = Query<QueryPlannerUser>()
+        query = query.where(\QueryPlannerUser.email == "unique@example.com")
 
         let indexPlan = try plannerWithIndex.plan(query: query)
         let tableScanPlan = try plannerNoIndex.plan(query: query)
@@ -122,19 +122,19 @@ struct CostEstimatorTests {
     @Test("Adding sort increases cost")
     func testSortIncreasesCost() throws {
         let statistics = CollectedStatisticsProvider()
-        statistics.updateTableStats(for: QPTestUser.self, rowCount: 10000, sampleSize: 1000)
+        statistics.updateTableStats(for: QueryPlannerUser.self, rowCount: 10000, sampleSize: 1000)
 
-        let planner = QueryPlanner<QPTestUser>(
+        let planner = QueryPlanner<QueryPlannerUser>(
             indexes: [], // No indexes to force table scan
             statistics: statistics
         )
 
-        var queryNoSort = Query<QPTestUser>()
-        queryNoSort = queryNoSort.where(\QPTestUser.age > 18)
+        var queryNoSort = Query<QueryPlannerUser>()
+        queryNoSort = queryNoSort.where(\QueryPlannerUser.age > 18)
 
-        var queryWithSort = Query<QPTestUser>()
-        queryWithSort = queryWithSort.where(\QPTestUser.age > 18)
-        queryWithSort = queryWithSort.orderBy(\QPTestUser.name)
+        var queryWithSort = Query<QueryPlannerUser>()
+        queryWithSort = queryWithSort.where(\QueryPlannerUser.age > 18)
+        queryWithSort = queryWithSort.orderBy(\QueryPlannerUser.name)
 
         let planNoSort = try planner.plan(query: queryNoSort)
         let planWithSort = try planner.plan(query: queryWithSort)
@@ -149,14 +149,14 @@ struct CostEstimatorTests {
 @Suite("StatisticsProvider Tests", .heartbeat)
 struct StatisticsProviderTests {
 
-    @Test("DefaultStatisticsProvider returns reasonable defaults")
+    @Test("HeuristicStatisticsProvider returns reasonable defaults")
     func testDefaultStatisticsProvider() {
-        let provider = DefaultStatisticsProvider()
+        let provider = HeuristicStatisticsProvider()
 
-        let rowCount = provider.estimatedRowCount(for: QPTestUser.self)
+        let rowCount = provider.estimatedRowCount(for: QueryPlannerUser.self)
         #expect(rowCount > 0)
 
-        let distinctCount = provider.estimatedDistinctValues(field: "email", type: QPTestUser.self)
+        let distinctCount = provider.estimatedDistinctValues(field: "email", type: QueryPlannerUser.self)
         #expect(distinctCount != nil)
         #expect(distinctCount! > 0)
     }
@@ -165,9 +165,9 @@ struct StatisticsProviderTests {
     func testCollectedStatisticsProvider() {
         let provider = CollectedStatisticsProvider()
 
-        provider.updateTableStats(for: QPTestUser.self, rowCount: 5000, sampleSize: 500)
+        provider.updateTableStats(for: QueryPlannerUser.self, rowCount: 5000, sampleSize: 500)
 
-        let rowCount = provider.estimatedRowCount(for: QPTestUser.self)
+        let rowCount = provider.estimatedRowCount(for: QueryPlannerUser.self)
         #expect(rowCount == 5000)
     }
 
@@ -183,10 +183,10 @@ struct StatisticsProviderTests {
         provider.updateIndexStats(indexStats)
 
         // Create an IndexDescriptor to query the stats
-        let kind = ScalarIndexKind<QPTestUser>(fields: [\.email])
+        let kind = ScalarIndexKind<QueryPlannerUser>(fields: [\.email])
         let descriptor = IndexDescriptor(
             name: "idx_email",
-            keyPaths: [\QPTestUser.email],
+            keyPaths: [\QueryPlannerUser.email],
             kind: kind
         )
 
@@ -200,10 +200,10 @@ struct StatisticsProviderTests {
         let provider = CollectedStatisticsProvider(fallbackRowCount: 5000)
 
         // Query an index that hasn't been registered
-        let kind = ScalarIndexKind<QPTestUser>(fields: [\.name])
+        let kind = ScalarIndexKind<QueryPlannerUser>(fields: [\.name])
         let descriptor = IndexDescriptor(
             name: "idx_unknown",
-            keyPaths: [\QPTestUser.name],
+            keyPaths: [\QueryPlannerUser.name],
             kind: kind
         )
 

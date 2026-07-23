@@ -3,6 +3,7 @@ import Testing
 import Foundation
 import Database
 import TestHeartbeat
+import DatabaseRuntime
 
 private actor ConcurrentMigrationCounter {
     private var willCount: Int = 0
@@ -98,6 +99,7 @@ struct ConcurrentMigrationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -110,7 +112,8 @@ struct ConcurrentMigrationSQLiteTests {
         let container = try await DBContainer(
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
-            configuration: .init(backend: .custom(engine))
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
         )
 
         try await container.migrateIfNeeded()
@@ -134,6 +137,7 @@ struct ConcurrentMigrationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -152,12 +156,14 @@ struct ConcurrentMigrationSQLiteTests {
         let containerA = try await DBContainer(
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
-            configuration: .init(backend: .custom(engine))
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
         )
         let containerB = try await DBContainer(
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
-            configuration: .init(backend: .custom(engine))
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
         )
 
         async let migrationA: Void = containerA.migrateIfNeeded()
@@ -170,6 +176,7 @@ struct ConcurrentMigrationSQLiteTests {
         let verificationContainer = try await DBContainer(
             for: SQLiteConcurrentMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let users = try await verificationContainer.newContext()

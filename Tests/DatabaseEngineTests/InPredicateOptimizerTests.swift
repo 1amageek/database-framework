@@ -7,13 +7,14 @@ import Testing
 import TestHeartbeat
 import Foundation
 import Core
+import DatabaseValue
 import StorageKit
 @testable import DatabaseEngine
 
 // MARK: - Test Model
 
 @Persistable
-struct InOptTestModel {
+struct InPredicateModel {
     var id: String = UUID().uuidString
     var name: String
     var email: String
@@ -28,7 +29,7 @@ struct InPredicateOptimizerConfigurationTests {
 
     @Test("Default configuration values")
     func defaultConfiguration() {
-        let config = InPredicateOptimizer<InOptTestModel>.Configuration.default
+        let config = InPredicateOptimizer<InPredicateModel>.Configuration.default
 
         #expect(config.unionThreshold == 10)
         #expect(config.joinThreshold == 1000)
@@ -37,7 +38,7 @@ struct InPredicateOptimizerConfigurationTests {
 
     @Test("Custom configuration")
     func customConfiguration() {
-        let config = InPredicateOptimizer<InOptTestModel>.Configuration(
+        let config = InPredicateOptimizer<InPredicateModel>.Configuration(
             unionThreshold: 5,
             joinThreshold: 500,
             minSelectivityImprovement: 0.2
@@ -56,8 +57,8 @@ struct QueryConditionInPredicateTests {
 
     @Test("containsInPredicate returns false for simple equals")
     func containsInPredicateFalseForEquals() {
-        let field = FieldReference<InOptTestModel>(\InOptTestModel.name)
-        let condition: QueryCondition<InOptTestModel> = .field(
+        let field = FieldReference<InPredicateModel>(\InPredicateModel.name)
+        let condition: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.equals(field: field, value: "Alice")
         )
 
@@ -67,8 +68,8 @@ struct QueryConditionInPredicateTests {
 
     @Test("containsInPredicate returns true for IN constraint")
     func containsInPredicateTrueForIn() {
-        let field = FieldReference<InOptTestModel>(\InOptTestModel.status)
-        let condition: QueryCondition<InOptTestModel> = .field(
+        let field = FieldReference<InPredicateModel>(\InPredicateModel.status)
+        let condition: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.in(field: field, values: ["active", "pending"])
         )
 
@@ -78,23 +79,23 @@ struct QueryConditionInPredicateTests {
 
     @Test("inPredicateCount counts nested IN predicates")
     func inPredicateCountNested() {
-        let statusField = FieldReference<InOptTestModel>(\InOptTestModel.status)
-        let nameField = FieldReference<InOptTestModel>(\InOptTestModel.name)
-        let emailField = FieldReference<InOptTestModel>(\InOptTestModel.email)
+        let statusField = FieldReference<InPredicateModel>(\InPredicateModel.status)
+        let nameField = FieldReference<InPredicateModel>(\InPredicateModel.name)
+        let emailField = FieldReference<InPredicateModel>(\InPredicateModel.email)
 
-        let inCondition1: QueryCondition<InOptTestModel> = .field(
+        let inCondition1: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.in(field: statusField, values: ["a", "b"])
         )
 
-        let inCondition2: QueryCondition<InOptTestModel> = .field(
+        let inCondition2: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.in(field: nameField, values: ["x", "y", "z"])
         )
 
-        let equalsCondition: QueryCondition<InOptTestModel> = .field(
+        let equalsCondition: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.equals(field: emailField, value: "test@example.com")
         )
 
-        let conjunction: QueryCondition<InOptTestModel> = .conjunction([
+        let conjunction: QueryCondition<InPredicateModel> = .conjunction([
             inCondition1,
             inCondition2,
             equalsCondition
@@ -106,7 +107,7 @@ struct QueryConditionInPredicateTests {
 
     @Test("alwaysTrue has no IN predicates")
     func alwaysTrueNoInPredicates() {
-        let condition: QueryCondition<InOptTestModel> = .alwaysTrue
+        let condition: QueryCondition<InPredicateModel> = .alwaysTrue
 
         #expect(condition.containsInPredicate == false)
         #expect(condition.inPredicateCount == 0)
@@ -114,7 +115,7 @@ struct QueryConditionInPredicateTests {
 
     @Test("alwaysFalse has no IN predicates")
     func alwaysFalseNoInPredicates() {
-        let condition: QueryCondition<InOptTestModel> = .alwaysFalse
+        let condition: QueryCondition<InPredicateModel> = .alwaysFalse
 
         #expect(condition.containsInPredicate == false)
         #expect(condition.inPredicateCount == 0)
@@ -128,10 +129,10 @@ struct InPredicateOptimizerExtractTests {
 
     @Test("Extract IN predicate from simple condition")
     func extractSimpleInPredicate() {
-        let optimizer = InPredicateOptimizer<InOptTestModel>()
-        let field = FieldReference<InOptTestModel>(\InOptTestModel.status)
+        let optimizer = InPredicateOptimizer<InPredicateModel>()
+        let field = FieldReference<InPredicateModel>(\InPredicateModel.status)
 
-        let condition: QueryCondition<InOptTestModel> = .field(
+        let condition: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.in(field: field, values: ["active", "pending"])
         )
 
@@ -144,10 +145,10 @@ struct InPredicateOptimizerExtractTests {
 
     @Test("Extract no predicates from equals condition")
     func extractNoPredicatesFromEquals() {
-        let optimizer = InPredicateOptimizer<InOptTestModel>()
-        let field = FieldReference<InOptTestModel>(\InOptTestModel.name)
+        let optimizer = InPredicateOptimizer<InPredicateModel>()
+        let field = FieldReference<InPredicateModel>(\InPredicateModel.name)
 
-        let condition: QueryCondition<InOptTestModel> = .field(
+        let condition: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.equals(field: field, value: "Alice")
         )
 
@@ -158,12 +159,12 @@ struct InPredicateOptimizerExtractTests {
 
     @Test("Extract multiple IN predicates from conjunction")
     func extractMultipleInPredicates() {
-        let optimizer = InPredicateOptimizer<InOptTestModel>()
-        let statusField = FieldReference<InOptTestModel>(\InOptTestModel.status)
-        let nameField = FieldReference<InOptTestModel>(\InOptTestModel.name)
-        let emailField = FieldReference<InOptTestModel>(\InOptTestModel.email)
+        let optimizer = InPredicateOptimizer<InPredicateModel>()
+        let statusField = FieldReference<InPredicateModel>(\InPredicateModel.status)
+        let nameField = FieldReference<InPredicateModel>(\InPredicateModel.name)
+        let emailField = FieldReference<InPredicateModel>(\InPredicateModel.email)
 
-        let condition: QueryCondition<InOptTestModel> = .conjunction([
+        let condition: QueryCondition<InPredicateModel> = .conjunction([
             .field(ScalarFieldCondition.in(field: statusField, values: ["a", "b"])),
             .field(ScalarFieldCondition.in(field: nameField, values: ["x", "y"])),
             .field(ScalarFieldCondition.equals(field: emailField, value: "test@example.com"))
@@ -182,10 +183,10 @@ struct InPredicateOptimizerStrategyTests {
 
     @Test("No optimization for condition without IN")
     func noOptimizationWithoutIn() {
-        let optimizer = InPredicateOptimizer<InOptTestModel>()
-        let field = FieldReference<InOptTestModel>(\InOptTestModel.name)
+        let optimizer = InPredicateOptimizer<InPredicateModel>()
+        let field = FieldReference<InPredicateModel>(\InPredicateModel.name)
 
-        let condition: QueryCondition<InOptTestModel> = .field(
+        let condition: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.equals(field: field, value: "Alice")
         )
 
@@ -203,20 +204,20 @@ struct InPredicateOptimizerStrategyTests {
 
     @Test("Index union strategy with index and small value count")
     func indexUnionStrategy() {
-        let optimizer = InPredicateOptimizer<InOptTestModel>(
+        let optimizer = InPredicateOptimizer<InPredicateModel>(
             configuration: .init(unionThreshold: 10)
         )
-        let field = FieldReference<InOptTestModel>(\InOptTestModel.status)
+        let field = FieldReference<InPredicateModel>(\InPredicateModel.status)
 
-        let condition: QueryCondition<InOptTestModel> = .field(
+        let condition: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.in(field: field, values: ["a", "b", "c"])
         )
 
         // Create index on status field
         let index = IndexDescriptor(
             name: "status_idx",
-            keyPaths: [\InOptTestModel.status],
-            kind: ScalarIndexKind<InOptTestModel>(fields: [\InOptTestModel.status])
+            keyPaths: [\InPredicateModel.status],
+            kind: ScalarIndexKind<InPredicateModel>(fields: [\InPredicateModel.status])
         )
 
         let (_, strategy) = optimizer.optimize(
@@ -234,15 +235,15 @@ struct InPredicateOptimizerStrategyTests {
 
     @Test("In-join strategy for larger value count without index")
     func inJoinStrategy() {
-        let optimizer = InPredicateOptimizer<InOptTestModel>(
+        let optimizer = InPredicateOptimizer<InPredicateModel>(
             configuration: .init(unionThreshold: 5, joinThreshold: 100)
         )
-        let field = FieldReference<InOptTestModel>(\InOptTestModel.status)
+        let field = FieldReference<InPredicateModel>(\InPredicateModel.status)
 
         // Create 20 values (> unionThreshold, <= joinThreshold)
         let values: [any TupleElement] = (0..<20).map { "value\($0)" }
 
-        let condition: QueryCondition<InOptTestModel> = .field(
+        let condition: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.in(field: field, values: values)
         )
 
@@ -261,13 +262,13 @@ struct InPredicateOptimizerStrategyTests {
 
     @Test("OR expansion strategy for small value count without index")
     func orExpansionStrategy() {
-        let optimizer = InPredicateOptimizer<InOptTestModel>(
+        let optimizer = InPredicateOptimizer<InPredicateModel>(
             configuration: .init(unionThreshold: 10, joinThreshold: 3)
         )
-        let field = FieldReference<InOptTestModel>(\InOptTestModel.status)
+        let field = FieldReference<InPredicateModel>(\InPredicateModel.status)
 
         // 4 values: > joinThreshold (3), <= 5 for OR expansion
-        let condition: QueryCondition<InOptTestModel> = .field(
+        let condition: QueryCondition<InPredicateModel> = .field(
             ScalarFieldCondition.in(field: field, values: ["a", "b", "c", "d"])
         )
 

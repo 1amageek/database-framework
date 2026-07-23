@@ -11,6 +11,7 @@
 import Testing
 import Foundation
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import Core
 import StorageKit
 import FDBStorage
@@ -20,12 +21,12 @@ import TestSupport
 struct OnlineIndexerLargeDataTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Test Context
 
-    struct TestContext: Sendable {
+    struct LargeDatasetIndexingContext: Sendable {
         let database: any StorageEngine
         let container: DBContainer
         let testSubspace: Subspace
@@ -34,7 +35,7 @@ struct OnlineIndexerLargeDataTests {
         let blobsSubspace: Subspace
 
         init() async throws {
-            self.database = try await FDBTestSetup.shared.makeEngine()
+            self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
             let testId = UUID().uuidString.prefix(8)
             self.testSubspace = Subspace(prefix: Tuple("test", "largedata", String(testId)).pack())
             self.itemSubspace = testSubspace.subspace("R")
@@ -43,13 +44,13 @@ struct OnlineIndexerLargeDataTests {
 
             // Create container with Player schema
             let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
-            self.container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            self.container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         }
 
         func cleanup() async throws {
             try await database.withTransaction { tx in
                 let range = testSubspace.range()
-                tx.clearRange(beginKey: range.begin, endKey: range.end)
+                try tx.clearRange(beginKey: range.begin, endKey: range.end)
             }
         }
 
@@ -60,7 +61,7 @@ struct OnlineIndexerLargeDataTests {
                 let batchEnd = min(batchStart + batchSize, players.count)
                 let batch = Array(players[batchStart..<batchEnd])
                 try await database.withTransaction { tx in
-                    let storage = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace)
+                    let storage = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
                     for player in batch {
                         let key = itemSubspace.subspace(Player.persistableType).pack(Tuple(player.id))
                         let value = try DataAccess.serialize(player)
@@ -86,26 +87,26 @@ struct OnlineIndexerLargeDataTests {
 
     @Test("Build index with large dataset - batch processing works")
     func testBuildIndexWithLargeDataset() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LargeDatasetIndexingContext()
 
             // Generate dataset with 200 items (enough to require multiple batches)
-            let players = LargeTestDataGenerator.generatePlayers(count: 200, nameLength: 100)
+            let players = PlayerDatasetGenerator.generatePlayers(count: 200, nameLength: 100)
             try await ctx.insertPlayers(players)
 
             // Create index
-            let index = TestIndex.create(name: "large_score_idx")
+            let index = PlayerIdentifierIndexDefinition.make(name: "large_score_idx")
             let maintainer = CountingIndexMaintainer<Player>(
                 indexSubspace: ctx.indexSubspace,
                 indexName: index.name
             )
 
-            let stateManager = IndexStateManager(
+            let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
-            try await stateManager.enable(index.name)
+            try await lifecycleStore.enable(index.name)
 
         let indexer = OnlineIndexer(
             container: ctx.container,
@@ -113,7 +114,7 @@ struct OnlineIndexerLargeDataTests {
             itemType: Player.persistableType,
             index: index,
             indexMaintainer: maintainer,
-            indexStateManager: stateManager,
+            indexLifecycleStore: lifecycleStore,
             batchSize: 30  // Small batch size to ensure multiple transactions
         )
 
@@ -130,30 +131,30 @@ struct OnlineIndexerLargeDataTests {
 
     @Test("Build index respects batch boundaries")
     func testBatchBoundaryProcessing() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LargeDatasetIndexingContext()
 
             let batchSize = 25
             // Generate exactly 3 batches + 7 remainder = 82 items
-            let players = LargeTestDataGenerator.generateForBatchTesting(
+            let players = PlayerDatasetGenerator.generateForBatchTesting(
                 batchSize: batchSize,
                 batches: 3,
                 remainder: 7
             )
             try await ctx.insertPlayers(players)
 
-            let index = TestIndex.create(name: "batch_test_idx")
+            let index = PlayerIdentifierIndexDefinition.make(name: "batch_test_idx")
             let maintainer = CountingIndexMaintainer<Player>(
                 indexSubspace: ctx.indexSubspace,
                 indexName: index.name
             )
 
-            let stateManager = IndexStateManager(
+            let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
-            try await stateManager.enable(index.name)
+            try await lifecycleStore.enable(index.name)
 
         let indexer = OnlineIndexer(
             container: ctx.container,
@@ -161,7 +162,7 @@ struct OnlineIndexerLargeDataTests {
             itemType: Player.persistableType,
             index: index,
             indexMaintainer: maintainer,
-            indexStateManager: stateManager,
+            indexLifecycleStore: lifecycleStore,
             batchSize: batchSize
         )
 
@@ -180,15 +181,15 @@ struct OnlineIndexerLargeDataTests {
 
     @Test("MultiTarget build with dataset")
     func testMultiTargetIndexer() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LargeDatasetIndexingContext()
 
-            let players = LargeTestDataGenerator.generatePlayers(count: 100, nameLength: 100)
+            let players = PlayerDatasetGenerator.generatePlayers(count: 100, nameLength: 100)
             try await ctx.insertPlayers(players)
 
             // Create multiple indexes
-            let index1 = TestIndex.create(name: "multi_idx_1")
-            let index2 = TestIndex.create(name: "multi_idx_2")
+            let index1 = PlayerIdentifierIndexDefinition.make(name: "multi_idx_1")
+            let index2 = PlayerIdentifierIndexDefinition.make(name: "multi_idx_2")
 
             let maintainer1 = CountingIndexMaintainer<Player>(
                 indexSubspace: ctx.indexSubspace,
@@ -199,7 +200,7 @@ struct OnlineIndexerLargeDataTests {
                 indexName: index2.name
             )
 
-            let stateManager = IndexStateManager(
+            let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
@@ -216,7 +217,7 @@ struct OnlineIndexerLargeDataTests {
                 blobsSubspace: ctx.blobsSubspace,
                 itemType: Player.persistableType,
                 targets: targets,
-                stateManager: stateManager,
+                lifecycleStore: lifecycleStore,
                 batchSize: 20
             )
 
@@ -236,21 +237,21 @@ struct OnlineIndexerLargeDataTests {
 
     @Test("Build index with empty dataset")
     func testBuildIndexWithEmptyDataset() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LargeDatasetIndexingContext()
 
-            let index = TestIndex.create(name: "empty_idx")
+            let index = PlayerIdentifierIndexDefinition.make(name: "empty_idx")
             let maintainer = CountingIndexMaintainer<Player>(
                 indexSubspace: ctx.indexSubspace,
                 indexName: index.name
             )
 
-            let stateManager = IndexStateManager(
+            let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
-            try await stateManager.enable(index.name)
+            try await lifecycleStore.enable(index.name)
 
             let indexer = OnlineIndexer(
                 container: ctx.container,
@@ -258,7 +259,7 @@ struct OnlineIndexerLargeDataTests {
                 itemType: Player.persistableType,
                 index: index,
                 indexMaintainer: maintainer,
-                indexStateManager: stateManager,
+                indexLifecycleStore: lifecycleStore,
                 batchSize: 100
             )
 
@@ -273,24 +274,24 @@ struct OnlineIndexerLargeDataTests {
 
     @Test("Build index with single item")
     func testBuildIndexWithSingleItem() async throws {
-        let ctx = try await TestContext()
+        let ctx = try await LargeDatasetIndexingContext()
 
         var player = Player(name: "Only One", score: 100, level: 1)
         player.id = "single"
         try await ctx.insertPlayers([player])
 
-        let index = TestIndex.create(name: "single_idx")
+        let index = PlayerIdentifierIndexDefinition.make(name: "single_idx")
         let maintainer = CountingIndexMaintainer<Player>(
             indexSubspace: ctx.indexSubspace,
             indexName: index.name
         )
 
-        let stateManager = IndexStateManager(
+        let lifecycleStore = IndexLifecycleStore(
             container: ctx.container,
             subspace: ctx.indexSubspace.subspace("_meta")
         )
 
-        try await stateManager.enable(index.name)
+        try await lifecycleStore.enable(index.name)
 
         let indexer = OnlineIndexer(
             container: ctx.container,
@@ -298,7 +299,7 @@ struct OnlineIndexerLargeDataTests {
             itemType: Player.persistableType,
             index: index,
             indexMaintainer: maintainer,
-            indexStateManager: stateManager,
+            indexLifecycleStore: lifecycleStore,
             batchSize: 100
         )
 

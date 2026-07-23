@@ -23,8 +23,10 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import ScalarIndex
 
 // MARK: - Test Model
@@ -45,15 +47,16 @@ struct WPUser {
 struct WritePreconditionTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     private func makeContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([WPUser.self])
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
@@ -62,7 +65,7 @@ struct WritePreconditionTests {
         let subspace = try await container.resolveDirectory(for: WPUser.self)
         let (begin, end) = subspace.range()
         try await container.engine.withTransaction { transaction in
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
         try await container.ensureIndexesReady()
     }

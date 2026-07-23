@@ -9,6 +9,8 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -18,14 +20,14 @@ import TestSupport
 // MARK: - Test Model
 
 @Persistable
-struct SetOpTestEdge {
-    #Directory<SetOpTestEdge>("sparql_set_operation_tests")
+struct SetOperationEdge {
+    #Directory<SetOperationEdge>("sparql_set_operation_tests")
     var id: String = UUID().uuidString
     var from: String = ""
     var relationship: String = ""
     var to: String = ""
 
-    #Index(GraphIndexKind<SetOpTestEdge>(
+    #Index(GraphIndexKind<SetOperationEdge>(
         from: \.from,
         edge: \.relationship,
         to: \.to,
@@ -39,7 +41,7 @@ struct SetOpTestEdge {
 struct SPARQLSetOperationTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Helpers
@@ -49,24 +51,25 @@ struct SPARQLSetOperationTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([SetOpTestEdge.self], version: Schema.Version(1, 0, 0))
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([SetOperationEdge.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
 
-    private func insertEdges(_ edges: [SetOpTestEdge], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [SetOperationEdge], context: FDBContext) async throws {
         for edge in edges {
             context.insert(edge)
         }
         try await context.save()
     }
 
-    private func makeEdge(from: String, relationship: String, to: String) -> SetOpTestEdge {
-        var edge = SetOpTestEdge()
+    private func makeEdge(from: String, relationship: String, to: String) -> SetOperationEdge {
+        var edge = SetOperationEdge()
         edge.from = from
         edge.relationship = relationship
         edge.to = to
@@ -99,13 +102,13 @@ struct SPARQLSetOperationTests {
         try await insertEdges(edges, context: context)
 
         // Query via knows
-        let knowsResult = try await context.sparql(SetOpTestEdge.self)
+        let knowsResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where(alice, knowsPred, "?target")
             .execute()
 
         // Query via follows
-        let followsResult = try await context.sparql(SetOpTestEdge.self)
+        let followsResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where(alice, followsPred, "?target")
             .execute()
@@ -156,17 +159,17 @@ struct SPARQLSetOperationTests {
         try await insertEdges(edges, context: context)
 
         // Query each separately and combine
-        let knowsResult = try await context.sparql(SetOpTestEdge.self)
+        let knowsResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where(alice, knowsPred, "?target")
             .execute()
 
-        let followsResult = try await context.sparql(SetOpTestEdge.self)
+        let followsResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where(alice, followsPred, "?target")
             .execute()
 
-        let likesResult = try await context.sparql(SetOpTestEdge.self)
+        let likesResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where(alice, likesPred, "?target")
             .execute()
@@ -212,13 +215,13 @@ struct SPARQLSetOperationTests {
         try await insertEdges(edges, context: context)
 
         // Get formal name
-        let nameResult = try await context.sparql(SetOpTestEdge.self)
+        let nameResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where(person, namePred, "?displayName")
             .execute()
 
         // Get nicknames
-        let nicknameResult = try await context.sparql(SetOpTestEdge.self)
+        let nicknameResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where(person, nicknamePred, "?displayName")
             .execute()
@@ -269,13 +272,13 @@ struct SPARQLSetOperationTests {
         try await insertEdges(edges, context: context)
 
         // Get all users
-        let allUsers = try await context.sparql(SetOpTestEdge.self)
+        let allUsers = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?person", typePred, "User")
             .execute()
 
         // Get banned users
-        let bannedUsers = try await context.sparql(SetOpTestEdge.self)
+        let bannedUsers = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?person", statusPred, "banned")
             .execute()
@@ -309,13 +312,13 @@ struct SPARQLSetOperationTests {
         try await insertEdges(edges, context: context)
 
         // Get entities with A
-        let withA = try await context.sparql(SetOpTestEdge.self)
+        let withA = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?entity", predA, "?val")
             .execute()
 
         // Get entities with B
-        let withB = try await context.sparql(SetOpTestEdge.self)
+        let withB = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?entity", predB, "?val")
             .execute()
@@ -346,12 +349,12 @@ struct SPARQLSetOperationTests {
 
         try await insertEdges(edges, context: context)
 
-        let widgets = try await context.sparql(SetOpTestEdge.self)
+        let widgets = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?item", predType, "Widget")
             .execute()
 
-        let flagged = try await context.sparql(SetOpTestEdge.self)
+        let flagged = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?item", predFlag, "true")
             .execute()
@@ -389,14 +392,14 @@ struct SPARQLSetOperationTests {
         try await insertEdges(edges, context: context)
 
         // Branch 1: price < 100
-        let cheapProducts = try await context.sparql(SetOpTestEdge.self)
+        let cheapProducts = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?product", pricePred, "?price")
             .filter(.lessThan("?price", 100))
             .execute()
 
         // Branch 2: discount > 0.5
-        let highDiscountProducts = try await context.sparql(SetOpTestEdge.self)
+        let highDiscountProducts = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?product", discountPred, "?discount")
             .filter(.greaterThan("?discount", 0.5))
@@ -439,13 +442,13 @@ struct SPARQLSetOperationTests {
         try await insertEdges(edges, context: context)
 
         // Get values from A
-        let fromA = try await context.sparql(SetOpTestEdge.self)
+        let fromA = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?entity", predA, "?val")
             .execute()
 
         // Get values from B
-        let fromB = try await context.sparql(SetOpTestEdge.self)
+        let fromB = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?entity", predB, "?val")
             .execute()
@@ -488,12 +491,12 @@ struct SPARQLSetOperationTests {
 
         try await insertEdges(edges, context: context)
 
-        let result1 = try await context.sparql(SetOpTestEdge.self)
+        let result1 = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("Source", pred1, "?target")
             .execute()
 
-        let result2 = try await context.sparql(SetOpTestEdge.self)
+        let result2 = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("Source", pred2, "?target")
             .execute()
@@ -528,12 +531,12 @@ struct SPARQLSetOperationTests {
 
         try await insertEdges(edges, context: context)
 
-        let emptyResult = try await context.sparql(SetOpTestEdge.self)
+        let emptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?e", pred1, "?v")
             .execute()
 
-        let nonEmptyResult = try await context.sparql(SetOpTestEdge.self)
+        let nonEmptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?e", pred2, "?v")
             .execute()
@@ -565,12 +568,12 @@ struct SPARQLSetOperationTests {
 
         try await insertEdges(edges, context: context)
 
-        let nonEmptyResult = try await context.sparql(SetOpTestEdge.self)
+        let nonEmptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?e", pred1, "?v")
             .execute()
 
-        let emptyResult = try await context.sparql(SetOpTestEdge.self)
+        let emptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?e", pred2, "?v")
             .execute()
@@ -597,12 +600,12 @@ struct SPARQLSetOperationTests {
 
         // No edges inserted
 
-        let result1 = try await context.sparql(SetOpTestEdge.self)
+        let result1 = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?e", pred1, "?v")
             .execute()
 
-        let result2 = try await context.sparql(SetOpTestEdge.self)
+        let result2 = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?e", pred2, "?v")
             .execute()
@@ -626,12 +629,12 @@ struct SPARQLSetOperationTests {
 
         try await insertEdges(edges, context: context)
 
-        let emptyResult = try await context.sparql(SetOpTestEdge.self)
+        let emptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?e", pred1, "?v")
             .execute()
 
-        let nonEmptyResult = try await context.sparql(SetOpTestEdge.self)
+        let nonEmptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?e", pred2, "?v")
             .execute()
@@ -660,12 +663,12 @@ struct SPARQLSetOperationTests {
 
         try await insertEdges(edges, context: context)
 
-        let nonEmptyResult = try await context.sparql(SetOpTestEdge.self)
+        let nonEmptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?e", pred1, "?v")
             .execute()
 
-        let emptyResult = try await context.sparql(SetOpTestEdge.self)
+        let emptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
             .where("?e", pred2, "?v")
             .execute()

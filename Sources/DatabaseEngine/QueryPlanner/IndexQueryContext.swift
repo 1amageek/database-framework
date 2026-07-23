@@ -1,9 +1,14 @@
 // IndexQueryContext.swift
 // DatabaseEngine - Context for index-based queries
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
+import DatabaseValue
 
 /// Context for executing index-based queries
 ///
@@ -18,7 +23,7 @@ import Core
 /// **Usage** (from index modules):
 /// ```swift
 /// // In VectorIndex/Fusion/Similar.swift
-/// func execute(candidates: Set<String>?) async throws -> [ScoredResult<T>] {
+/// func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
 ///     let indexSubspace = try await queryContext.indexSubspace(for: T.self)
 ///         .subspace(indexName)
 ///     let reader = try await queryContext.storageReader(for: T.self)
@@ -83,11 +88,14 @@ public struct IndexQueryContext: Sendable {
     ///
     /// The wire layer carries directory fields as strings keyed by field name.
     /// DatabaseEngine owns the binding to concrete directory path components.
-    public func withPartitionValues<T: Persistable>(
-        _ partitionValues: [String: String]?,
+    public func withPartitions<T: Persistable>(
+        _ partitions: [DatabaseObjectField],
         for type: T.Type
     ) throws -> IndexQueryContext {
-        guard let binding = try CanonicalPartitionBinding.makeBinding(for: type, partitionValues: partitionValues) else {
+        guard let binding = try CanonicalPartitionBinding.makeBinding(
+            for: type,
+            partitions: partitions
+        ) else {
             return self
         }
         return IndexQueryContext(context: context, partitionBinding: binding)
@@ -119,6 +127,64 @@ public struct IndexQueryContext: Sendable {
         return fdbStore.indexSubspace
     }
 
+    /// Resolves a declared index using only the caller's read transaction.
+    ///
+    /// Unlike `indexSubspace(for:)`, this API does not create a directory or
+    /// initialize index state. `nil` means the logical partition has never
+    /// existed and therefore has no rows to scan.
+    public func readableIndexSubspace<T: Persistable>(
+        named indexName: String,
+        for type: T.Type,
+        transaction: any Transaction
+    ) async throws -> Subspace? {
+        guard type.indexDescriptors.contains(where: { $0.name == indexName }) else {
+            throw IndexQueryContextError.indexNotFound(indexName)
+        }
+        let path: AnyDirectoryPath?
+        if let binding = partitionBinding(for: type) {
+            path = try AnyDirectoryPath(binding)
+        } else {
+            path = nil
+        }
+        return try await context.container.readableIndexSubspace(
+            named: indexName,
+            for: type,
+            path: path,
+            transaction: transaction
+        )
+    }
+
+    /// Resolves a declared index by entity name using only the caller's read
+    /// transaction. A missing logical partition is an empty dataset and returns
+    /// `nil`; this method never creates directory or index metadata.
+    public func readableIndexSubspace(
+        named indexName: String,
+        forEntityName entityName: String,
+        partitions: [DatabaseObjectField],
+        transaction: any Transaction
+    ) async throws -> Subspace? {
+        guard let entity = schema.entitiesByName[entityName],
+              let persistableType = entity.persistableType else {
+            throw IndexQueryContextError.indexNotFound(entityName)
+        }
+
+        func resolveReadableIndexSubspace<T: Persistable>(
+            _ type: T.Type
+        ) async throws -> Subspace? {
+            try await withPartitions(partitions, for: type)
+                .readableIndexSubspace(
+                    named: indexName,
+                    for: type,
+                    transaction: transaction
+                )
+        }
+
+        return try await _openExistential(
+            persistableType,
+            do: resolveReadableIndexSubspace
+        )
+    }
+
     /// Get the index subspace for an entity resolved by name.
     ///
     /// This is the type-erased counterpart of `indexSubspace(for:)`. It looks the
@@ -131,6 +197,17 @@ public struct IndexQueryContext: Sendable {
     /// - Throws: `IndexQueryContextError.indexNotFound` when the entity is absent
     ///   or its `persistableType` is nil (e.g. wire-decoded schemas).
     public func indexSubspace(forEntityName entityName: String) async throws -> Subspace {
+        try await indexSubspace(
+            forEntityName: entityName,
+            partitions: []
+        )
+    }
+
+    /// Get an index subspace for a runtime-resolved entity and canonical partition.
+    public func indexSubspace(
+        forEntityName entityName: String,
+        partitions: [DatabaseObjectField]
+    ) async throws -> Subspace {
         guard let entity = schema.entitiesByName[entityName] else {
             throw IndexQueryContextError.indexNotFound(entityName)
         }
@@ -140,11 +217,17 @@ public struct IndexQueryContext: Sendable {
             )
         }
 
-        func helper<T: Persistable>(_ type: T.Type) async throws -> Subspace {
-            try await indexSubspace(for: type)
+        func resolveIndexSubspace<T: Persistable>(
+            _ type: T.Type
+        ) async throws -> Subspace {
+            try await withPartitions(partitions, for: type)
+                .indexSubspace(for: type)
         }
 
-        return try await _openExistential(persistableType, do: helper)
+        return try await _openExistential(
+            persistableType,
+            do: resolveIndexSubspace
+        )
     }
 
     /// Get a StorageReader for a type
@@ -225,34 +308,70 @@ public struct IndexQueryContext: Sendable {
         var results: [T] = []
 
         // Use partition binding if available
-        // Note: context.model() internally evaluates GET per item via FDBDataStore.fetchByIdInTransaction
         if let binding = partitionBinding(for: type) {
-            for id in ids {
-                if let idElement = id[0] {
-                    if let item = try await context.model(
-                        for: idElement,
-                        as: type,
-                        partition: binding,
-                        cachePolicy: cachePolicy
-                    ) {
-                        results.append(item)
-                    }
+            for identifierTuple in ids {
+                if let item = try await context.model(
+                    forIdentifierTuple: identifierTuple,
+                    as: type,
+                    partition: binding,
+                    cachePolicy: cachePolicy
+                ) {
+                    results.append(item)
                 }
             }
         } else {
-            for id in ids {
-                if let idElement = id[0] {
-                    if let item = try await context.model(
-                        for: idElement,
-                        as: type,
-                        cachePolicy: cachePolicy
-                    ) {
-                        results.append(item)
-                    }
+            for identifierTuple in ids {
+                if let item = try await context.model(
+                    forIdentifierTuple: identifierTuple,
+                    as: type,
+                    cachePolicy: cachePolicy
+                ) {
+                    results.append(item)
                 }
             }
         }
 
+        return results
+    }
+
+    /// Fetches application-level identifiers without erasing their declared
+    /// model identifier type.
+    public func fetchItems<T: Persistable>(
+        identifiers: [T.ID],
+        type: T.Type,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> [T] {
+        try context.container.securityDelegate?.evaluateList(
+            type: type,
+            limit: identifiers.count,
+            offset: nil,
+            orderBy: nil
+        )
+
+        var results: [T] = []
+        results.reserveCapacity(identifiers.count)
+        if let binding = partitionBinding(for: type) {
+            for identifier in identifiers {
+                if let item = try await context.model(
+                    for: identifier,
+                    as: type,
+                    partition: binding,
+                    cachePolicy: cachePolicy
+                ) {
+                    results.append(item)
+                }
+            }
+        } else {
+            for identifier in identifiers {
+                if let item = try await context.model(
+                    for: identifier,
+                    as: type,
+                    cachePolicy: cachePolicy
+                ) {
+                    results.append(item)
+                }
+            }
+        }
         return results
     }
 
@@ -284,13 +403,9 @@ public struct IndexQueryContext: Sendable {
         results.reserveCapacity(ids.count)
 
         if let binding = partitionBinding(for: type) {
-            for id in ids {
-                guard let idElement = id[0] else {
-                    results.append(nil)
-                    continue
-                }
+            for identifierTuple in ids {
                 let item = try await context.model(
-                    for: idElement,
+                    forIdentifierTuple: identifierTuple,
                     as: type,
                     partition: binding,
                     cachePolicy: cachePolicy
@@ -298,13 +413,9 @@ public struct IndexQueryContext: Sendable {
                 results.append(item)
             }
         } else {
-            for id in ids {
-                guard let idElement = id[0] else {
-                    results.append(nil)
-                    continue
-                }
+            for identifierTuple in ids {
                 let item = try await context.model(
-                    for: idElement,
+                    forIdentifierTuple: identifierTuple,
                     as: type,
                     cachePolicy: cachePolicy
                 )
@@ -328,19 +439,17 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
-        guard let idElement = id[0] else { return nil }
-
         // Use partition binding if available
         if let binding = partitionBinding(for: type) {
             return try await context.model(
-                for: idElement,
+                forIdentifierTuple: id,
                 as: type,
                 partition: binding,
                 cachePolicy: cachePolicy
             )
         } else {
             return try await context.model(
-                for: idElement,
+                forIdentifierTuple: id,
                 as: type,
                 cachePolicy: cachePolicy
             )
@@ -361,10 +470,6 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         transaction: any Transaction
     ) async throws -> T? {
-        let itemSub = try await itemSubspace(for: type)
-        let key = itemSub.subspace(T.persistableType).pack(id)
-
-        // Use ItemStorage for proper envelope handling
         let store: any DataStore
         if let binding = partitionBinding(for: type) {
             store = try await context.container.store(for: type, path: binding)
@@ -374,64 +479,16 @@ public struct IndexQueryContext: Sendable {
         guard let fdbStore = store as? FDBDataStore else {
             throw IndexQueryContextError.unsupportedStoreType
         }
-
-        let storage = ItemStorage(transaction: transaction, blobsSubspace: fdbStore.blobsSubspace)
-        guard let data = try await storage.read(for: key, snapshot: true) else {
-            return nil
-        }
-
-        let item: T = try DataAccess.deserialize(data)
-        // Security: Evaluate GET for the retrieved item
-        try context.container.securityDelegate?.evaluateGet(item)
-        return item
-    }
-
-    /// Fetch items by string IDs
-    ///
-    /// For types with dynamic directories, uses the partition binding if set via `withPartition()`.
-    ///
-    /// - Parameters:
-    ///   - type: The persistable type
-    ///   - ids: Array of ID strings
-    /// - Returns: Array of items
-    public func fetchItemsByStringIds<T: Persistable>(
-        type: T.Type,
-        ids: [String]
-    ) async throws -> [T] {
-        var results: [T] = []
-
-        // Use partition binding if available
-        if let binding = partitionBinding(for: type) {
-            for idString in ids {
-                if let item = try await context.model(for: idString, as: type, partition: binding) {
-                    results.append(item)
-                    continue
-                }
-                if let intId = Int64(idString), let item = try await context.model(for: intId, as: type, partition: binding) {
-                    results.append(item)
-                    continue
-                }
-                if let intId = Int(idString), let item = try await context.model(for: intId, as: type, partition: binding) {
-                    results.append(item)
-                }
-            }
-        } else {
-            for idString in ids {
-                if let item = try await context.model(for: idString, as: type) {
-                    results.append(item)
-                    continue
-                }
-                if let intId = Int64(idString), let item = try await context.model(for: intId, as: type) {
-                    results.append(item)
-                    continue
-                }
-                if let intId = Int(idString), let item = try await context.model(for: intId, as: type) {
-                    results.append(item)
-                }
-            }
-        }
-
-        return results
+        _ = try RecordIdentifierKeyCodec.value(
+            from: id,
+            expectedType: T.recordIdentifierType
+        )
+        return try await fdbStore.fetchByIdentifierTupleInTransaction(
+            type,
+            identifier: id,
+            transaction: transaction,
+            snapshot: true
+        )
     }
 
     /// Fetch all items of a type (expensive, use with caution)
@@ -488,6 +545,7 @@ public struct IndexQueryContext: Sendable {
             itemSubspace: fdbStore.itemSubspace,
             blobsSubspace: fdbStore.blobsSubspace,
             itemType: T.persistableType,
+            itemStorageFactory: context.container.itemStorageFactory,
             configuration: configuration
         )
 
@@ -522,8 +580,7 @@ public struct IndexQueryContext: Sendable {
     ) -> [IndexDescriptor] {
         let descriptors = indexDescriptors(for: type)
         return descriptors.filter { descriptor in
-            let kindType = Swift.type(of: descriptor.kind)
-            return kindType.identifier == kindIdentifier
+            descriptor.kind.identifier == kindIdentifier
         }
     }
 
@@ -573,26 +630,6 @@ internal struct FDBStorageReaderAdapter: StorageReader {
         self.store = store
     }
 
-    func fetchItem<T: Persistable & Codable>(id: any TupleElement, type: T.Type) async throws -> T? {
-        return try await store.fetch(type, id: id)
-    }
-
-    func scanItems<T: Persistable & Codable>(type: T.Type) -> AsyncThrowingStream<T, Error> {
-        return AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    let items = try await store.fetchAll(type)
-                    for item in items {
-                        continuation.yield(item)
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-        }
-    }
-
     func scanRange(
         subspace: Subspace,
         start: Tuple?,
@@ -600,7 +637,7 @@ internal struct FDBStorageReaderAdapter: StorageReader {
         startInclusive: Bool,
         endInclusive: Bool,
         reverse: Bool
-    ) -> AsyncThrowingStream<(key: [UInt8], value: [UInt8]), Error> {
+    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
         if let fdbStore = store as? FDBDataStore {
             return fdbStore.scanRangeRaw(
                 subspace: subspace,
@@ -616,14 +653,16 @@ internal struct FDBStorageReaderAdapter: StorageReader {
         }
     }
 
-    func getValue(key: [UInt8]) async throws -> [UInt8]? {
+    func getValue(key: Bytes) async throws -> Bytes? {
         if let fdbStore = store as? FDBDataStore {
             return try await fdbStore.getValueRaw(key: key)
         }
         return nil
     }
 
-    func scanSubspace(_ subspace: Subspace) -> AsyncThrowingStream<(key: [UInt8], value: [UInt8]), Error> {
+    func scanSubspace(
+        _ subspace: Subspace
+    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
         return scanRange(
             subspace: subspace,
             start: nil,
@@ -649,7 +688,7 @@ extension FDBDataStore {
         reverse: Bool,
         limit: Int? = nil,
         streamingMode: StreamingMode? = nil
-    ) -> AsyncThrowingStream<(key: [UInt8], value: [UInt8]), Error> {
+    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
         let mode = streamingMode ?? StreamingMode.forQuery(limit: limit)
         let effectiveLimit = limit ?? 0
 
@@ -657,15 +696,15 @@ extension FDBDataStore {
             Task {
                 do {
                     try await self.container.engine.withTransaction(configuration: .default) { transaction in
-                        let beginKey: [UInt8]
-                        let endKey: [UInt8]
+                        let beginKey: Bytes
+                        let endKey: Bytes
 
                         if let startTuple = start {
                             let packed = subspace.pack(startTuple)
                             if startInclusive {
                                 beginKey = packed
                             } else {
-                                beginKey = self.incrementKey(packed)
+                                beginKey = self.keyAfter(packed)
                             }
                         } else {
                             beginKey = subspace.prefix
@@ -674,12 +713,12 @@ extension FDBDataStore {
                         if let endTuple = end {
                             let packed = subspace.pack(endTuple)
                             if endInclusive {
-                                endKey = self.incrementKey(packed)
+                                endKey = self.keyAfter(packed)
                             } else {
                                 endKey = packed
                             }
                         } else {
-                            endKey = self.incrementKey(subspace.prefix)
+                            endKey = try strinc(subspace.prefix)
                         }
 
                         let fromSelector: KeySelector
@@ -714,29 +753,15 @@ extension FDBDataStore {
     }
 
     /// Get a single value by key (raw access)
-    func getValueRaw(key: [UInt8]) async throws -> [UInt8]? {
+    func getValueRaw(key: Bytes) async throws -> Bytes? {
         return try await self.container.engine.withTransaction(configuration: .default) { transaction in
             return try await transaction.getValue(for: key, snapshot: true)
         }
     }
 
-    /// Increment the last byte of a key (for range end)
-    private func incrementKey(_ key: [UInt8]) -> [UInt8] {
-        var result = key
-        if result.isEmpty {
-            result.append(0x00)
-        } else {
-            var i = result.count - 1
-            while i >= 0 {
-                if result[i] < 0xFF {
-                    result[i] += 1
-                    return result
-                }
-                i -= 1
-            }
-            result.append(0x00)
-        }
-        return result
+    /// Return the first key strictly greater than one exact key.
+    private func keyAfter(_ key: Bytes) -> Bytes {
+        key + [0x00]
     }
 }
 

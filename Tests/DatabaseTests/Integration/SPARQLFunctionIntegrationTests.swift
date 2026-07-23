@@ -7,6 +7,10 @@ import Foundation
 @testable import Database
 @testable import DatabaseEngine
 import Core
+import DatabaseRuntime
+import DatabaseValue
+import DatabaseValueCodable
+import DatabaseWire
 import Graph
 import StorageKit
 import FDBStorage
@@ -16,7 +20,7 @@ import TestSupport
 struct SPARQLFunctionIntegrationTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Test Models
@@ -35,49 +39,64 @@ struct SPARQLFunctionIntegrationTests {
         #Directory<SPARQLFunctionTriple>("sparql_function_test_rdf")
 
         var id: String = UUID().uuidString
-        var subject: String = ""
-        var predicate: String = ""
-        var object: String = ""
+        var subject: DatabaseRDFTerm = .iri("urn:subject")
+        var predicate: DatabaseRDFTerm = .iri("urn:predicate")
+        var object: DatabaseRDFTerm = .iri("urn:object")
 
-        #Index(GraphIndexKind<SPARQLFunctionTriple>(
-            from: \.subject,
-            edge: \.predicate,
-            to: \.object,
-            strategy: .tripleStore
+        #Index(RDFQuadIndexKind<SPARQLFunctionTriple>(
+            subject: \.subject,
+            predicate: \.predicate,
+            object: \.object
         ))
+
+        init(subject: String, predicate: String, object: String) {
+            self.subject = .iri(subject)
+            self.predicate = .iri("urn:predicate:\(predicate)")
+            if DatabaseRDFIRIValidator.isAbsolute(object) {
+                self.object = .iri(object)
+            } else {
+                self.object = .literal(
+                    DatabaseRDFLiteral(
+                        lexicalForm: object,
+                        datatype: .xsdString
+                    )
+                )
+            }
+        }
     }
 
     // MARK: - Helper Methods
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([SPARQLFunctionUser.self, SPARQLFunctionTriple.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
 
         // Clean up previous test data
-        if try await database.directoryService.exists(path: ["sparql_function_test_users"]) {
-            try await database.directoryService.remove(path: ["sparql_function_test_users"])
+        if try await database.directoryExists(path: ["sparql_function_test_users"]) {
+            try await database.removeDirectory(path: ["sparql_function_test_users"])
         }
-        if try await database.directoryService.exists(path: ["sparql_function_test_rdf"]) {
-            try await database.directoryService.remove(path: ["sparql_function_test_rdf"])
+        if try await database.directoryExists(path: ["sparql_function_test_rdf"]) {
+            try await database.removeDirectory(path: ["sparql_function_test_rdf"])
         }
         try await container.ensureIndexesReady()
 
         // Set index to readable (required for SPARQL queries)
         let subspace = try await container.resolveDirectory(for: SPARQLFunctionTriple.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
+        let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
 
         for descriptor in SPARQLFunctionTriple.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
+            let currentState = try await indexLifecycleStore.state(of: descriptor.name)
             if currentState == .disabled {
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
+                try await indexLifecycleStore.enable(descriptor.name)
+                try await indexLifecycleStore.makeReadable(descriptor.name)
             } else if currentState == .writeOnly {
-                try await indexStateManager.makeReadable(descriptor.name)
+                try await indexLifecycleStore.makeReadable(descriptor.name)
             }
         }
 
@@ -85,7 +104,7 @@ struct SPARQLFunctionIntegrationTests {
     }
 
     private func uniqueID(_ prefix: String) -> String {
-        "\(prefix)-\(UUID().uuidString.prefix(8))"
+        "urn:\(prefix):\(UUID().uuidString.prefix(8))"
     }
 
     // MARK: - Test 1: Basic IN Predicate with SPARQL()
@@ -117,7 +136,7 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: SQL with SPARQL() function
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s \"knows\" \"\(bob.id)\" }'))
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:knows> <\(bob.id)> }'))
         """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
@@ -159,7 +178,7 @@ struct SPARQLFunctionIntegrationTests {
         let sql = """
         SELECT * FROM SPARQLFunctionUser
         WHERE age > 25
-          AND id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s \"role\" "admin" }'))
+          AND id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:role> "admin" }'))
         """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
@@ -205,8 +224,8 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: Find users who are admins AND have swift skill
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s \"role\" "admin" }'))
-          AND id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s "skill" "swift" }'))
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:role> "admin" }'))
+          AND id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:skill> "swift" }'))
         """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
@@ -226,7 +245,7 @@ struct SPARQLFunctionIntegrationTests {
 
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(NonExistentType, 'SELECT ?s WHERE { ?s "p" "o" }'))
+        WHERE id IN (SPARQL(NonExistentType, 'SELECT ?s WHERE { ?s <urn:predicate:p> "o" }'))
         """
 
         await #expect(throws: SPARQLFunctionError.self) {
@@ -244,7 +263,7 @@ struct SPARQLFunctionIntegrationTests {
         // User type has no graph index
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionUser, 'SELECT ?s WHERE { ?s "p" "o" }'))
+        WHERE id IN (SPARQL(SPARQLFunctionUser, 'SELECT ?s WHERE { ?s <urn:predicate:p> "o" }'))
         """
 
         await #expect(throws: SPARQLFunctionError.self) {
@@ -270,7 +289,7 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: Query returns multiple variables (?s and ?o)
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s "knows" ?o }'))
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s <urn:predicate:knows> ?o }'))
         """
 
         await #expect(throws: SPARQLFunctionError.self) {
@@ -302,7 +321,7 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: Query returns ?s and ?o, but we explicitly select ?s
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s "knows" ?o }', '?s'))
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s <urn:predicate:knows> ?o }', '?s'))
         """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
@@ -329,7 +348,7 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: SPARQL returns no results
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s "nonexistent" "value" }'))
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:nonexistent> "value" }'))
         """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
@@ -364,7 +383,7 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: Should return all users
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s "status" "active" }'))
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:status> "active" }'))
         LIMIT 100
         """
 
@@ -379,27 +398,34 @@ struct SPARQLFunctionIntegrationTests {
 
     // MARK: - Test 10: SPARQLFunctionRewriter preserves from/fromNamed
 
-    @Test("SPARQLFunctionRewriter preserves from/fromNamed fields")
+    @Test("SPARQLFunctionRewriter preserves the dataset")
     func testRewriterPreservesDatasetClauses() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
-        // Construct a SelectQuery with from/fromNamed and a simple filter (no SPARQL() function)
         let query = QueryIR.SelectQuery(
             projection: .all,
             source: .table(QueryIR.TableRef("SPARQLFunctionUser")),
             filter: .greaterThan(.column(QueryIR.ColumnRef(column: "age")), .literal(.int(25))),
-            from: ["http://example.org/graph1"],
-            fromNamed: ["http://example.org/named1", "http://example.org/named2"]
+            dataset: .explicit(
+                defaultGraphs: ["http://example.org/graph1"],
+                namedGraphs: [
+                    "http://example.org/named1",
+                    "http://example.org/named2",
+                ]
+            )
         )
 
         // Pass through SPARQLFunctionRewriter (filter exists, so query is reconstructed)
-        let rewriter = SPARQLFunctionRewriter(context: context)
+        let rewriter = SPARQLFunctionRewriter(
+            context: context,
+            workMeter: DatabaseWorkMeter(
+                budget: DatabaseExecutionBudget()
+            )
+        )
         let rewritten = try await rewriter.rewrite(query)
 
-        // Verify from/fromNamed are preserved
-        #expect(rewritten.from == ["http://example.org/graph1"])
-        #expect(rewritten.fromNamed == ["http://example.org/named1", "http://example.org/named2"])
+        #expect(rewritten.dataset == query.dataset)
 
         // Verify other fields are also preserved
         #expect(rewritten.projection == .all)
@@ -437,7 +463,7 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: SPARQL + ORDER BY + LIMIT
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s "verified" "true" }'))
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:verified> "true" }'))
         ORDER BY age ASC
         LIMIT 2
         """

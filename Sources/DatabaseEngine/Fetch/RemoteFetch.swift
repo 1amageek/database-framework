@@ -4,7 +4,11 @@
 // Reference: FDB Record Layer RemoteFetchProperties and FDBRecordStore.fetchRemote
 // Optimizes record retrieval by reducing round trips and leveraging locality.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 import Synchronization
@@ -135,17 +139,22 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// Item type name for subspace
     private let itemType: String
 
+    /// Container-scoped canonical record storage policy
+    private let itemStorageFactory: ItemStorageFactory
+
     // MARK: - Initialization
 
     public init(
         subspace: Subspace,
         blobsSubspace: Subspace,
         itemType: String = String(describing: Item.self),
+        itemStorageFactory: ItemStorageFactory,
         configuration: RemoteFetchConfiguration = .default
     ) {
         self.subspace = subspace
         self.blobsSubspace = blobsSubspace
         self.itemType = itemType
+        self.itemStorageFactory = itemStorageFactory
         self.configuration = configuration
     }
 
@@ -166,7 +175,10 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         guard !primaryKeys.isEmpty else { return [] }
 
         let itemTypeSubspace = subspace.subspace(itemType)
-        let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+        let storage = itemStorageFactory.make(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
 
         // Optimize fetch order based on key locality
         let orderedKeys: [Tuple]
@@ -239,16 +251,19 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// - Parameters:
     ///   - primaryKeys: The primary keys to fetch
     ///   - transaction: The transaction to use
-    /// - Returns: AsyncStream of fetched items
+    /// - Returns: A throwing stream of fetched items
     public func stream(
         primaryKeys: [Tuple],
         transaction: any Transaction
-    ) -> AsyncStream<Item> {
-        AsyncStream { continuation in
+    ) -> AsyncThrowingStream<Item, Error> {
+        AsyncThrowingStream { continuation in
             Task {
                 do {
                     let itemTypeSubspace = subspace.subspace(itemType)
-                    let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+                    let storage = itemStorageFactory.make(
+                        transaction: transaction,
+                        blobsSubspace: blobsSubspace
+                    )
                     let batches = primaryKeys.chunked(into: configuration.batchSize)
 
                     for batch in batches {
@@ -262,7 +277,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish()
+                    continuation.finish(throwing: error)
                 }
             }
         }
@@ -293,7 +308,10 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         }
 
         let itemTypeSubspace = subspace.subspace(itemType)
-        let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+        let storage = itemStorageFactory.make(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
 
         var items: [Item] = []
         var notFoundKeys: [Tuple] = []
@@ -433,6 +451,7 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
             subspace: subspace,
             blobsSubspace: blobsSubspace,
             itemType: itemType,
+            itemStorageFactory: container.itemStorageFactory,
             configuration: configuration
         )
         self.maxConcurrency = maxConcurrency

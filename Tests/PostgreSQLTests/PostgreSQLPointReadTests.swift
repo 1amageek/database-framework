@@ -9,6 +9,7 @@ import PostgreSQLStorage
 @testable import DatabaseEngine
 @testable import Core
 import TestSupport
+import DatabaseRuntime
 
 @Persistable
 private struct PGPointReadItem: Equatable {
@@ -52,12 +53,12 @@ private struct PGSecuredPointReadItem: Equatable, SecurityPolicy {
     }
 }
 
-private struct PGTestAuth: AuthContext {
+private struct PostgreSQLAuthorizationContext: AuthContext {
     let userID: String
     var roles: Set<String> = []
 }
 
-@Suite("PostgreSQL Point Read Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
+@Suite("PostgreSQL Point Read Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
 struct PostgreSQLPointReadTests {
 
     private func uniqueID(_ prefix: String) -> String {
@@ -66,27 +67,28 @@ struct PostgreSQLPointReadTests {
 
     private func setupStaticContainer() async throws -> DBContainer {
         let schema = Schema([PGPointReadItem.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLTestSetup.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
     }
 
     private func setupPartitionedContainer() async throws -> DBContainer {
         let schema = Schema([TenantOrder.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLTestSetup.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
     }
 
     private func setupSecuredContainer() async throws -> DBContainer {
-        let engine = try await PostgreSQLTestSetup.shared.engine
+        let engine = try await PostgreSQLScenarioCoordinator.shared.engine
         let schema = Schema([PGSecuredPointReadItem.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .enabled(strict: true)
         )
     }
 
     @Test("DataStore.fetch(id:) returns item, supports tuple-wrapped ids, and returns nil for missing key")
     func staticPointRead() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupStaticContainer()
             let context = container.newContext()
 
@@ -116,7 +118,7 @@ struct PostgreSQLPointReadTests {
 
     @Test("DataStore.executeBatch single-item path preserves upsert and delete semantics")
     func dataStoreSingleItemExecuteBatch() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupStaticContainer()
             let store = try await container.store(for: PGPointReadItem.self)
 
@@ -144,7 +146,7 @@ struct PostgreSQLPointReadTests {
 
     @Test("DataStore.fetch(id:) respects resolved partition path")
     func partitionedPointRead() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupPartitionedContainer()
             let context = container.newContext()
 
@@ -173,11 +175,11 @@ struct PostgreSQLPointReadTests {
 
     @Test("DataStore.fetch(id:) preserves GET security checks on point-read fast path")
     func securedPointRead() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupSecuredContainer()
             let itemID = uniqueID("secure")
 
-            try await AuthContextKey.$current.withValue(PGTestAuth(userID: "owner")) {
+            try await AuthContextKey.$current.withValue(PostgreSQLAuthorizationContext(userID: "owner")) {
                 let context = container.newContext()
                 var item = PGSecuredPointReadItem()
                 item.id = itemID
@@ -189,13 +191,13 @@ struct PostgreSQLPointReadTests {
 
             let store = try await container.store(for: PGSecuredPointReadItem.self)
 
-            let authorized = try await AuthContextKey.$current.withValue(PGTestAuth(userID: "owner")) {
+            let authorized = try await AuthContextKey.$current.withValue(PostgreSQLAuthorizationContext(userID: "owner")) {
                 try await store.fetch(PGSecuredPointReadItem.self, id: itemID)
             }
             #expect(authorized?.id == itemID)
 
             await #expect(throws: SecurityError.self) {
-                try await AuthContextKey.$current.withValue(PGTestAuth(userID: "intruder")) {
+                try await AuthContextKey.$current.withValue(PostgreSQLAuthorizationContext(userID: "intruder")) {
                     _ = try await store.fetch(PGSecuredPointReadItem.self, id: itemID)
                 }
             }

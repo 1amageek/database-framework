@@ -10,13 +10,13 @@ import TestSupport
 struct TransactionBasicTests {
 
     @Test func simpleReadWrite() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
         
         // Simple write
         try await runner.run(configuration: .default) { tx in
-            tx.setValue([1, 2, 3], for: [0, 0, 1])
+            try tx.setValue([1, 2, 3], for: [0, 0, 1])
         }
         
         // Simple read
@@ -28,15 +28,15 @@ struct TransactionBasicTests {
     }
     
     @Test func simpleGetRange() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(database: database)
         
         // Write multiple keys
         try await runner.run(configuration: .default) { tx in
-            tx.setValue([1], for: [0, 0, 2, 1])
-            tx.setValue([2], for: [0, 0, 2, 2])
-            tx.setValue([3], for: [0, 0, 2, 3])
+            try tx.setValue([1], for: [0, 0, 2, 1])
+            try tx.setValue([2], for: [0, 0, 2, 2])
+            try tx.setValue([3], for: [0, 0, 2, 3])
         }
         
         // Read with collectRange

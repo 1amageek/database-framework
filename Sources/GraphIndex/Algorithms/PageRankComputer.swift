@@ -3,7 +3,11 @@
 //
 // Provides PageRank computation using power iteration.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import Graph
 import DatabaseEngine
@@ -25,10 +29,9 @@ import StorageKit
 /// **Time Complexity**: O(E * iterations)
 /// **Space Complexity**: O(V) for score storage
 ///
-/// **Transaction Strategy**:
-/// - Each iteration processes nodes in batches
-/// - Uses `.batch` transaction configuration (30s timeout)
-/// - Stores intermediate results in memory for resumability
+/// **Snapshot Strategy**:
+/// - One caller-owned snapshot covers collection and every iteration
+/// - Intermediate scores remain in memory
 ///
 /// **Reference**: Page, Brin et al., "The PageRank Citation Ranking:
 /// Bringing Order to the Web" (1999)
@@ -47,12 +50,12 @@ import StorageKit
 ///     print("\(nodeID): \(score)")
 /// }
 /// ```
-public final class PageRankComputer<Edge: Persistable>: Sendable {
+public final class PageRankComputer: Sendable {
 
     // MARK: - Properties
 
-    /// Database connection (internally thread-safe)
-    private let database: any StorageEngine
+    /// Storage snapshot shared by the complete computation.
+    private let snapshot: GraphReadSnapshot
 
     /// Edge scanner for neighbor lookups (centralizes key structure knowledge)
     private let scanner: GraphEdgeScanner
@@ -60,24 +63,34 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
     /// Configuration
     private let configuration: PageRankConfiguration
 
+    /// Shared request work budget.
+    private let workBudget: GraphAlgorithmWorkBudget?
+
     // MARK: - Initialization
 
     /// Initialize PageRank computer
     ///
     /// - Parameters:
-    ///   - database: FDB database connection
+    ///   - snapshot: Stable storage snapshot for the complete computation
     ///   - subspace: Index subspace
     ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
-    public init(
-        database: any StorageEngine,
+    package init(
+        snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
+        scope: GraphScanScope = .all,
         configuration: PageRankConfiguration = .default
     ) {
-        self.database = database
-        self.scanner = GraphEdgeScanner(indexSubspace: subspace, strategy: strategy)
+        self.snapshot = snapshot
+        self.scanner = GraphEdgeScanner(
+            indexSubspace: subspace,
+            strategy: strategy,
+            scope: scope,
+            snapshot: snapshot
+        )
         self.configuration = configuration
+        self.workBudget = snapshot.workBudget
     }
 
     // MARK: - Public API
@@ -86,11 +99,25 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
     ///
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: PageRankResult with scores for all nodes
-    public func compute(edgeLabel: String? = nil) async throws -> PageRankResult {
+    public func compute(edgeLabel: GraphIdentity? = nil) async throws -> PageRankResult {
         let startTime = MonotonicClock.now()
 
         // Step 1: Collect all nodes and their out-degrees
-        let (nodes, outDegrees) = try await collectNodesAndDegrees(edgeLabel: edgeLabel)
+        let collection = try await collectNodesAndDegrees(edgeLabel: edgeLabel)
+        let nodes = collection.nodes
+        let outDegrees = collection.outDegrees
+        let graph = collection.graph
+
+        if let limitReason = collection.limitReason {
+            return PageRankResult(
+                scores: [:],
+                iterations: 0,
+                convergenceDelta: 0,
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                isComplete: false,
+                limitReason: limitReason
+            )
+        }
 
         guard !nodes.isEmpty else {
             return PageRankResult(
@@ -101,10 +128,12 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
             )
         }
 
+        let orderedNodes = nodes.sorted()
+
         // Step 2: Initialize scores uniformly
         let n = Double(nodes.count)
-        var scores: [String: Double] = [:]
-        for node in nodes {
+        var scores: [GraphIdentity: Double] = [:]
+        for node in orderedNodes {
             scores[node] = 1.0 / n
         }
 
@@ -114,60 +143,81 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
         var delta = Double.infinity
 
         while iteration < configuration.maxIterations && delta > configuration.convergenceThreshold {
-            iteration += 1
-            var newScores: [String: Double] = [:]
+            var newScores: [GraphIdentity: Double] = [:]
 
             // Calculate dangling rank sum (nodes with no outgoing edges)
             // Dangling nodes distribute their rank uniformly to all nodes
             // Reference: Page, Brin et al., "The PageRank Citation Ranking" (1999)
             var danglingRankSum = 0.0
-            for node in nodes {
-                if (outDegrees[node] ?? 0) == 0 {
-                    danglingRankSum += scores[node] ?? 0
+            for node in orderedNodes {
+                guard let outDegree = outDegrees[node],
+                      let score = scores[node] else {
+                    throw PageRankError.inconsistentNodeState(node)
+                }
+                if outDegree == 0 {
+                    danglingRankSum += score
                 }
             }
             let danglingContribution = d * danglingRankSum / n
 
             // Initialize with teleportation probability + dangling contribution
-            for node in nodes {
+            for node in orderedNodes {
                 newScores[node] = (1.0 - d) / n + danglingContribution
             }
 
-            // Distribute scores along edges in batches
-            let nodeArray = Array(nodes)
-            for batchStart in stride(from: 0, to: nodeArray.count, by: configuration.batchSize) {
-                let batchEnd = min(batchStart + configuration.batchSize, nodeArray.count)
-                let batch = Array(nodeArray[batchStart..<batchEnd])
+            let contributionBatch = try computeContributions(
+                nodes: orderedNodes,
+                scores: scores,
+                outDegrees: outDegrees,
+                graph: graph,
+                dampingFactor: d
+            )
 
-                // Fetch incoming edges for each node in the batch
-                let contributions = try await computeContributions(
-                    nodes: batch,
+            if let limitReason = contributionBatch.limitReason {
+                return PageRankResult(
                     scores: scores,
-                    outDegrees: outDegrees,
-                    edgeLabel: edgeLabel,
-                    dampingFactor: d
+                    iterations: iteration,
+                    convergenceDelta: delta.isFinite ? delta : 0,
+                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                    isComplete: false,
+                    limitReason: limitReason
                 )
+            }
 
-                // Accumulate contributions
-                for (node, contribution) in contributions {
-                    newScores[node, default: (1.0 - d) / n + danglingContribution] += contribution
+            for (node, contribution) in contributionBatch.contributions {
+                guard let score = newScores[node] else {
+                    throw PageRankError.inconsistentNodeState(node)
                 }
+                newScores[node] = score + contribution
             }
 
             // Compute convergence delta (L1 norm)
             delta = 0
-            for node in nodes {
-                delta += abs((newScores[node] ?? 0) - (scores[node] ?? 0))
+            for node in orderedNodes {
+                guard let newScore = newScores[node],
+                      let oldScore = scores[node] else {
+                    throw PageRankError.inconsistentNodeState(node)
+                }
+                delta += abs(newScore - oldScore)
             }
 
             scores = newScores
+            iteration += 1
         }
 
+        let converged = delta <= configuration.convergenceThreshold
         return PageRankResult(
             scores: scores,
             iterations: iteration,
             convergenceDelta: delta,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            isComplete: converged,
+            limitReason: converged
+                ? nil
+                : .maxIterationsReached(
+                    iterations: iteration,
+                    limit: configuration.maxIterations
+                )
         )
     }
 
@@ -181,26 +231,37 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
     ///   - edgeLabel: Optional edge label filter
     /// - Returns: PageRankResult with scores relative to startNode
     public func computePersonalized(
-        from startNode: String,
-        edgeLabel: String? = nil
+        from startNode: GraphIdentity,
+        edgeLabel: GraphIdentity? = nil
     ) async throws -> PageRankResult {
         let startTime = MonotonicClock.now()
 
         // Step 1: Collect all nodes and their out-degrees
-        let (nodes, outDegrees) = try await collectNodesAndDegrees(edgeLabel: edgeLabel)
+        let collection = try await collectNodesAndDegrees(edgeLabel: edgeLabel)
+        let nodes = collection.nodes
+        let outDegrees = collection.outDegrees
+        let graph = collection.graph
 
-        guard nodes.contains(startNode) else {
+        if let limitReason = collection.limitReason {
             return PageRankResult(
-                scores: [startNode: 1.0],
+                scores: [:],
                 iterations: 0,
                 convergenceDelta: 0,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                isComplete: false,
+                limitReason: limitReason
             )
         }
 
+        guard nodes.contains(startNode) else {
+            throw PageRankError.personalizationSourceNotFound(startNode)
+        }
+
+        let orderedNodes = nodes.sorted()
+
         // Step 2: Initialize - all probability on start node
-        var scores: [String: Double] = [:]
-        for node in nodes {
+        var scores: [GraphIdentity: Double] = [:]
+        for node in orderedNodes {
             scores[node] = node == startNode ? 1.0 : 0.0
         }
 
@@ -210,23 +271,26 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
         var delta = Double.infinity
 
         while iteration < configuration.maxIterations && delta > configuration.convergenceThreshold {
-            iteration += 1
-            var newScores: [String: Double] = [:]
+            var newScores: [GraphIdentity: Double] = [:]
 
             // Calculate dangling rank sum (nodes with no outgoing edges)
             // In personalized PageRank, dangling nodes teleport back to start node
             // Reference: Haveliwala, "Topic-Sensitive PageRank" (2002)
             var danglingRankSum = 0.0
-            for node in nodes {
-                if (outDegrees[node] ?? 0) == 0 {
-                    danglingRankSum += scores[node] ?? 0
+            for node in orderedNodes {
+                guard let outDegree = outDegrees[node],
+                      let score = scores[node] else {
+                    throw PageRankError.inconsistentNodeState(node)
+                }
+                if outDegree == 0 {
+                    danglingRankSum += score
                 }
             }
             let danglingContribution = d * danglingRankSum
 
             // Teleportation goes back to start node (not uniform)
             // Dangling contribution also goes to start node
-            for node in nodes {
+            for node in orderedNodes {
                 if node == startNode {
                     newScores[node] = (1.0 - d) + danglingContribution
                 } else {
@@ -234,68 +298,101 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
                 }
             }
 
-            // Distribute scores along edges
-            let nodeArray = Array(nodes)
-            for batchStart in stride(from: 0, to: nodeArray.count, by: configuration.batchSize) {
-                let batchEnd = min(batchStart + configuration.batchSize, nodeArray.count)
-                let batch = Array(nodeArray[batchStart..<batchEnd])
+            let contributionBatch = try computeContributions(
+                nodes: orderedNodes,
+                scores: scores,
+                outDegrees: outDegrees,
+                graph: graph,
+                dampingFactor: d
+            )
 
-                let contributions = try await computeContributions(
-                    nodes: batch,
+            if let limitReason = contributionBatch.limitReason {
+                return PageRankResult(
                     scores: scores,
-                    outDegrees: outDegrees,
-                    edgeLabel: edgeLabel,
-                    dampingFactor: d
+                    iterations: iteration,
+                    convergenceDelta: delta.isFinite ? delta : 0,
+                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                    isComplete: false,
+                    limitReason: limitReason
                 )
+            }
 
-                for (node, contribution) in contributions {
-                    newScores[node, default: 0] += contribution
+            for (node, contribution) in contributionBatch.contributions {
+                guard let score = newScores[node] else {
+                    throw PageRankError.inconsistentNodeState(node)
                 }
+                newScores[node] = score + contribution
             }
 
             // Compute convergence delta
             delta = 0
-            for node in nodes {
-                delta += abs((newScores[node] ?? 0) - (scores[node] ?? 0))
+            for node in orderedNodes {
+                guard let newScore = newScores[node],
+                      let oldScore = scores[node] else {
+                    throw PageRankError.inconsistentNodeState(node)
+                }
+                delta += abs(newScore - oldScore)
             }
 
             scores = newScores
+            iteration += 1
         }
 
+        let converged = delta <= configuration.convergenceThreshold
         return PageRankResult(
             scores: scores,
             iterations: iteration,
             convergenceDelta: delta,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            isComplete: converged,
+            limitReason: converged
+                ? nil
+                : .maxIterationsReached(
+                    iterations: iteration,
+                    limit: configuration.maxIterations
+                )
         )
     }
 
     // MARK: - Private Methods
 
     /// Collect all nodes and compute their out-degrees using GraphEdgeScanner
+    private struct NodeCollection: Sendable {
+        let nodes: Set<GraphIdentity>
+        let outDegrees: [GraphIdentity: Int]
+        let graph: MaterializedGraphSnapshot
+        let limitReason: LimitReason?
+    }
+
+    private struct ContributionBatch: Sendable {
+        let contributions: [GraphIdentity: Double]
+        let limitReason: LimitReason?
+    }
+
     private func collectNodesAndDegrees(
-        edgeLabel: String?
-    ) async throws -> (nodes: Set<String>, outDegrees: [String: Int]) {
-        // Use GraphEdgeScanner to scan all edges
-        let edges: [EdgeInfo] = try await database.withTransaction(configuration: .batch) { transaction in
-            var collectedEdges: [EdgeInfo] = []
-            for try await edge in self.scanner.scanAllEdges(edgeLabel: edgeLabel, transaction: transaction) {
-                collectedEdges.append(edge)
-            }
-            return collectedEdges
+        edgeLabel: GraphIdentity?
+    ) async throws -> NodeCollection {
+        let load = try await MaterializedGraphSnapshotBuilder.load(
+            scanner: scanner,
+            edgeLabel: edgeLabel,
+            snapshot: snapshot
+        )
+        let graph = load.graph
+        var outDegrees: [GraphIdentity: Int] = [:]
+        outDegrees.reserveCapacity(graph.nodes.count)
+        for node in graph.nodes {
+            outDegrees[node] = 0
+        }
+        for (node, edges) in graph.outgoing {
+            outDegrees[node] = edges.count
         }
 
-        // Process edges outside transaction to avoid Sendable issues
-        var nodes: Set<String> = []
-        var outDegrees: [String: Int] = [:]
-
-        for edge in edges {
-            nodes.insert(edge.source)
-            nodes.insert(edge.target)
-            outDegrees[edge.source, default: 0] += 1
-        }
-
-        return (nodes, outDegrees)
+        return NodeCollection(
+            nodes: graph.nodes,
+            outDegrees: outDegrees,
+            graph: graph,
+            limitReason: load.limitReason
+        )
     }
 
     /// Compute PageRank contributions for a batch of target nodes using GraphEdgeScanner
@@ -304,37 +401,52 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
     /// - When `edgeLabel` is specified: O(degree) per node via prefix scan
     /// - When `edgeLabel` is nil: O(E) full scan of incoming edge subspace + filter
     private func computeContributions(
-        nodes: [String],
-        scores: [String: Double],
-        outDegrees: [String: Int],
-        edgeLabel: String?,
+        nodes: [GraphIdentity],
+        scores: [GraphIdentity: Double],
+        outDegrees: [GraphIdentity: Int],
+        graph: MaterializedGraphSnapshot,
         dampingFactor: Double
-    ) async throws -> [(node: String, contribution: Double)] {
-        // Use GraphEdgeScanner to get incoming edges for all target nodes
-        let incomingEdges: [EdgeInfo] = try await database.withTransaction(configuration: .batch) { transaction in
-            try await self.scanner.batchScanIncoming(
-                to: nodes,
-                edgeLabel: edgeLabel,
-                transaction: transaction
-            )
+    ) throws -> ContributionBatch {
+        var contributionsByTarget: [GraphIdentity: Double] = [:]
+
+        for node in nodes {
+            guard try consumeWork() else {
+                return ContributionBatch(
+                    contributions: [:],
+                    limitReason: workBudget?.limitReason
+                )
+            }
+
+            for edge in graph.incomingNeighbors(of: node) {
+                guard try consumeWork() else {
+                    return ContributionBatch(
+                        contributions: [:],
+                        limitReason: workBudget?.limitReason
+                    )
+                }
+
+                guard let sourceScore = scores[edge.source],
+                      let sourceOutDegree = outDegrees[edge.source],
+                      sourceOutDegree > 0 else {
+                    throw PageRankError.inconsistentNodeState(edge.source)
+                }
+                contributionsByTarget[edge.target, default: 0] +=
+                    dampingFactor * sourceScore / Double(sourceOutDegree)
+            }
         }
 
-        // Accumulate contributions per target node
-        var contributionsByTarget: [String: Double] = [:]
-
-        for edge in incomingEdges {
-            let targetNode = edge.target
-            let sourceNode = edge.source
-
-            let sourceScore = scores[sourceNode] ?? 0
-            let sourceOutDegree = outDegrees[sourceNode] ?? 1
-
-            contributionsByTarget[targetNode, default: 0] += dampingFactor * sourceScore / Double(sourceOutDegree)
-        }
-
-        // Convert to result format
-        return contributionsByTarget.compactMap { (node, contribution) in
-            contribution > 0 ? (node, contribution) : nil
-        }
+        return ContributionBatch(
+            contributions: contributionsByTarget,
+            limitReason: nil
+        )
     }
+
+    private func consumeWork(_ units: UInt64 = 1) throws -> Bool {
+        try workBudget?.consume(units) ?? true
+    }
+}
+
+public enum PageRankError: Error, Sendable {
+    case personalizationSourceNotFound(GraphIdentity)
+    case inconsistentNodeState(GraphIdentity)
 }

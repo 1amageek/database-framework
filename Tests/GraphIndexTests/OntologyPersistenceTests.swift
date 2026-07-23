@@ -15,26 +15,27 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
 @testable import OntologyIndex
 
-// MARK: - Dummy Entity (required by DBContainer)
+// MARK: - Schema Anchor Record
 
-/// Minimal @Persistable entity to satisfy DBContainer's Schema requirement.
-/// Ontology tests do not use this entity — they operate on the ontology subspace (O/).
+/// Anchors the container schema while ontology operations use their dedicated subspace.
 @Persistable
-struct OntologyTestDummy {
-    #Directory<OntologyTestDummy>("ontology_persistence_dummy")
+struct OntologyPersistenceRecord {
+    #Directory<OntologyPersistenceRecord>("ontology_persistence_records")
 
     var id: String = ULID().ulidString
     var subject: String = ""
     var predicate: String = ""
     var object: String = ""
 
-    #Index(GraphIndexKind<OntologyTestDummy>(
+    #Index(GraphIndexKind<OntologyPersistenceRecord>(
         from: \.subject,
         edge: \.predicate,
         to: \.object,
@@ -52,12 +53,13 @@ struct OntologyPersistenceTests {
     // MARK: - Helpers
 
     private func setupContext() async throws -> FDBContext {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([OntologyTestDummy.self], version: Schema.Version(1, 0, 0))
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([OntologyPersistenceRecord.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
         return container.newContext()

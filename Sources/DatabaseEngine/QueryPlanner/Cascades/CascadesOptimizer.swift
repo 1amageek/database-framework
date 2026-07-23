@@ -6,7 +6,11 @@
 // Reference: Graefe, G. "The Cascades Framework for Query Optimization", 1995
 // https://15721.courses.cs.cmu.edu/spring2019/papers/22-optimizer1/graefe-ieee1995.pdf
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 // MARK: - Cascades Optimizer
@@ -78,7 +82,7 @@ public final class CascadesOptimizer: @unchecked Sendable {
         self.startTime = nil
 
         // Register default rules
-        registerDefaultRules()
+        registerOptimizerRules()
     }
 
     // MARK: - Rule Registration
@@ -94,7 +98,7 @@ public final class CascadesOptimizer: @unchecked Sendable {
     }
 
     /// Register default built-in rules
-    private func registerDefaultRules() {
+    private func registerOptimizerRules() {
         // Transformation rules
         transformationRules = [
             FilterPushDownRule(),

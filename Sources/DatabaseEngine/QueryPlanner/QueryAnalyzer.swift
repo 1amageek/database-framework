@@ -19,7 +19,7 @@ public struct QueryAnalyzer<T: Persistable> {
         // Normalize to Conjunctive Normal Form for easier planning
         let normalized: QueryCondition<T>
         if let predicate = combinedPredicate {
-            let converted = normalizer.convert(predicate)
+            let converted = try normalizer.convert(predicate)
             normalized = normalizer.toCNF(converted)
         } else {
             normalized = .alwaysTrue
@@ -326,9 +326,6 @@ public enum QueryPattern: Sendable, Hashable {
     /// Spatial query present
     case spatialQuery
 
-    /// Aggregation query (COUNT, SUM, etc.)
-    case aggregation(AggregationType)
-
     /// Top-N query (ORDER BY with LIMIT)
     case topN
 
@@ -343,11 +340,8 @@ public enum QueryPattern: Sendable, Hashable {
         case .fullTextSearch: hasher.combine(3)
         case .vectorSearch: hasher.combine(4)
         case .spatialQuery: hasher.combine(5)
-        case .aggregation(let type):
-            hasher.combine(6)
-            hasher.combine(type)
-        case .topN: hasher.combine(7)
-        case .pagination: hasher.combine(8)
+        case .topN: hasher.combine(6)
+        case .pagination: hasher.combine(7)
         }
     }
 
@@ -362,8 +356,6 @@ public enum QueryPattern: Sendable, Hashable {
              (.topN, .topN),
              (.pagination, .pagination):
             return true
-        case (.aggregation(let lhsType), .aggregation(let rhsType)):
-            return lhsType == rhsType
         default:
             return false
         }

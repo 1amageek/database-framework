@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Rank
 import TestSupport
 @testable import DatabaseEngine
@@ -21,7 +22,7 @@ private struct BenchmarkContext {
     let maintainer: RankIndexMaintainer<BenchmarkPlayer, Int64>
 
     init() async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("bench", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace("score_rank")
@@ -46,7 +47,7 @@ private struct BenchmarkContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }
@@ -108,7 +109,7 @@ private struct BenchmarkPlayer: Persistable {
     }
 }
 
-// MARK: - Benchmark Helper
+// MARK: - Benchmark Measurement
 
 private struct BenchmarkResult {
     let operation: String
@@ -139,7 +140,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Bulk insert performance - 100 players")
     func testBulkInsert100() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         let players = (0..<100).map { i in
@@ -173,7 +174,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Bulk insert performance - 1000 players")
     func testBulkInsert1000() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         let players = (0..<1000).map { i in
@@ -216,7 +217,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Top-K query performance - varying K values")
     func testTopKPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 500 players
@@ -263,7 +264,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Top-K ordering verification")
     func testTopKOrdering() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert players with known scores
@@ -297,7 +298,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Rank lookup performance - varying ranks")
     func testRankLookupPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 500 players with scores 1-500
@@ -350,7 +351,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Count query performance (O(1))")
     func testCountPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 500 players
@@ -402,7 +403,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Percentile query performance")
     func testPercentilePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 500 players with scores 1-500
@@ -451,7 +452,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Update performance")
     func testUpdatePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 100 players
@@ -506,7 +507,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Delete performance")
     func testDeletePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 100 players
@@ -558,7 +559,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Ties handling performance")
     func testTiesPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Insert 100 players with only 10 distinct scores (many ties)
@@ -613,7 +614,7 @@ struct RankIndexPerformanceTests {
 
     @Test("Scale test - 2000 players")
     func testScale2000() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         let playerCount = 2000

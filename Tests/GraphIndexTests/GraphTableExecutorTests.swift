@@ -5,6 +5,8 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import Graph
 import StorageKit
 import FDBStorage
@@ -55,7 +57,7 @@ struct GraphTableExecutorTests {
     // MARK: - Setup
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     private func uniqueID(_ prefix: String) -> String {
@@ -67,18 +69,19 @@ struct GraphTableExecutorTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
 
         let subspace = try await container.resolveDirectory(for: SocialEdge.self)
         let (begin, end) = subspace.range()
         try await database.withTransaction { transaction in
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
         try await container.ensureIndexesReady()
 
@@ -345,17 +348,18 @@ struct GraphTableExecutorTests {
 
     @Test("Error: graph index not found")
     func testErrorIndexNotFound() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([NoGraphIndexType.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
         let subspace = try await container.resolveDirectory(for: NoGraphIndexType.self)
         let (begin, end) = subspace.range()
         try await database.withTransaction { transaction in
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
 
         let source = GraphTableSource(

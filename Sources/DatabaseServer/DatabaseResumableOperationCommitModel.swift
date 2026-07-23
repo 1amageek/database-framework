@@ -1,0 +1,10 @@
+/// Defines where a resumable operation establishes its durable checkpoint.
+public enum DatabaseResumableOperationCommitModel: Sendable, Equatable {
+    /// Operation effects and job state commit in one transaction.
+    case atomicWithJobState
+
+    /// The operation commits an idempotent durable checkpoint before the job
+    /// runner records progress. A retry must derive its next step from that
+    /// operation-owned checkpoint.
+    case operationCheckpointed
+}

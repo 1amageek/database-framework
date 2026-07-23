@@ -4,6 +4,7 @@ import Foundation
 import Database
 import StorageKit
 import TestHeartbeat
+import DatabaseRuntime
 
 // MARK: - Test Types
 
@@ -15,8 +16,8 @@ protocol SQLitePolymorphicDocument: Polymorphable {
 extension SQLitePolymorphicDocument {
     public static var polymorphableType: String { "SQLitePolymorphicDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("sqlite_polymorphic_fetch_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("sqlite_polymorphic_fetch_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -67,8 +68,8 @@ protocol SQLiteSecurePolymorphicDocument: Polymorphable {
 extension SQLiteSecurePolymorphicDocument {
     public static var polymorphableType: String { "SQLiteSecurePolymorphicDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("sqlite_secure_polymorphic_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("sqlite_secure_polymorphic_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -128,7 +129,7 @@ struct SQLiteSecurePolymorphicArticle: SQLiteSecurePolymorphicDocument, Security
     }
 }
 
-private struct SQLitePolymorphicTestAuth: AuthContext {
+private struct SQLitePolymorphicAuthorizationContext: AuthContext {
     let userID: String
     var roles: Set<String> = []
 }
@@ -142,8 +143,8 @@ protocol SQLitePolymorphicVectorDocument: Polymorphable {
 extension SQLitePolymorphicVectorDocument {
     public static var polymorphableType: String { "SQLitePolymorphicVectorDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("sqlite_polymorphic_vector_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("sqlite_polymorphic_vector_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -190,8 +191,8 @@ protocol SQLitePolymorphicVectorNoIndexDocument: Polymorphable {
 extension SQLitePolymorphicVectorNoIndexDocument {
     public static var polymorphableType: String { "SQLitePolymorphicVectorNoIndexDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("sqlite_polymorphic_vector_no_index_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("sqlite_polymorphic_vector_no_index_shared")]
     }
 }
 
@@ -214,8 +215,8 @@ protocol SQLitePolymorphicOptionalVectorDocument: Polymorphable {
 extension SQLitePolymorphicOptionalVectorDocument {
     public static var polymorphableType: String { "SQLitePolymorphicOptionalVectorDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("sqlite_polymorphic_optional_vector_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("sqlite_polymorphic_optional_vector_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -270,8 +271,14 @@ struct PolymorphicFetchSQLiteTests {
             [SQLitePolymorphicVectorArticle.self, SQLitePolymorphicVectorReport.self],
             version: Schema.Version(1, 0, 0)
         )
+        let engine = try SQLiteStorageEngine(configuration: .inMemory)
 
-        return try await DBContainer.inMemory(for: schema, security: .disabled)
+        return try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try vectorRuntimeConfiguration(),
+            security: .disabled
+        )
     }
 
     private func setupOptionalVectorContainer() async throws -> DBContainer {
@@ -279,8 +286,24 @@ struct PolymorphicFetchSQLiteTests {
             [SQLitePolymorphicOptionalVectorArticle.self, SQLitePolymorphicOptionalVectorReport.self],
             version: Schema.Version(1, 0, 0)
         )
+        let engine = try SQLiteStorageEngine(configuration: .inMemory)
 
-        return try await DBContainer.inMemory(for: schema, security: .disabled)
+        return try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try vectorRuntimeConfiguration(),
+            security: .disabled
+        )
+    }
+
+    private func vectorRuntimeConfiguration() throws -> DatabaseRuntimeConfiguration {
+        try DatabaseRuntimeConfiguration(
+            indexMaintainerProviders: [
+                VectorIndexMaintainerProvider()
+            ],
+            indexReadExecutors: [VectorReadExecutors.indexExecutor],
+            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor]
+        )
     }
 
     private func setupNoIndexVectorContainer() async throws -> DBContainer {
@@ -419,6 +442,7 @@ struct PolymorphicFetchSQLiteTests {
         let initialContainer = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -441,6 +465,7 @@ struct PolymorphicFetchSQLiteTests {
         let reopenedContainer = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let reopenedContext = reopenedContainer.newContext()
@@ -739,6 +764,7 @@ struct PolymorphicFetchSQLiteTests {
         let container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .enabled()
         )
 
@@ -748,7 +774,7 @@ struct PolymorphicFetchSQLiteTests {
             body: "Created by Alice"
         )
         original.id = "sqlite-secure-polymorphic-article"
-        try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "alice")) {
+        try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "alice")) {
             try await container.newContext().savePolymorphic(
                 original,
                 as: SQLiteSecurePolymorphicArticle.self
@@ -759,7 +785,7 @@ struct PolymorphicFetchSQLiteTests {
         transferred.title = "Secure Transferred"
         transferred.ownerID = "bob"
         transferred.body = "Transferred to Bob"
-        try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "alice")) {
+        try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "alice")) {
             try await container.newContext().savePolymorphic(
                 transferred,
                 as: SQLiteSecurePolymorphicArticle.self
@@ -770,7 +796,7 @@ struct PolymorphicFetchSQLiteTests {
         deniedUpdate.title = "Secure Unauthorized"
         deniedUpdate.body = "Alice should not be able to update after transfer"
         do {
-            try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "alice")) {
+            try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "alice")) {
                 try await container.newContext().savePolymorphic(
                     deniedUpdate,
                     as: SQLiteSecurePolymorphicArticle.self
@@ -783,7 +809,7 @@ struct PolymorphicFetchSQLiteTests {
         }
 
         do {
-            try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "alice")) {
+            try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "alice")) {
                 try await container.newContext().deletePolymorphic(
                     SQLiteSecurePolymorphicArticle.self,
                     id: original.id,
@@ -810,7 +836,7 @@ struct PolymorphicFetchSQLiteTests {
             valuePrefix: "Secure Unauthorized"
         ) == 0)
 
-        let fetchedAsBob = try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "bob")) {
+        let fetchedAsBob = try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "bob")) {
             try await container.newContext().fetchPolymorphic(
                 SQLiteSecurePolymorphicArticle.self,
                 id: original.id
@@ -819,7 +845,7 @@ struct PolymorphicFetchSQLiteTests {
         #expect((fetchedAsBob as? SQLiteSecurePolymorphicArticle)?.title == "Secure Transferred")
         #expect((fetchedAsBob as? SQLiteSecurePolymorphicArticle)?.ownerID == "bob")
 
-        try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "bob")) {
+        try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "bob")) {
             try await container.newContext().deletePolymorphic(
                 SQLiteSecurePolymorphicArticle.self,
                 id: original.id,
@@ -980,7 +1006,6 @@ struct PolymorphicFetchSQLiteTests {
     @Test("Polymorphic optional vector KeyPath overload queries shared index end-to-end on SQLite")
     func polymorphicOptionalVectorKeyPathOverloadQueriesSharedIndexEndToEndOnSQLite() async throws {
         let container = try await setupOptionalVectorContainer()
-        VectorReadBridge.registerReadExecutors()
 
         let context = container.newContext()
         let article = SQLitePolymorphicOptionalVectorArticle(
@@ -1019,7 +1044,6 @@ struct PolymorphicFetchSQLiteTests {
     @Test("Polymorphic vector index is maintained and queried end-to-end on SQLite")
     func polymorphicVectorIndexIsMaintainedAndQueriedEndToEndOnSQLite() async throws {
         let container = try await setupVectorContainer()
-        VectorReadBridge.registerReadExecutors()
 
         let context = container.newContext()
 

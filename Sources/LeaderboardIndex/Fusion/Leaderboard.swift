@@ -4,7 +4,11 @@
 // This file is part of LeaderboardIndex module, not DatabaseEngine.
 // DatabaseEngine does not know about TimeWindowLeaderboardIndexKind.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -54,27 +58,8 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     ///     Leaderboard(\.score).top(100)
     /// }
     /// ```
-    public init(_ scoreKeyPath: KeyPath<T, Int>) {
-        guard let context = FusionContext.current else {
-            fatalError("Leaderboard must be used within context.fuse { } block")
-        }
-        self.scoreFieldName = T.fieldName(for: scoreKeyPath)
-        self.groupByFieldName = nil
-        self.queryContext = context
-    }
-
     /// Create a Leaderboard query for an Int64 score field
     public init(_ scoreKeyPath: KeyPath<T, Int64>) {
-        guard let context = FusionContext.current else {
-            fatalError("Leaderboard must be used within context.fuse { } block")
-        }
-        self.scoreFieldName = T.fieldName(for: scoreKeyPath)
-        self.groupByFieldName = nil
-        self.queryContext = context
-    }
-
-    /// Create a Leaderboard query for a Double score field
-    public init(_ scoreKeyPath: KeyPath<T, Double>) {
         guard let context = FusionContext.current else {
             fatalError("Leaderboard must be used within context.fuse { } block")
         }
@@ -104,21 +89,8 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     // MARK: - Initialization (Explicit Context)
 
     /// Create a Leaderboard query with explicit context
-    public init(_ scoreKeyPath: KeyPath<T, Int>, context: IndexQueryContext) {
-        self.scoreFieldName = T.fieldName(for: scoreKeyPath)
-        self.groupByFieldName = nil
-        self.queryContext = context
-    }
-
     /// Create a Leaderboard query for Int64 with explicit context
     public init(_ scoreKeyPath: KeyPath<T, Int64>, context: IndexQueryContext) {
-        self.scoreFieldName = T.fieldName(for: scoreKeyPath)
-        self.groupByFieldName = nil
-        self.queryContext = context
-    }
-
-    /// Create a Leaderboard query for Double with explicit context
-    public init(_ scoreKeyPath: KeyPath<T, Double>, context: IndexQueryContext) {
         self.scoreFieldName = T.fieldName(for: scoreKeyPath)
         self.groupByFieldName = nil
         self.queryContext = context
@@ -170,16 +142,15 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     // MARK: - Index Discovery
 
     /// Find the index descriptor and kind for leaderboard
-    private func findIndexDescriptorAndKind() -> (descriptor: IndexDescriptor, kind: TimeWindowLeaderboardIndexKind<T, Int64>)? {
+    private func findIndexDescriptorAndKind() throws -> (
+        descriptor: IndexDescriptor,
+        kind: TimeWindowLeaderboardIndexKind<T>
+    )? {
         for descriptor in T.indexDescriptors {
-            // Use type-safe identifier from TimeWindowLeaderboardIndexKind
-            guard descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<T, Int64>.identifier else {
+            guard descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<T>.identifier else {
                 continue
             }
-            // Check if score field matches via kind's fieldNames
-            guard let kind = descriptor.kind as? TimeWindowLeaderboardIndexKind<T, Int64> else {
-                continue
-            }
+            let kind = try TimeWindowLeaderboardIndexKind<T>(canonical: descriptor.kind)
             if kind.fieldNames.contains(scoreFieldName) {
                 return (descriptor, kind)
             }
@@ -189,8 +160,8 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - FusionQuery
 
-    public func execute(candidates: Set<String>?) async throws -> [ScoredResult<T>] {
-        guard let (descriptor, indexKind) = findIndexDescriptorAndKind() else {
+    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
+        guard let (descriptor, indexKind) = try findIndexDescriptorAndKind() else {
             throw FusionQueryError.indexNotFound(
                 type: T.persistableType,
                 field: scoreFieldName,
@@ -221,8 +192,8 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         var items = try await queryContext.fetchItems(ids: topKResults.map(\.pk), type: T.self)
 
         // Filter to candidates if provided
-        if let candidateIds = candidates {
-            items = items.filter { candidateIds.contains("\($0.id)") }
+        if let candidateIDs = candidates {
+            items = items.filter { candidateIDs.contains($0.id) }
         }
 
         // Match items with their leaderboard scores

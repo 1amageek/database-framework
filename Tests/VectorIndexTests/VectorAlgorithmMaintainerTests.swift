@@ -13,11 +13,11 @@ import Vector
 @Suite("Vector Algorithm Maintainer Tests", .serialized, .heartbeat)
 struct VectorAlgorithmMaintainerTests {
 
-    @Test("IVF stores binary vectors and returns nearest neighbors after training")
-    func ivfStoresBinaryVectorsAndSearchesAfterTraining() async throws {
+    @Test("IVF stores contiguous Float32 vector payloads and returns nearest neighbors after training")
+    func ivfStoresContiguousFloat32VectorPayloadsAndSearchesAfterTraining() async throws {
         let database = InMemoryEngine()
         let context = makeContext(name: "ivf")
-        let maintainer = IVFIndexMaintainer<HNSWTestDocument>(
+        let maintainer = IVFIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
             metric: .euclidean,
@@ -25,7 +25,7 @@ struct VectorAlgorithmMaintainerTests {
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: IVFParameters(nlist: 2, nprobe: 2, kmeansIterations: 3)
         )
-        let docs = algorithmTestDocuments()
+        let docs = algorithmDocuments()
 
         try await database.withTransaction { transaction in
             try await maintainer.train(vectors: docs.map(\.embedding), transaction: transaction)
@@ -54,7 +54,7 @@ struct VectorAlgorithmMaintainerTests {
     func ivfRejectsMalformedStoredVectorPayloads() async throws {
         let database = InMemoryEngine()
         let context = makeContext(name: "ivf-corrupt")
-        let maintainer = IVFIndexMaintainer<HNSWTestDocument>(
+        let maintainer = IVFIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
             metric: .euclidean,
@@ -62,7 +62,7 @@ struct VectorAlgorithmMaintainerTests {
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: IVFParameters(nlist: 2, nprobe: 2, kmeansIterations: 3)
         )
-        let docs = algorithmTestDocuments()
+        let docs = algorithmDocuments()
 
         try await database.withTransaction { transaction in
             try await maintainer.train(vectors: docs.map(\.embedding), transaction: transaction)
@@ -81,7 +81,7 @@ struct VectorAlgorithmMaintainerTests {
             guard let firstKey = entries.first?.0 else {
                 throw VectorIndexError.invalidStructure("Expected IVF list entry")
             }
-            transaction.setValue([0x00], for: firstKey)
+            try transaction.setValue([0x00], for: firstKey)
         }
 
         await #expect(throws: VectorIndexError.self) {
@@ -91,11 +91,11 @@ struct VectorAlgorithmMaintainerTests {
         }
     }
 
-    @Test("PQ stores binary vectors, compressed codes, and searches after training")
-    func pqStoresBinaryVectorsCodesAndSearchesAfterTraining() async throws {
+    @Test("PQ stores vector payloads, compressed codes, and searches after training")
+    func pqStoresVectorPayloadsAndCompressedCodesAndSearchesAfterTraining() async throws {
         let database = InMemoryEngine()
         let context = makeContext(name: "pq")
-        let maintainer = PQIndexMaintainer<HNSWTestDocument>(
+        let maintainer = PQIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
             metric: .euclidean,
@@ -103,7 +103,7 @@ struct VectorAlgorithmMaintainerTests {
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: PQParameters(m: 2, niter: 2)
         )
-        let docs = algorithmTestDocuments()
+        let docs = algorithmDocuments()
 
         try await database.withTransaction { transaction in
             try await maintainer.scanItems(
@@ -136,7 +136,7 @@ struct VectorAlgorithmMaintainerTests {
     func pqRejectsMalformedCompressedCodes() async throws {
         let database = InMemoryEngine()
         let context = makeContext(name: "pq-corrupt")
-        let maintainer = PQIndexMaintainer<HNSWTestDocument>(
+        let maintainer = PQIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
             metric: .euclidean,
@@ -144,7 +144,7 @@ struct VectorAlgorithmMaintainerTests {
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: PQParameters(m: 2, niter: 2)
         )
-        let docs = algorithmTestDocuments()
+        let docs = algorithmDocuments()
 
         try await database.withTransaction { transaction in
             try await maintainer.scanItems(
@@ -163,7 +163,7 @@ struct VectorAlgorithmMaintainerTests {
             guard let firstKey = entries.first?.0 else {
                 throw VectorIndexError.invalidStructure("Expected PQ code entry")
             }
-            transaction.setValue([0x00], for: firstKey)
+            try transaction.setValue([0x00], for: firstKey)
         }
 
         await #expect(throws: VectorIndexError.self) {
@@ -176,24 +176,24 @@ struct VectorAlgorithmMaintainerTests {
     private func makeContext(name: String) -> (index: Index, indexSubspace: Subspace) {
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "vector-algorithm", name, String(testId)).pack())
-        let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
-        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .euclidean)
+        let indexSubspace = subspace.subspace("I").subspace("HNSWDocument_embedding")
+        let kind = VectorIndexKind<HNSWDocument>(embedding: \.embedding, dimensions: 4, metric: .euclidean)
         let index = Index(
-            name: "HNSWTestDocument_embedding",
+            name: "HNSWDocument_embedding",
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWTestDocument_embedding",
-            itemTypes: Set(["HNSWTestDocument"])
+            subspaceKey: "HNSWDocument_embedding",
+            itemTypes: Set(["HNSWDocument"])
         )
         return (index, indexSubspace)
     }
 
-    private func algorithmTestDocuments() -> [HNSWTestDocument] {
+    private func algorithmDocuments() -> [HNSWDocument] {
         [
-            HNSWTestDocument(id: "exact", title: "Exact", embedding: [1, 0, 0, 0]),
-            HNSWTestDocument(id: "near", title: "Near", embedding: [0.9, 0.1, 0, 0]),
-            HNSWTestDocument(id: "orthogonal", title: "Orthogonal", embedding: [0, 1, 0, 0]),
-            HNSWTestDocument(id: "opposite", title: "Opposite", embedding: [-1, 0, 0, 0])
+            HNSWDocument(id: "exact", title: "Exact", embedding: [1, 0, 0, 0]),
+            HNSWDocument(id: "near", title: "Near", embedding: [0.9, 0.1, 0, 0]),
+            HNSWDocument(id: "orthogonal", title: "Orthogonal", embedding: [0, 1, 0, 0]),
+            HNSWDocument(id: "opposite", title: "Opposite", embedding: [-1, 0, 0, 0])
         ]
     }
 

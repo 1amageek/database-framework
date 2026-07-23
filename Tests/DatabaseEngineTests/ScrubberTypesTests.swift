@@ -314,14 +314,14 @@ struct ScrubberTypesTests {
 
     @Test("Retry limit exceeded error")
     func testRetryLimitExceededError() {
-        struct MockError: Error, CustomStringConvertible {
+        struct ConnectionFailure: Error, CustomStringConvertible {
             var description: String { "connection failed" }
         }
 
         let error = ScrubberError.retryLimitExceeded(
             phase: "Phase 1",
             attempts: 10,
-            lastError: MockError()
+            lastError: ConnectionFailure()
         )
 
         #expect(error.description.contains("Phase 1"))

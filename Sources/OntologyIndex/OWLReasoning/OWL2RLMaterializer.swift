@@ -5,7 +5,7 @@
 //
 // Reference: W3C OWL 2 RL Profile https://www.w3.org/TR/owl2-profiles/#OWL_2_RL
 
-import Foundation
+import DatabaseValue
 import StorageKit
 import Graph
 
@@ -46,28 +46,13 @@ public struct OWL2RLMaterializer: Sendable {
 
     /// Configuration for materialization
     public struct Configuration: Sendable {
-        /// Maximum inference depth for recursive rules
-        public let maxInferenceDepth: Int
-
-        /// Whether to track provenance for inferred triples
-        public let trackProvenance: Bool
-
         /// Whether to detect inconsistencies during materialization
         public let detectInconsistencies: Bool
 
-        /// Batch size for processing multiple inferences
-        public let batchSize: Int
-
         public init(
-            maxInferenceDepth: Int = 10,
-            trackProvenance: Bool = true,
-            detectInconsistencies: Bool = true,
-            batchSize: Int = 100
+            detectInconsistencies: Bool = true
         ) {
-            self.maxInferenceDepth = maxInferenceDepth
-            self.trackProvenance = trackProvenance
             self.detectInconsistencies = detectInconsistencies
-            self.batchSize = batchSize
         }
 
         /// Default configuration
@@ -99,59 +84,27 @@ public struct OWL2RLMaterializer: Sendable {
     ///   - transaction: The active transaction
     /// - Returns: Inference result containing inferred triples and any inconsistencies
     public func materializeOnWrite(
-        triple: (subject: String, predicate: String, object: String),
+        triple: ReasoningTriple,
         ontologyIRI: String,
         transaction: any Transaction
     ) async throws -> InferenceResult {
-        var visited = Set<TripleKey>()
-        return try await materializeOnWrite(
-            triple: triple,
-            ontologyIRI: ontologyIRI,
-            transaction: transaction,
-            depth: 0,
-            visited: &visited
-        )
-    }
-
-    /// Internal materialization with depth tracking and cycle detection.
-    ///
-    /// - Parameters:
-    ///   - depth: Current recursion depth (0 = initial call)
-    ///   - visited: Set of already-processed triples to prevent redundant inference
-    private func materializeOnWrite(
-        triple: (subject: String, predicate: String, object: String),
-        ontologyIRI: String,
-        transaction: any Transaction,
-        depth: Int,
-        visited: inout Set<TripleKey>
-    ) async throws -> InferenceResult {
         var result = InferenceResult()
-
-        // Cycle detection: skip already-processed triples
-        let tripleKey = TripleKey(triple.subject, triple.predicate, triple.object)
-        guard !visited.contains(tripleKey) else {
-            return result
-        }
-        visited.insert(tripleKey)
-
-        // Depth limit enforcement
-        guard depth < configuration.maxInferenceDepth else {
-            result.statistics.depthLimitReached = true
-            return result
-        }
-
-        let startTime = Date()
-
-        // Create antecedent for tracking
-        let baseTriple = tripleKey
+        let clock = ContinuousClock()
+        let start = clock.now
+        let baseTriple = triple
 
         // Apply rules based on predicate
-        switch triple.predicate {
+        switch triple.predicate.rawValue {
         case WellKnownIRI.rdfType:
+            let classIRI = try requireIRI(
+                triple.object,
+                position: .object,
+                rule: .caxSco
+            )
             // Instance typing: apply class hierarchy rules
             try await materializeClassHierarchy(
                 individual: triple.subject,
-                classIRI: triple.object,
+                classIRI: classIRI,
                 ontologyIRI: ontologyIRI,
                 baseTriple: baseTriple,
                 transaction: transaction,
@@ -159,10 +112,20 @@ public struct OWL2RLMaterializer: Sendable {
             )
 
         case WellKnownIRI.rdfsSubClassOf:
+            let subClass = try requireIRI(
+                triple.subject,
+                position: .subject,
+                rule: .scmSco
+            )
+            let superClass = try requireIRI(
+                triple.object,
+                position: .object,
+                rule: .scmSco
+            )
             // Class hierarchy assertion: propagate to existing instances
             try await materializeSubClassAssertion(
-                subClass: triple.subject,
-                superClass: triple.object,
+                subClass: subClass,
+                superClass: superClass,
                 ontologyIRI: ontologyIRI,
                 baseTriple: baseTriple,
                 transaction: transaction,
@@ -170,10 +133,20 @@ public struct OWL2RLMaterializer: Sendable {
             )
 
         case WellKnownIRI.rdfsSubPropertyOf:
+            let subProperty = try requireIRI(
+                triple.subject,
+                position: .subject,
+                rule: .scmSpo
+            )
+            let superProperty = try requireIRI(
+                triple.object,
+                position: .object,
+                rule: .scmSpo
+            )
             // Property hierarchy: apply prp-spo1
             try await materializeSubPropertyAssertion(
-                subProperty: triple.subject,
-                superProperty: triple.object,
+                subProperty: subProperty,
+                superProperty: superProperty,
                 ontologyIRI: ontologyIRI,
                 baseTriple: baseTriple,
                 transaction: transaction,
@@ -193,7 +166,9 @@ public struct OWL2RLMaterializer: Sendable {
             )
         }
 
-        result.statistics.inferenceTime = Date().timeIntervalSince(startTime)
+        result.statistics.inferenceTime = seconds(
+            in: start.duration(to: clock.now)
+        )
         return result
     }
 
@@ -204,10 +179,10 @@ public struct OWL2RLMaterializer: Sendable {
     /// When x rdf:type C is asserted, for every superclass S of C,
     /// infer x rdf:type S.
     private func materializeClassHierarchy(
-        individual: String,
+        individual: DatabaseRDFTerm,
         classIRI: String,
         ontologyIRI: String,
-        baseTriple: TripleKey,
+        baseTriple: ReasoningTriple,
         transaction: any Transaction,
         result: inout InferenceResult
     ) async throws {
@@ -222,14 +197,22 @@ public struct OWL2RLMaterializer: Sendable {
 
         // For each superclass, infer typing
         for superClass in superClasses {
-            let inferredTriple = TripleKey(individual, WellKnownIRI.rdfType, superClass)
+            let inferredTriple = try reasoningTriple(
+                subject: individual,
+                predicateIRI: WellKnownIRI.rdfType,
+                object: .iri(superClass)
+            )
 
             // Create provenance
             let provenance = InferenceProvenance(
                 rule: .caxSco,
                 antecedents: [
                     baseTriple,
-                    TripleKey(classIRI, WellKnownIRI.rdfsSubClassOf, superClass)
+                    try iriTriple(
+                        subjectIRI: classIRI,
+                        predicateIRI: WellKnownIRI.rdfsSubClassOf,
+                        objectIRI: superClass
+                    )
                 ]
             )
 
@@ -245,13 +228,21 @@ public struct OWL2RLMaterializer: Sendable {
         )
 
         for equivalentClass in equivalentClasses where equivalentClass != classIRI {
-            let inferredTriple = TripleKey(individual, WellKnownIRI.rdfType, equivalentClass)
+            let inferredTriple = try reasoningTriple(
+                subject: individual,
+                predicateIRI: WellKnownIRI.rdfType,
+                object: .iri(equivalentClass)
+            )
 
             let provenance = InferenceProvenance(
                 rule: .caxEqc1,
                 antecedents: [
                     baseTriple,
-                    TripleKey(classIRI, WellKnownIRI.owlEquivalentClass, equivalentClass)
+                    try iriTriple(
+                        subjectIRI: classIRI,
+                        predicateIRI: WellKnownIRI.owlEquivalentClass,
+                        objectIRI: equivalentClass
+                    )
                 ]
             )
 
@@ -265,7 +256,7 @@ public struct OWL2RLMaterializer: Sendable {
         subClass: String,
         superClass: String,
         ontologyIRI: String,
-        baseTriple: TripleKey,
+        baseTriple: ReasoningTriple,
         transaction: any Transaction,
         result: inout InferenceResult
     ) async throws {
@@ -282,13 +273,21 @@ public struct OWL2RLMaterializer: Sendable {
         )
 
         for transitiveSuper in transitiveSuperClasses {
-            let inferredTriple = TripleKey(subClass, WellKnownIRI.rdfsSubClassOf, transitiveSuper)
+            let inferredTriple = try iriTriple(
+                subjectIRI: subClass,
+                predicateIRI: WellKnownIRI.rdfsSubClassOf,
+                objectIRI: transitiveSuper
+            )
 
             let provenance = InferenceProvenance(
                 rule: .scmSco,
                 antecedents: [
                     baseTriple,
-                    TripleKey(superClass, WellKnownIRI.rdfsSubClassOf, transitiveSuper)
+                    try iriTriple(
+                        subjectIRI: superClass,
+                        predicateIRI: WellKnownIRI.rdfsSubClassOf,
+                        objectIRI: transitiveSuper
+                    )
                 ]
             )
 
@@ -304,7 +303,7 @@ public struct OWL2RLMaterializer: Sendable {
         subProperty: String,
         superProperty: String,
         ontologyIRI: String,
-        baseTriple: TripleKey,
+        baseTriple: ReasoningTriple,
         transaction: any Transaction,
         result: inout InferenceResult
     ) async throws {
@@ -318,13 +317,21 @@ public struct OWL2RLMaterializer: Sendable {
         )
 
         for transitiveSuper in transitiveSuperProperties {
-            let inferredTriple = TripleKey(subProperty, WellKnownIRI.rdfsSubPropertyOf, transitiveSuper)
+            let inferredTriple = try iriTriple(
+                subjectIRI: subProperty,
+                predicateIRI: WellKnownIRI.rdfsSubPropertyOf,
+                objectIRI: transitiveSuper
+            )
 
             let provenance = InferenceProvenance(
                 rule: .scmSpo,
                 antecedents: [
                     baseTriple,
-                    TripleKey(superProperty, WellKnownIRI.rdfsSubPropertyOf, transitiveSuper)
+                    try iriTriple(
+                        subjectIRI: superProperty,
+                        predicateIRI: WellKnownIRI.rdfsSubPropertyOf,
+                        objectIRI: transitiveSuper
+                    )
                 ]
             )
 
@@ -337,30 +344,45 @@ public struct OWL2RLMaterializer: Sendable {
 
     /// Materialize inferences for a property assertion
     private func materializePropertyAssertion(
-        subject: String,
-        predicate: String,
-        object: String,
+        subject: DatabaseRDFTerm,
+        predicate: DatabaseRDFPredicateIRI,
+        object: DatabaseRDFTerm,
         ontologyIRI: String,
-        baseTriple: TripleKey,
+        baseTriple: ReasoningTriple,
         transaction: any Transaction,
         result: inout InferenceResult
     ) async throws {
+        let predicateIRI = predicate.rawValue
+        let propertyDefinition = try await ontologyStore.getProperty(
+            predicateIRI,
+            ontologyIRI: ontologyIRI,
+            transaction: transaction
+        )
+
         // prp-spo1: If p1 rdfs:subPropertyOf p2, and x p1 y, then x p2 y
         let superProperties = try await ontologyStore.getSuperProperties(
-            of: predicate,
+            of: predicateIRI,
             ontologyIRI: ontologyIRI,
             transaction: transaction
         )
 
         for superProp in superProperties {
             result.statistics.ruleApplications += 1
-            let inferredTriple = TripleKey(subject, superProp, object)
+            let inferredTriple = try reasoningTriple(
+                subject: subject,
+                predicateIRI: superProp,
+                object: object
+            )
 
             let provenance = InferenceProvenance(
                 rule: .prpSpo1,
                 antecedents: [
                     baseTriple,
-                    TripleKey(predicate, WellKnownIRI.rdfsSubPropertyOf, superProp)
+                    try iriTriple(
+                        subjectIRI: predicateIRI,
+                        predicateIRI: WellKnownIRI.rdfsSubPropertyOf,
+                        objectIRI: superProp
+                    )
                 ]
             )
 
@@ -369,19 +391,27 @@ public struct OWL2RLMaterializer: Sendable {
         }
 
         // prp-inv1/2: If p1 owl:inverseOf p2, and x p1 y, then y p2 x
-        if let inverseProperty = try await ontologyStore.getInverse(
-            of: predicate,
-            ontologyIRI: ontologyIRI,
-            transaction: transaction
-        ) {
+        if let inverseProperty = propertyDefinition?.inverseOf {
             result.statistics.ruleApplications += 1
-            let inferredTriple = TripleKey(object, inverseProperty, subject)
+            let reversedSubject = try requireRDFSubject(
+                object,
+                rule: .prpInv1
+            )
+            let inferredTriple = try reasoningTriple(
+                subject: reversedSubject,
+                predicateIRI: inverseProperty,
+                object: subject
+            )
 
             let provenance = InferenceProvenance(
                 rule: .prpInv1,
                 antecedents: [
                     baseTriple,
-                    TripleKey(predicate, WellKnownIRI.owlInverseOf, inverseProperty)
+                    try iriTriple(
+                        subjectIRI: predicateIRI,
+                        predicateIRI: WellKnownIRI.owlInverseOf,
+                        objectIRI: inverseProperty
+                    )
                 ]
             )
 
@@ -390,19 +420,27 @@ public struct OWL2RLMaterializer: Sendable {
         }
 
         // prp-symp: If p is symmetric, and x p y, then y p x
-        if try await ontologyStore.isSymmetric(
-            property: predicate,
-            ontologyIRI: ontologyIRI,
-            transaction: transaction
-        ) {
+        if propertyDefinition?.isSymmetric == true {
             result.statistics.ruleApplications += 1
-            let inferredTriple = TripleKey(object, predicate, subject)
+            let reversedSubject = try requireRDFSubject(
+                object,
+                rule: .prpSymp
+            )
+            let inferredTriple = try ReasoningTriple(
+                subject: reversedSubject,
+                predicate: predicate,
+                object: subject
+            )
 
             let provenance = InferenceProvenance(
                 rule: .prpSymp,
                 antecedents: [
                     baseTriple,
-                    TripleKey(predicate, WellKnownIRI.rdfType, WellKnownIRI.owlSymmetricProperty)
+                    try iriTriple(
+                        subjectIRI: predicateIRI,
+                        predicateIRI: WellKnownIRI.rdfType,
+                        objectIRI: WellKnownIRI.owlSymmetricProperty
+                    )
                 ]
             )
 
@@ -411,21 +449,25 @@ public struct OWL2RLMaterializer: Sendable {
         }
 
         // prp-dom: Domain inference
-        let domains = try await ontologyStore.getDomains(
-            of: predicate,
-            ontologyIRI: ontologyIRI,
-            transaction: transaction
-        )
+        let domains = propertyDefinition?.domains ?? []
 
         for domain in domains {
             result.statistics.ruleApplications += 1
-            let inferredTriple = TripleKey(subject, WellKnownIRI.rdfType, domain)
+            let inferredTriple = try reasoningTriple(
+                subject: subject,
+                predicateIRI: WellKnownIRI.rdfType,
+                object: .iri(domain)
+            )
 
             let provenance = InferenceProvenance(
                 rule: .prpDom,
                 antecedents: [
                     baseTriple,
-                    TripleKey(predicate, WellKnownIRI.rdfsDomain, domain)
+                    try iriTriple(
+                        subjectIRI: predicateIRI,
+                        predicateIRI: WellKnownIRI.rdfsDomain,
+                        objectIRI: domain
+                    )
                 ]
             )
 
@@ -434,21 +476,31 @@ public struct OWL2RLMaterializer: Sendable {
         }
 
         // prp-rng: Range inference
-        let ranges = try await ontologyStore.getRanges(
-            of: predicate,
-            ontologyIRI: ontologyIRI,
-            transaction: transaction
-        )
+        let ranges = propertyDefinition?.type == .objectProperty
+            ? propertyDefinition?.ranges ?? []
+            : []
 
         for range in ranges {
             result.statistics.ruleApplications += 1
-            let inferredTriple = TripleKey(object, WellKnownIRI.rdfType, range)
+            let rangeSubject = try requireRDFSubject(
+                object,
+                rule: .prpRng
+            )
+            let inferredTriple = try reasoningTriple(
+                subject: rangeSubject,
+                predicateIRI: WellKnownIRI.rdfType,
+                object: .iri(range)
+            )
 
             let provenance = InferenceProvenance(
                 rule: .prpRng,
                 antecedents: [
                     baseTriple,
-                    TripleKey(predicate, WellKnownIRI.rdfsRange, range)
+                    try iriTriple(
+                        subjectIRI: predicateIRI,
+                        predicateIRI: WellKnownIRI.rdfsRange,
+                        objectIRI: range
+                    )
                 ]
             )
 
@@ -462,8 +514,8 @@ public struct OWL2RLMaterializer: Sendable {
                 subject: subject,
                 predicate: predicate,
                 object: object,
-                ontologyIRI: ontologyIRI,
-                transaction: transaction,
+                baseTriple: baseTriple,
+                propertyDefinition: propertyDefinition,
                 result: &result
             )
         }
@@ -473,32 +525,117 @@ public struct OWL2RLMaterializer: Sendable {
 
     /// Detect inconsistencies from a property assertion
     private func detectInconsistencies(
-        subject: String,
-        predicate: String,
-        object: String,
-        ontologyIRI: String,
-        transaction: any Transaction,
+        subject: DatabaseRDFTerm,
+        predicate: DatabaseRDFPredicateIRI,
+        object: DatabaseRDFTerm,
+        baseTriple: ReasoningTriple,
+        propertyDefinition: StoredPropertyDefinition?,
         result: inout InferenceResult
     ) async throws {
         // prp-irp: Irreflexive property violation
-        if subject == object {
-            if try await ontologyStore.isIrreflexive(
-                property: predicate,
-                ontologyIRI: ontologyIRI,
-                transaction: transaction
-            ) {
-                result.inconsistencies.append(InconsistencyReport(
-                    rule: .prpIrp,
-                    involvedTriples: [TripleKey(subject, predicate, object)],
-                    description: "Irreflexive property \(predicate) used reflexively on \(subject)"
-                ))
-                result.statistics.inconsistenciesDetected += 1
-            }
+        if subject == object && propertyDefinition?.isIrreflexive == true {
+            result.inconsistencies.append(InconsistencyReport(
+                rule: .prpIrp,
+                involvedTriples: [baseTriple],
+                description: "Irreflexive property \(predicate.rawValue) used reflexively on \(subject)"
+            ))
+            result.statistics.inconsistenciesDetected += 1
         }
 
         // prp-asyp: Asymmetric property violation (would need to query existing triples)
         // This is handled at consistency check time rather than materialization
     }
+
+    private func reasoningTriple(
+        subject: DatabaseRDFTerm,
+        predicateIRI: String,
+        object: DatabaseRDFTerm
+    ) throws -> ReasoningTriple {
+        do {
+            return try ReasoningTriple(
+                subject: subject,
+                predicateIRI: predicateIRI,
+                object: object
+            )
+        } catch let error {
+            throw OWL2RLMaterializationError.invalidGeneratedTriple(error)
+        }
+    }
+
+    private func iriTriple(
+        subjectIRI: String,
+        predicateIRI: String,
+        objectIRI: String
+    ) throws -> ReasoningTriple {
+        try reasoningTriple(
+            subject: .iri(subjectIRI),
+            predicateIRI: predicateIRI,
+            object: .iri(objectIRI)
+        )
+    }
+
+    private func requireIRI(
+        _ term: DatabaseRDFTerm,
+        position: OWL2RLMaterializationPosition,
+        rule: OWL2RLRule
+    ) throws -> String {
+        guard case .iri(let value) = term else {
+            throw OWL2RLMaterializationError.expectedIRI(
+                rule: rule,
+                position: position,
+                actual: termKind(term)
+            )
+        }
+        return value
+    }
+
+    private func requireRDFSubject(
+        _ term: DatabaseRDFTerm,
+        rule: OWL2RLRule
+    ) throws -> DatabaseRDFTerm {
+        switch term {
+        case .iri, .blankNode:
+            return term
+        case .literal, .tripleTerm:
+            throw OWL2RLMaterializationError.expectedRDFSubject(
+                rule: rule,
+                actual: termKind(term)
+            )
+        }
+    }
+
+    private func termKind(_ term: DatabaseRDFTerm) -> DatabaseRDFTermKind {
+        switch term {
+        case .blankNode: .blankNode
+        case .iri: .iri
+        case .literal: .literal
+        case .tripleTerm: .tripleTerm
+        }
+    }
+
+    private func seconds(in duration: Duration) -> Double {
+        let components = duration.components
+        return Double(components.seconds)
+            + Double(components.attoseconds) / 1_000_000_000_000_000_000
+    }
+}
+
+public enum OWL2RLMaterializationPosition: Sendable, Equatable {
+    case subject
+    case object
+}
+
+public enum OWL2RLMaterializationError: Error, Sendable, Equatable {
+    case expectedIRI(
+        rule: OWL2RLRule,
+        position: OWL2RLMaterializationPosition,
+        actual: DatabaseRDFTermKind
+    )
+    case expectedRDFSubject(
+        rule: OWL2RLRule,
+        actual: DatabaseRDFTermKind
+    )
+    case invalidGeneratedTriple(ReasoningTripleError)
 }
 
 // MARK: - Well-Known IRIs
@@ -536,12 +673,12 @@ public enum WellKnownIRI {
 /// An inferred triple with its provenance
 public struct InferredTriple: Sendable {
     /// The inferred triple
-    public let triple: TripleKey
+    public let triple: ReasoningTriple
 
     /// Provenance tracking how this triple was derived
     public let provenance: InferenceProvenance
 
-    public init(triple: TripleKey, provenance: InferenceProvenance) {
+    public init(triple: ReasoningTriple, provenance: InferenceProvenance) {
         self.triple = triple
         self.provenance = provenance
     }

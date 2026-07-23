@@ -1,7 +1,11 @@
 // BitmapIndex.swift
 // QueryPlanner - Bitmap index support for low-cardinality columns
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import StorageKit
 
@@ -500,7 +504,7 @@ public struct BitmapIndexSuggester<T: Persistable> {
 
             // Check if already indexed
             let hasIndex = existingIndexes.contains { index in
-                index.keyPaths.first.map { T.fieldName(for: $0) == fieldName } ?? false
+                index.fieldNames.first == fieldName
             }
 
             if hasIndex {

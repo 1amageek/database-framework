@@ -264,7 +264,7 @@ struct ExecutionPatternTests {
             ExecutionTriple("?person", "name", "?name")
         ])
 
-        let variables = pattern.variables
+        let variables = pattern.outputVariables
         #expect(variables.count == 2)
         #expect(variables.contains("?person"))
         #expect(variables.contains("?name"))
@@ -276,7 +276,7 @@ struct ExecutionPatternTests {
         let right: ExecutionPattern = .basic([ExecutionTriple("?x", "age", "?age")])
         let join: ExecutionPattern = .join(left, right)
 
-        let variables = join.variables
+        let variables = join.outputVariables
         #expect(variables.count == 2)
         #expect(variables.contains("?x"))
         #expect(variables.contains("?age"))
@@ -288,8 +288,8 @@ struct ExecutionPatternTests {
         let right: ExecutionPattern = .basic([ExecutionTriple("?person", "email", "?email")])
         let optional: ExecutionPattern = .optional(left, right)
 
-        let required = optional.requiredVariables
-        let all = optional.variables
+        let required = optional.requiredOutputVariables
+        let all = optional.outputVariables
         let optionalVars = optional.optionalVariables
 
         #expect(required.contains("?person"))
@@ -304,7 +304,7 @@ struct ExecutionPatternTests {
         let right: ExecutionPattern = .basic([ExecutionTriple("?x", "type", "B"), ExecutionTriple("?x", "age", "?age")])
         let union: ExecutionPattern = .union(left, right)
 
-        let required = union.requiredVariables
+        let required = union.requiredOutputVariables
 
         // Only ?x is required in both branches
         #expect(required.contains("?x"))
@@ -340,7 +340,7 @@ struct ExecutionPatternTests {
 struct FilterExpressionTests {
 
     @Test("Equals filter")
-    func testEquals() {
+    func testEquals() throws {
         let filter = FilterExpression.equals("?name", "Alice")
 
         var binding = VariableBinding()
@@ -349,12 +349,12 @@ struct FilterExpressionTests {
         var otherBinding = VariableBinding()
         otherBinding = otherBinding.binding("?name", to: "Bob")
 
-        #expect(filter.evaluate(binding))
-        #expect(!filter.evaluate(otherBinding))
+        #expect(try filter.evaluate(binding))
+        #expect(try !filter.evaluate(otherBinding))
     }
 
     @Test("Not equals filter")
-    func testNotEquals() {
+    func testNotEquals() throws {
         let filter = FilterExpression.notEquals("?name", "Alice")
 
         var aliceBinding = VariableBinding()
@@ -366,13 +366,13 @@ struct FilterExpressionTests {
         // Unbound variable should return false (SPARQL semantics)
         let unboundBinding = VariableBinding()
 
-        #expect(!filter.evaluate(aliceBinding))
-        #expect(filter.evaluate(bobBinding))
-        #expect(!filter.evaluate(unboundBinding))  // SPARQL: unbound → false
+        #expect(try !filter.evaluate(aliceBinding))
+        #expect(try filter.evaluate(bobBinding))
+        #expect(try !filter.evaluate(unboundBinding))  // SPARQL: unbound → false
     }
 
     @Test("Variable equals filter")
-    func testVariableEquals() {
+    func testVariableEquals() throws {
         let filter = FilterExpression.variableEquals("?x", "?y")
 
         var sameBinding = VariableBinding()
@@ -383,12 +383,12 @@ struct FilterExpressionTests {
         diffBinding = diffBinding.binding("?x", to: "Alice")
         diffBinding = diffBinding.binding("?y", to: "Bob")
 
-        #expect(filter.evaluate(sameBinding))
-        #expect(!filter.evaluate(diffBinding))
+        #expect(try filter.evaluate(sameBinding))
+        #expect(try !filter.evaluate(diffBinding))
     }
 
     @Test("Variable not equals filter")
-    func testVariableNotEquals() {
+    func testVariableNotEquals() throws {
         let filter = FilterExpression.variableNotEquals("?x", "?y")
 
         var sameBinding = VariableBinding()
@@ -399,12 +399,12 @@ struct FilterExpressionTests {
         diffBinding = diffBinding.binding("?x", to: "Alice")
         diffBinding = diffBinding.binding("?y", to: "Bob")
 
-        #expect(!filter.evaluate(sameBinding))
-        #expect(filter.evaluate(diffBinding))
+        #expect(try !filter.evaluate(sameBinding))
+        #expect(try filter.evaluate(diffBinding))
     }
 
     @Test("Bound filter")
-    func testBound() {
+    func testBound() throws {
         let filter = FilterExpression.bound("?email")
 
         var withEmail = VariableBinding()
@@ -412,12 +412,12 @@ struct FilterExpressionTests {
 
         let withoutEmail = VariableBinding()
 
-        #expect(filter.evaluate(withEmail))
-        #expect(!filter.evaluate(withoutEmail))
+        #expect(try filter.evaluate(withEmail))
+        #expect(try !filter.evaluate(withoutEmail))
     }
 
     @Test("Not bound filter")
-    func testNotBound() {
+    func testNotBound() throws {
         let filter = FilterExpression.notBound("?email")
 
         var withEmail = VariableBinding()
@@ -425,12 +425,12 @@ struct FilterExpressionTests {
 
         let withoutEmail = VariableBinding()
 
-        #expect(!filter.evaluate(withEmail))
-        #expect(filter.evaluate(withoutEmail))
+        #expect(try !filter.evaluate(withEmail))
+        #expect(try filter.evaluate(withoutEmail))
     }
 
     @Test("Contains filter")
-    func testContains() {
+    func testContains() throws {
         let filter = FilterExpression.contains("?name", "li")
 
         var aliceBinding = VariableBinding()
@@ -439,12 +439,12 @@ struct FilterExpressionTests {
         var bobBinding = VariableBinding()
         bobBinding = bobBinding.binding("?name", to: "Bob")
 
-        #expect(filter.evaluate(aliceBinding))
-        #expect(!filter.evaluate(bobBinding))
+        #expect(try filter.evaluate(aliceBinding))
+        #expect(try !filter.evaluate(bobBinding))
     }
 
     @Test("Starts with filter")
-    func testStartsWith() {
+    func testStartsWith() throws {
         let filter = FilterExpression.startsWith("?name", "Al")
 
         var aliceBinding = VariableBinding()
@@ -453,12 +453,12 @@ struct FilterExpressionTests {
         var bobBinding = VariableBinding()
         bobBinding = bobBinding.binding("?name", to: "Bob")
 
-        #expect(filter.evaluate(aliceBinding))
-        #expect(!filter.evaluate(bobBinding))
+        #expect(try filter.evaluate(aliceBinding))
+        #expect(try !filter.evaluate(bobBinding))
     }
 
     @Test("Ends with filter")
-    func testEndsWith() {
+    func testEndsWith() throws {
         let filter = FilterExpression.endsWith("?name", "ce")
 
         var aliceBinding = VariableBinding()
@@ -467,12 +467,12 @@ struct FilterExpressionTests {
         var bobBinding = VariableBinding()
         bobBinding = bobBinding.binding("?name", to: "Bob")
 
-        #expect(filter.evaluate(aliceBinding))
-        #expect(!filter.evaluate(bobBinding))
+        #expect(try filter.evaluate(aliceBinding))
+        #expect(try !filter.evaluate(bobBinding))
     }
 
     @Test("Regex filter")
-    func testRegex() {
+    func testRegex() throws {
         let filter = FilterExpression.regex("?name", "^[A-Z]")
 
         var capitalBinding = VariableBinding()
@@ -481,12 +481,12 @@ struct FilterExpressionTests {
         var lowerBinding = VariableBinding()
         lowerBinding = lowerBinding.binding("?name", to: "alice")
 
-        #expect(filter.evaluate(capitalBinding))
-        #expect(!filter.evaluate(lowerBinding))
+        #expect(try filter.evaluate(capitalBinding))
+        #expect(try !filter.evaluate(lowerBinding))
     }
 
     @Test("Case insensitive regex filter")
-    func testRegexCaseInsensitive() {
+    func testRegexCaseInsensitive() throws {
         let filter = FilterExpression.regexWithFlags("?name", "alice", "i")
 
         var upperBinding = VariableBinding()
@@ -495,12 +495,12 @@ struct FilterExpressionTests {
         var lowerBinding = VariableBinding()
         lowerBinding = lowerBinding.binding("?name", to: "alice")
 
-        #expect(filter.evaluate(upperBinding))
-        #expect(filter.evaluate(lowerBinding))
+        #expect(try filter.evaluate(upperBinding))
+        #expect(try filter.evaluate(lowerBinding))
     }
 
     @Test("AND filter")
-    func testAnd() {
+    func testAnd() throws {
         let filter = FilterExpression.and(
             .bound("?name"),
             .equals("?status", "active")
@@ -514,12 +514,12 @@ struct FilterExpressionTests {
         invalidBinding = invalidBinding.binding("?name", to: "Alice")
         invalidBinding = invalidBinding.binding("?status", to: "inactive")
 
-        #expect(filter.evaluate(validBinding))
-        #expect(!filter.evaluate(invalidBinding))
+        #expect(try filter.evaluate(validBinding))
+        #expect(try !filter.evaluate(invalidBinding))
     }
 
     @Test("OR filter")
-    func testOr() {
+    func testOr() throws {
         let filter = FilterExpression.or(
             .equals("?status", "active"),
             .equals("?status", "pending")
@@ -534,13 +534,13 @@ struct FilterExpressionTests {
         var inactiveBinding = VariableBinding()
         inactiveBinding = inactiveBinding.binding("?status", to: "inactive")
 
-        #expect(filter.evaluate(activeBinding))
-        #expect(filter.evaluate(pendingBinding))
-        #expect(!filter.evaluate(inactiveBinding))
+        #expect(try filter.evaluate(activeBinding))
+        #expect(try filter.evaluate(pendingBinding))
+        #expect(try !filter.evaluate(inactiveBinding))
     }
 
     @Test("NOT filter")
-    func testNot() {
+    func testNot() throws {
         let filter = FilterExpression.not(.equals("?status", "deleted"))
 
         var activeBinding = VariableBinding()
@@ -549,12 +549,12 @@ struct FilterExpressionTests {
         var deletedBinding = VariableBinding()
         deletedBinding = deletedBinding.binding("?status", to: "deleted")
 
-        #expect(filter.evaluate(activeBinding))
-        #expect(!filter.evaluate(deletedBinding))
+        #expect(try filter.evaluate(activeBinding))
+        #expect(try !filter.evaluate(deletedBinding))
     }
 
     @Test("Numeric filter")
-    func testNumeric() {
+    func testNumeric() throws {
         let ageFilter = FilterExpression.numeric("?age", ">=", 18)
 
         var adultBinding = VariableBinding()
@@ -563,12 +563,12 @@ struct FilterExpressionTests {
         var minorBinding = VariableBinding()
         minorBinding = minorBinding.binding("?age", to: .int64(15))
 
-        #expect(ageFilter.evaluate(adultBinding))
-        #expect(!ageFilter.evaluate(minorBinding))
+        #expect(try ageFilter.evaluate(adultBinding))
+        #expect(try !ageFilter.evaluate(minorBinding))
     }
 
     @Test("allOf convenience constructor")
-    func testAllOf() {
+    func testAllOf() throws {
         let filter = FilterExpression.allOf([
             .bound("?name"),
             .bound("?age"),
@@ -585,12 +585,12 @@ struct FilterExpressionTests {
         invalidBinding = invalidBinding.binding("?status", to: "active")
         // missing ?age
 
-        #expect(filter.evaluate(validBinding))
-        #expect(!filter.evaluate(invalidBinding))
+        #expect(try filter.evaluate(validBinding))
+        #expect(try !filter.evaluate(invalidBinding))
     }
 
     @Test("anyOf convenience constructor")
-    func testAnyOf() {
+    func testAnyOf() throws {
         let filter = FilterExpression.anyOf([
             .equals("?type", "admin"),
             .equals("?type", "moderator")
@@ -602,25 +602,25 @@ struct FilterExpressionTests {
         var userBinding = VariableBinding()
         userBinding = userBinding.binding("?type", to: "user")
 
-        #expect(filter.evaluate(adminBinding))
-        #expect(!filter.evaluate(userBinding))
+        #expect(try filter.evaluate(adminBinding))
+        #expect(try !filter.evaluate(userBinding))
     }
 
     @Test("Comparison filters")
-    func testComparisons() {
+    func testComparisons() throws {
         // Note: These are STRING comparisons (lexicographical), not numeric
         var binding = VariableBinding()
         binding = binding.binding("?score", to: "50")
 
         // String comparison: "50" < "60" (true), "50" < "100" (false - lexicographical)
-        #expect(FilterExpression.lessThan("?score", "60").evaluate(binding))
-        #expect(FilterExpression.lessThanOrEqual("?score", "50").evaluate(binding))
-        #expect(FilterExpression.greaterThan("?score", "40").evaluate(binding))
-        #expect(FilterExpression.greaterThanOrEqual("?score", "50").evaluate(binding))
+        #expect(try FilterExpression.lessThan("?score", "60").evaluate(binding))
+        #expect(try FilterExpression.lessThanOrEqual("?score", "50").evaluate(binding))
+        #expect(try FilterExpression.greaterThan("?score", "40").evaluate(binding))
+        #expect(try FilterExpression.greaterThanOrEqual("?score", "50").evaluate(binding))
     }
 
     @Test("Variables property")
-    func testVariables() {
+    func testVariables() throws {
         let simpleFilter = FilterExpression.equals("?name", "Alice")
         #expect(simpleFilter.variables == Set(["?name"]))
 
@@ -635,15 +635,15 @@ struct FilterExpressionTests {
     }
 
     @Test("Always true/false")
-    func testAlwaysTrueFalse() {
+    func testAlwaysTrueFalse() throws {
         let binding = VariableBinding()
 
-        #expect(FilterExpression.alwaysTrue.evaluate(binding))
-        #expect(!FilterExpression.alwaysFalse.evaluate(binding))
+        #expect(try FilterExpression.alwaysTrue.evaluate(binding))
+        #expect(try !FilterExpression.alwaysFalse.evaluate(binding))
     }
 
     @Test("Custom filter")
-    func testCustomFilter() {
+    func testCustomFilter() throws {
         let filter = FilterExpression.custom { binding in
             guard let age = binding.int("?age") else { return false }
             return age >= 21 && age <= 65
@@ -658,9 +658,9 @@ struct FilterExpressionTests {
         var tooOld = VariableBinding()
         tooOld = tooOld.binding("?age", to: "70")
 
-        #expect(filter.evaluate(validBinding))
-        #expect(!filter.evaluate(tooYoung))
-        #expect(!filter.evaluate(tooOld))
+        #expect(try filter.evaluate(validBinding))
+        #expect(try !filter.evaluate(tooYoung))
+        #expect(try !filter.evaluate(tooOld))
     }
 }
 
@@ -839,7 +839,7 @@ struct SPARQLQueryBuilderUnitTests {
         ])
 
         #expect(!pattern.isEmpty)
-        #expect(pattern.variables.contains("?friend"))
+        #expect(pattern.outputVariables.contains("?friend"))
     }
 
     @Test("Graph pattern construction")
@@ -850,7 +850,7 @@ struct SPARQLQueryBuilderUnitTests {
         let basic: ExecutionPattern = .basic([p1, p2])
         #expect(basic.patternCount == 2)
 
-        let variables = basic.variables
+        let variables = basic.outputVariables
         #expect(variables.contains("?friend"))
         #expect(variables.contains("?name"))
     }
@@ -861,8 +861,8 @@ struct SPARQLQueryBuilderUnitTests {
         let filtered: ExecutionPattern = .filter(basic, .numeric("?age", ">=", 18))
 
         #expect(!filtered.isEmpty)
-        #expect(filtered.variables.contains("?x"))
-        #expect(filtered.variables.contains("?age"))
+        #expect(filtered.outputVariables.contains("?x"))
+        #expect(filtered.outputVariables.contains("?age"))
     }
 }
 
@@ -883,24 +883,24 @@ struct ExpressionEvaluatorVariableTests {
     }
 
     @Test("Variable lookup resolves with ?-prefixed binding key")
-    func variableLookup() {
+    func variableLookup() throws {
         let binding = makeBinding([("?name", "Alice")])
         // QueryIR.Variable("name") has .name == "name" (no ?)
         let expr = QueryIR.Expression.variable(QueryIR.Variable("name"))
-        let result = ExpressionEvaluator.evaluate(expr, binding: binding)
+        let result = try ExpressionEvaluator.evaluate(expr, binding: binding)
         #expect(result == .string("Alice"))
     }
 
     @Test("Variable lookup when Variable already has ? prefix")
-    func variableLookupWithPrefix() {
+    func variableLookupWithPrefix() throws {
         let binding = makeBinding([("?age", "30")])
         let expr = QueryIR.Expression.variable(QueryIR.Variable("?age"))
-        let result = ExpressionEvaluator.evaluate(expr, binding: binding)
+        let result = try ExpressionEvaluator.evaluate(expr, binding: binding)
         #expect(result == .string("30"))
     }
 
     @Test("CONTAINS function with variable resolves correctly")
-    func containsFilter() {
+    func containsFilter() throws {
         let binding = makeBinding([("?name", "Google")])
         let expr = QueryIR.Expression.function(QueryIR.FunctionCall(
             name: "CONTAINS",
@@ -910,12 +910,12 @@ struct ExpressionEvaluatorVariableTests {
             ],
             distinct: false
         ))
-        let result = ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
+        let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
         #expect(result == true)
     }
 
     @Test("CONTAINS function returns false when no match")
-    func containsFilterNoMatch() {
+    func containsFilterNoMatch() throws {
         let binding = makeBinding([("?name", "Apple")])
         let expr = QueryIR.Expression.function(QueryIR.FunctionCall(
             name: "CONTAINS",
@@ -925,12 +925,12 @@ struct ExpressionEvaluatorVariableTests {
             ],
             distinct: false
         ))
-        let result = ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
+        let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
         #expect(result == false)
     }
 
     @Test("LCASE nested in CONTAINS resolves variable")
-    func lcaseContainsNested() {
+    func lcaseContainsNested() throws {
         let binding = makeBinding([("?name", "OpenAI")])
         // CONTAINS(LCASE(?name), "ai")
         let expr = QueryIR.Expression.function(QueryIR.FunctionCall(
@@ -945,46 +945,46 @@ struct ExpressionEvaluatorVariableTests {
             ],
             distinct: false
         ))
-        let result = ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
+        let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
         #expect(result == true)
     }
 
     @Test("Equality comparison resolves variable")
-    func equalityFilter() {
+    func equalityFilter() throws {
         let binding = makeBinding([("?name", "Toyota")])
         let expr = QueryIR.Expression.equal(
             .variable(QueryIR.Variable("name")),
             .literal(.string("Toyota"))
         )
-        let result = ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
+        let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
         #expect(result == true)
     }
 
     @Test("BOUND check resolves variable")
-    func boundCheck() {
+    func boundCheck() throws {
         let binding = makeBinding([("?name", "Alice")])
         let expr = QueryIR.Expression.bound(QueryIR.Variable("name"))
-        let result = ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
+        let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
         #expect(result == true)
     }
 
     @Test("BOUND check returns false for unbound variable")
-    func boundCheckUnbound() {
+    func boundCheckUnbound() throws {
         let binding = makeBinding([("?name", "Alice")])
         let expr = QueryIR.Expression.bound(QueryIR.Variable("email"))
-        let result = ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
+        let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
         #expect(result == false)
     }
 
     @Test("BOUND function form resolves variable")
-    func boundFunctionForm() {
+    func boundFunctionForm() throws {
         let binding = makeBinding([("?x", "value")])
         let expr = QueryIR.Expression.function(QueryIR.FunctionCall(
             name: "BOUND",
             arguments: [.variable(QueryIR.Variable("x"))],
             distinct: false
         ))
-        let result = ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
+        let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
         #expect(result == true)
     }
 }

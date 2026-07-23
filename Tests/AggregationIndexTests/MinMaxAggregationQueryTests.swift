@@ -7,19 +7,20 @@ import Core
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
+import DatabaseRuntime
 
 @Suite("MIN/MAX AggregationQuery Integration Tests", .serialized, .heartbeat)
 struct MinMaxAggregationQueryTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Test Models
 
     @Persistable
-    struct OrderMinTest {
-        #Directory<OrderMinTest>("test", "order_min")
+    struct MinimumOrder {
+        #Directory<MinimumOrder>("test", "order_min")
 
         var id: String = UUID().uuidString
         var region: String = ""
@@ -27,15 +28,15 @@ struct MinMaxAggregationQueryTests {
         var amount: Double = 0.0
         var quantity: Int64 = 0
 
-        #Index(MinIndexKind<OrderMinTest, Double>(
+        #Index(MinIndexKind<MinimumOrder, Double>(
             groupBy: [\.region],
             value: \.amount
         ))
     }
 
     @Persistable
-    struct OrderMaxTest {
-        #Directory<OrderMaxTest>("test", "order_max")
+    struct MaximumOrder {
+        #Directory<MaximumOrder>("test", "order_max")
 
         var id: String = UUID().uuidString
         var region: String = ""
@@ -43,15 +44,15 @@ struct MinMaxAggregationQueryTests {
         var amount: Double = 0.0
         var quantity: Int64 = 0
 
-        #Index(MaxIndexKind<OrderMaxTest, Double>(
+        #Index(MaxIndexKind<MaximumOrder, Double>(
             groupBy: [\.region],
             value: \.amount
         ))
     }
 
     @Persistable
-    struct OrderMixedTest {
-        #Directory<OrderMixedTest>("test", "order_mixed")
+    struct MixedAggregationOrder {
+        #Directory<MixedAggregationOrder>("test", "order_mixed")
 
         var id: String = UUID().uuidString
         var region: String = ""
@@ -59,14 +60,14 @@ struct MinMaxAggregationQueryTests {
         var amount: Double = 0.0
         var quantity: Int64 = 0
 
-        #Index(CountIndexKind<OrderMixedTest>(groupBy: [\.region]))
-        #Index(MinIndexKind<OrderMixedTest, Double>(groupBy: [\.region], value: \.amount))
-        #Index(MaxIndexKind<OrderMixedTest, Double>(groupBy: [\.region], value: \.amount))
+        #Index(CountIndexKind<MixedAggregationOrder>(groupBy: [\.region]))
+        #Index(MinIndexKind<MixedAggregationOrder, Double>(groupBy: [\.region], value: \.amount))
+        #Index(MaxIndexKind<MixedAggregationOrder, Double>(groupBy: [\.region], value: \.amount))
     }
 
     @Persistable
-    struct OrderInt64Test {
-        #Directory<OrderInt64Test>("test", "order_int64")
+    struct Int64AggregationOrder {
+        #Directory<Int64AggregationOrder>("test", "order_int64")
 
         var id: String = UUID().uuidString
         var region: String = ""
@@ -74,7 +75,7 @@ struct MinMaxAggregationQueryTests {
         var amount: Double = 0.0
         var quantity: Int64 = 0
 
-        #Index(MinIndexKind<OrderInt64Test, Int64>(
+        #Index(MinIndexKind<Int64AggregationOrder, Int64>(
             groupBy: [\.region],
             value: \.quantity
         ))
@@ -85,18 +86,18 @@ struct MinMaxAggregationQueryTests {
     @Test("MIN aggregation end-to-end with context.aggregate().execute()")
     func testMinAggregationEndToEnd() async throws {
         // Create schema from Persistable type
-        let schema = Schema([OrderMinTest.self])
-        let engine = try await FDBTestSetup.shared.makeEngine()
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), security: .disabled)
+        let schema = Schema([MinimumOrder.self])
+        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Insert test data
         let orders = [
-            OrderMinTest(region: "US", category: "Electronics", amount: 999.99, quantity: 2),
-            OrderMinTest(region: "US", category: "Books", amount: 49.99, quantity: 5),
-            OrderMinTest(region: "EU", category: "Electronics", amount: 1299.00, quantity: 1),
-            OrderMinTest(region: "EU", category: "Books", amount: 39.99, quantity: 3),
-            OrderMinTest(region: "APAC", category: "Electronics", amount: 899.00, quantity: 2),
+            MinimumOrder(region: "US", category: "Electronics", amount: 999.99, quantity: 2),
+            MinimumOrder(region: "US", category: "Books", amount: 49.99, quantity: 5),
+            MinimumOrder(region: "EU", category: "Electronics", amount: 1299.00, quantity: 1),
+            MinimumOrder(region: "EU", category: "Books", amount: 39.99, quantity: 3),
+            MinimumOrder(region: "APAC", category: "Electronics", amount: 899.00, quantity: 2),
         ]
 
         for order in orders {
@@ -105,9 +106,9 @@ struct MinMaxAggregationQueryTests {
         try await context.save()
 
         // Execute MIN aggregation query
-        let results = try await context.aggregate(OrderMinTest.self)
-            .groupBy(\OrderMinTest.region)
-            .min(\OrderMinTest.amount, as: "minAmount")
+        let results = try await context.aggregate(MinimumOrder.self)
+            .groupBy(\MinimumOrder.region)
+            .min(\MinimumOrder.amount, as: "minAmount")
             .execute()
 
         #expect(results.count == 3, "Should have 3 regions")
@@ -132,18 +133,18 @@ struct MinMaxAggregationQueryTests {
     @Test("MAX aggregation end-to-end with context.aggregate().execute()")
     func testMaxAggregationEndToEnd() async throws {
         // Create schema from Persistable type
-        let schema = Schema([OrderMaxTest.self])
-        let engine = try await FDBTestSetup.shared.makeEngine()
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), security: .disabled)
+        let schema = Schema([MaximumOrder.self])
+        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Insert test data
         let orders = [
-            OrderMaxTest(region: "US", category: "Electronics", amount: 999.99, quantity: 2),
-            OrderMaxTest(region: "US", category: "Books", amount: 49.99, quantity: 5),
-            OrderMaxTest(region: "EU", category: "Electronics", amount: 1299.00, quantity: 1),
-            OrderMaxTest(region: "EU", category: "Books", amount: 39.99, quantity: 3),
-            OrderMaxTest(region: "APAC", category: "Electronics", amount: 899.00, quantity: 2),
+            MaximumOrder(region: "US", category: "Electronics", amount: 999.99, quantity: 2),
+            MaximumOrder(region: "US", category: "Books", amount: 49.99, quantity: 5),
+            MaximumOrder(region: "EU", category: "Electronics", amount: 1299.00, quantity: 1),
+            MaximumOrder(region: "EU", category: "Books", amount: 39.99, quantity: 3),
+            MaximumOrder(region: "APAC", category: "Electronics", amount: 899.00, quantity: 2),
         ]
 
         for order in orders {
@@ -152,9 +153,9 @@ struct MinMaxAggregationQueryTests {
         try await context.save()
 
         // Execute MAX aggregation query
-        let results = try await context.aggregate(OrderMaxTest.self)
-            .groupBy(\OrderMaxTest.region)
-            .max(\OrderMaxTest.amount, as: "maxAmount")
+        let results = try await context.aggregate(MaximumOrder.self)
+            .groupBy(\MaximumOrder.region)
+            .max(\MaximumOrder.amount, as: "maxAmount")
             .execute()
 
         #expect(results.count == 3, "Should have 3 regions")
@@ -179,18 +180,18 @@ struct MinMaxAggregationQueryTests {
     @Test("Mixed MIN/MAX/COUNT aggregation end-to-end")
     func testMixedMinMaxCountAggregation() async throws {
         // Create schema from Persistable type
-        let schema = Schema([OrderMixedTest.self])
-        let engine = try await FDBTestSetup.shared.makeEngine()
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), security: .disabled)
+        let schema = Schema([MixedAggregationOrder.self])
+        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Insert test data
         let orders = [
-            OrderMixedTest(region: "US", category: "Electronics", amount: 999.99, quantity: 2),
-            OrderMixedTest(region: "US", category: "Books", amount: 49.99, quantity: 5),
-            OrderMixedTest(region: "EU", category: "Electronics", amount: 1299.00, quantity: 1),
-            OrderMixedTest(region: "EU", category: "Books", amount: 39.99, quantity: 3),
-            OrderMixedTest(region: "APAC", category: "Electronics", amount: 899.00, quantity: 2),
+            MixedAggregationOrder(region: "US", category: "Electronics", amount: 999.99, quantity: 2),
+            MixedAggregationOrder(region: "US", category: "Books", amount: 49.99, quantity: 5),
+            MixedAggregationOrder(region: "EU", category: "Electronics", amount: 1299.00, quantity: 1),
+            MixedAggregationOrder(region: "EU", category: "Books", amount: 39.99, quantity: 3),
+            MixedAggregationOrder(region: "APAC", category: "Electronics", amount: 899.00, quantity: 2),
         ]
 
         for order in orders {
@@ -199,11 +200,11 @@ struct MinMaxAggregationQueryTests {
         try await context.save()
 
         // Execute mixed aggregation query
-        let results = try await context.aggregate(OrderMixedTest.self)
-            .groupBy(\OrderMixedTest.region)
+        let results = try await context.aggregate(MixedAggregationOrder.self)
+            .groupBy(\MixedAggregationOrder.region)
             .count(as: "orderCount")
-            .min(\OrderMixedTest.amount, as: "minAmount")
-            .max(\OrderMixedTest.amount, as: "maxAmount")
+            .min(\MixedAggregationOrder.amount, as: "minAmount")
+            .max(\MixedAggregationOrder.amount, as: "maxAmount")
             .execute()
 
         #expect(results.count == 3, "Should have 3 regions")
@@ -255,16 +256,16 @@ struct MinMaxAggregationQueryTests {
     @Test("MIN aggregation with Int64 type")
     func testMinAggregationWithInt64() async throws {
         // Create schema from Persistable type
-        let schema = Schema([OrderInt64Test.self])
-        let engine = try await FDBTestSetup.shared.makeEngine()
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), security: .disabled)
+        let schema = Schema([Int64AggregationOrder.self])
+        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Insert test data
         let orders = [
-            OrderInt64Test(region: "US", category: "Electronics", amount: 999.99, quantity: 10),
-            OrderInt64Test(region: "US", category: "Books", amount: 49.99, quantity: 2),
-            OrderInt64Test(region: "EU", category: "Electronics", amount: 1299.00, quantity: 5),
+            Int64AggregationOrder(region: "US", category: "Electronics", amount: 999.99, quantity: 10),
+            Int64AggregationOrder(region: "US", category: "Books", amount: 49.99, quantity: 2),
+            Int64AggregationOrder(region: "EU", category: "Electronics", amount: 1299.00, quantity: 5),
         ]
 
         for order in orders {
@@ -273,9 +274,9 @@ struct MinMaxAggregationQueryTests {
         try await context.save()
 
         // Execute MIN aggregation query on Int64 field
-        let results = try await context.aggregate(OrderInt64Test.self)
-            .groupBy(\OrderInt64Test.region)
-            .min(\OrderInt64Test.quantity, as: "minQuantity")
+        let results = try await context.aggregate(Int64AggregationOrder.self)
+            .groupBy(\Int64AggregationOrder.region)
+            .min(\Int64AggregationOrder.quantity, as: "minQuantity")
             .execute()
 
         #expect(results.count == 2, "Should have 2 regions")

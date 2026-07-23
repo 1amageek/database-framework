@@ -3,7 +3,6 @@
 //
 // Reference: FDB Record Layer multi-target indexing strategy
 
-import Foundation
 import StorageKit
 import Core
 import Metrics
@@ -36,7 +35,7 @@ import Synchronization
 ///         IndexBuildTarget(index: emailIndex, maintainer: emailMaintainer),
 ///         IndexBuildTarget(index: nameIndex, maintainer: nameMaintainer),
 ///     ],
-///     stateManager: stateManager
+///     lifecycleStore: lifecycleStore
 /// )
 ///
 /// try await indexer.buildIndexes(clearFirst: true)
@@ -63,7 +62,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     private let targets: [IndexBuildTarget<Item>]
 
     /// Index state manager
-    private let stateManager: IndexStateManager
+    private let lifecycleStore: IndexLifecycleStore
 
     // Configuration
     private let batchSize: Int
@@ -90,7 +89,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     ///   - blobsSubspace: Subspace where blob chunks are stored
     ///   - itemType: Type name of items to index
     ///   - targets: Index build targets (index + maintainer pairs)
-    ///   - stateManager: Index state manager
+    ///   - lifecycleStore: Index state manager
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - throttleDelayMs: Delay between batches in ms (default: 0)
     public init(
@@ -100,7 +99,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         blobsSubspace: Subspace,
         itemType: String,
         targets: [IndexBuildTarget<Item>],
-        stateManager: IndexStateManager,
+        lifecycleStore: IndexLifecycleStore,
         batchSize: Int = 100,
         throttleDelayMs: Int = 0
     ) {
@@ -110,7 +109,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         self.blobsSubspace = blobsSubspace
         self.itemType = itemType
         self.targets = targets
-        self.stateManager = stateManager
+        self.lifecycleStore = lifecycleStore
         self.batchSize = batchSize
         self.throttleDelayMs = throttleDelayMs
 
@@ -159,7 +158,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     public func buildIndexes(clearFirst: Bool = false) async throws {
         // Set all indexes to write-only state
         for target in targets {
-            try await stateManager.enable(target.index.name)
+            try await lifecycleStore.enable(target.index.name)
         }
 
         // Clear if requested
@@ -174,7 +173,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
         // Transition all to readable
         for target in targets {
-            try await stateManager.makeReadable(target.index.name)
+            try await lifecycleStore.makeReadable(target.index.name)
         }
 
         // Clear progress
@@ -226,7 +225,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                     var lastProcessedKey: Bytes? = nil
 
                     // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
-                    let storage = ItemStorage(
+                    let storage = self.container.itemStorageFactory.make(
                         transaction: transaction,
                         blobsSubspace: self.blobsSubspace
                     )
@@ -248,7 +247,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
                         batchEntries.append((item: item, id: id))
 
-                        lastProcessedKey = Array(key)
+                        lastProcessedKey = key
                         itemsInBatch += 1
                     }
 
@@ -304,7 +303,9 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
             // Throttle if configured
             if throttleDelayMs > 0 {
-                try await Task.sleep(nanoseconds: UInt64(throttleDelayMs) * 1_000_000)
+                try await container.engine.monotonicClock.sleep(
+                    for: .milliseconds(Int64(throttleDelayMs))
+                )
             }
         }
     }
@@ -317,19 +318,18 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
-            return try JSONDecoder().decode(RangeSet.self, from: Data(bytes))
+            return try RangeSetCodec.decode(bytes)
         }
     }
 
     private func saveProgress(_ rangeSet: RangeSet, _ transaction: any Transaction) throws {
-        let data = try JSONEncoder().encode(rangeSet)
-        transaction.setValue(Array(data), for: progressKey)
+        try transaction.setValue(try RangeSetCodec.encode(rangeSet), for: progressKey)
     }
 
     private func clearProgress() async throws {
         let progressKey = self.progressKey
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.clear(key: progressKey)
+            try transaction.clear(key: progressKey)
         }
     }
 
@@ -338,7 +338,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     private func clearIndexData(for index: Index) async throws {
         let indexRange = self.indexSubspace.subspace(index.name).range()
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
+            try transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }
     }
 }

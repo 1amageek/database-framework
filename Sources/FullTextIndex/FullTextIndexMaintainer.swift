@@ -3,9 +3,11 @@
 //
 // Maintains full-text indexes using inverted index structure.
 
-import Foundation
 import Core
 import DatabaseEngine
+import DatabaseValue
+import FullText
+import QueryIR
 import StorageKit
 
 // MARK: - FullText Constants
@@ -69,8 +71,8 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private let dfSubspace: Subspace
 
     // BM25 statistics keys
-    private let statsNKey: [UInt8]
-    private let statsTotalLengthKey: [UInt8]
+    private let statsNKey: Bytes
+    private let statsTotalLengthKey: Bytes
 
     private var termNormalizer: FullTextTermNormalizer {
         FullTextTermNormalizer(
@@ -128,20 +130,20 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 // Remove term entries
                 for term in oldTermPositions.keys {
                     let termKey = try buildTermKey(term: term, id: oldId)
-                    transaction.clear(key: termKey)
+                    try transaction.clear(key: termKey)
 
                     // Decrement df for this term (BM25)
                     let dfKey = dfSubspace.pack(Tuple(term))
-                    transaction.atomicOp(key: dfKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
+                    try transaction.atomicOp(key: dfKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
                 }
 
                 // Remove document metadata
                 let docKey = docsSubspace.pack(oldId)
-                transaction.clear(key: docKey)
+                try transaction.clear(key: docKey)
 
                 // Decrement BM25 corpus statistics
-                transaction.atomicOp(key: statsNKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
-                transaction.atomicOp(key: statsTotalLengthKey, param: ByteConversion.int64ToBytes(-Int64(oldDocLength)), mutationType: .add)
+                try transaction.atomicOp(key: statsNKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
+                try transaction.atomicOp(key: statsTotalLengthKey, param: ByteConversion.int64ToBytes(-Int64(oldDocLength)), mutationType: .add)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil text was not indexed, nothing to remove
             }
@@ -171,28 +173,28 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
                         // Store positions for phrase search support
                         let positionElements: [any TupleElement] = positions.map { Int64($0) as any TupleElement }
                         let value = Tuple(positionElements).pack()
-                        transaction.setValue(value, for: termKey)
+                        try transaction.setValue(value, for: termKey)
                     } else {
                         // Store term frequency (tf) for BM25 scoring
                         // Without this, all terms would be treated as tf=1
                         let tfValue = Tuple(Int64(positions.count)).pack()
-                        transaction.setValue(tfValue, for: termKey)
+                        try transaction.setValue(tfValue, for: termKey)
                     }
 
                     // Increment df for this term (BM25)
                     let dfKey = dfSubspace.pack(Tuple(term))
-                    transaction.atomicOp(key: dfKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
+                    try transaction.atomicOp(key: dfKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
                 }
 
                 // Store document metadata: (uniqueTermCount, docLength)
                 let docKey = docsSubspace.pack(newId)
                 let uniqueTermCount = Int64(termPositions.count)
                 let docValue = Tuple(uniqueTermCount, Int64(newDocLength)).pack()
-                transaction.setValue(docValue, for: docKey)
+                try transaction.setValue(docValue, for: docKey)
 
                 // Increment BM25 corpus statistics
-                transaction.atomicOp(key: statsNKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
-                transaction.atomicOp(key: statsTotalLengthKey, param: ByteConversion.int64ToBytes(Int64(newDocLength)), mutationType: .add)
+                try transaction.atomicOp(key: statsNKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
+                try transaction.atomicOp(key: statsTotalLengthKey, param: ByteConversion.int64ToBytes(Int64(newDocLength)), mutationType: .add)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil text is not indexed
             }
@@ -230,28 +232,28 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 // Store positions for phrase search support
                 let positionElements: [any TupleElement] = positions.map { Int64($0) as any TupleElement }
                 let value = Tuple(positionElements).pack()
-                transaction.setValue(value, for: termKey)
+                try transaction.setValue(value, for: termKey)
             } else {
                 // Store term frequency (tf) for BM25 scoring
                 // Without this, all terms would be treated as tf=1
                 let tfValue = Tuple(Int64(positions.count)).pack()
-                transaction.setValue(tfValue, for: termKey)
+                try transaction.setValue(tfValue, for: termKey)
             }
 
             // Increment df for this term (BM25)
             let dfKey = dfSubspace.pack(Tuple(term))
-            transaction.atomicOp(key: dfKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
+            try transaction.atomicOp(key: dfKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
         }
 
         // Store document metadata: (uniqueTermCount, docLength)
         let docKey = docsSubspace.pack(id)
         let uniqueTermCount = Int64(termPositions.count)
         let docValue = Tuple(uniqueTermCount, Int64(docLength)).pack()
-        transaction.setValue(docValue, for: docKey)
+        try transaction.setValue(docValue, for: docKey)
 
         // Increment BM25 corpus statistics
-        transaction.atomicOp(key: statsNKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
-        transaction.atomicOp(key: statsTotalLengthKey, param: ByteConversion.int64ToBytes(Int64(docLength)), mutationType: .add)
+        try transaction.atomicOp(key: statsNKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
+        try transaction.atomicOp(key: statsTotalLengthKey, param: ByteConversion.int64ToBytes(Int64(docLength)), mutationType: .add)
     }
 
     /// Compute expected index keys for this item
@@ -487,9 +489,8 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// which is more efficient than string-based `@dynamicMemberLookup`.
     private func extractText(from item: Item) throws -> String {
         // Use optimized DataAccess method - KeyPath when available, falls back to KeyExpression
-        let fieldValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
+        let fieldValues = try DataAccess.evaluate(
+            item: item,
             expression: index.rootExpression
         )
 
@@ -528,7 +529,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
             guard termSubspace.contains(key) else { break }
 
             let keyTuple = try termSubspace.unpack(key)
-            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
+            let elements = try keyTuple.elements()
             results.append(elements)
         }
 
@@ -557,89 +558,6 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
 
         return result
-    }
-
-    /// Simple whitespace and punctuation tokenization
-    private func simpleTokenize(_ text: String) -> [(term: String, position: Int)] {
-        let words = text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
-
-        var tokens: [(String, Int)] = []
-        tokens.reserveCapacity(words.count)
-        var position = 0
-
-        for word in words {
-            let trimmed = word.trimmingCharacters(in: .whitespaces)
-            if trimmed.count >= minTermLength {
-                tokens.append((trimmed, position))
-                position += 1
-            }
-        }
-
-        return tokens
-    }
-
-    /// Stemming tokenization (simplified - just lowercases and removes common suffixes)
-    private func stemTokenize(_ text: String) -> [(term: String, position: Int)] {
-        let words = text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
-
-        var tokens: [(String, Int)] = []
-        tokens.reserveCapacity(words.count)
-        var position = 0
-
-        for word in words {
-            var stemmed = word.trimmingCharacters(in: .whitespaces)
-
-            // Simple Porter stemmer rules (English)
-            if stemmed.hasSuffix("ing") && stemmed.count > 5 {
-                stemmed = String(stemmed.dropLast(3))
-            } else if stemmed.hasSuffix("ed") && stemmed.count > 4 {
-                stemmed = String(stemmed.dropLast(2))
-            } else if stemmed.hasSuffix("s") && !stemmed.hasSuffix("ss") && stemmed.count > 3 {
-                stemmed = String(stemmed.dropLast(1))
-            }
-
-            if stemmed.count >= minTermLength {
-                tokens.append((stemmed, position))
-                position += 1
-            }
-        }
-
-        return tokens
-    }
-
-    /// N-gram tokenization
-    private func ngramTokenize(_ text: String) -> [(term: String, position: Int)] {
-        let lowered = text.lowercased()
-        let characters = Array(lowered)
-
-        var tokens: [(String, Int)] = []
-        let estimatedCount = max(0, characters.count - ngramSize + 1)
-        tokens.reserveCapacity(estimatedCount)
-        var position = 0
-
-        for i in 0...(max(0, characters.count - ngramSize)) {
-            let ngram = String(characters[i..<min(i + ngramSize, characters.count)])
-            if ngram.count >= minTermLength && !ngram.trimmingCharacters(in: .whitespaces).isEmpty {
-                tokens.append((ngram, position))
-                position += 1
-            }
-        }
-
-        return tokens
-    }
-
-    /// Keyword tokenization (entire value as single token)
-    private func keywordTokenize(_ text: String) -> [(term: String, position: Int)] {
-        let normalized = text.lowercased().trimmingCharacters(in: .whitespaces)
-        if normalized.count >= minTermLength {
-            return [(normalized, 0)]
-        }
-        return []
-    }
-
-    /// Normalize a single token for search
-    private func normalizeToken(_ token: String) -> String {
-        return token.lowercased().trimmingCharacters(in: .whitespaces)
     }
 
     /// Verify that term positions form a consecutive phrase
@@ -694,7 +612,9 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// the same string representation (e.g., Int64(123) vs Int(123)).
     private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
         let packed = Tuple(elements).pack()
-        return Data(packed).base64EncodedString()
+        return DatabaseLiteralEncoding.base64(
+            DatabaseBytes(retaining: packed)
+        )
     }
 
     // MARK: - BM25 Statistics
@@ -708,11 +628,21 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> BM25Statistics {
         // Read N (total document count)
         let nValue = try await transaction.getValue(for: statsNKey, snapshot: true)
-        let n: Int64 = nValue.map { ByteConversion.bytesToInt64($0) } ?? 0
+        let n: Int64
+        if let nValue {
+            n = try ByteConversion.bytesToInt64(nValue)
+        } else {
+            n = 0
+        }
 
         // Read totalLength
         let lengthValue = try await transaction.getValue(for: statsTotalLengthKey, snapshot: true)
-        let totalLength: Int64 = lengthValue.map { ByteConversion.bytesToInt64($0) } ?? 0
+        let totalLength: Int64
+        if let lengthValue {
+            totalLength = try ByteConversion.bytesToInt64(lengthValue)
+        } else {
+            totalLength = 0
+        }
 
         return BM25Statistics(totalDocuments: n, totalLength: totalLength)
     }
@@ -752,7 +682,8 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> Int64 {
         let dfKey = dfSubspace.pack(Tuple(normalizedTerm))
         let value = try await transaction.getValue(for: dfKey, snapshot: true)
-        return value.map { ByteConversion.bytesToInt64($0) } ?? 0
+        guard let value else { return 0 }
+        return try ByteConversion.bytesToInt64(value)
     }
 
     /// Get document metadata (term count and document length)

@@ -5,6 +5,8 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import Graph
 import StorageKit
 import FDBStorage
@@ -38,7 +40,7 @@ fileprivate struct EdgeCaseConnection {
 struct SPARQLPropertyFilterEdgeCaseTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     private func uniqueID(_ prefix: String) -> String {
@@ -46,30 +48,31 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([EdgeCaseConnection.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
 
-        if try await database.directoryService.exists(path: ["sparql_property_filter_edge_case_tests"]) {
-            try await database.directoryService.remove(path: ["sparql_property_filter_edge_case_tests"])
+        if try await database.directoryExists(path: ["sparql_property_filter_edge_case_tests"]) {
+            try await database.removeDirectory(path: ["sparql_property_filter_edge_case_tests"])
         }
         try await container.ensureIndexesReady()
 
         // Set index to readable
         let subspace = try await container.resolveDirectory(for: EdgeCaseConnection.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
+        let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
 
         for descriptor in EdgeCaseConnection.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
+            let currentState = try await indexLifecycleStore.state(of: descriptor.name)
             if currentState == .disabled {
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
+                try await indexLifecycleStore.enable(descriptor.name)
+                try await indexLifecycleStore.makeReadable(descriptor.name)
             } else if currentState == .writeOnly {
-                try await indexStateManager.makeReadable(descriptor.name)
+                try await indexLifecycleStore.makeReadable(descriptor.name)
             }
         }
 
@@ -96,8 +99,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .or(
@@ -133,8 +135,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .not(.equals("?note", .string("inactive")))
@@ -167,8 +168,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .regex("?note", "^active")
@@ -201,8 +201,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .greaterThan("?score", .int64(150))
@@ -237,8 +236,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             on: EdgeCaseConnection.self,
@@ -271,8 +269,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .lessThanOrEqual("?score", .int64(30))
@@ -306,8 +303,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .greaterThan("?score", .int64(30))
@@ -341,8 +337,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .notEquals("?score", .int64(50))
@@ -375,8 +370,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .startsWith("?note", "active")
@@ -408,8 +402,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .endsWith("?note", "active")
@@ -442,8 +435,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .greaterThan("?score", .int64(100))

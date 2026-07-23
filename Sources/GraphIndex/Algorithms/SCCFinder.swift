@@ -5,7 +5,11 @@
 // Reference: Tarjan, R. E. (1972). "Depth-first search and linear graph algorithms"
 // SIAM Journal on Computing, 1(2), 146-160.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 import DatabaseEngine
@@ -35,26 +39,19 @@ public struct SCCConfiguration: Sendable {
         maxNodes: Int = 100_000,
         batchSize: Int = 100
     ) {
-        self.maxComponents = maxComponents
-        self.maxNodes = maxNodes
-        self.batchSize = batchSize
+        self.maxComponents = Swift.max(1, maxComponents)
+        self.maxNodes = Swift.max(1, maxNodes)
+        self.batchSize = Swift.max(1, batchSize)
     }
-}
-
-/// Reason for incomplete SCC search
-public enum SCCLimitReason: Sendable, Equatable {
-    case maxNodesReached
-    case maxComponentsReached
-    case timeout
 }
 
 /// Result of SCC computation
 public struct SCCResult: Sendable {
     /// All strongly connected components (each component is a list of node IDs)
-    public let components: [[String]]
+    public let components: [[GraphIdentity]]
 
     /// Mapping from node ID to component index
-    public let nodeToComponent: [String: Int]
+    public let nodeToComponent: [GraphIdentity: Int]
 
     /// Whether the graph is a DAG (all components have size 1)
     public var isDAG: Bool {
@@ -77,25 +74,23 @@ public struct SCCResult: Sendable {
     /// Duration in nanoseconds
     public let durationNs: UInt64
 
-    /// Whether all components were found
-    public let isComplete: Bool
-
     /// Reason if search was incomplete
-    public let limitReason: SCCLimitReason?
+    public let limitReason: LimitReason?
+
+    /// Whether all components were found.
+    public var isComplete: Bool { limitReason == nil }
 
     public init(
-        components: [[String]],
-        nodeToComponent: [String: Int],
+        components: [[GraphIdentity]],
+        nodeToComponent: [GraphIdentity: Int],
         nodesExplored: Int,
         durationNs: UInt64,
-        isComplete: Bool,
-        limitReason: SCCLimitReason? = nil
+        limitReason: LimitReason? = nil
     ) {
         self.components = components
         self.nodeToComponent = nodeToComponent
         self.nodesExplored = nodesExplored
         self.durationNs = durationNs
-        self.isComplete = isComplete
         self.limitReason = limitReason
     }
 }
@@ -132,20 +127,22 @@ public final class SCCFinder: Sendable {
 
     // MARK: - Properties
 
-    private let database: any StorageEngine
+    private let snapshot: GraphReadSnapshot
     private let scanner: GraphEdgeScanner
     private let configuration: SCCConfiguration
+    private let workBudget: GraphAlgorithmWorkBudget?
 
     // MARK: - Initialization
 
-    public init(
-        database: any StorageEngine,
+    package init(
+        snapshot: GraphReadSnapshot,
         scanner: GraphEdgeScanner,
         configuration: SCCConfiguration = .default
     ) {
-        self.database = database
+        self.snapshot = snapshot
         self.scanner = scanner
         self.configuration = configuration
+        self.workBudget = snapshot.workBudget
     }
 
     // MARK: - Public API
@@ -154,25 +151,56 @@ public final class SCCFinder: Sendable {
     ///
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: SCC result with all components
-    public func findSCCs(edgeLabel: String? = nil) async throws -> SCCResult {
+    public func findSCCs(edgeLabel: GraphIdentity? = nil) async throws -> SCCResult {
+        try await computeSCCs(edgeLabel: edgeLabel).result
+    }
+
+    private struct SCCComputation: Sendable {
+        let result: SCCResult
+        let graph: MaterializedGraphSnapshot
+    }
+
+    private func computeSCCs(
+        edgeLabel: GraphIdentity?
+    ) async throws -> SCCComputation {
         let startTime = MonotonicClock.now()
 
-        // Collect all nodes first
-        let allNodes = try await collectAllNodes(edgeLabel: edgeLabel)
+        let load = try await MaterializedGraphSnapshotBuilder.load(
+            scanner: scanner,
+            edgeLabel: edgeLabel,
+            snapshot: snapshot,
+            maximumNodes: configuration.maxNodes
+        )
+        if let limitReason = load.limitReason {
+            return SCCComputation(
+                result: SCCResult(
+                    components: [],
+                    nodeToComponent: [:],
+                    nodesExplored: load.graph.nodes.count,
+                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                    limitReason: limitReason
+                ),
+                graph: load.graph
+            )
+        }
 
-        // Run Tarjan's algorithm
-        let result = try await runTarjan(nodes: allNodes, edgeLabel: edgeLabel)
+        let result = try await runTarjan(
+            graph: load.graph,
+            initialLimitReason: load.limitReason
+        )
 
         let endTime = MonotonicClock.now()
         let durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
-        return SCCResult(
-            components: result.components,
-            nodeToComponent: result.nodeToComponent,
-            nodesExplored: result.nodesExplored,
-            durationNs: durationNs,
-            isComplete: result.isComplete,
-            limitReason: result.limitReason
+        return SCCComputation(
+            result: SCCResult(
+                components: result.components,
+                nodeToComponent: result.nodeToComponent,
+                nodesExplored: result.nodesExplored,
+                durationNs: durationNs,
+                limitReason: result.limitReason
+            ),
+            graph: load.graph
         )
     }
 
@@ -184,60 +212,84 @@ public final class SCCFinder: Sendable {
     ///   - edgeLabel: Optional edge label filter
     /// - Returns: True if nodes are strongly connected
     public func isStronglyConnected(
-        from: String,
-        to: String,
-        edgeLabel: String? = nil
+        from: GraphIdentity,
+        to: GraphIdentity,
+        edgeLabel: GraphIdentity? = nil
     ) async throws -> Bool {
+        let load = try await MaterializedGraphSnapshotBuilder.load(
+            scanner: scanner,
+            edgeLabel: edgeLabel,
+            snapshot: snapshot,
+            maximumNodes: configuration.maxNodes
+        )
+        if let limitReason = load.limitReason {
+            throw SCCError.incomplete(limitReason)
+        }
         // First check if there's a path from -> to
-        let forwardPath = try await hasPath(from: from, to: to, edgeLabel: edgeLabel)
-        guard forwardPath else { return false }
+        let forwardPath = try await hasPath(
+            from: from,
+            to: to,
+            graph: load.graph
+        )
+        if let limitReason = forwardPath.limitReason {
+            throw SCCError.incomplete(limitReason)
+        }
+        guard forwardPath.exists else { return false }
 
         // Then check if there's a path to -> from
-        let backwardPath = try await hasPath(from: to, to: from, edgeLabel: edgeLabel)
-        return backwardPath
+        let backwardPath = try await hasPath(
+            from: to,
+            to: from,
+            graph: load.graph
+        )
+        if let limitReason = backwardPath.limitReason {
+            throw SCCError.incomplete(limitReason)
+        }
+        return backwardPath.exists
     }
 
     /// Build the condensation graph (DAG of SCCs)
     ///
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: Condensation graph structure
-    public func condensationGraph(edgeLabel: String? = nil) async throws -> CondensationGraph {
-        let sccResult = try await findSCCs(edgeLabel: edgeLabel)
+    public func condensationGraph(edgeLabel: GraphIdentity? = nil) async throws -> CondensationGraph {
+        let computation = try await computeSCCs(edgeLabel: edgeLabel)
+        let sccResult = computation.result
+        if let limitReason = sccResult.limitReason {
+            throw SCCError.incomplete(limitReason)
+        }
 
-        // Collect condensation edges inside the transaction
-        let condensationEdges: [Int: Set<Int>] = try await database.withTransaction(configuration: .default) { transaction in
-            var edges: [Int: Set<Int>] = [:]
+        var edges: [Int: Set<Int>] = [:]
 
-            // Initialize edge sets for all components
-            for i in 0..<sccResult.componentCount {
-                edges[i] = []
+        // Initialize edge sets for all components
+        for index in 0..<sccResult.componentCount {
+            edges[index] = []
+        }
+
+        for edge in computation.graph.edges {
+            guard try consumeWork() else {
+                throw incompleteWorkError()
             }
-
-            // For each edge in the original graph, add corresponding condensation edge
-            for (node, componentIdx) in sccResult.nodeToComponent {
-                let neighbors = try await self.scanner.scanAllOutgoing(
-                    from: node,
-                    edgeLabel: edgeLabel,
-                    transaction: transaction
+            guard let componentIndex = sccResult.nodeToComponent[edge.source],
+                  let neighborComponent = sccResult.nodeToComponent[edge.target] else {
+                throw SCCError.inconsistentState(
+                    "condensation edge references an unknown component"
                 )
-
-                for neighbor in neighbors {
-                    if let neighborComponent = sccResult.nodeToComponent[neighbor.target] {
-                        // Only add edge if components are different
-                        if neighborComponent != componentIdx {
-                            edges[componentIdx]?.insert(neighborComponent)
-                        }
-                    }
-                }
             }
-
-            return edges
+            if neighborComponent != componentIndex {
+                guard edges[componentIndex] != nil else {
+                    throw SCCError.inconsistentState(
+                        "missing condensation component \(componentIndex)"
+                    )
+                }
+                edges[componentIndex]?.insert(neighborComponent)
+            }
         }
 
         let componentSizes = sccResult.components.map { $0.count }
 
         return CondensationGraph(
-            edges: condensationEdges,
+            edges: edges,
             componentSizes: componentSizes
         )
     }
@@ -247,102 +299,92 @@ public final class SCCFinder: Sendable {
     /// Internal state for Tarjan's algorithm.
     private struct TarjanState {
         var index: Int = 0
-        var nodeIndex: [String: Int] = [:]
-        var nodeLowLink: [String: Int] = [:]
-        var onStack: Set<String> = []
-        var stack: [String] = []
-        var components: [[String]] = []
-        var nodeToComponent: [String: Int] = [:]
+        var nodeIndex: [GraphIdentity: Int] = [:]
+        var nodeLowLink: [GraphIdentity: Int] = [:]
+        var onStack: Set<GraphIdentity> = []
+        var stack: [GraphIdentity] = []
+        var components: [[GraphIdentity]] = []
+        var nodeToComponent: [GraphIdentity: Int] = [:]
         var nodesExplored: Int = 0
-        var isComplete: Bool = true
-        var limitReason: SCCLimitReason?
+        var limitReason: LimitReason?
+        var reachedComponentLimit = false
 
         // Neighbors cache to avoid repeated lookups
-        var neighborsCache: [String: [String]] = [:]
-    }
-
-    private struct TarjanPrefetch: Sendable {
-        let neighborsCache: [String: [String]]
-        let nodesExplored: Int
-        let isComplete: Bool
-        let limitReason: SCCLimitReason?
+        var neighborsCache: [GraphIdentity: [GraphIdentity]] = [:]
     }
 
     private struct TarjanResult {
-        let components: [[String]]
-        let nodeToComponent: [String: Int]
+        let components: [[GraphIdentity]]
+        let nodeToComponent: [GraphIdentity: Int]
         let nodesExplored: Int
-        let isComplete: Bool
-        let limitReason: SCCLimitReason?
+        let limitReason: LimitReason?
     }
 
     private func runTarjan(
-        nodes: Set<String>,
-        edgeLabel: String?
+        graph: MaterializedGraphSnapshot,
+        initialLimitReason: LimitReason?
     ) async throws -> TarjanResult {
-        let prefetch = try await database.withTransaction(configuration: .default) { transaction in
-            var neighborsCache: [String: [String]] = [:]
-            var nodesExplored = 0
-            var isComplete = true
-            var limitReason: SCCLimitReason?
+        let nodes = graph.nodes
+        var neighborsCache: [GraphIdentity: [GraphIdentity]] = [:]
+        var nodesExplored = 0
 
-            for node in nodes {
-                if nodesExplored >= self.configuration.maxNodes {
-                    isComplete = false
-                    limitReason = .maxNodesReached
-                    break
-                }
-
-                let neighbors = try await self.scanner.scanAllOutgoing(
-                    from: node,
-                    edgeLabel: edgeLabel,
-                    transaction: transaction
+        for node in nodes.sorted() {
+            guard try consumeWork() else {
+                return TarjanResult(
+                    components: [],
+                    nodeToComponent: [:],
+                    nodesExplored: nodesExplored,
+                    limitReason: initialLimitReason ?? workBudget?.limitReason
                 )
-
-                neighborsCache[node] = neighbors.map { $0.target }
-                nodesExplored += 1
             }
 
-            return TarjanPrefetch(
-                neighborsCache: neighborsCache,
-                nodesExplored: nodesExplored,
-                isComplete: isComplete,
-                limitReason: limitReason
-            )
+            var neighbors: [GraphIdentity] = []
+            for edge in graph.outgoingNeighbors(of: node) {
+                guard try consumeWork() else {
+                    return TarjanResult(
+                        components: [],
+                        nodeToComponent: [:],
+                        nodesExplored: nodesExplored,
+                        limitReason: initialLimitReason ?? workBudget?.limitReason
+                    )
+                }
+                if nodes.contains(edge.target) {
+                    neighbors.append(edge.target)
+                }
+            }
+
+            neighborsCache[node] = neighbors
+            nodesExplored += 1
         }
 
         var state = TarjanState()
-        state.neighborsCache = prefetch.neighborsCache
-        state.nodesExplored = prefetch.nodesExplored
-        state.isComplete = prefetch.isComplete
-        state.limitReason = prefetch.limitReason
+        state.neighborsCache = neighborsCache
+        state.nodesExplored = nodesExplored
+        state.limitReason = initialLimitReason
 
         // Run Tarjan's DFS
-        for node in nodes {
-            if state.components.count >= configuration.maxComponents {
-                state.isComplete = false
-                state.limitReason = .maxComponentsReached
+        for node in nodes.sorted() {
+            guard state.nodeIndex[node] == nil else { continue }
+            guard state.components.count < configuration.maxComponents else {
+                recordComponentLimit(state: &state)
                 break
             }
-
-            if state.nodeIndex[node] == nil {
-                strongConnect(node, state: &state)
-            }
+            try strongConnect(node, state: &state)
+            if state.reachedComponentLimit { break }
         }
 
         return TarjanResult(
             components: state.components,
             nodeToComponent: state.nodeToComponent,
             nodesExplored: state.nodesExplored,
-            isComplete: state.isComplete,
             limitReason: state.limitReason
         )
     }
 
     /// Core of Tarjan's algorithm - iterative version to avoid stack overflow
-    private func strongConnect(_ start: String, state: inout TarjanState) {
+    private func strongConnect(_ start: GraphIdentity, state: inout TarjanState) throws {
         // Use explicit stack to avoid recursion depth issues
-        var callStack: [(node: String, phase: Int, neighborIndex: Int)] = [(start, 0, 0)]
+        var callStack: [(node: GraphIdentity, phase: Int, neighborIndex: Int)] = [(start, 0, 0)]
 
         while !callStack.isEmpty {
             let (node, phase, neighborIndex) = callStack.removeLast()
@@ -361,7 +403,11 @@ public final class SCCFinder: Sendable {
 
             case 1:
                 // Process neighbors
-                let neighbors = state.neighborsCache[node] ?? []
+                guard let neighbors = state.neighborsCache[node] else {
+                    throw SCCError.inconsistentState(
+                        "missing cached neighbors for Tarjan node"
+                    )
+                }
 
                 if neighborIndex < neighbors.count {
                     let neighbor = neighbors[neighborIndex]
@@ -372,10 +418,11 @@ public final class SCCFinder: Sendable {
                         callStack.append((neighbor, 0, 0))  // Start DFS on neighbor
                     } else if state.onStack.contains(neighbor) {
                         // Neighbor is on stack, update lowlink
-                        state.nodeLowLink[node] = Swift.min(
-                            state.nodeLowLink[node]!,
-                            state.nodeIndex[neighbor]!
-                        )
+                        guard let lowLink = state.nodeLowLink[node],
+                              let neighborIndex = state.nodeIndex[neighbor] else {
+                            throw SCCError.inconsistentState("missing Tarjan index state")
+                        }
+                        state.nodeLowLink[node] = Swift.min(lowLink, neighborIndex)
                         // Continue to next neighbor
                         callStack.append((node, 1, neighborIndex + 1))
                     } else {
@@ -384,11 +431,23 @@ public final class SCCFinder: Sendable {
                     }
                 } else {
                     // All neighbors processed, check if root of SCC
-                    if state.nodeLowLink[node] == state.nodeIndex[node] {
+                    guard let lowLink = state.nodeLowLink[node],
+                          let nodeIndex = state.nodeIndex[node] else {
+                        throw SCCError.inconsistentState("missing Tarjan root state")
+                    }
+                    if lowLink == nodeIndex {
+                        guard state.components.count < configuration.maxComponents else {
+                            recordComponentLimit(state: &state)
+                            callStack.removeAll(keepingCapacity: false)
+                            continue
+                        }
+
                         // Start new SCC
-                        var component: [String] = []
+                        var component: [GraphIdentity] = []
                         repeat {
-                            let w = state.stack.removeLast()
+                            guard let w = state.stack.popLast() else {
+                                throw SCCError.inconsistentState("Tarjan stack underflow")
+                            }
                             state.onStack.remove(w)
                             component.append(w)
                             state.nodeToComponent[w] = state.components.count
@@ -400,14 +459,22 @@ public final class SCCFinder: Sendable {
 
             case 2:
                 // Resume after recursive call
-                let neighbors = state.neighborsCache[node] ?? []
+                guard let neighbors = state.neighborsCache[node] else {
+                    throw SCCError.inconsistentState(
+                        "missing cached neighbors for resumed Tarjan node"
+                    )
+                }
+                guard neighbors.indices.contains(neighborIndex) else {
+                    throw SCCError.inconsistentState("invalid Tarjan neighbor index")
+                }
                 let neighbor = neighbors[neighborIndex]
 
                 // Update lowlink from child
-                state.nodeLowLink[node] = Swift.min(
-                    state.nodeLowLink[node]!,
-                    state.nodeLowLink[neighbor]!
-                )
+                guard let lowLink = state.nodeLowLink[node],
+                      let neighborLowLink = state.nodeLowLink[neighbor] else {
+                    throw SCCError.inconsistentState("missing Tarjan low-link state")
+                }
+                state.nodeLowLink[node] = Swift.min(lowLink, neighborLowLink)
 
                 // Continue to next neighbor
                 callStack.append((node, 1, neighborIndex + 1))
@@ -420,108 +487,194 @@ public final class SCCFinder: Sendable {
 
     // MARK: - Helper Methods
 
-    /// Collect all unique nodes from the graph
-    private func collectAllNodes(edgeLabel: String? = nil) async throws -> Set<String> {
-        let maxNodes = configuration.maxNodes
+    private func recordComponentLimit(state: inout TarjanState) {
+        state.reachedComponentLimit = true
+        guard state.limitReason == nil else { return }
+        state.limitReason = .maxResultsReached(
+            returned: state.components.count,
+            limit: configuration.maxComponents
+        )
+    }
 
-        return try await database.withTransaction(configuration: .default) { transaction in
-            var nodes = Set<String>()
+    private func consumeWork(_ units: UInt64 = 1) throws -> Bool {
+        try workBudget?.consume(units) ?? true
+    }
 
-            // Scan all edges and collect both endpoints
-            for try await edge in self.scanner.scanAllEdges(edgeLabel: edgeLabel, transaction: transaction) {
-                if nodes.count >= maxNodes {
-                    break
-                }
-                nodes.insert(edge.source)
-                nodes.insert(edge.target)
-            }
-
-            return nodes
+    private func incompleteWorkError() -> SCCError {
+        guard let reason = workBudget?.limitReason else {
+            return .inconsistentState("work budget stopped without a limit reason")
         }
+        return .incomplete(reason)
+    }
+
+    private struct PathCheck: Sendable {
+        let exists: Bool
+        let limitReason: LimitReason?
     }
 
     /// Check if there's a path from source to target (BFS)
     private func hasPath(
-        from source: String,
-        to target: String,
-        edgeLabel: String?
-    ) async throws -> Bool {
-        if source == target { return true }
+        from source: GraphIdentity,
+        to target: GraphIdentity,
+        graph: MaterializedGraphSnapshot
+    ) async throws -> PathCheck {
+        if source == target { return PathCheck(exists: true, limitReason: nil) }
 
         let maxNodes = configuration.maxNodes
 
-        return try await database.withTransaction(configuration: .default) { transaction in
-            var visited = Set<String>()
-            var queue = [source]
-            visited.insert(source)
+        var visited = Set<GraphIdentity>()
+        var queue = [source]
+        var queueIndex = 0
+        visited.insert(source)
 
-            while !queue.isEmpty {
-                let current = queue.removeFirst()
-
-                let neighbors = try await self.scanner.scanAllOutgoing(
-                    from: current,
-                    edgeLabel: edgeLabel,
-                    transaction: transaction
+        while queueIndex < queue.count {
+            guard try consumeWork() else {
+                return PathCheck(
+                    exists: false,
+                    limitReason: workBudget?.limitReason
                 )
+            }
 
-                for neighbor in neighbors {
-                    if neighbor.target == target {
-                        return true
-                    }
+            let current = queue[queueIndex]
+            queueIndex += 1
 
-                    if !visited.contains(neighbor.target) {
-                        visited.insert(neighbor.target)
-                        queue.append(neighbor.target)
+            for neighbor in graph.outgoingNeighbors(of: current) {
+                guard try consumeWork() else {
+                    return PathCheck(
+                        exists: false,
+                        limitReason: workBudget?.limitReason
+                    )
+                }
+                if neighbor.target == target {
+                    return PathCheck(exists: true, limitReason: nil)
+                }
 
-                        // Limit search to prevent infinite loops
-                        if visited.count > maxNodes {
-                            return false
-                        }
+                if !visited.contains(neighbor.target) {
+                    visited.insert(neighbor.target)
+                    queue.append(neighbor.target)
+
+                    // Limit search to prevent infinite loops.
+                    if visited.count > maxNodes {
+                        return PathCheck(
+                            exists: false,
+                            limitReason: .maxNodesReached(
+                                explored: maxNodes,
+                                limit: maxNodes
+                            )
+                        )
                     }
                 }
             }
+        }
 
-            return false
+        return PathCheck(exists: false, limitReason: nil)
+    }
+}
+
+// MARK: - Transaction-scoped Query
+
+/// Public SCC query that creates the finder only inside a transaction scope.
+///
+/// A storage transaction never escapes this type, so every read performed by
+/// one method observes exactly one read version.
+public struct StronglyConnectedComponentsQuery<Edge: Persistable>: Sendable {
+    private let queryContext: IndexQueryContext
+    private let index: DeclaredPropertyGraphIndex
+    private let configuration: SCCConfiguration
+
+    package init(
+        queryContext: IndexQueryContext,
+        index: DeclaredPropertyGraphIndex,
+        configuration: SCCConfiguration
+    ) {
+        self.queryContext = queryContext
+        self.index = index
+        self.configuration = configuration
+    }
+
+    public func find(edgeLabel: String? = nil) async throws -> SCCResult {
+        try await withFinder { finder in
+            try await finder.findSCCs(
+                edgeLabel: edgeLabel.map(GraphIdentity.identifier)
+            )
+        }
+    }
+
+    public func containsSameComponent(
+        _ source: String,
+        _ target: String,
+        edgeLabel: String? = nil
+    ) async throws -> Bool {
+        try await withFinder { finder in
+            try await finder.isStronglyConnected(
+                from: .identifier(source),
+                to: .identifier(target),
+                edgeLabel: edgeLabel.map(GraphIdentity.identifier)
+            )
+        }
+    }
+
+    public func condensationGraph(
+        edgeLabel: String? = nil
+    ) async throws -> CondensationGraph {
+        try await withFinder { finder in
+            try await finder.condensationGraph(
+                edgeLabel: edgeLabel.map(GraphIdentity.identifier)
+            )
+        }
+    }
+
+    private func withFinder<Result: Sendable>(
+        _ operation: @Sendable @escaping (SCCFinder) async throws -> Result
+    ) async throws -> Result {
+        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
+            index,
+            for: Edge.self,
+            in: queryContext
+        )
+        return try await queryContext.withTransaction { transaction in
+            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let finder = SCCFinder(
+                snapshot: snapshot,
+                scanner: resolvedIndex.scanner(snapshot: snapshot),
+                configuration: configuration
+            )
+            return try await operation(finder)
         }
     }
 }
 
-// MARK: - FDBContext Extension
-
 extension FDBContext {
-    /// Create an SCC finder for the given edge type
-    ///
-    /// Uses the first graph index found on the type.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let sccFinder = try await context.sccFinder(for: Edge.self)
-    /// let result = try await sccFinder.findSCCs()
-    ///
-    /// print("Found \(result.componentCount) strongly connected components")
-    /// print("Is DAG: \(result.isDAG)")
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - type: The edge type with a graph index
-    ///   - configuration: Optional configuration for SCC computation
-    /// - Returns: SCC finder instance
-    public func sccFinder<Edge: Persistable>(
+    /// Select the entity's only property-graph index for SCC operations.
+    public func stronglyConnectedComponents<Edge: Persistable>(
         for type: Edge.Type,
         configuration: SCCConfiguration = .default
-    ) async throws -> SCCFinder {
-        // Find the graph index descriptor
-        guard let descriptor = type.indexDescriptors.first(where: {
-            $0.kindIdentifier == GraphIndexKind<Edge>.identifier
-        }),
-        let kind = descriptor.kind as? GraphIndexKind<Edge> else {
-            throw SCCError.graphIndexNotFound
-        }
+    ) throws -> StronglyConnectedComponentsQuery<Edge> {
+        StronglyConnectedComponentsQuery(
+            queryContext: indexQueryContext,
+            index: try PropertyGraphIndexResolver.unique(
+                for: type,
+                in: indexQueryContext
+            ),
+            configuration: configuration
+        )
+    }
 
-        let typeSubspace = try await indexQueryContext.indexSubspace(for: type)
-        let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
-        return SCCFinder(database: container.engine, scanner: scanner, configuration: configuration)
+    /// Select an entity-owned property-graph index by exact name.
+    public func stronglyConnectedComponents<Edge: Persistable>(
+        for type: Edge.Type,
+        indexNamed indexName: String,
+        configuration: SCCConfiguration = .default
+    ) throws -> StronglyConnectedComponentsQuery<Edge> {
+        StronglyConnectedComponentsQuery(
+            queryContext: indexQueryContext,
+            index: try PropertyGraphIndexResolver.exact(
+                named: indexName,
+                for: type,
+                in: indexQueryContext
+            ),
+            configuration: configuration
+        )
     }
 }
 
@@ -530,11 +683,17 @@ extension FDBContext {
 /// Errors for SCC operations
 public enum SCCError: Error, CustomStringConvertible, Sendable {
     case graphIndexNotFound
+    case incomplete(LimitReason)
+    case inconsistentState(String)
 
     public var description: String {
         switch self {
         case .graphIndexNotFound:
             return "No graph index found on the type. Add a GraphIndexKind to the type."
+        case .incomplete(let reason):
+            return "SCC computation is incomplete: \(reason)"
+        case .inconsistentState(let message):
+            return "SCC internal state is inconsistent: \(message)"
         }
     }
 }

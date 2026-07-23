@@ -34,9 +34,10 @@ struct DatasetClauseTests {
         let query = try parseQuery("""
             SELECT * FROM <http://example.org/graph1> WHERE { ?s ?p ?o }
             """)
-        #expect(query.from != nil)
-        #expect(query.from?.count == 1)
-        #expect(query.from?[0] == "http://example.org/graph1")
+        #expect(query.dataset == .explicit(
+            defaultGraphs: ["http://example.org/graph1"],
+            namedGraphs: []
+        ))
     }
 
     @Test("FROM NAMED clause captures IRI")
@@ -44,9 +45,10 @@ struct DatasetClauseTests {
         let query = try parseQuery("""
             SELECT * FROM NAMED <http://example.org/named1> WHERE { ?s ?p ?o }
             """)
-        #expect(query.fromNamed != nil)
-        #expect(query.fromNamed?.count == 1)
-        #expect(query.fromNamed?[0] == "http://example.org/named1")
+        #expect(query.dataset == .explicit(
+            defaultGraphs: [],
+            namedGraphs: ["http://example.org/named1"]
+        ))
     }
 
     @Test("Multiple FROM and FROM NAMED")
@@ -58,8 +60,13 @@ struct DatasetClauseTests {
             FROM NAMED <http://example.org/n1>
             WHERE { ?s ?p ?o }
             """)
-        #expect(query.from?.count == 2)
-        #expect(query.fromNamed?.count == 1)
+        #expect(query.dataset == .explicit(
+            defaultGraphs: [
+                "http://example.org/g1",
+                "http://example.org/g2",
+            ],
+            namedGraphs: ["http://example.org/n1"]
+        ))
     }
 
     @Test("No FROM clause returns nil")
@@ -67,8 +74,7 @@ struct DatasetClauseTests {
         let query = try parseQuery("""
             SELECT * WHERE { ?s ?p ?o }
             """)
-        #expect(query.from == nil)
-        #expect(query.fromNamed == nil)
+        #expect(query.dataset == .implicit)
     }
 }
 
@@ -82,10 +88,11 @@ struct LiteralDirectionTests {
         let pattern = try parsePattern(#"""
             SELECT * WHERE { ?s ?p "text"@ar--rtl }
             """#)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         #expect(triples.count == 1)
         guard case .literal(.dirLangLiteral(let value, let lang, let dir)) = triples[0].object else {
             Issue.record("Expected dirLangLiteral, got \(triples[0].object)")
@@ -101,10 +108,11 @@ struct LiteralDirectionTests {
         let pattern = try parsePattern(#"""
             SELECT * WHERE { ?s ?p "hello"@en--ltr }
             """#)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         guard case .literal(.dirLangLiteral(let value, let lang, let dir)) = triples[0].object else {
             Issue.record("Expected dirLangLiteral, got \(triples[0].object)")
             return
@@ -119,10 +127,11 @@ struct LiteralDirectionTests {
         let pattern = try parsePattern(#"""
             SELECT * WHERE { ?s ?p "hello"@en }
             """#)
-        guard case .basic(let triples) = pattern else {
+        guard case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected .basic")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         guard case .literal(.langLiteral(let value, let lang)) = triples[0].object else {
             Issue.record("Expected langLiteral, got \(triples[0].object)")
             return

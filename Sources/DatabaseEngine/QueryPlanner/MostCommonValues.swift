@@ -1,7 +1,11 @@
 // MostCommonValues.swift
 // QueryPlanner - Most Common Values (MCV) for selectivity estimation
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Most Common Values (MCV) list for selectivity estimation

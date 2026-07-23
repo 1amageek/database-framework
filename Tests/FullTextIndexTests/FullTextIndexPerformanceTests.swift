@@ -5,6 +5,7 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import StorageKit
 import FDBStorage
 import FullText
@@ -69,7 +70,7 @@ struct BenchmarkArticle: Persistable {
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Full-Text Benchmark Context
 
 private struct BenchmarkContext {
     let database: any StorageEngine
@@ -79,7 +80,7 @@ private struct BenchmarkContext {
     let kind: FullTextIndexKind<BenchmarkArticle>
 
     init(tokenizer: TokenizationStrategy = .simple, storePositions: Bool = false, indexName: String = "BenchmarkArticle_content") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("benchmark", "fulltext", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -112,7 +113,7 @@ private struct BenchmarkContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -178,7 +179,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("Bulk insert performance - 100 documents")
     func testBulkInsert100Documents() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         let documentCount = 100
@@ -219,7 +220,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("Bulk insert performance - varying document size")
     func testBulkInsertVaryingSize() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
 
         for wordsPerDoc in [10, 50, 100, 200] {
             let ctx = try await BenchmarkContext()
@@ -259,7 +260,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("Single term search performance")
     func testSingleTermSearchPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Setup: Insert documents
@@ -313,7 +314,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("Boolean AND query performance")
     func testBooleanANDPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Setup: Insert documents with known overlapping terms
@@ -372,7 +373,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("Boolean OR query performance")
     func testBooleanORPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Setup: Insert documents
@@ -430,7 +431,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("Phrase search performance")
     func testPhraseSearchPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext(storePositions: true)
 
         // Setup: Insert documents with known phrases
@@ -492,7 +493,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("BM25 scoring performance")
     func testBM25ScoringPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Setup: Insert documents
@@ -548,7 +549,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("Tokenizer comparison")
     func testTokenizerComparison() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
 
         let documentCount = 50
         let content = generateContent(wordCount: 50)
@@ -590,7 +591,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("Update performance")
     func testUpdatePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Setup: Insert initial documents
@@ -654,7 +655,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("Delete performance")
     func testDeletePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BenchmarkContext()
 
         // Setup: Insert documents
@@ -709,7 +710,7 @@ struct FullTextIndexPerformanceTests {
 
     @Test("Search scalability - increasing document count")
     func testSearchScalability() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
 
         for documentCount in [50, 100, 200] {
             let ctx = try await BenchmarkContext()

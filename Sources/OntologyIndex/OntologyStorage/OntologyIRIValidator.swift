@@ -1,7 +1,11 @@
 // OntologyIRIValidator.swift
 // GraphIndex - Validates @OWLClass / @OWLObjectProperty IRIs against OntologyStore
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Graph
 import Core

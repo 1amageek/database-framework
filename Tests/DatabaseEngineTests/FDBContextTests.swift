@@ -7,6 +7,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import Core
 
 /// Tests for FDBContext functionality
@@ -24,8 +25,8 @@ struct FDBContextTests {
     /// Test model conforming to Persistable with #Directory
     /// Uses unique path "test/fdbcontext" to avoid conflicts with other test suites
     @Persistable
-    struct TestUser {
-        #Directory<TestUser>("fdb_context_test_users")
+    struct ContextUser {
+        #Directory<ContextUser>("fdb_context_test_users")
         var id: String = ULID().ulidString
         var name: String
         var email: String
@@ -34,8 +35,8 @@ struct FDBContextTests {
     }
 
     @Persistable
-    struct TestProduct {
-        #Directory<TestProduct>("fdb_context_test_products")
+    struct ContextProduct {
+        #Directory<ContextProduct>("fdb_context_test_products")
         var id: String = ULID().ulidString
         var name: String
         var price: Double
@@ -44,15 +45,16 @@ struct FDBContextTests {
     // MARK: - Helper Methods
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         // Use Schema([Type.self]) to properly register types
-        let schema = Schema([TestUser.self, TestProduct.self], version: Schema.Version(1, 0, 0))
+        let schema = Schema([ContextUser.self, ContextProduct.self], version: Schema.Version(1, 0, 0))
 
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
@@ -60,11 +62,11 @@ struct FDBContextTests {
     /// Clean up test data - call at START of each test that modifies data
     /// Uses DirectoryLayer.remove() to handle old format data
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.directoryService.exists(path: ["fdb_context_test_users"]) {
-            try await container.engine.directoryService.remove(path: ["fdb_context_test_users"])
+        if try await container.engine.directoryExists(path: ["fdb_context_test_users"]) {
+            try await container.engine.removeDirectory(path: ["fdb_context_test_users"])
         }
-        if try await container.engine.directoryService.exists(path: ["fdb_context_test_products"]) {
-            try await container.engine.directoryService.remove(path: ["fdb_context_test_products"])
+        if try await container.engine.directoryExists(path: ["fdb_context_test_products"]) {
+            try await container.engine.removeDirectory(path: ["fdb_context_test_products"])
         }
     }
 
@@ -99,7 +101,7 @@ struct FDBContextTests {
 
         #expect(context.hasChanges == false)
 
-        let user = TestUser(name: "Alice", email: "alice@example.com", age: 30)
+        let user = ContextUser(name: "Alice", email: "alice@example.com", age: 30)
         context.insert(user)
         #expect(context.hasChanges == true)
 
@@ -118,7 +120,7 @@ struct FDBContextTests {
         let container = try await setupContainer()
         let context = container.newContext()
 
-        let user = TestUser(name: "Bob", email: "bob@example.com", age: 25)
+        let user = ContextUser(name: "Bob", email: "bob@example.com", age: 25)
 
         context.create(user)
         #expect(context.hasChanges == true)
@@ -132,7 +134,7 @@ struct FDBContextTests {
         let container = try await setupContainer()
         let context = container.newContext()
 
-        let user = TestUser(name: "Bob", email: "bob@example.com", age: 25)
+        let user = ContextUser(name: "Bob", email: "bob@example.com", age: 25)
 
         context.insert(user)
         #expect(context.hasChanges == true)
@@ -155,7 +157,7 @@ struct FDBContextTests {
         let container = try await setupContainer()
         let context = container.newContext()
 
-        let user = TestUser(name: "Charlie", email: "charlie@example.com", age: 35)
+        let user = ContextUser(name: "Charlie", email: "charlie@example.com", age: 35)
         context.insert(user)
         #expect(context.hasChanges == true)
 
@@ -175,11 +177,11 @@ struct FDBContextTests {
 
         let context = container.newContext()
 
-        let user = TestUser(name: "David", email: "david@example.com", age: 40)
+        let user = ContextUser(name: "David", email: "david@example.com", age: 40)
         context.insert(user)
         try await context.save()
 
-        let fetchedUser = try await context.model(for: user.id, as: TestUser.self)
+        let fetchedUser = try await context.model(for: user.id, as: ContextUser.self)
         #expect(fetchedUser != nil)
         #expect(fetchedUser?.id == user.id)
         #expect(fetchedUser?.name == user.name)
@@ -192,7 +194,7 @@ struct FDBContextTests {
         let container = try await setupContainer()
         let context = container.newContext()
 
-        let fetchedUser = try await context.model(for: "nonexistent-id", as: TestUser.self)
+        let fetchedUser = try await context.model(for: "nonexistent-id", as: ContextUser.self)
         #expect(fetchedUser == nil)
     }
 
@@ -205,16 +207,16 @@ struct FDBContextTests {
         let context = container.newContext()
 
         let users = [
-            TestUser(name: "User1", email: "user1@example.com", age: 20),
-            TestUser(name: "User2", email: "user2@example.com", age: 25),
-            TestUser(name: "User3", email: "user3@example.com", age: 30)
+            ContextUser(name: "User1", email: "user1@example.com", age: 20),
+            ContextUser(name: "User2", email: "user2@example.com", age: 25),
+            ContextUser(name: "User3", email: "user3@example.com", age: 30)
         ]
         for user in users {
             context.insert(user)
         }
         try await context.save()
 
-        let fetchedUsers = try await context.fetch(TestUser.self).execute()
+        let fetchedUsers = try await context.fetch(ContextUser.self).execute()
         #expect(fetchedUsers.count == 3)
 
         let names = Set(fetchedUsers.map(\.name))
@@ -231,17 +233,17 @@ struct FDBContextTests {
 
         let context = container.newContext()
 
-        let user = TestUser(name: "Eve", email: "eve@example.com", age: 28)
+        let user = ContextUser(name: "Eve", email: "eve@example.com", age: 28)
         context.insert(user)
         try await context.save()
 
-        let existingUser = try await context.model(for: user.id, as: TestUser.self)
+        let existingUser = try await context.model(for: user.id, as: ContextUser.self)
         #expect(existingUser != nil)
 
         context.delete(user)
         try await context.save()
 
-        let deletedUser = try await context.model(for: user.id, as: TestUser.self)
+        let deletedUser = try await context.model(for: user.id, as: ContextUser.self)
         #expect(deletedUser == nil)
     }
 
@@ -255,15 +257,15 @@ struct FDBContextTests {
 
         let context = container.newContext()
 
-        let user = TestUser(name: "Frank", email: "frank@example.com", age: 33)
-        let product = TestProduct(name: "Widget", price: 9.99)
+        let user = ContextUser(name: "Frank", email: "frank@example.com", age: 33)
+        let product = ContextProduct(name: "Widget", price: 9.99)
 
         context.insert(user)
         context.insert(product)
         try await context.save()
 
-        let fetchedUsers = try await context.fetch(TestUser.self).execute()
-        let fetchedProducts = try await context.fetch(TestProduct.self).execute()
+        let fetchedUsers = try await context.fetch(ContextUser.self).execute()
+        let fetchedProducts = try await context.fetch(ContextProduct.self).execute()
 
         #expect(fetchedUsers.count == 1)
         #expect(fetchedProducts.count == 1)
@@ -283,12 +285,12 @@ struct FDBContextTests {
         let context = container.newContext()
 
         for i in 1...5 {
-            let user = TestUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
+            let user = ContextUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
             context.insert(user)
         }
         try await context.save()
 
-        let fetchedUsers = try await context.fetch(TestUser.self)
+        let fetchedUsers = try await context.fetch(ContextUser.self)
             .limit(2)
             .execute()
         #expect(fetchedUsers.count == 2)
@@ -303,12 +305,12 @@ struct FDBContextTests {
         let context = container.newContext()
 
         for i in 1...3 {
-            let user = TestUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
+            let user = ContextUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
             context.insert(user)
         }
         try await context.save()
 
-        let count = try await context.fetch(TestUser.self).count()
+        let count = try await context.fetch(ContextUser.self).count()
         #expect(count == 3)
     }
 
@@ -321,7 +323,7 @@ struct FDBContextTests {
         try await cleanup(container: container)
 
         let context = container.newContext()
-        let user = TestUser(name: "Grace", email: "grace@example.com", age: 27)
+        let user = ContextUser(name: "Grace", email: "grace@example.com", age: 27)
 
         try await context.performAndSave {
             context.insert(user)
@@ -329,7 +331,7 @@ struct FDBContextTests {
 
         #expect(context.hasChanges == false)
 
-        let fetchedUser = try await context.model(for: user.id, as: TestUser.self)
+        let fetchedUser = try await context.model(for: user.id, as: ContextUser.self)
         #expect(fetchedUser != nil)
         #expect(fetchedUser?.name == "Grace")
     }
@@ -345,7 +347,7 @@ struct FDBContextTests {
         let context = container.newContext()
 
         for i in 1...10 {
-            let user = TestUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
+            let user = ContextUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
             context.insert(user)
         }
 
@@ -397,8 +399,8 @@ struct FDBContextTests {
         let context = container.newContext()
 
         let users = [
-            TestUser(name: "User1", email: "user1@example.com", age: 20),
-            TestUser(name: "User2", email: "user2@example.com", age: 25)
+            ContextUser(name: "User1", email: "user1@example.com", age: 20),
+            ContextUser(name: "User2", email: "user2@example.com", age: 25)
         ]
         for user in users {
             context.insert(user)
@@ -406,7 +408,7 @@ struct FDBContextTests {
         try await context.save()
 
         var enumeratedNames: [String] = []
-        try await context.enumerate(TestUser.self) { user in
+        try await context.enumerate(ContextUser.self) { user in
             enumeratedNames.append(user.name)
         }
 

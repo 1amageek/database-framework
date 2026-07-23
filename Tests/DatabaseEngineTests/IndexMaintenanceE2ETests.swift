@@ -14,10 +14,12 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import FullText
 import Graph
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import FullTextIndex
 @testable import GraphIndex
 @testable import ScalarIndex
@@ -94,22 +96,23 @@ struct IndexMaintenanceE2ETests {
     // MARK: - Setup
 
     private func setupContainer<T: Persistable>(_ types: [T.Type]) async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema(types.map { $0 as any Persistable.Type }, version: Schema.Version(1, 0, 0))
 
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
 
     private func cleanup(container: DBContainer, paths: [[String]]) async throws {
         for path in paths {
-            if try await container.engine.directoryService.exists(path: path) {
-                try await container.engine.directoryService.remove(path: path)
+            if try await container.engine.directoryExists(path: path) {
+                try await container.engine.removeDirectory(path: path)
             }
         }
         // Re-initialize indexes after directory removal
@@ -173,7 +176,7 @@ struct IndexMaintenanceE2ETests {
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
         let scalarIndexName = E2EScalarUser.indexDescriptors.first { descriptor in
-            type(of: descriptor.kind).identifier == "scalar"
+            descriptor.kindIdentifier == "scalar"
         }?.name
 
         #expect(scalarIndexName != nil, "E2EScalarUser should have a scalar index")
@@ -224,7 +227,7 @@ struct IndexMaintenanceE2ETests {
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
         let countIndexName = E2ECountItem.indexDescriptors.first { descriptor in
-            type(of: descriptor.kind).identifier == "count"
+            descriptor.kindIdentifier == "count"
         }?.name
 
         #expect(countIndexName != nil, "E2ECountItem should have a count index")
@@ -271,7 +274,7 @@ struct IndexMaintenanceE2ETests {
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
         let fullTextIndexName = E2EFullTextArticle.indexDescriptors.first { descriptor in
-            type(of: descriptor.kind).identifier == "fulltext"
+            descriptor.kindIdentifier == "fulltext"
         }?.name
 
         #expect(fullTextIndexName != nil, "E2EFullTextArticle should have a fullText index")
@@ -331,7 +334,7 @@ struct IndexMaintenanceE2ETests {
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
         let graphIndexName = E2EGraphEdge.indexDescriptors.first { descriptor in
-            type(of: descriptor.kind).identifier == "graph"
+            descriptor.kindIdentifier == "graph"
         }?.name
 
         #expect(graphIndexName != nil, "E2EGraphEdge should have a graph index")
@@ -384,7 +387,7 @@ struct IndexMaintenanceE2ETests {
         let typeSubspace = try await container.resolveDirectory(for: E2EGraphEdge.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
         let graphIndexName = E2EGraphEdge.indexDescriptors.first { descriptor in
-            type(of: descriptor.kind).identifier == "graph"
+            descriptor.kindIdentifier == "graph"
         }?.name
 
         var countBeforeDelete = 0
@@ -421,9 +424,9 @@ struct IndexMaintenanceE2ETests {
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
     }
 
-    // MARK: - Comparison Test: Direct Maintainer vs FDBContext.save()
+    // MARK: - Comparison Test: Provider Registry vs FDBContext.save()
 
-    @Test("Comparison: Direct IndexMaintainer works but FDBContext.save() may not")
+    @Test("Provider registry and FDBContext.save() maintain identical graph entries")
     func testComparisonDirectVsSave() async throws {
         let container = try await setupContainer([E2EGraphEdge.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
@@ -432,19 +435,15 @@ struct IndexMaintenanceE2ETests {
         let typeSubspace = try await container.resolveDirectory(for: E2EGraphEdge.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
-        let graphIndexDescriptor = E2EGraphEdge.indexDescriptors.first { descriptor in
-            type(of: descriptor.kind).identifier == "graph"
-        }!
-
-        let graphIndexSubspace = indexSubspace.subspace(graphIndexDescriptor.name)
-
-        // Create maintainer directly
-        guard let maintainable = graphIndexDescriptor.kind as? any IndexKindMaintainable else {
-            Issue.record("GraphIndexKind should conform to IndexKindMaintainable")
+        guard let graphIndexDescriptor = E2EGraphEdge.indexDescriptors.first(where: { descriptor in
+            descriptor.kindIdentifier == "graph"
+        }) else {
+            Issue.record("Expected graph index descriptor")
             return
         }
 
-        // Build Index from descriptor
+        let graphIndexSubspace = indexSubspace.subspace(graphIndexDescriptor.name)
+
         let index = Index(
             name: graphIndexDescriptor.name,
             kind: graphIndexDescriptor.kind,
@@ -453,7 +452,10 @@ struct IndexMaintenanceE2ETests {
             itemTypes: Set([E2EGraphEdge.persistableType])
         )
 
-        let maintainer: any IndexMaintainer<E2EGraphEdge> = try maintainable.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<E2EGraphEdge> = try container
+            .runtimeConfiguration
+            .indexMaintainerProviders
+            .makeIndexMaintainer(
             index: index,
             subspace: graphIndexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
@@ -493,7 +495,7 @@ struct IndexMaintenanceE2ETests {
             )
         }
 
-        // Part 2: FDBContext.save() (may fail if IndexMaintenanceService is broken)
+        // Part 2: FDBContext.save()
         let context = container.newContext()
 
         var contextEdge = E2EGraphEdge()
@@ -512,7 +514,7 @@ struct IndexMaintenanceE2ETests {
         // This is the key assertion
         #expect(
             contextSaveCount == 2,
-            "FDBContext.save() should create 2 entries (same as direct maintainer), got \(contextSaveCount). Direct maintainer created \(directMaintainerCount). This discrepancy proves IndexMaintenanceService is not using IndexKindMaintainable."
+            "FDBContext.save() should create the same 2 entries as the provider registry, got \(contextSaveCount). The provider registry created \(directMaintainerCount)."
         )
 
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])

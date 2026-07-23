@@ -3,7 +3,11 @@
 //
 // 2-layer architecture for efficient batch queries while maintaining deletion accuracy.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -51,7 +55,7 @@ private struct MinMaxSubspaces: Sendable {
 /// - `getAllMins()`: O(G) - Layer 2 range scan
 /// - Insert/Update: O(log N) + O(log M) - Layer 1 write + Layer 2 update
 /// - Delete: O(log N) + O(log M) - Layer 1 clear + Layer 2 recomputation
-public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable & Sendable>: SubspaceIndexMaintainer {
+public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     public let index: Index
@@ -59,6 +63,8 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     public let idExpression: KeyExpression
 
     private let layers: MinMaxSubspaces
+
+    private var maximumScanGroups: Int { 100_000 }
 
     // MARK: - Initialization
 
@@ -80,47 +86,39 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         newItem: Item?,
         transaction: any Transaction
     ) async throws {
-        // 1. Layer 1: Update individual values
-        if let oldItem = oldItem {
-            do {
-                let oldKey = try buildIndividualKey(for: oldItem)
-                transaction.clear(key: oldKey)
-            } catch DataAccessError.nilValueCannotBeIndexed {
-                // Sparse index: nil value was not indexed
-            }
+        // Extract both sides before mutating Layer 1.
+        let oldContribution = try oldItem.flatMap {
+            try contribution(for: $0)
+        }
+        let newContribution = try newItem.flatMap {
+            try contribution(for: $0)
+        }
+        let keyChanged = oldContribution?.individualKey
+            != newContribution?.individualKey
+
+        if keyChanged, let oldContribution {
+            try transaction.clear(key: oldContribution.individualKey)
+        }
+        if let newContribution,
+           keyChanged
+            || oldContribution?.storedValue != newContribution.storedValue {
+            try transaction.setValue(
+                newContribution.storedValue,
+                for: newContribution.individualKey
+            )
         }
 
-        if let newItem = newItem {
-            do {
-                let newKey = try buildIndividualKey(for: newItem)
-                let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
-                transaction.setValue(value, for: newKey)
-            } catch DataAccessError.nilValueCannotBeIndexed {
-                // Sparse index: nil value is not indexed
-            }
-        }
-
-        // 2. Layer 2: Update aggregates for affected groups
         var affectedGroups: [[any TupleElement]] = []
-        if let oldItem {
-            do {
-                if let oldGrouping = try extractGrouping(from: oldItem) {
-                    affectedGroups.append(oldGrouping)
-                }
-            } catch DataAccessError.nilValueCannotBeIndexed {
-                // Sparse index: nil value was not indexed
-            }
+        if keyChanged, let oldContribution {
+            affectedGroups.append(oldContribution.grouping)
         }
-        if let newItem {
-            do {
-                if let newGrouping = try extractGrouping(from: newItem) {
-                    // Only add if different from old grouping
-                    if affectedGroups.isEmpty || !areGroupingsEqual(affectedGroups[0], newGrouping) {
-                        affectedGroups.append(newGrouping)
-                    }
-                }
-            } catch DataAccessError.nilValueCannotBeIndexed {
-                // Sparse index: nil value is not indexed
+        if keyChanged, let newContribution {
+            if affectedGroups.isEmpty
+                || !areGroupingsEqual(
+                    affectedGroups[0],
+                    newContribution.grouping
+                ) {
+                affectedGroups.append(newContribution.grouping)
             }
         }
 
@@ -137,22 +135,17 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         id: Tuple,
         transaction: any Transaction
     ) async throws {
-        // Sparse index: if value field is nil, skip indexing
-        do {
-            // Layer 1: Store individual value
-            let indexKey = try buildIndividualKey(for: item, id: id)
-            let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
-            transaction.setValue(value, for: indexKey)
-
-            // Layer 2: Update aggregate for this group
-            let groupingValues = try extractGrouping(from: item) ?? []
-            try await updateAggregateForGroup(
-                groupingValues: groupingValues,
-                transaction: transaction
-            )
-        } catch DataAccessError.nilValueCannotBeIndexed {
-            // Sparse index: nil value is not indexed
+        guard let contribution = try contribution(for: item, id: id) else {
+            return
         }
+        try transaction.setValue(
+            contribution.storedValue,
+            for: contribution.individualKey
+        )
+        try await updateAggregateForGroup(
+            groupingValues: contribution.grouping,
+            transaction: transaction
+        )
     }
 
     /// Compute expected index keys for this item
@@ -165,11 +158,10 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         for item: Item,
         id: Tuple
     ) async throws -> [Bytes] {
-        do {
-            return [try buildIndividualKey(for: item, id: id)]
-        } catch DataAccessError.nilValueCannotBeIndexed {
+        guard let contribution = try contribution(for: item, id: id) else {
             return []
         }
+        return [contribution.individualKey]
     }
 
     // MARK: - Query Methods
@@ -190,17 +182,12 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         }
 
         // Layer 2: Direct read (O(1))
-        let aggregateKey = layers.aggregated.pack(Tuple(groupingValues))
+        let aggregateKey = layers.aggregated.pack(elements: groupingValues)
+        try validateKeySize(aggregateKey)
         guard let valueData = try await transaction.getValue(for: aggregateKey, snapshot: true) else {
             throw IndexError.noData("No MIN value found for group")
         }
-
-        let tuple = try Tuple.unpack(from: valueData)
-        guard tuple.count >= 2 else {
-            throw IndexError.invalidStructure("Invalid MIN aggregate structure")
-        }
-
-        return try TupleDecoder.decode(tuple[0], as: Value.self)
+        return try decodeAggregateValue(valueData).value
     }
 
     /// Get all minimum values across all groups
@@ -215,37 +202,68 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], min: Value, itemId: Tuple)] {
         var results: [(grouping: [any TupleElement], min: Value, itemId: Tuple)] = []
+        guard index.rootExpression.columnCount >= 1 else {
+            throw IndexError.invalidStructure(
+                "MIN index must contain a value field"
+            )
+        }
+        let groupingFieldCount = index.rootExpression.columnCount - 1
+
+        // The empty grouping tuple packs to the aggregated subspace prefix
+        // itself, which is intentionally outside Subspace.range(). Read the
+        // single global aggregate directly.
+        if groupingFieldCount == 0 {
+            let aggregateKey = layers.aggregated.pack(elements: [])
+            try validateKeySize(aggregateKey)
+            guard let value = try await transaction.getValue(
+                for: aggregateKey,
+                snapshot: true
+            ) else {
+                return []
+            }
+            let aggregate = try decodeAggregateValue(value)
+            return [(grouping: [], min: aggregate.value, itemId: aggregate.itemId)]
+        }
 
         // Layer 2: Scan only aggregated values (O(G))
         let range = layers.aggregated.range()
-        let kvs = try await transaction.collectRange(
+        var scannedGroups = 0
+        var scannedBytes = 0
+        try await transaction.forEachInRange(
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
-            snapshot: true
-        )
+            limit: maximumScanGroups + 1,
+            snapshot: true,
+            streamingMode: .iterator
+        ) { key, value in
+            scannedGroups += 1
+            guard scannedGroups <= maximumScanGroups else {
+                throw AggregationStorageError.scanLimitExceeded(
+                    maximumScanGroups
+                )
+            }
+            scannedBytes = try checkedAggregationScannedBytes(
+                scannedBytes,
+                adding: key.count + value.count
+            )
 
-        for (key, value) in kvs {
             // Extract grouping values from key
             let groupingTuple = try layers.aggregated.unpack(key)
-            let groupingElements = (0..<groupingTuple.count).compactMap { groupingTuple[$0] }
+            let groupingElements = try groupingTuple.elements()
+            guard groupingElements.count == groupingFieldCount else {
+                throw IndexError.invalidStructure(
+                    "MIN aggregate key has an invalid grouping field count"
+                )
+            }
 
             // Extract MIN value and itemId from value
             // Value structure: [value, id_element1, id_element2, ...]
-            let valueTuple = try Tuple.unpack(from: value)
-            guard valueTuple.count >= 2 else { continue }
-
-            let valueElements = (0..<valueTuple.count).compactMap { valueTuple[$0] }
-            guard valueElements.count >= 2 else { continue }
-
-            let minValue = try TupleDecoder.decode(valueElements[0], as: Value.self)
-            // Primary key is all elements after the first
-            let idElements = Array(valueElements.dropFirst())
-            let itemId = Tuple(idElements)
+            let aggregate = try decodeAggregateValue(value)
 
             results.append((
                 grouping: groupingElements,
-                min: minValue,
-                itemId: itemId
+                min: aggregate.value,
+                itemId: aggregate.itemId
             ))
         }
 
@@ -254,29 +272,66 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
 
     // MARK: - Private Methods
 
-    /// Build Layer 1 key (individual value storage)
-    private func buildIndividualKey(for item: Item, id: Tuple? = nil) throws -> Bytes {
-        let indexedValues = try evaluateIndexFields(from: item)
-        let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
-
-        var allValues: [any TupleElement] = indexedValues
-        allValues.append(contentsOf: extractIdElements(from: primaryKeyTuple))
-
-        // Use Layer 1 subspace
-        return try packAndValidate(Tuple(allValues), in: layers.individual)
+    private struct Contribution {
+        let grouping: [any TupleElement]
+        let individualKey: Bytes
+        let storedValue: Bytes
     }
 
-    /// Extract grouping values from an item
-    ///
-    /// **Field structure**: [grouping_fields..., value_field]
-    /// - All fields except the last are grouping keys
-    /// - The last field is the value to aggregate
-    private func extractGrouping(from item: Item?) throws -> [any TupleElement]? {
-        guard let item = item else { return nil }
-        let allValues = try evaluateIndexFields(from: item)
-        // Last field is the value, everything before is grouping
-        guard !allValues.isEmpty else { return nil }
-        return Array(allValues.dropLast())
+    private func decodeAggregateValue(
+        _ bytes: Bytes
+    ) throws -> (value: Value, itemId: Tuple) {
+        var cursor = TupleCursor(bytes: bytes)
+        let minimum = try cursor.requireNext()
+        let idStart = cursor.consumedByteCount
+        guard !cursor.isAtEnd else {
+            throw IndexError.invalidStructure(
+                "Invalid minimum aggregate value: expected [value, id]"
+            )
+        }
+        return (
+            value: try TupleDecoder.decode(minimum, as: Value.self),
+            itemId: try Tuple(packed: bytes[idStart..<bytes.count])
+        )
+    }
+
+    /// Builds one sparse contribution while retaining null grouping values.
+    private func contribution(
+        for item: Item,
+        id: Tuple? = nil
+    ) throws -> Contribution? {
+        guard let fields = try AggregationFieldExtractor.contribution(
+            from: item,
+            index: index
+        ) else {
+            return nil
+        }
+        let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
+
+        var allValues: [any TupleElement] = []
+        allValues.reserveCapacity(
+            fields.grouping.count + 1 + primaryKeyTuple.count
+        )
+        allValues.append(contentsOf: fields.grouping)
+        allValues.append(fields.value)
+        for index in 0..<primaryKeyTuple.count {
+            allValues.append(try primaryKeyTuple.element(at: index))
+        }
+
+        let individualKey = try packAndValidate(
+            elements: allValues,
+            in: layers.individual
+        )
+        let storedValue = try CoveringValueBuilder.build(
+            for: item,
+            index: index
+        )
+        try validateValueSize(storedValue)
+        return Contribution(
+            grouping: fields.grouping,
+            individualKey: individualKey,
+            storedValue: storedValue
+        )
     }
 
     /// Update Layer 2 aggregate for a specific group
@@ -289,12 +344,9 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         groupingValues: [any TupleElement],
         transaction: any Transaction
     ) async throws {
-        let groupingTuple = Tuple(groupingValues)
-        let groupingBytes = groupingTuple.pack()
-
         // Find MIN value from Layer 1
         let individualGroupSpace = Subspace(
-            prefix: layers.individual.prefix + groupingBytes
+            prefix: layers.individual.pack(elements: groupingValues)
         )
         let range = individualGroupSpace.range()
         let selector = KeySelector.firstGreaterOrEqual(range.begin)
@@ -302,36 +354,34 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         guard let minKey = try await transaction.getKey(selector: selector, snapshot: true),
               individualGroupSpace.contains(minKey) else {
             // Group is empty → Clear Layer 2
-            let aggregateKey = layers.aggregated.pack(groupingTuple)
-            transaction.clear(key: aggregateKey)
+            let aggregateKey = layers.aggregated.pack(
+                elements: groupingValues
+            )
+            try validateKeySize(aggregateKey)
+            try transaction.clear(key: aggregateKey)
             return
         }
 
         // Extract MIN value and itemId from Layer 1 key
         // Key structure: [value][id_element1][id_element2]...
-        let dataTuple = try individualGroupSpace.unpack(minKey)
-        guard dataTuple.count >= 2 else {
+        let aggregateValue = minKey[
+            individualGroupSpace.prefix.count..<minKey.count
+        ]
+        var cursor = TupleCursor(bytes: aggregateValue)
+        let minimum = try cursor.requireNext()
+        _ = try TupleDecoder.decode(minimum, as: Value.self)
+        guard !cursor.isAtEnd else {
             throw IndexError.invalidStructure("Invalid Layer 1 key structure: expected at least [value, id]")
         }
-
-        // First element is the value
-        guard let minValue = dataTuple[0] else {
-            throw IndexError.invalidStructure("Missing value in Layer 1 key")
-        }
-
-        // Remaining elements are the primary key components
-        let idElements = (1..<dataTuple.count).compactMap { dataTuple[$0] }
-        guard !idElements.isEmpty else {
-            throw IndexError.invalidStructure("Missing primary key in Layer 1 key")
+        while !cursor.isAtEnd {
+            _ = try cursor.requireNext()
         }
 
         // Update Layer 2
         // Store as flat tuple: [value, id_element1, id_element2, ...]
-        let aggregateKey = layers.aggregated.pack(groupingTuple)
-        var aggregateElements: [any TupleElement] = [minValue]
-        aggregateElements.append(contentsOf: idElements)
-        let aggregateValue = Tuple(aggregateElements).pack()
-        transaction.setValue(aggregateValue, for: aggregateKey)
+        let aggregateKey = layers.aggregated.pack(elements: groupingValues)
+        try validateKeySize(aggregateKey)
+        try transaction.setValue(aggregateValue, for: aggregateKey)
     }
 }
 
@@ -362,7 +412,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
 /// - `getAllMaxs()`: O(G) - Layer 2 range scan
 /// - Insert/Update: O(log N) + O(log M) - Layer 1 write + Layer 2 update
 /// - Delete: O(log N) + O(log M) - Layer 1 clear + Layer 2 recomputation
-public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable & Sendable>: SubspaceIndexMaintainer {
+public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     public let index: Index
@@ -370,6 +420,8 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     public let idExpression: KeyExpression
 
     private let layers: MinMaxSubspaces
+
+    private var maximumScanGroups: Int { 100_000 }
 
     // MARK: - Initialization
 
@@ -391,47 +443,38 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         newItem: Item?,
         transaction: any Transaction
     ) async throws {
-        // 1. Layer 1: Update individual values
-        if let oldItem = oldItem {
-            do {
-                let oldKey = try buildIndividualKey(for: oldItem)
-                transaction.clear(key: oldKey)
-            } catch DataAccessError.nilValueCannotBeIndexed {
-                // Sparse index: nil value was not indexed
-            }
+        let oldContribution = try oldItem.flatMap {
+            try contribution(for: $0)
+        }
+        let newContribution = try newItem.flatMap {
+            try contribution(for: $0)
+        }
+        let keyChanged = oldContribution?.individualKey
+            != newContribution?.individualKey
+
+        if keyChanged, let oldContribution {
+            try transaction.clear(key: oldContribution.individualKey)
+        }
+        if let newContribution,
+           keyChanged
+            || oldContribution?.storedValue != newContribution.storedValue {
+            try transaction.setValue(
+                newContribution.storedValue,
+                for: newContribution.individualKey
+            )
         }
 
-        if let newItem = newItem {
-            do {
-                let newKey = try buildIndividualKey(for: newItem)
-                let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
-                transaction.setValue(value, for: newKey)
-            } catch DataAccessError.nilValueCannotBeIndexed {
-                // Sparse index: nil value is not indexed
-            }
-        }
-
-        // 2. Layer 2: Update aggregates for affected groups
         var affectedGroups: [[any TupleElement]] = []
-        if let oldItem {
-            do {
-                if let oldGrouping = try extractGrouping(from: oldItem) {
-                    affectedGroups.append(oldGrouping)
-                }
-            } catch DataAccessError.nilValueCannotBeIndexed {
-                // Sparse index: nil value was not indexed
-            }
+        if keyChanged, let oldContribution {
+            affectedGroups.append(oldContribution.grouping)
         }
-        if let newItem {
-            do {
-                if let newGrouping = try extractGrouping(from: newItem) {
-                    // Only add if different from old grouping
-                    if affectedGroups.isEmpty || !areGroupingsEqual(affectedGroups[0], newGrouping) {
-                        affectedGroups.append(newGrouping)
-                    }
-                }
-            } catch DataAccessError.nilValueCannotBeIndexed {
-                // Sparse index: nil value is not indexed
+        if keyChanged, let newContribution {
+            if affectedGroups.isEmpty
+                || !areGroupingsEqual(
+                    affectedGroups[0],
+                    newContribution.grouping
+                ) {
+                affectedGroups.append(newContribution.grouping)
             }
         }
 
@@ -448,22 +491,17 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         id: Tuple,
         transaction: any Transaction
     ) async throws {
-        // Sparse index: if value field is nil, skip indexing
-        do {
-            // Layer 1: Store individual value
-            let indexKey = try buildIndividualKey(for: item, id: id)
-            let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
-            transaction.setValue(value, for: indexKey)
-
-            // Layer 2: Update aggregate for this group
-            let groupingValues = try extractGrouping(from: item) ?? []
-            try await updateAggregateForGroup(
-                groupingValues: groupingValues,
-                transaction: transaction
-            )
-        } catch DataAccessError.nilValueCannotBeIndexed {
-            // Sparse index: nil value is not indexed
+        guard let contribution = try contribution(for: item, id: id) else {
+            return
         }
+        try transaction.setValue(
+            contribution.storedValue,
+            for: contribution.individualKey
+        )
+        try await updateAggregateForGroup(
+            groupingValues: contribution.grouping,
+            transaction: transaction
+        )
     }
 
     /// Compute expected index keys for this item
@@ -476,11 +514,10 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         for item: Item,
         id: Tuple
     ) async throws -> [Bytes] {
-        do {
-            return [try buildIndividualKey(for: item, id: id)]
-        } catch DataAccessError.nilValueCannotBeIndexed {
+        guard let contribution = try contribution(for: item, id: id) else {
             return []
         }
+        return [contribution.individualKey]
     }
 
     // MARK: - Query Methods
@@ -501,17 +538,12 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         }
 
         // Layer 2: Direct read (O(1))
-        let aggregateKey = layers.aggregated.pack(Tuple(groupingValues))
+        let aggregateKey = layers.aggregated.pack(elements: groupingValues)
+        try validateKeySize(aggregateKey)
         guard let valueData = try await transaction.getValue(for: aggregateKey, snapshot: true) else {
             throw IndexError.noData("No MAX value found for group")
         }
-
-        let tuple = try Tuple.unpack(from: valueData)
-        guard tuple.count >= 2 else {
-            throw IndexError.invalidStructure("Invalid MAX aggregate structure")
-        }
-
-        return try TupleDecoder.decode(tuple[0], as: Value.self)
+        return try decodeAggregateValue(valueData).value
     }
 
     /// Get all maximum values across all groups
@@ -526,37 +558,68 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], max: Value, itemId: Tuple)] {
         var results: [(grouping: [any TupleElement], max: Value, itemId: Tuple)] = []
+        guard index.rootExpression.columnCount >= 1 else {
+            throw IndexError.invalidStructure(
+                "MAX index must contain a value field"
+            )
+        }
+        let groupingFieldCount = index.rootExpression.columnCount - 1
+
+        // The empty grouping tuple packs to the aggregated subspace prefix
+        // itself, which is intentionally outside Subspace.range(). Read the
+        // single global aggregate directly.
+        if groupingFieldCount == 0 {
+            let aggregateKey = layers.aggregated.pack(elements: [])
+            try validateKeySize(aggregateKey)
+            guard let value = try await transaction.getValue(
+                for: aggregateKey,
+                snapshot: true
+            ) else {
+                return []
+            }
+            let aggregate = try decodeAggregateValue(value)
+            return [(grouping: [], max: aggregate.value, itemId: aggregate.itemId)]
+        }
 
         // Layer 2: Scan only aggregated values (O(G))
         let range = layers.aggregated.range()
-        let kvs = try await transaction.collectRange(
+        var scannedGroups = 0
+        var scannedBytes = 0
+        try await transaction.forEachInRange(
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
-            snapshot: true
-        )
+            limit: maximumScanGroups + 1,
+            snapshot: true,
+            streamingMode: .iterator
+        ) { key, value in
+            scannedGroups += 1
+            guard scannedGroups <= maximumScanGroups else {
+                throw AggregationStorageError.scanLimitExceeded(
+                    maximumScanGroups
+                )
+            }
+            scannedBytes = try checkedAggregationScannedBytes(
+                scannedBytes,
+                adding: key.count + value.count
+            )
 
-        for (key, value) in kvs {
             // Extract grouping values from key
             let groupingTuple = try layers.aggregated.unpack(key)
-            let groupingElements = (0..<groupingTuple.count).compactMap { groupingTuple[$0] }
+            let groupingElements = try groupingTuple.elements()
+            guard groupingElements.count == groupingFieldCount else {
+                throw IndexError.invalidStructure(
+                    "MAX aggregate key has an invalid grouping field count"
+                )
+            }
 
             // Extract MAX value and itemId from value
             // Value structure: [value, id_element1, id_element2, ...]
-            let valueTuple = try Tuple.unpack(from: value)
-            guard valueTuple.count >= 2 else { continue }
-
-            let valueElements = (0..<valueTuple.count).compactMap { valueTuple[$0] }
-            guard valueElements.count >= 2 else { continue }
-
-            let maxValue = try TupleDecoder.decode(valueElements[0], as: Value.self)
-            // Primary key is all elements after the first
-            let idElements = Array(valueElements.dropFirst())
-            let itemId = Tuple(idElements)
+            let aggregate = try decodeAggregateValue(value)
 
             results.append((
                 grouping: groupingElements,
-                max: maxValue,
-                itemId: itemId
+                max: aggregate.value,
+                itemId: aggregate.itemId
             ))
         }
 
@@ -565,29 +628,66 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
 
     // MARK: - Private Methods
 
-    /// Build Layer 1 key (individual value storage)
-    private func buildIndividualKey(for item: Item, id: Tuple? = nil) throws -> Bytes {
-        let indexedValues = try evaluateIndexFields(from: item)
-        let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
-
-        var allValues: [any TupleElement] = indexedValues
-        allValues.append(contentsOf: extractIdElements(from: primaryKeyTuple))
-
-        // Use Layer 1 subspace
-        return try packAndValidate(Tuple(allValues), in: layers.individual)
+    private struct Contribution {
+        let grouping: [any TupleElement]
+        let individualKey: Bytes
+        let storedValue: Bytes
     }
 
-    /// Extract grouping values from an item
-    ///
-    /// **Field structure**: [grouping_fields..., value_field]
-    /// - All fields except the last are grouping keys
-    /// - The last field is the value to aggregate
-    private func extractGrouping(from item: Item?) throws -> [any TupleElement]? {
-        guard let item = item else { return nil }
-        let allValues = try evaluateIndexFields(from: item)
-        // Last field is the value, everything before is grouping
-        guard !allValues.isEmpty else { return nil }
-        return Array(allValues.dropLast())
+    private func decodeAggregateValue(
+        _ bytes: Bytes
+    ) throws -> (value: Value, itemId: Tuple) {
+        var cursor = TupleCursor(bytes: bytes)
+        let maximum = try cursor.requireNext()
+        let idStart = cursor.consumedByteCount
+        guard !cursor.isAtEnd else {
+            throw IndexError.invalidStructure(
+                "Invalid maximum aggregate value: expected [value, id]"
+            )
+        }
+        return (
+            value: try TupleDecoder.decode(maximum, as: Value.self),
+            itemId: try Tuple(packed: bytes[idStart..<bytes.count])
+        )
+    }
+
+    /// Builds one sparse contribution while retaining null grouping values.
+    private func contribution(
+        for item: Item,
+        id: Tuple? = nil
+    ) throws -> Contribution? {
+        guard let fields = try AggregationFieldExtractor.contribution(
+            from: item,
+            index: index
+        ) else {
+            return nil
+        }
+        let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
+
+        var allValues: [any TupleElement] = []
+        allValues.reserveCapacity(
+            fields.grouping.count + 1 + primaryKeyTuple.count
+        )
+        allValues.append(contentsOf: fields.grouping)
+        allValues.append(fields.value)
+        for index in 0..<primaryKeyTuple.count {
+            allValues.append(try primaryKeyTuple.element(at: index))
+        }
+
+        let individualKey = try packAndValidate(
+            elements: allValues,
+            in: layers.individual
+        )
+        let storedValue = try CoveringValueBuilder.build(
+            for: item,
+            index: index
+        )
+        try validateValueSize(storedValue)
+        return Contribution(
+            grouping: fields.grouping,
+            individualKey: individualKey,
+            storedValue: storedValue
+        )
     }
 
     /// Update Layer 2 aggregate for a specific group
@@ -600,12 +700,9 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         groupingValues: [any TupleElement],
         transaction: any Transaction
     ) async throws {
-        let groupingTuple = Tuple(groupingValues)
-        let groupingBytes = groupingTuple.pack()
-
         // Find MAX value from Layer 1
         let individualGroupSpace = Subspace(
-            prefix: layers.individual.prefix + groupingBytes
+            prefix: layers.individual.pack(elements: groupingValues)
         )
         let range = individualGroupSpace.range()
         let selector = KeySelector.lastLessThan(range.end)
@@ -613,36 +710,34 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         guard let maxKey = try await transaction.getKey(selector: selector, snapshot: true),
               individualGroupSpace.contains(maxKey) else {
             // Group is empty → Clear Layer 2
-            let aggregateKey = layers.aggregated.pack(groupingTuple)
-            transaction.clear(key: aggregateKey)
+            let aggregateKey = layers.aggregated.pack(
+                elements: groupingValues
+            )
+            try validateKeySize(aggregateKey)
+            try transaction.clear(key: aggregateKey)
             return
         }
 
         // Extract MAX value and itemId from Layer 1 key
         // Key structure: [value][id_element1][id_element2]...
-        let dataTuple = try individualGroupSpace.unpack(maxKey)
-        guard dataTuple.count >= 2 else {
+        let aggregateValue = maxKey[
+            individualGroupSpace.prefix.count..<maxKey.count
+        ]
+        var cursor = TupleCursor(bytes: aggregateValue)
+        let maximum = try cursor.requireNext()
+        _ = try TupleDecoder.decode(maximum, as: Value.self)
+        guard !cursor.isAtEnd else {
             throw IndexError.invalidStructure("Invalid Layer 1 key structure: expected at least [value, id]")
         }
-
-        // First element is the value
-        guard let maxValue = dataTuple[0] else {
-            throw IndexError.invalidStructure("Missing value in Layer 1 key")
-        }
-
-        // Remaining elements are the primary key components
-        let idElements = (1..<dataTuple.count).compactMap { dataTuple[$0] }
-        guard !idElements.isEmpty else {
-            throw IndexError.invalidStructure("Missing primary key in Layer 1 key")
+        while !cursor.isAtEnd {
+            _ = try cursor.requireNext()
         }
 
         // Update Layer 2
         // Store as flat tuple: [value, id_element1, id_element2, ...]
-        let aggregateKey = layers.aggregated.pack(groupingTuple)
-        var aggregateElements: [any TupleElement] = [maxValue]
-        aggregateElements.append(contentsOf: idElements)
-        let aggregateValue = Tuple(aggregateElements).pack()
-        transaction.setValue(aggregateValue, for: aggregateKey)
+        let aggregateKey = layers.aggregated.pack(elements: groupingValues)
+        try validateKeySize(aggregateKey)
+        try transaction.setValue(aggregateValue, for: aggregateKey)
     }
 }
 

@@ -13,22 +13,17 @@ import StorageKit
 // MARK: - Field Reference
 
 /// Reference to a field in a model
-public struct FieldReference<T: Persistable>: @unchecked Sendable, Hashable {
-    /// The KeyPath to the field (type-erased)
-    public let keyPath: AnyKeyPath
-
+public struct FieldReference<T: Persistable>: Sendable, Hashable {
     /// The field name (dot notation for nested fields)
     public let fieldName: String
 
     /// Create a field reference from a typed KeyPath
     public init<V>(_ keyPath: KeyPath<T, V>) {
-        self.keyPath = keyPath
         self.fieldName = T.fieldName(for: keyPath)
     }
 
-    /// Create a field reference from type-erased components
-    public init(anyKeyPath: AnyKeyPath, fieldName: String) {
-        self.keyPath = anyKeyPath
+    /// Create a field reference from its canonical name.
+    public init(fieldName: String) {
         self.fieldName = fieldName
     }
 
@@ -54,9 +49,6 @@ public protocol FieldConditionProtocol<T>: Sendable {
 
     /// The field name
     var fieldName: String { get }
-
-    /// The field's KeyPath
-    var keyPath: AnyKeyPath { get }
 
     /// Whether this is an equality constraint
     var isEquality: Bool { get }
@@ -223,7 +215,6 @@ public struct ScalarFieldCondition<T: Persistable>: FieldConditionProtocol, Send
     // MARK: - FieldConditionProtocol
 
     public var fieldName: String { field.fieldName }
-    public var keyPath: AnyKeyPath { field.keyPath }
     public var isEquality: Bool { constraintType.isEquality }
     public var isRange: Bool { constraintType.isRange }
     public var isIn: Bool { constraintType.isIn }
@@ -307,7 +298,6 @@ public struct TextSearchFieldCondition<T: Persistable>: FieldConditionProtocol, 
     }
 
     public var fieldName: String { field.fieldName }
-    public var keyPath: AnyKeyPath { field.keyPath }
     public var isEquality: Bool { false }
     public var isRange: Bool { false }
     public var isIn: Bool { false }
@@ -335,7 +325,6 @@ public struct SpatialFieldCondition<T: Persistable>: FieldConditionProtocol, Sen
     }
 
     public var fieldName: String { field.fieldName }
-    public var keyPath: AnyKeyPath { field.keyPath }
     public var isEquality: Bool { false }
     public var isRange: Bool { false }
     public var isIn: Bool { false }
@@ -363,7 +352,6 @@ public struct VectorFieldCondition<T: Persistable>: FieldConditionProtocol, Send
     }
 
     public var fieldName: String { field.fieldName }
-    public var keyPath: AnyKeyPath { field.keyPath }
     public var isEquality: Bool { false }
     public var isRange: Bool { false }
     public var isIn: Bool { false }
@@ -391,7 +379,6 @@ public struct StringPatternFieldCondition<T: Persistable>: FieldConditionProtoco
     }
 
     public var fieldName: String { field.fieldName }
-    public var keyPath: AnyKeyPath { field.keyPath }
     public var isEquality: Bool { false }
     public var isRange: Bool { false }
     public var isIn: Bool { false }

@@ -6,8 +6,14 @@
 //
 // Reference: W3C SPARQL 1.1 Query Language, Section 15 (Solution Sequences and Modifiers)
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseValue
+import DatabaseEngine
 
 /// A single ORDER BY sort key for VariableBinding sorting
 ///
@@ -28,7 +34,7 @@ import Core
 public struct BindingSortKey: Sendable {
 
     /// Evaluates a binding to produce the sort value
-    public let evaluate: @Sendable (VariableBinding) -> FieldValue?
+    public let evaluate: @Sendable (VariableBinding) throws -> FieldValue?
 
     /// Sort direction: true = ascending (ASC), false = descending (DESC)
     public let ascending: Bool
@@ -50,7 +56,7 @@ public struct BindingSortKey: Sendable {
     public init(
         ascending: Bool = true,
         nullsLast: Bool = false,
-        evaluate: @escaping @Sendable (VariableBinding) -> FieldValue?
+        evaluate: @escaping @Sendable (VariableBinding) throws -> FieldValue?
     ) {
         self.ascending = ascending
         self.nullsLast = nullsLast
@@ -89,6 +95,25 @@ public struct BindingSortKey: Sendable {
 /// **Reference**: W3C SPARQL 1.1 Query Language, Section 15.1
 public struct BindingSorter: Sendable {
 
+    private struct DecoratedBinding: Sendable {
+        let originalIndex: Int
+        let keyOffset: Int
+        let fingerprint: DatabaseBytes
+    }
+
+    private struct ScratchPlan: Sendable {
+        let keyStorageCount: Int
+        let retainedByteCount: UInt64
+    }
+
+    private static let fingerprintStorageByteCount: UInt64 = 32
+
+    // Swift does not expose native Array buffer-header capacity. Charge a
+    // conservative fixed overhead for each of the four owned scratch buffers
+    // in addition to their stride-based element storage.
+    private static let arrayStorageOverheadByteCount: UInt64 = 64
+    private static let scratchArrayCount: UInt64 = 4
+
     /// Sort bindings by multiple keys
     ///
     /// - Parameters:
@@ -96,19 +121,75 @@ public struct BindingSorter: Sendable {
     ///   - keys: Ordered list of sort keys (primary key first)
     /// - Returns: Sorted array of bindings
     public static func sort(
-        _ bindings: [VariableBinding],
-        by keys: [BindingSortKey]
-    ) -> [VariableBinding] {
+        _ bindings: consuming [VariableBinding],
+        by keys: [BindingSortKey],
+        workMeter: DatabaseWorkMeter
+    ) throws -> [VariableBinding] {
+        try workMeter.consume(UInt64(bindings.count), at: .sortInput)
         guard !keys.isEmpty, bindings.count > 1 else {
-            return bindings
+            return consume bindings
         }
 
-        return bindings.sorted { lhs, rhs in
-            for key in keys {
-                let lVal = key.evaluate(lhs)
-                let rVal = key.evaluate(rhs)
+        let scratchPlan = try scratchPlan(
+            bindingCount: bindings.count,
+            keyCount: keys.count,
+            workMeter: workMeter
+        )
+        let scratchReservation = try workMeter.reserveIntermediate(
+            rows: UInt64(bindings.count),
+            bytes: scratchPlan.retainedByteCount,
+            at: .sortInput
+        )
+        defer { scratchReservation.release() }
 
-                let result = compareValues(lVal, rVal, nullsLast: key.nullsLast)
+        var ownedBindings = consume bindings
+        try decorateSortAndReorder(
+            &ownedBindings,
+            keys: keys,
+            keyStorageCount: scratchPlan.keyStorageCount,
+            workMeter: workMeter
+        )
+        return ownedBindings
+    }
+
+    private static func decorateSortAndReorder(
+        _ ownedBindings: inout [VariableBinding],
+        keys: [BindingSortKey],
+        keyStorageCount: Int,
+        workMeter: DatabaseWorkMeter
+    ) throws {
+        var evaluatedKeys: [FieldValue?] = []
+        evaluatedKeys.reserveCapacity(keyStorageCount)
+        var decorated: [DecoratedBinding] = []
+        decorated.reserveCapacity(ownedBindings.count)
+        for (index, binding) in ownedBindings.enumerated() {
+            let keyOffset = evaluatedKeys.count
+            for key in keys {
+                evaluatedKeys.append(try key.evaluate(binding))
+            }
+            decorated.append(
+                DecoratedBinding(
+                    originalIndex: index,
+                    keyOffset: keyOffset,
+                    fingerprint: try binding.canonicalFingerprint(
+                        workMeter: workMeter
+                    )
+                )
+            )
+        }
+
+        try decorated.sort { lhsItem, rhsItem in
+            for keyIndex in keys.indices {
+                let key = keys[keyIndex]
+                try workMeter.consume(2, at: .sortComparison)
+                let lVal = evaluatedKeys[lhsItem.keyOffset + keyIndex]
+                let rVal = evaluatedKeys[rhsItem.keyOffset + keyIndex]
+
+                let result = try compareValues(
+                    lVal,
+                    rVal,
+                    nullsLast: key.nullsLast
+                )
 
                 switch result {
                 case .orderedSame:
@@ -119,8 +200,206 @@ public struct BindingSorter: Sendable {
                     return !key.ascending
                 }
             }
-            return false // All keys equal, maintain relative order
+            try workMeter.consume(2, at: .sortComparison)
+            return lhsItem.fingerprint.lexicographicallyPrecedes(
+                rhsItem.fingerprint
+            )
         }
+
+        reorder(&ownedBindings, accordingTo: decorated)
+    }
+
+    package static func sort(
+        _ bindings: consuming [VariableBinding],
+        by keys: [SPARQLOrderKeyPlan],
+        workMeter: DatabaseWorkMeter,
+        evaluate: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue?
+    ) async throws -> [VariableBinding] {
+        try workMeter.consume(UInt64(bindings.count), at: .sortInput)
+        guard !keys.isEmpty, bindings.count > 1 else {
+            return consume bindings
+        }
+
+        let scratchPlan = try scratchPlan(
+            bindingCount: bindings.count,
+            keyCount: keys.count,
+            workMeter: workMeter
+        )
+        let scratchReservation = try workMeter.reserveIntermediate(
+            rows: UInt64(bindings.count),
+            bytes: scratchPlan.retainedByteCount,
+            at: .sortInput
+        )
+        defer { scratchReservation.release() }
+
+        var ownedBindings = consume bindings
+        try await decorateSortAndReorder(
+            &ownedBindings,
+            keys: keys,
+            keyStorageCount: scratchPlan.keyStorageCount,
+            workMeter: workMeter,
+            evaluate: evaluate
+        )
+        return ownedBindings
+    }
+
+    /// Sorts a retained relation while preserving its request-scoped owner.
+    /// Unique input is reordered in place. Shared input is first admitted into
+    /// a unique row-header buffer because cache storage is immutable.
+    static func sort(
+        _ bindings: consuming SPARQLRetainedBindings,
+        by keys: [SPARQLOrderKeyPlan],
+        workMeter: DatabaseWorkMeter,
+        evaluate: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue?
+    ) async throws -> SPARQLRetainedBindings {
+        let bindingCount = bindings.count
+        try workMeter.consume(UInt64(bindingCount), at: .sortInput)
+        guard !keys.isEmpty, bindingCount > 1 else {
+            return consume bindings
+        }
+
+        let normalizedBuilder = try SPARQLRetainedBindingBuilder.resuming(
+            consume bindings,
+            workMeter: workMeter,
+            stage: .sortInput
+        )
+        let normalized = normalizedBuilder.finish()
+        let scratchPlan = try scratchPlan(
+            bindingCount: bindingCount,
+            keyCount: keys.count,
+            workMeter: workMeter
+        )
+        let scratchReservation = try workMeter.reserveIntermediate(
+            rows: UInt64(bindingCount),
+            bytes: scratchPlan.retainedByteCount,
+            at: .sortInput
+        )
+        defer { scratchReservation.release() }
+
+        var evaluatedKeys: [FieldValue?] = []
+        evaluatedKeys.reserveCapacity(scratchPlan.keyStorageCount)
+        var decorated: [DecoratedBinding] = []
+        decorated.reserveCapacity(bindingCount)
+        for index in 0..<bindingCount {
+            let keyOffset = evaluatedKeys.count
+            let fingerprint = try await normalized.withElement(
+                at: index
+            ) { binding in
+                for key in keys {
+                    evaluatedKeys.append(
+                        try await evaluate(
+                            key.expression,
+                            copy binding
+                        )
+                    )
+                }
+                return try binding.canonicalFingerprint(
+                    workMeter: workMeter
+                )
+            }
+            decorated.append(
+                DecoratedBinding(
+                    originalIndex: index,
+                    keyOffset: keyOffset,
+                    fingerprint: fingerprint
+                )
+            )
+        }
+
+        try decorated.sort { lhsItem, rhsItem in
+            for keyIndex in keys.indices {
+                let key = keys[keyIndex]
+                try workMeter.consume(2, at: .sortComparison)
+                let lhs = evaluatedKeys[lhsItem.keyOffset + keyIndex]
+                let rhs = evaluatedKeys[rhsItem.keyOffset + keyIndex]
+                switch try compareValues(
+                    lhs,
+                    rhs,
+                    nullsLast: key.nullsLast
+                ) {
+                case .orderedSame:
+                    continue
+                case .orderedAscending:
+                    return key.ascending
+                case .orderedDescending:
+                    return !key.ascending
+                }
+            }
+            try workMeter.consume(2, at: .sortComparison)
+            return lhsItem.fingerprint.lexicographicallyPrecedes(
+                rhsItem.fingerprint
+            )
+        }
+
+        return (consume normalized).reorderingUniqueElements { destination in
+            decorated[destination].originalIndex
+        }
+    }
+
+    private static func decorateSortAndReorder(
+        _ ownedBindings: inout [VariableBinding],
+        keys: [SPARQLOrderKeyPlan],
+        keyStorageCount: Int,
+        workMeter: DatabaseWorkMeter,
+        evaluate: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue?
+    ) async throws {
+        var evaluatedKeys: [FieldValue?] = []
+        evaluatedKeys.reserveCapacity(keyStorageCount)
+        var decorated: [DecoratedBinding] = []
+        decorated.reserveCapacity(ownedBindings.count)
+        for (index, binding) in ownedBindings.enumerated() {
+            let keyOffset = evaluatedKeys.count
+            for key in keys {
+                evaluatedKeys.append(
+                    try await evaluate(key.expression, binding)
+                )
+            }
+            decorated.append(
+                DecoratedBinding(
+                    originalIndex: index,
+                    keyOffset: keyOffset,
+                    fingerprint: try binding.canonicalFingerprint(
+                        workMeter: workMeter
+                    )
+                )
+            )
+        }
+
+        try decorated.sort { lhsItem, rhsItem in
+            for keyIndex in keys.indices {
+                let key = keys[keyIndex]
+                try workMeter.consume(2, at: .sortComparison)
+                let lhs = evaluatedKeys[lhsItem.keyOffset + keyIndex]
+                let rhs = evaluatedKeys[rhsItem.keyOffset + keyIndex]
+                switch try compareValues(
+                    lhs,
+                    rhs,
+                    nullsLast: key.nullsLast
+                ) {
+                case .orderedSame:
+                    continue
+                case .orderedAscending:
+                    return key.ascending
+                case .orderedDescending:
+                    return !key.ascending
+                }
+            }
+            try workMeter.consume(2, at: .sortComparison)
+            return lhsItem.fingerprint.lexicographicallyPrecedes(
+                rhsItem.fingerprint
+            )
+        }
+
+        reorder(&ownedBindings, accordingTo: decorated)
     }
 
     // MARK: - Private
@@ -136,7 +415,7 @@ public struct BindingSorter: Sendable {
         _ lhs: FieldValue?,
         _ rhs: FieldValue?,
         nullsLast: Bool
-    ) -> ComparisonResult {
+    ) throws -> ComparisonResult {
         switch (lhs, rhs) {
         case (.none, .none):
             return .orderedSame
@@ -151,14 +430,132 @@ public struct BindingSorter: Sendable {
         case (.some, .some(.null)):
             return nullsLast ? .orderedAscending : .orderedDescending
         case (.some(let l), .some(let r)):
-            // Use FieldValue.compare(to:) for type-aware comparison
-            if let cmp = l.compare(to: r) {
-                return cmp
-            }
-            // Fallback: use Comparable conformance for cross-type ordering
-            if l < r { return .orderedAscending }
-            if r < l { return .orderedDescending }
-            return .orderedSame
+            return try SPARQLTermOrdering.compare(l, r)
         }
+    }
+
+    private static func reorder(
+        _ bindings: inout [VariableBinding],
+        accordingTo decorated: [DecoratedBinding]
+    ) {
+        var originalAtPosition = Array(bindings.indices)
+        var positionOfOriginal = Array(bindings.indices)
+        for destination in bindings.indices {
+            let desiredOriginal = decorated[destination].originalIndex
+            let currentPosition = positionOfOriginal[desiredOriginal]
+            guard currentPosition != destination else { continue }
+
+            let displacedOriginal = originalAtPosition[destination]
+            bindings.swapAt(destination, currentPosition)
+            originalAtPosition.swapAt(destination, currentPosition)
+            positionOfOriginal[desiredOriginal] = destination
+            positionOfOriginal[displacedOriginal] = currentPosition
+        }
+    }
+
+    private static func scratchPlan(
+        bindingCount: Int,
+        keyCount: Int,
+        workMeter: DatabaseWorkMeter
+    ) throws -> ScratchPlan {
+        let (keyStorageCount, keyCountOverflow) = bindingCount
+            .multipliedReportingOverflow(by: keyCount)
+        guard !keyCountOverflow else {
+            throw scratchByteOverflow(workMeter: workMeter)
+        }
+
+        let rowCount = UInt64(bindingCount)
+        let keySlotCount = UInt64(keyStorageCount)
+        var retainedByteCount: UInt64 = 0
+        retainedByteCount = try checkedAdd(
+            retainedByteCount,
+            checkedMultiply(
+                keySlotCount,
+                UInt64(MemoryLayout<FieldValue?>.stride),
+                workMeter: workMeter
+            ),
+            workMeter: workMeter
+        )
+        retainedByteCount = try checkedAdd(
+            retainedByteCount,
+            checkedMultiply(
+                rowCount,
+                UInt64(MemoryLayout<DecoratedBinding>.stride),
+                workMeter: workMeter
+            ),
+            workMeter: workMeter
+        )
+        retainedByteCount = try checkedAdd(
+            retainedByteCount,
+            checkedMultiply(
+                rowCount,
+                fingerprintStorageByteCount
+                    + arrayStorageOverheadByteCount,
+                workMeter: workMeter
+            ),
+            workMeter: workMeter
+        )
+        let reorderSlotCount = try checkedMultiply(
+            rowCount,
+            2,
+            workMeter: workMeter
+        )
+        retainedByteCount = try checkedAdd(
+            retainedByteCount,
+            checkedMultiply(
+                reorderSlotCount,
+                UInt64(MemoryLayout<Int>.stride),
+                workMeter: workMeter
+            ),
+            workMeter: workMeter
+        )
+        retainedByteCount = try checkedAdd(
+            retainedByteCount,
+            checkedMultiply(
+                scratchArrayCount,
+                arrayStorageOverheadByteCount,
+                workMeter: workMeter
+            ),
+            workMeter: workMeter
+        )
+        return ScratchPlan(
+            keyStorageCount: keyStorageCount,
+            retainedByteCount: retainedByteCount
+        )
+    }
+
+    private static func checkedAdd(
+        _ left: UInt64,
+        _ right: UInt64,
+        workMeter: DatabaseWorkMeter
+    ) throws -> UInt64 {
+        let (result, overflow) = left.addingReportingOverflow(right)
+        guard !overflow else {
+            throw scratchByteOverflow(workMeter: workMeter)
+        }
+        return result
+    }
+
+    private static func checkedMultiply(
+        _ left: UInt64,
+        _ right: UInt64,
+        workMeter: DatabaseWorkMeter
+    ) throws -> UInt64 {
+        let (result, overflow) = left.multipliedReportingOverflow(by: right)
+        guard !overflow else {
+            throw scratchByteOverflow(workMeter: workMeter)
+        }
+        return result
+    }
+
+    private static func scratchByteOverflow(
+        workMeter: DatabaseWorkMeter
+    ) -> DatabaseWorkLimitError {
+        DatabaseWorkLimitError.maximumIntermediateBytes(
+            stage: .sortInput,
+            consumed: workMeter.retainedIntermediateBytes,
+            requested: UInt64.max,
+            maximum: workMeter.budget.maximumIntermediateBytes
+        )
     }
 }

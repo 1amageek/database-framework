@@ -65,27 +65,39 @@ struct TransitiveClosureCorrectnessTests {
 
     // MARK: - OWLDatatypeValidator NaN tests
 
-    @Test("NaN comparison returns nil (incomparable)")
-    func nanComparison() {
+    @Test("NaN comparison is unordered")
+    func nanComparison() throws {
         let validator = OWLDatatypeValidator()
-        let nan = OWLLiteral(lexicalForm: "NaN", datatype: "xsd:double")
-        let five = OWLLiteral(lexicalForm: "5.0", datatype: "xsd:double")
+        let nan = OWLLiteral(
+            lexicalForm: "NaN",
+            datatype: XSDDatatype.double.typedLiteralDatatype
+        )
+        let five = OWLLiteral(
+            lexicalForm: "5.0",
+            datatype: XSDDatatype.double.typedLiteralDatatype
+        )
 
         // NaN is incomparable with any value
-        #expect(validator.compare(nan, five) == nil)
-        #expect(validator.compare(five, nan) == nil)
-        #expect(validator.compare(nan, nan) == nil)
+        #expect(try validator.compare(nan, five) == .unordered)
+        #expect(try validator.compare(five, nan) == .unordered)
+        #expect(try validator.compare(nan, nan) == .unordered)
     }
 
     @Test("Normal numeric comparison still works")
-    func normalNumericComparison() {
+    func normalNumericComparison() throws {
         let validator = OWLDatatypeValidator()
-        let three = OWLLiteral(lexicalForm: "3.0", datatype: "xsd:double")
-        let five = OWLLiteral(lexicalForm: "5.0", datatype: "xsd:double")
+        let three = OWLLiteral(
+            lexicalForm: "3.0",
+            datatype: XSDDatatype.double.typedLiteralDatatype
+        )
+        let five = OWLLiteral(
+            lexicalForm: "5.0",
+            datatype: XSDDatatype.double.typedLiteralDatatype
+        )
 
-        #expect(validator.compare(three, five) == .orderedAscending)
-        #expect(validator.compare(five, three) == .orderedDescending)
-        #expect(validator.compare(five, five) == .orderedSame)
+        #expect(try validator.compare(three, five) == .less)
+        #expect(try validator.compare(five, three) == .greater)
+        #expect(try validator.compare(five, five) == .equal)
     }
 
     // MARK: - ExpansionRules facet-aware witness tests
@@ -93,7 +105,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Facet-aware witness for datatypeRestriction with minInclusive")
     func facetAwareWitnessMinInclusive() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer",
+            datatype: XSDDatatype.integer.iri,
             facets: [.minInclusive(10)]
         )
 
@@ -108,7 +120,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Facet-aware witness for range [5, 15]")
     func facetAwareWitnessRange() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer",
+            datatype: XSDDatatype.integer.iri,
             facets: [.minInclusive(5), .maxInclusive(15)]
         )
 
@@ -174,7 +186,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Contradictory facets: minInclusive=10, maxExclusive=5 returns nil")
     func contradictoryFacetsReturnNil() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer",
+            datatype: XSDDatatype.integer.iri,
             facets: [.minInclusive(10), .maxExclusive(5)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -184,7 +196,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Contradictory facets: minInclusive=5, maxExclusive=5 returns nil (half-open empty)")
     func halfOpenEmptyReturnsNil() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer",
+            datatype: XSDDatatype.integer.iri,
             facets: [.minInclusive(5), .maxExclusive(5)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -196,7 +208,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Integer range: minExclusive=2, maxExclusive=3 returns nil (no integer in (2,3))")
     func noIntegerInOpenRange() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer",
+            datatype: XSDDatatype.integer.iri,
             facets: [.minExclusive(2), .maxExclusive(3)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -206,7 +218,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Integer range: minInclusive=2, maxInclusive=5 returns valid witness")
     func integerWitnessInClosedRange() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer",
+            datatype: XSDDatatype.integer.iri,
             facets: [.minInclusive(2), .maxInclusive(5)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -222,7 +234,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Integer range: minExclusive=2, maxInclusive=3 returns 3")
     func integerWitnessExclusiveInclusive() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer",
+            datatype: XSDDatatype.integer.iri,
             facets: [.minExclusive(2), .maxInclusive(3)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -238,7 +250,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("String maxLength=2 returns witness of length <= 2")
     func stringMaxLengthFacet() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:string",
+            datatype: XSDDatatype.string.iri,
             facets: [.maxLength(2)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -251,7 +263,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("String contradictory length: minLength=5, maxLength=2 returns nil")
     func stringContradictoryLengthReturnsNil() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:string",
+            datatype: XSDDatatype.string.iri,
             facets: [.minLength(5), .maxLength(2)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -270,7 +282,7 @@ struct TransitiveClosureCorrectnessTests {
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
             range: .datatypeRestriction(
-                datatype: "xsd:integer",
+                datatype: XSDDatatype.integer.iri,
                 facets: [.minInclusive(10), .maxExclusive(5)]
             )
         )
@@ -341,7 +353,7 @@ struct TransitiveClosureCorrectnessTests {
         // ¬xsd:integer — complement of integers includes all strings, dates, etc.
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
-            range: .dataComplementOf(.datatype("xsd:integer"))
+            range: .dataComplementOf(.datatype(XSDDatatype.integer.iri))
         )
         graph.addConcept(concept, to: nodeID)
 
@@ -351,7 +363,7 @@ struct TransitiveClosureCorrectnessTests {
             let values = graph.node(nodeID)?.dataValues["test:prop"]
             #expect(values != nil && !values!.isEmpty, "Witness should be generated")
             if let w = values?.first {
-                #expect(w.datatype != "xsd:integer", "Witness must not be an integer")
+                #expect(w.datatype != XSDDatatype.integer.iri, "Witness must not be an integer")
             }
         } else if case .clash = result {
             Issue.record("dataComplementOf should not cause clash (¬xsd:integer is satisfiable)")
@@ -368,7 +380,7 @@ struct TransitiveClosureCorrectnessTests {
 
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
-            range: .dataUnionOf([.datatype("xsd:integer"), .datatype("xsd:string")])
+            range: .dataUnionOf([.datatype(XSDDatatype.integer.iri), .datatype(XSDDatatype.string.iri)])
         )
         graph.addConcept(concept, to: nodeID)
 
@@ -414,10 +426,10 @@ struct TransitiveClosureCorrectnessTests {
 
         // Union of two contradictory ranges
         let range1 = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer", facets: [.minInclusive(10), .maxExclusive(5)]
+            datatype: XSDDatatype.integer.iri, facets: [.minInclusive(10), .maxExclusive(5)]
         )
         let range2 = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer", facets: [.minInclusive(20), .maxExclusive(15)]
+            datatype: XSDDatatype.integer.iri, facets: [.minInclusive(20), .maxExclusive(15)]
         )
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
@@ -442,10 +454,10 @@ struct TransitiveClosureCorrectnessTests {
 
         // Intersection: [0, 100] ∩ [50, 200] = [50, 100]
         let range1 = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer", facets: [.minInclusive(0), .maxInclusive(100)]
+            datatype: XSDDatatype.integer.iri, facets: [.minInclusive(0), .maxInclusive(100)]
         )
         let range2 = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer", facets: [.minInclusive(50), .maxInclusive(200)]
+            datatype: XSDDatatype.integer.iri, facets: [.minInclusive(50), .maxInclusive(200)]
         )
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
@@ -472,7 +484,7 @@ struct TransitiveClosureCorrectnessTests {
         // minInclusive=5 AND minExclusive=5 → effective: x > 5
         // With maxInclusive=6 → range is (5, 6], witness should be 6
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer",
+            datatype: XSDDatatype.integer.iri,
             facets: [.minInclusive(5), .minExclusive(5), .maxInclusive(6)]
         )
 
@@ -492,7 +504,7 @@ struct TransitiveClosureCorrectnessTests {
         let minVal = 9007199254740980
         let maxVal = 9007199254740990
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer",
+            datatype: XSDDatatype.integer.iri,
             facets: [.minInclusive(minVal), .maxInclusive(maxVal)]
         )
 
@@ -506,7 +518,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Integer witness: single point [42, 42]")
     func integerWitnessSinglePoint() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: "xsd:integer",
+            datatype: XSDDatatype.integer.iri,
             facets: [.minInclusive(42), .maxInclusive(42)]
         )
 
@@ -528,7 +540,7 @@ struct TransitiveClosureCorrectnessTests {
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
             range: .datatypeRestriction(
-                datatype: "xsd:string",
+                datatype: XSDDatatype.string.iri,
                 facets: [.pattern("[0-9]+")]
             )
         )
@@ -552,7 +564,7 @@ struct TransitiveClosureCorrectnessTests {
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
             range: .datatypeRestriction(
-                datatype: "xsd:integer",
+                datatype: XSDDatatype.integer.iri,
                 facets: [.pattern("[13579]")]
             )
         )

@@ -4,6 +4,7 @@ import Testing
 import Database
 import StorageKit
 import TestHeartbeat
+import DatabaseRuntime
 
 @Persistable
 private struct DatabaseFrameworkE2EAccount {
@@ -894,6 +895,7 @@ struct DatabaseFrameworkE2ETests {
         let container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let subspace = try await container.resolveDirectory(for: DatabaseFrameworkE2ELargeDocument.self)
@@ -1518,6 +1520,7 @@ struct DatabaseFrameworkE2ETests {
         let initialContainer = try await DBContainer(
             for: DatabaseFrameworkE2EMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -1541,7 +1544,8 @@ struct DatabaseFrameworkE2ETests {
         let migratedContainer = try await DBContainer(
             for: DatabaseFrameworkE2EMigrationSchemaV2.self,
             migrationPlan: DatabaseFrameworkE2EMigrationPlan.self,
-            configuration: .init(backend: .custom(engine))
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
         )
         try await migratedContainer.migrateIfNeeded()
         let migratedVersion = try await migratedContainer.getCurrentSchemaVersion()
@@ -1549,6 +1553,7 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer(
             for: DatabaseFrameworkE2EMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()

@@ -138,7 +138,7 @@ struct QueryOptimizationTests {
         let indexUsage = IndexUsage(indexName: "idx_name", kind: .scalar, accessPattern: .prefixScan)
 
         #expect(indexScan.bounds.lower == [.string("John")])
-        #expect(indexScan.bounds.upper == nil)
+        #expect(indexScan.bounds.upper == [.string("John")])
         #expect(indexUsage.accessPattern == .prefixScan)
     }
 

@@ -4,7 +4,11 @@
 // Reference: FDB Record Layer InExtractor.java
 // Transforms IN predicates into efficient join or union operations.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 
@@ -179,7 +183,6 @@ public struct InPredicateOptimizer<T: Persistable>: Sendable {
                 predicates.append(InPredicate(
                     fieldPath: fieldCondition.fieldName,
                     values: values,
-                    keyPath: fieldCondition.keyPath,
                     sourcePredicate: fieldCondition.predicate
                 ))
             }
@@ -215,9 +218,7 @@ public struct InPredicateOptimizer<T: Persistable>: Sendable {
 
         // Check for index support by comparing field names
         let hasIndex = availableIndexes.contains { index in
-            guard let firstKeyPath = index.keyPaths.first else { return false }
-            let indexFieldName = T.fieldName(for: firstKeyPath)
-            return indexFieldName == predicate.fieldPath
+            index.fieldNames.first == predicate.fieldPath
         }
 
         // Determine strategy based on value count and index availability
@@ -249,10 +250,7 @@ public struct InPredicateOptimizer<T: Persistable>: Sendable {
     ///
     /// Reference: PostgreSQL ScalarArrayOpExpr expansion for small arrays
     private func buildOrExpansion(from predicate: InPredicate<T>) -> QueryCondition<T> {
-        let fieldRef = FieldReference<T>(
-            anyKeyPath: predicate.keyPath,
-            fieldName: predicate.fieldPath
-        )
+        let fieldRef = FieldReference<T>(fieldName: predicate.fieldPath)
 
         // Create equals conditions for each value
         let equalsConditions: [QueryCondition<T>] = predicate.values.map { value in
@@ -326,15 +324,12 @@ public struct InPredicateOptimizer<T: Persistable>: Sendable {
 // MARK: - InPredicate
 
 /// Represents an extracted IN predicate
-public struct InPredicate<T: Persistable>: @unchecked Sendable {
+public struct InPredicate<T: Persistable>: Sendable {
     /// Field path for the IN predicate
     public let fieldPath: String
 
     /// Values in the IN list (as TupleElements)
     public let values: [any TupleElement]
-
-    /// KeyPath to the field
-    public let keyPath: AnyKeyPath
 
     /// Source predicate for rebuilding
     public let sourcePredicate: Predicate<T>?
@@ -342,12 +337,10 @@ public struct InPredicate<T: Persistable>: @unchecked Sendable {
     public init(
         fieldPath: String,
         values: [any TupleElement],
-        keyPath: AnyKeyPath,
         sourcePredicate: Predicate<T>?
     ) {
         self.fieldPath = fieldPath
         self.values = values
-        self.keyPath = keyPath
         self.sourcePredicate = sourcePredicate
     }
 }

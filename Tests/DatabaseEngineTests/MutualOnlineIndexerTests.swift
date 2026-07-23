@@ -7,7 +7,7 @@
 
 import Testing
 import TestHeartbeat
-import Foundation
+import StorageKit
 @testable import DatabaseEngine
 @testable import Core
 
@@ -387,19 +387,17 @@ struct MutualIndexerProgressTests {
 
     @Test("Progress survives restart")
     func testProgressResumability() throws {
-        let begin: [UInt8] = [0x00]
-        let end: [UInt8] = [0xFF]
+        let begin: Bytes = [0x00]
+        let end: Bytes = [0xFF]
 
         // Create a rangeSet with initial range
         let rangeSet = RangeSet(initialRange: (begin: begin, end: end))
 
         // Serialize before any processing
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(rangeSet)
+        let data = try RangeSetCodec.encode(rangeSet)
 
         // Deserialize (simulating restart)
-        let decoder = JSONDecoder()
-        let restored = try decoder.decode(RangeSet.self, from: data)
+        let restored = try RangeSetCodec.decode(data)
 
         // Progress should be preserved - unprocessed range should still exist
         #expect(!restored.isEmpty)

@@ -77,23 +77,23 @@ struct TrigramSimilarityTests {
     // MARK: - FilterExpression.similarTo
 
     @Test("similarTo filter matches: Google vs Google LLC at default threshold")
-    func testFilterMatches() {
+    func testFilterMatches() throws {
         let filter = FilterExpression.similarTo("?name", "Google LLC", 0.45)
         let binding = VariableBinding(["?name": .string("Google")])
-        #expect(filter.evaluate(binding))
+        #expect(try filter.evaluate(binding))
     }
 
     @Test("similarTo filter rejects unrelated names")
-    func testFilterRejects() {
+    func testFilterRejects() throws {
         let filter = FilterExpression.similarTo("?name", "Apple", 0.45)
         let binding = VariableBinding(["?name": .string("Zebra")])
-        #expect(!filter.evaluate(binding))
+        #expect(try !filter.evaluate(binding))
     }
 
     @Test("similarTo filter handles unbound variable")
-    func testFilterUnbound() {
+    func testFilterUnbound() throws {
         let filter = FilterExpression.similarTo("?name", "Google", 0.45)
-        #expect(!filter.evaluate(VariableBinding()))
+        #expect(try !filter.evaluate(VariableBinding()))
     }
 
     @Test("similarTo variables extraction")

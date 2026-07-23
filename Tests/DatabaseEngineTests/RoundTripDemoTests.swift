@@ -10,6 +10,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import Core
 
 @Persistable
@@ -26,12 +27,13 @@ struct DemoItem: Equatable {
 struct RoundTripDemoTests {
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([DemoItem.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }

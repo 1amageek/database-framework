@@ -3,7 +3,11 @@
 //
 // Complete Morton Code implementation ported from fdb-record-layer.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Morton Code (Z-order curve) encoding for Cartesian coordinates
 public enum MortonCode {

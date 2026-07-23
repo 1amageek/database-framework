@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
 // MARK: - Test Models
 
-struct PerfTestSale: Persistable {
+struct AggregationBenchmarkSale: Persistable {
     typealias ID = String
 
     var id: String
@@ -30,7 +31,7 @@ struct PerfTestSale: Persistable {
         self.quantity = quantity
     }
 
-    static var persistableType: String { "PerfTestSale" }
+    static var persistableType: String { "AggregationBenchmarkSale" }
     static var allFields: [String] { ["id", "region", "category", "amount", "quantity"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -48,37 +49,37 @@ struct PerfTestSale: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<PerfTestSale, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<AggregationBenchmarkSale, Value>) -> String {
         switch keyPath {
-        case \PerfTestSale.id: return "id"
-        case \PerfTestSale.region: return "region"
-        case \PerfTestSale.category: return "category"
-        case \PerfTestSale.amount: return "amount"
-        case \PerfTestSale.quantity: return "quantity"
+        case \AggregationBenchmarkSale.id: return "id"
+        case \AggregationBenchmarkSale.region: return "region"
+        case \AggregationBenchmarkSale.category: return "category"
+        case \AggregationBenchmarkSale.amount: return "amount"
+        case \AggregationBenchmarkSale.quantity: return "quantity"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<PerfTestSale>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<AggregationBenchmarkSale>) -> String {
         switch keyPath {
-        case \PerfTestSale.id: return "id"
-        case \PerfTestSale.region: return "region"
-        case \PerfTestSale.category: return "category"
-        case \PerfTestSale.amount: return "amount"
-        case \PerfTestSale.quantity: return "quantity"
+        case \AggregationBenchmarkSale.id: return "id"
+        case \AggregationBenchmarkSale.region: return "region"
+        case \AggregationBenchmarkSale.category: return "category"
+        case \AggregationBenchmarkSale.amount: return "amount"
+        case \AggregationBenchmarkSale.quantity: return "quantity"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PerfTestSale> {
+        if let partial = keyPath as? PartialKeyPath<AggregationBenchmarkSale> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Benchmark Helper
+// MARK: - Benchmark Measurement
 
 private struct BenchmarkResult {
     let operation: String
@@ -122,8 +123,8 @@ struct AggregationIndexPerformanceTests {
 
     @Test("COUNT index bulk insert performance")
     func testCountBulkInsertPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "count", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("count_region")
@@ -133,13 +134,13 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "count_region",
-            kind: CountIndexKind<PerfTestSale>(groupBy: [\.region]),
+            kind: CountIndexKind<AggregationBenchmarkSale>(groupBy: [\.region]),
             rootExpression: FieldKeyExpression(fieldName: "region"),
             subspaceKey: "count_region",
-            itemTypes: Set(["PerfTestSale"])
+            itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
-        let maintainer = CountIndexMaintainer<PerfTestSale>(
+        let maintainer = CountIndexMaintainer<AggregationBenchmarkSale>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -148,7 +149,7 @@ struct AggregationIndexPerformanceTests {
         // Generate test data
         let itemCount = 1000
         let sales = (0..<itemCount).map { i in
-            PerfTestSale(
+            AggregationBenchmarkSale(
                 id: "sale-\(i)",
                 region: regions[i % regions.count],
                 category: categories[i % categories.count],
@@ -185,14 +186,14 @@ struct AggregationIndexPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
     @Test("COUNT index query performance")
     func testCountQueryPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "count", "query", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("count_region")
@@ -202,13 +203,13 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "count_region",
-            kind: CountIndexKind<PerfTestSale>(groupBy: [\.region]),
+            kind: CountIndexKind<AggregationBenchmarkSale>(groupBy: [\.region]),
             rootExpression: FieldKeyExpression(fieldName: "region"),
             subspaceKey: "count_region",
-            itemTypes: Set(["PerfTestSale"])
+            itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
-        let maintainer = CountIndexMaintainer<PerfTestSale>(
+        let maintainer = CountIndexMaintainer<AggregationBenchmarkSale>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -218,7 +219,7 @@ struct AggregationIndexPerformanceTests {
         let itemCount = 500
         try await database.withTransaction { transaction in
             for i in 0..<itemCount {
-                let sale = PerfTestSale(
+                let sale = AggregationBenchmarkSale(
                     id: "sale-\(i)",
                     region: regions[i % regions.count],
                     category: "Category",
@@ -260,7 +261,7 @@ struct AggregationIndexPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -268,8 +269,8 @@ struct AggregationIndexPerformanceTests {
 
     @Test("SUM index bulk insert performance")
     func testSumBulkInsertPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "sum", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("sum_region_amount")
@@ -278,16 +279,16 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "sum_region_amount",
-            kind: SumIndexKind<PerfTestSale, Double>(groupBy: [\.region], value: \.amount),
+            kind: SumIndexKind<AggregationBenchmarkSale, Double>(groupBy: [\.region], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
             ]),
             subspaceKey: "sum_region_amount",
-            itemTypes: Set(["PerfTestSale"])
+            itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
-        let maintainer = SumIndexMaintainer<PerfTestSale, Double>(
+        let maintainer = SumIndexMaintainer<AggregationBenchmarkSale, Double>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -300,7 +301,7 @@ struct AggregationIndexPerformanceTests {
             let region = regions[i % regions.count]
             let amount = Double(i % 100) * 10.0 + Double.random(in: 0.01...0.99)
             expectedSums[region, default: 0] += amount
-            return PerfTestSale(
+            return AggregationBenchmarkSale(
                 id: "sale-\(i)",
                 region: region,
                 category: "Category",
@@ -333,30 +334,30 @@ struct AggregationIndexPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
     @Test("SUM index update performance (same group)")
     func testSumUpdateSameGroupPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "sum", "update", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("sum_region_amount")
 
         let index = Index(
             name: "sum_region_amount",
-            kind: SumIndexKind<PerfTestSale, Double>(groupBy: [\.region], value: \.amount),
+            kind: SumIndexKind<AggregationBenchmarkSale, Double>(groupBy: [\.region], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
             ]),
             subspaceKey: "sum_region_amount",
-            itemTypes: Set(["PerfTestSale"])
+            itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
-        let maintainer = SumIndexMaintainer<PerfTestSale, Double>(
+        let maintainer = SumIndexMaintainer<AggregationBenchmarkSale, Double>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -364,9 +365,9 @@ struct AggregationIndexPerformanceTests {
 
         // Insert initial data
         let itemCount = 100
-        var sales: [PerfTestSale] = []
+        var sales: [AggregationBenchmarkSale] = []
         for i in 0..<itemCount {
-            let sale = PerfTestSale(
+            let sale = AggregationBenchmarkSale(
                 id: "sale-\(i)",
                 region: "Tokyo",
                 category: "Category",
@@ -387,7 +388,7 @@ struct AggregationIndexPerformanceTests {
             for i in 0..<updateCount {
                 let saleIndex = i % itemCount
                 let oldSale = sales[saleIndex]
-                let newSale = PerfTestSale(
+                let newSale = AggregationBenchmarkSale(
                     id: oldSale.id,
                     region: oldSale.region,
                     category: oldSale.category,
@@ -412,7 +413,7 @@ struct AggregationIndexPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -420,8 +421,8 @@ struct AggregationIndexPerformanceTests {
 
     @Test("MIN index bulk insert performance")
     func testMinBulkInsertPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "min", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("min_region_amount")
@@ -430,16 +431,16 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "min_region_amount",
-            kind: MinIndexKind<PerfTestSale, Double>(groupBy: [\.region], value: \.amount),
+            kind: MinIndexKind<AggregationBenchmarkSale, Double>(groupBy: [\.region], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
             ]),
             subspaceKey: "min_region_amount",
-            itemTypes: Set(["PerfTestSale"])
+            itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
-        let maintainer = MinIndexMaintainer<PerfTestSale, Double>(
+        let maintainer = MinIndexMaintainer<AggregationBenchmarkSale, Double>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -454,7 +455,7 @@ struct AggregationIndexPerformanceTests {
             if minPerRegion[region] == nil || amount < minPerRegion[region]! {
                 minPerRegion[region] = amount
             }
-            return PerfTestSale(
+            return AggregationBenchmarkSale(
                 id: "sale-\(i)",
                 region: region,
                 category: "Category",
@@ -497,14 +498,14 @@ struct AggregationIndexPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
     @Test("MAX index bulk insert performance")
     func testMaxBulkInsertPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "max", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("max_region_amount")
@@ -513,16 +514,16 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "max_region_amount",
-            kind: MaxIndexKind<PerfTestSale, Double>(groupBy: [\.region], value: \.amount),
+            kind: MaxIndexKind<AggregationBenchmarkSale, Double>(groupBy: [\.region], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
             ]),
             subspaceKey: "max_region_amount",
-            itemTypes: Set(["PerfTestSale"])
+            itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
-        let maintainer = MaxIndexMaintainer<PerfTestSale, Double>(
+        let maintainer = MaxIndexMaintainer<AggregationBenchmarkSale, Double>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -531,7 +532,7 @@ struct AggregationIndexPerformanceTests {
         // Generate test data
         let itemCount = 1000
         let sales = (0..<itemCount).map { i in
-            PerfTestSale(
+            AggregationBenchmarkSale(
                 id: "sale-\(i)",
                 region: regions[i % regions.count],
                 category: "Category",
@@ -574,7 +575,7 @@ struct AggregationIndexPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -582,8 +583,8 @@ struct AggregationIndexPerformanceTests {
 
     @Test("AVERAGE index bulk insert performance")
     func testAverageBulkInsertPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "avg", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("avg_region_amount")
@@ -592,16 +593,16 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "avg_region_amount",
-            kind: AverageIndexKind<PerfTestSale, Double>(groupBy: [\.region], value: \.amount),
+            kind: AverageIndexKind<AggregationBenchmarkSale, Double>(groupBy: [\.region], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
             ]),
             subspaceKey: "avg_region_amount",
-            itemTypes: Set(["PerfTestSale"])
+            itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
-        let maintainer = AverageIndexMaintainer<PerfTestSale, Double>(
+        let maintainer = AverageIndexMaintainer<AggregationBenchmarkSale, Double>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -616,7 +617,7 @@ struct AggregationIndexPerformanceTests {
             let amount = Double(100 + (i % 100))
             sumPerRegion[region, default: 0] += amount
             countPerRegion[region, default: 0] += 1
-            return PerfTestSale(
+            return AggregationBenchmarkSale(
                 id: "sale-\(i)",
                 region: region,
                 category: "Category",
@@ -645,7 +646,7 @@ struct AggregationIndexPerformanceTests {
         let (_, queryBenchmark) = try await benchmark("AVERAGE query", itemCount: queryCount) {
             for i in 0..<queryCount {
                 _ = try await database.withTransaction { transaction in
-                    try await maintainer.getAverage(
+                    try await maintainer.getAverageAsDouble(
                         groupingValues: [regions[i % regions.count]],
                         transaction: transaction
                     )
@@ -659,7 +660,7 @@ struct AggregationIndexPerformanceTests {
         // Verify averages
         for region in regions {
             let result = try await database.withTransaction { transaction in
-                try await maintainer.getAverage(
+                try await maintainer.getAverageAsDouble(
                     groupingValues: [region],
                     transaction: transaction
                 )
@@ -672,7 +673,7 @@ struct AggregationIndexPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -680,8 +681,8 @@ struct AggregationIndexPerformanceTests {
 
     @Test("Composite grouping performance")
     func testCompositeGroupingPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "composite", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("count_region_category")
@@ -691,16 +692,16 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "count_region_category",
-            kind: CountIndexKind<PerfTestSale>(groupBy: [\.region, \.category]),
+            kind: CountIndexKind<AggregationBenchmarkSale>(groupBy: [\.region, \.category]),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category")
             ]),
             subspaceKey: "count_region_category",
-            itemTypes: Set(["PerfTestSale"])
+            itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
-        let maintainer = CountIndexMaintainer<PerfTestSale>(
+        let maintainer = CountIndexMaintainer<AggregationBenchmarkSale>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -709,7 +710,7 @@ struct AggregationIndexPerformanceTests {
         // Generate test data
         let itemCount = 1000
         let sales = (0..<itemCount).map { i in
-            PerfTestSale(
+            AggregationBenchmarkSale(
                 id: "sale-\(i)",
                 region: regions[i % regions.count],
                 category: categories[i % categories.count],
@@ -762,7 +763,7 @@ struct AggregationIndexPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -770,8 +771,8 @@ struct AggregationIndexPerformanceTests {
 
     @Test("Large scale COUNT performance")
     func testLargeScaleCountPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "scale", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("count_scale")
@@ -782,13 +783,13 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "count_scale",
-            kind: CountIndexKind<PerfTestSale>(groupBy: [\.region]),
+            kind: CountIndexKind<AggregationBenchmarkSale>(groupBy: [\.region]),
             rootExpression: FieldKeyExpression(fieldName: "region"),
             subspaceKey: "count_scale",
-            itemTypes: Set(["PerfTestSale"])
+            itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
-        let maintainer = CountIndexMaintainer<PerfTestSale>(
+        let maintainer = CountIndexMaintainer<AggregationBenchmarkSale>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -804,7 +805,7 @@ struct AggregationIndexPerformanceTests {
             try await database.withTransaction { transaction in
                 for i in 0..<batchSize {
                     let idx = batch * batchSize + i
-                    let sale = PerfTestSale(
+                    let sale = AggregationBenchmarkSale(
                         id: "sale-\(idx)",
                         region: "region-\(idx % groupCount)",
                         category: "Category",
@@ -838,7 +839,7 @@ struct AggregationIndexPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -846,8 +847,8 @@ struct AggregationIndexPerformanceTests {
 
     @Test("Delete performance")
     func testDeletePerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "delete", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("count_delete")
@@ -856,13 +857,13 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "count_delete",
-            kind: CountIndexKind<PerfTestSale>(groupBy: [\.region]),
+            kind: CountIndexKind<AggregationBenchmarkSale>(groupBy: [\.region]),
             rootExpression: FieldKeyExpression(fieldName: "region"),
             subspaceKey: "count_delete",
-            itemTypes: Set(["PerfTestSale"])
+            itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
-        let maintainer = CountIndexMaintainer<PerfTestSale>(
+        let maintainer = CountIndexMaintainer<AggregationBenchmarkSale>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -870,9 +871,9 @@ struct AggregationIndexPerformanceTests {
 
         // Insert test data
         let itemCount = 300
-        var sales: [PerfTestSale] = []
+        var sales: [AggregationBenchmarkSale] = []
         for i in 0..<itemCount {
-            let sale = PerfTestSale(
+            let sale = AggregationBenchmarkSale(
                 id: "sale-\(i)",
                 region: regions[i % regions.count],
                 category: "Category",
@@ -920,7 +921,7 @@ struct AggregationIndexPerformanceTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }

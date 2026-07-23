@@ -1,9 +1,13 @@
 // CountIndexMaintainer.swift
 // AggregationIndex - Index maintainer for COUNT aggregation
 //
-// Maintains counts using atomic FDB operations for thread-safe updates.
+// Maintains counts with checked transactional read/replace mutations.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -12,7 +16,7 @@ import StorageKit
 ///
 /// **Functionality**:
 /// - Maintain counts of items grouped by field values
-/// - Atomic increment/decrement operations
+/// - Checked increment/decrement operations in the caller's transaction
 /// - Efficient GROUP BY COUNT queries
 ///
 /// **Index Structure**:
@@ -26,6 +30,10 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression
+
+    public var groupingFieldCount: Int {
+        index.kind.fieldNames.count
+    }
 
     // MARK: - Initialization
 
@@ -46,8 +54,12 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
         newItem: Item?,
         transaction: any Transaction
     ) async throws {
-        let oldKey = try oldItem.map { try buildGroupingKey(evaluateIndexFields(from: $0)) }
-        let newKey = try newItem.map { try buildGroupingKey(evaluateIndexFields(from: $0)) }
+        let oldKey = try oldItem.map { item in
+            try buildGroupingKey(groupingValues(from: item))
+        }
+        let newKey = try newItem.map { item in
+            try buildGroupingKey(groupingValues(from: item))
+        }
 
         switch (oldKey, newKey) {
         case let (.some(old), .some(new)) where old == new:
@@ -77,7 +89,7 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
         id: Tuple,
         transaction: any Transaction
     ) async throws {
-        let groupingValues = try evaluateIndexFields(from: item)
+        let groupingValues = try groupingValues(from: item)
         let countKey = try buildGroupingKey(groupingValues)
         try await incrementCount(key: countKey, transaction: transaction)
     }
@@ -86,7 +98,7 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
         for item: Item,
         id: Tuple
     ) async throws -> [Bytes] {
-        let groupingValues = try evaluateIndexFields(from: item)
+        let groupingValues = try groupingValues(from: item)
         return [try buildGroupingKey(groupingValues)]
     }
 
@@ -105,5 +117,21 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
         transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], count: Int64)] {
         try await scanAllCounts(transaction: transaction)
+    }
+
+    private func groupingValues(
+        from item: Item
+    ) throws -> [any TupleElement] {
+        guard index.kind.fieldNames.count
+                == index.rootExpression.columnCount else {
+            throw IndexError.invalidStructure(
+                "Count index '\(index.name)' has inconsistent field metadata"
+            )
+        }
+        return try AggregationFieldExtractor.grouping(
+            from: item,
+            fieldNames: index.kind.fieldNames,
+            indexName: index.name
+        )
     }
 }

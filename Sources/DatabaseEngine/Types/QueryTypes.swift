@@ -1,8 +1,13 @@
 // QueryTypes.swift
 // DatabaseEngine - Common types for queries
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 
 // MARK: - Geo Point
 
@@ -36,10 +41,15 @@ public struct GeoPoint: Sendable, Codable, Equatable {
         let deltaLat = (other.latitude - latitude) * .pi / 180
         let deltaLon = (other.longitude - longitude) * .pi / 180
 
-        let a = sin(deltaLat / 2) * sin(deltaLat / 2) +
-                cos(lat1) * cos(lat2) *
-                sin(deltaLon / 2) * sin(deltaLon / 2)
-        let c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        let halfDeltaLatitudeSine = DatabaseMath.sine(deltaLat / 2)
+        let halfDeltaLongitudeSine = DatabaseMath.sine(deltaLon / 2)
+        let a = halfDeltaLatitudeSine * halfDeltaLatitudeSine +
+                DatabaseMath.cosine(lat1) * DatabaseMath.cosine(lat2) *
+                halfDeltaLongitudeSine * halfDeltaLongitudeSine
+        let c = 2 * DatabaseMath.arcTangent(
+            y: DatabaseMath.squareRoot(a),
+            x: DatabaseMath.squareRoot(1 - a)
+        )
 
         return earthRadiusKm * c
     }
@@ -83,7 +93,7 @@ public struct BoundingBox: Sendable, Codable, Equatable {
     ) -> BoundingBox {
         // Approximate degrees per km
         let latDelta = radiusKm / 111.0  // 1 degree latitude ≈ 111 km
-        let lonDelta = radiusKm / (111.0 * cos(center.latitude * .pi / 180))
+        let lonDelta = radiusKm / (111.0 * DatabaseMath.cosine(center.latitude * .pi / 180))
 
         return BoundingBox(
             minLatitude: center.latitude - latDelta,
@@ -129,33 +139,33 @@ public enum DistanceUnit: Sendable {
 ///
 /// **Type Preservation**:
 /// - `groupKey`: Preserves original types via `FieldValue` (int64, double, string, etc.)
-/// - `aggregates`: Returns typed results (int64 for count, double for sum/avg, original type for min/max)
+/// - `aggregates`: Preserves exact integer kinds for count/sum and integral averages;
+///   floating-point inputs remain floating-point; min/max preserve their input type.
 ///
 /// **Empty Results**:
 /// - `min`/`max` return `nil` in `aggregates` for empty groups (not zero)
 /// - `count` returns `0` for empty groups
-/// - `sum`/`avg` return `FieldValue.double(0.0)` for empty groups
+/// - `sum`/`avg` return `nil` when every input is null or the group is empty
+///
+/// A record count is not implicit metadata. Callers request `count` as an
+/// aggregate and read its `FieldValue.int64` result like every other aggregate.
 public struct AggregateResult<T: Persistable>: Sendable {
     /// Group key values (field name → typed value)
     public let groupKey: [String: FieldValue]
 
     /// Aggregation results (aggregation name → typed value)
     /// - count: `FieldValue.int64`
-    /// - sum/avg: `FieldValue.double`
+    /// - sum: exact `FieldValue.int64`/`uint64`, or `double` for floating inputs
+    /// - avg: exact integer when integral, otherwise an exactly convertible `double`
     /// - min/max: `FieldValue?` (nil for empty groups)
     public let aggregates: [String: FieldValue?]
 
-    /// Number of records in this group
-    public let count: Int
-
     public init(
         groupKey: [String: FieldValue],
-        aggregates: [String: FieldValue?],
-        count: Int
+        aggregates: [String: FieldValue?]
     ) {
         self.groupKey = groupKey
         self.aggregates = aggregates
-        self.count = count
     }
 
     // MARK: - Convenience Accessors
@@ -163,9 +173,41 @@ public struct AggregateResult<T: Persistable>: Sendable {
     /// Get aggregate value as Double (for sum, avg, or numeric min/max)
     ///
     /// - Parameter name: The aggregation name
-    /// - Returns: Double value, or nil if not found or not numeric
-    public func aggregateDouble(_ name: String) -> Double? {
-        aggregates[name]??.asDouble
+    /// - Returns: Double value, or nil when the aggregate is absent or null.
+    /// - Throws: A typed error for non-numeric, non-finite, or lossy values.
+    public func aggregateDouble(
+        _ name: String
+    ) throws(AggregateResultError) -> Double? {
+        guard let stored = aggregates[name], let value = stored else {
+            return nil
+        }
+        switch value {
+        case .int64(let integer):
+            guard let result = Double(exactly: integer) else {
+                throw .notExactlyRepresentableAsDouble(
+                    name: name,
+                    value: value
+                )
+            }
+            return result
+        case .uint64(let integer):
+            guard let result = Double(exactly: integer) else {
+                throw .notExactlyRepresentableAsDouble(
+                    name: name,
+                    value: value
+                )
+            }
+            return result
+        case .double(let floatingPoint):
+            guard floatingPoint.isFinite else {
+                throw .nonFiniteDouble(name: name)
+            }
+            return floatingPoint
+        case .null:
+            return nil
+        case .string, .bool, .data, .rdfTerm, .array:
+            throw .nonNumericValue(name: name, value: value)
+        }
     }
 
     /// Get aggregate value as Int64 (for count)
@@ -207,4 +249,10 @@ public struct AggregateResult<T: Persistable>: Sendable {
     public func groupKeyDouble(_ name: String) -> Double? {
         groupKey[name]?.doubleValue
     }
+}
+
+public enum AggregateResultError: Error, Sendable, Equatable {
+    case nonNumericValue(name: String, value: FieldValue)
+    case notExactlyRepresentableAsDouble(name: String, value: FieldValue)
+    case nonFiniteDouble(name: String)
 }

@@ -3,6 +3,7 @@ import Foundation
 import Database
 import Testing
 import TestHeartbeat
+import DatabaseRuntime
 
 @Persistable(type: "SQLiteFacadeUser")
 struct SQLiteFacadeUserV1 {
@@ -52,6 +53,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
         let container = try await DBContainer(
             for: schema,
             configuration: SQLiteStorageEngine.Configuration.inMemory,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
 
@@ -77,6 +79,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLiteFacadeSchemaV1.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -89,13 +92,15 @@ struct DatabaseContainerConfigurationSQLiteTests {
         let migratedContainer = try await DBContainer(
             for: SQLiteFacadeSchemaV2.self,
             migrationPlan: SQLiteFacadeMigrationPlan.self,
-            configuration: SQLiteStorageEngine.Configuration.file(dbPath)
+            configuration: SQLiteStorageEngine.Configuration.file(dbPath),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer(
             for: SQLiteFacadeSchemaV2.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()

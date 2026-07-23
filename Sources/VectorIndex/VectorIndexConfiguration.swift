@@ -3,7 +3,11 @@
 //
 // Provides IndexConfiguration implementation to select HNSW vs Flat search at runtime.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import Vector
 

@@ -1,0 +1,19 @@
+import Graph
+
+public struct SPARQLLoadDocument: Sendable {
+    public let byteCount: UInt64
+    private var storage: [RDFTriple]
+
+    public init(byteCount: UInt64, triples: consuming [RDFTriple]) {
+        self.byteCount = byteCount
+        self.storage = consume triples
+    }
+
+    public var tripleCount: Int {
+        storage.count
+    }
+
+    consuming func takeTriples() -> [RDFTriple] {
+        storage
+    }
+}

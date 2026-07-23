@@ -7,6 +7,7 @@
 import Testing
 import TestHeartbeat
 import Foundation
+import DatabaseValue
 import Graph
 @testable import GraphIndex
 @testable import OntologyIndex
@@ -399,44 +400,44 @@ struct OWL2RLRulesTests {
 struct InferenceProvenanceTests {
 
     @Test("Triple key creation")
-    func tripleKeyCreation() {
-        let key = TripleKey(
-            subject: "ex:Alice",
-            predicate: "rdf:type",
-            object: "ex:Person"
+    func tripleKeyCreation() throws {
+        let key = try ReasoningTriple(
+            subjectIRI: "ex:Alice",
+            predicateIRI: "rdf:type",
+            objectIRI: "ex:Person"
         )
 
-        #expect(key.subject == "ex:Alice")
-        #expect(key.predicate == "rdf:type")
-        #expect(key.object == "ex:Person")
+        #expect(key.subject == .iri("ex:Alice"))
+        #expect(key.predicate.rawValue == "rdf:type")
+        #expect(key.object == .iri("ex:Person"))
     }
 
     @Test("Triple key convenience initializer")
-    func tripleKeyConvenience() {
-        let key = TripleKey("ex:Bob", "ex:knows", "ex:Alice")
+    func tripleKeyConvenience() throws {
+        let key = try ReasoningTriple("ex:Bob", "ex:knows", "ex:Alice")
 
-        #expect(key.subject == "ex:Bob")
-        #expect(key.predicate == "ex:knows")
-        #expect(key.object == "ex:Alice")
+        #expect(key.subject == .iri("ex:Bob"))
+        #expect(key.predicate.rawValue == "ex:knows")
+        #expect(key.object == .iri("ex:Alice"))
     }
 
     @Test("Triple key hashable")
-    func tripleKeyHashable() {
-        let key1 = TripleKey("ex:A", "ex:p", "ex:B")
-        let key2 = TripleKey("ex:A", "ex:p", "ex:B")
-        let key3 = TripleKey("ex:A", "ex:p", "ex:C")
+    func tripleKeyHashable() throws {
+        let key1 = try ReasoningTriple("ex:A", "ex:p", "ex:B")
+        let key2 = try ReasoningTriple("ex:A", "ex:p", "ex:B")
+        let key3 = try ReasoningTriple("ex:A", "ex:p", "ex:C")
 
         #expect(key1 == key2)
         #expect(key1 != key3)
 
-        let set: Set<TripleKey> = [key1, key2, key3]
+        let set: Set<ReasoningTriple> = [key1, key2, key3]
         #expect(set.count == 2)
     }
 
     @Test("Inference provenance creation")
-    func inferenceProvenanceCreation() {
-        let antecedent1 = TripleKey("ex:Alice", "rdf:type", "ex:Employee")
-        let antecedent2 = TripleKey("ex:Employee", "rdfs:subClassOf", "ex:Person")
+    func inferenceProvenanceCreation() throws {
+        let antecedent1 = try ReasoningTriple("ex:Alice", "rdf:type", "ex:Employee")
+        let antecedent2 = try ReasoningTriple("ex:Employee", "rdfs:subClassOf", "ex:Person")
 
         let provenance = InferenceProvenance(
             rule: .caxSco,
@@ -446,45 +447,38 @@ struct InferenceProvenanceTests {
 
         #expect(provenance.rule == .caxSco)
         #expect(provenance.antecedents.count == 2)
-        #expect(provenance.isValid == true)
         #expect(provenance.depth == 1)
-        #expect(!provenance.isExplicit)
     }
 
-    @Test("Explicit assertion provenance")
-    func explicitAssertionProvenance() {
-        let provenance = InferenceProvenance.asserted()
-
-        #expect(provenance.antecedents.isEmpty)
-        #expect(provenance.depth == 0)
-        #expect(provenance.isExplicit)
-    }
-
-    @Test("Provenance encoding and decoding")
-    func provenanceEncodeDecode() throws {
-        let provenance = InferenceProvenance(
-            rule: .prpInv1,
-            antecedents: [TripleKey("ex:A", "ex:p", "ex:B")],
-            depth: 2
+    @Test("Typed RDF terms remain distinct reasoning identities")
+    func typedTermsRemainDistinct() throws {
+        let iriObject = try ReasoningTriple(
+            subject: .iri("ex:A"),
+            predicateIRI: "ex:p",
+            object: .iri("ex:value")
+        )
+        let literalObject = try ReasoningTriple(
+            subject: .iri("ex:A"),
+            predicateIRI: "ex:p",
+            object: .literal(DatabaseRDFLiteral(
+                lexicalForm: "ex:value",
+                datatype: .xsdString
+            ))
         )
 
-        let encoded = try provenance.encode()
-        let decoded = try InferenceProvenance.decode(from: encoded)
-
-        #expect(decoded.rule == .prpInv1)
-        #expect(decoded.antecedents.count == 1)
-        #expect(decoded.depth == 2)
+        #expect(iriObject != literalObject)
+        #expect(Set([iriObject, literalObject]).count == 2)
     }
 
     @Test("Inference result")
-    func inferenceResult() {
+    func inferenceResult() throws {
         var result = InferenceResult()
 
         #expect(result.isEmpty)
         #expect(!result.hasInconsistencies)
 
         result.inferred.append((
-            triple: TripleKey("ex:A", "rdf:type", "ex:B"),
+            triple: try ReasoningTriple("ex:A", "rdf:type", "ex:B"),
             provenance: InferenceProvenance(rule: .caxSco, antecedents: [])
         ))
 
@@ -499,83 +493,6 @@ struct InferenceProvenanceTests {
         #expect(result.hasInconsistencies)
     }
 
-    @Test("Deletion status")
-    func deletionStatus() {
-        #expect(DeletionStatus.valid.rawValue == "valid")
-        #expect(DeletionStatus.tentativelyDeleted.rawValue == "tentativelyDeleted")
-        #expect(DeletionStatus.deleted.rawValue == "deleted")
-        #expect(DeletionStatus.rederived.rawValue == "rederived")
-    }
-
-    @Test("DRed deletion result")
-    func dredDeletionResult() {
-        let result = DRedDeletionResult(
-            permanentlyDeleted: [TripleKey("ex:A", "ex:p", "ex:B")],
-            rederived: [TripleKey("ex:C", "ex:q", "ex:D")],
-            cascadingChecks: 10,
-            maintenanceTime: 0.5
-        )
-
-        #expect(result.permanentlyDeleted.count == 1)
-        #expect(result.rederived.count == 1)
-        #expect(result.cascadingChecks == 10)
-    }
-}
-
-// MARK: - DependencyGraph Tests
-
-@Suite("DependencyGraph", .heartbeat)
-struct DependencyGraphTests {
-
-    @Test("Add dependency")
-    func addDependency() {
-        var graph = DependencyGraph()
-
-        let antecedent = TripleKey("ex:A", "ex:p", "ex:B")
-        let consequent = TripleKey("ex:C", "ex:q", "ex:D")
-
-        graph.addDependency(antecedent: antecedent, consequent: consequent)
-
-        #expect(graph.getDependents(of: antecedent).contains(consequent))
-        #expect(graph.getDependencies(of: consequent).contains(antecedent))
-    }
-
-    @Test("Get transitive dependents")
-    func getTransitiveDependents() {
-        var graph = DependencyGraph()
-
-        let t1 = TripleKey("ex:A", "ex:p", "ex:B")
-        let t2 = TripleKey("ex:C", "ex:q", "ex:D")
-        let t3 = TripleKey("ex:E", "ex:r", "ex:F")
-
-        graph.addDependency(antecedent: t1, consequent: t2)
-        graph.addDependency(antecedent: t2, consequent: t3)
-
-        let transitive = graph.getTransitiveDependents(of: t1)
-
-        #expect(transitive.contains(t2))
-        #expect(transitive.contains(t3))
-        #expect(!transitive.contains(t1))
-    }
-
-    @Test("Remove triple")
-    func removeTriple() {
-        var graph = DependencyGraph()
-
-        let t1 = TripleKey("ex:A", "ex:p", "ex:B")
-        let t2 = TripleKey("ex:C", "ex:q", "ex:D")
-        let t3 = TripleKey("ex:E", "ex:r", "ex:F")
-
-        graph.addDependency(antecedent: t1, consequent: t2)
-        graph.addDependency(antecedent: t2, consequent: t3)
-
-        graph.remove(t2)
-
-        #expect(graph.getDependents(of: t1).isEmpty)
-        #expect(graph.getDependencies(of: t3).isEmpty)
-        #expect(graph.getDependents(of: t2).isEmpty)
-        #expect(graph.getDependencies(of: t2).isEmpty)
-    }
 }
 
 // MARK: - InferenceStatistics Tests

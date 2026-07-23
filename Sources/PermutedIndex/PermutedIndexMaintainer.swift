@@ -3,9 +3,14 @@
 //
 // Maintains permuted indexes that reorder compound index fields.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
+import Permuted
 import StorageKit
 
 /// Maintainer for PERMUTED indexes
@@ -74,15 +79,15 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
         // Remove old permuted entry
         if let oldItem = oldItem {
             if let oldKey = try buildPermutedKey(for: oldItem) {
-                transaction.clear(key: oldKey)
+                try transaction.clear(key: oldKey)
             }
         }
 
         // Add new permuted entry
         if let newItem = newItem {
             if let newKey = try buildPermutedKey(for: newItem) {
-                let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
-                transaction.setValue(value, for: newKey)
+                let value = try CoveringValueBuilder.build(for: newItem, index: index)
+                try transaction.setValue(value, for: newKey)
             }
         }
     }
@@ -94,8 +99,8 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
         transaction: any Transaction
     ) async throws {
         if let key = try buildPermutedKey(for: item, id: id) {
-            let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
-            transaction.setValue(value, for: key)
+            let value = try CoveringValueBuilder.build(for: item, index: index)
+            try transaction.setValue(value, for: key)
         }
     }
 
@@ -152,8 +157,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
             // Extract primary key from the key
             // Key structure: [prefix][remaining_fields...][primaryKey]
             let keyTuple = try prefixSubspace.unpack(key)
-            // Avoid pack/unpack cycle: convert Tuple to array directly
-            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
+            let elements = try keyTuple.elements()
 
             // The last element(s) are the primary key
             // We need to know how many fields are in the permutation to extract primary key
@@ -161,10 +165,14 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
             let prefixFieldCount = prefixValues.count
             let remainingFieldCount = fieldCount - prefixFieldCount
 
-            if elements.count > remainingFieldCount {
-                let primaryKeyElements = Array(elements.suffix(from: remainingFieldCount))
-                results.append(primaryKeyElements)
+            guard elements.count > remainingFieldCount else {
+                throw PermutedIndexError.corruptedEntry(
+                    expectedMinimumElementCount: remainingFieldCount + 1,
+                    actual: elements.count
+                )
             }
+            let primaryKeyElements = Array(elements.suffix(from: remainingFieldCount))
+            results.append(primaryKeyElements)
         }
 
         return results
@@ -205,8 +213,13 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
 
             // The entire remaining key is the primary key
             let keyTuple = try valueSubspace.unpack(key)
-            // Avoid pack/unpack cycle: convert Tuple to array directly
-            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
+            let elements = try keyTuple.elements()
+            guard !elements.isEmpty else {
+                throw PermutedIndexError.corruptedEntry(
+                    expectedMinimumElementCount: 1,
+                    actual: 0
+                )
+            }
             results.append(elements)
         }
 
@@ -234,19 +247,19 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
             guard subspace.contains(key) else { break }
 
             let keyTuple = try subspace.unpack(key)
-            // Avoid pack/unpack cycle: convert Tuple to array directly
-            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
+            let elements = try keyTuple.elements()
 
             // Split into permuted fields and primary key
             let fieldCount = permutation.size
-            if elements.count > fieldCount {
-                let permutedFields = Array(elements.prefix(fieldCount))
-                let primaryKey = Array(elements.suffix(from: fieldCount))
-                results.append((permutedFields, primaryKey))
-            } else if elements.count == fieldCount {
-                // No separate primary key? This shouldn't happen in normal use
-                results.append((elements, []))
+            guard elements.count > fieldCount else {
+                throw PermutedIndexError.corruptedEntry(
+                    expectedMinimumElementCount: fieldCount + 1,
+                    actual: elements.count
+                )
             }
+            let permutedFields = Array(elements.prefix(fieldCount))
+            let primaryKey = Array(elements.suffix(from: fieldCount))
+            results.append((permutedFields, primaryKey))
         }
 
         return results
@@ -273,15 +286,14 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
-    private func buildPermutedKey(for item: Item, id: Tuple? = nil) throws -> [UInt8]? {
+    private func buildPermutedKey(for item: Item, id: Tuple? = nil) throws -> Bytes? {
         // Evaluate index expression using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
         // Sparse index: if any field value is nil, return nil (no index entry)
         let fieldValues: [any TupleElement]
         do {
-            fieldValues = try DataAccess.evaluateIndexFields(
-                from: item,
-                keyPaths: index.keyPaths,
+            fieldValues = try DataAccess.evaluate(
+                item: item,
                 expression: index.rootExpression
             )
         } catch DataAccessError.nilValueCannotBeIndexed {

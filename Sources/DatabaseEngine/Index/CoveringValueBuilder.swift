@@ -1,150 +1,190 @@
-// CoveringValueBuilder.swift
-// DatabaseEngine - Shared utility for covering index value construction
-//
-// Builds covering index values that are stored directly in the main index
-// entry's value bytes. Indexes use this to embed additional field data
-// for index-only scans.
-
-import Foundation
 import Core
+import DatabaseValue
+import DatabaseWire
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
+import Foundation
+#endif
 import StorageKit
 
-/// Shared utility for building covering index values
-///
-/// Covering indexes store additional field values directly in the index entry's
-/// value bytes, enabling index-only scans without primary key lookups.
-///
-/// **Format**: `[presenceBitmap: UInt64, value1, value2, ...]`
-/// - First element is a UInt64 bitmap indicating which fields are present (non-nil)
-/// - Only present fields are stored in subsequent elements
-/// - Supports up to 64 fields (bitmap bits)
-/// - Properly distinguishes nil from empty string ("")
-///
-/// **Example**:
-/// ```swift
-/// // Fields: ["name", "age", "status"]
-/// // Values: name="Alice", age=30, status=nil
-/// // Bitmap: 0b011 (bits 0,1 set for name,age; bit 2 unset for status)
-/// // Tuple: [3, "Alice", 30]  // status not included
-/// ```
-///
-/// **Usage**:
-/// ```swift
-/// // In IndexMaintainer.updateIndex():
-/// let value = try CoveringValueBuilder.build(
-///     for: newItem, storedFieldNames: index.storedFieldNames
-/// )
-/// transaction.setValue(value, for: key)
-///
-/// // Clearing: just clear the key (no suffix to clean up)
-/// transaction.clear(key: key)
-/// ```
+/// Builds and reads canonical field projections stored in index values.
 public enum CoveringValueBuilder {
+    public static let formatVersion: UInt16 = 1
 
-    /// Build covering value bytes from item's storedFieldNames
+    private static let magic: [UInt8] = [0x44, 0x42, 0x49, 0x58]
+    private static func wireLimits() throws -> DatabaseWireLimits {
+        try DatabaseWireLimits(
+            maximumFrameBytes: databaseMaximumValueSize,
+            maximumStringBytes: databaseMaximumValueSize,
+            maximumByteStringBytes: databaseMaximumValueSize,
+            maximumCollectionCount: 10_000,
+            maximumNestingDepth: 64,
+            maximumObjectCount: 100_000
+        )
+    }
+
+    /// Builds a canonical projection for an index entry.
     ///
-    /// Returns empty array if storedFieldNames is empty.
-    ///
-    /// - Parameters:
-    ///   - item: Item to extract field values from
-    ///   - storedFieldNames: Field names to store in covering value
-    /// - Returns: FDB Tuple bytes with presence bitmap and values
-    /// - Throws: `TupleEncodingError` if a field value cannot be encoded
+    /// Non-covering indexes without stored fields retain an empty value. A fully
+    /// covering index always stores a DBIX frame, including key-only indexes, so
+    /// decoding never has to infer record values from tuple encodings.
     public static func build<Item: Persistable>(
         for item: Item,
-        storedFieldNames: [String]
-    ) throws -> [UInt8] {
-        guard !storedFieldNames.isEmpty else { return [] }
+        index: Index
+    ) throws -> Bytes {
+        let schemas = try validatedSchemas(for: Item.self)
+        let modelFields = Set(schemas.map(\.name))
+        let requestedPaths = ["id"] + index.kind.fieldNames + index.storedFieldNames
+        let projectedNames = orderedUnique(requestedPaths.map(rootFieldName))
 
-        // Check field count limit (UInt64 has 64 bits)
-        guard storedFieldNames.count <= 64 else {
-            throw TupleEncodingError.unsupportedType(
-                actualType: "Too many fields: \(storedFieldNames.count) (max 64)"
+        for field in projectedNames where !modelFields.contains(field) {
+            throw CanonicalIndexProjectionError.unknownField(
+                entity: Item.persistableType,
+                index: index.name,
+                field: field
             )
         }
 
-        // Build presence bitmap and collect present values
-        var presenceBitmap: UInt64 = 0
-        var presentValues: [any TupleElement] = []
-
-        for (index, fieldName) in storedFieldNames.enumerated() {
-            if let rawValue = item[dynamicMember: fieldName] {
-                // Field has a value (including empty string)
-                presenceBitmap |= (1 << index)
-
-                if let tupleElement = rawValue as? any TupleElement {
-                    presentValues.append(tupleElement)
-                } else if let converted = TupleEncoder.encodeOrNil(rawValue) {
-                    presentValues.append(converted)
-                } else {
-                    throw TupleEncodingError.unsupportedType(
-                        actualType: String(describing: type(of: rawValue)))
-                }
-            }
-            // If rawValue is nil, bit remains 0 and value is not added
+        let fullyCovering = modelFields.isSubset(of: Set(projectedNames))
+        guard !index.storedFieldNames.isEmpty || fullyCovering else {
+            return []
         }
 
-        // Build final tuple: [bitmap, value1, value2, ...]
-        var elements: [any TupleElement] = [Int64(presenceBitmap)]
-        elements.append(contentsOf: presentValues)
+        let encodedFields = try DatabaseRecordEncoder.encode(item)
+        let fieldsByName = Dictionary(
+            uniqueKeysWithValues: encodedFields.map { ($0.name, $0) }
+        )
+        let selectedFields = try projectedNames.map { fieldName in
+            guard let field = fieldsByName[fieldName] else {
+                throw CanonicalIndexProjectionError.invalidSchema(
+                    entity: Item.persistableType,
+                    reason: "encoded field '\(fieldName)' is missing"
+                )
+            }
+            return field
+        }.sorted { $0.number < $1.number }
 
-        return Tuple(elements).pack()
+        let bytes = try DatabaseRecordFieldFrameCodec.encode(
+            magic: magic,
+            version: formatVersion,
+            entity: Item.persistableType,
+            fields: selectedFields,
+            limits: try wireLimits()
+        )
+        try validateValueSize(bytes)
+        return bytes
     }
 
-    /// Decode covering value bytes to property dictionary
-    ///
-    /// - Parameters:
-    ///   - value: FDB bytes containing bitmap and values
-    ///   - storedFieldNames: Field names in the same order as build()
-    /// - Returns: Dictionary mapping field names to values (nil for absent fields)
-    /// - Throws: `TupleDecodingError` if value format is invalid
+    /// Decodes the stored-field portion for graph and specialized index readers.
     public static func decode(
-        _ value: [UInt8],
+        _ bytes: Bytes,
         storedFieldNames: [String]
-    ) throws -> [String: any Sendable] {
-        guard !value.isEmpty else { return [:] }
-
-        let tuple = try Tuple.unpack(from: value)
-        guard tuple.count >= 1 else {
-            throw TupleDecodingError.invalidFormat("Expected at least 1 element (bitmap)")
+    ) throws -> [String: DatabaseValue] {
+        guard !storedFieldNames.isEmpty else { return [:] }
+        guard !bytes.isEmpty else {
+            throw CanonicalIndexProjectionError.missingProjection(index: "unknown")
         }
 
-        // Extract presence bitmap (tuple[0] is guaranteed to exist due to count check)
-        // Note: Tuple may store small Int64 values as Int, so we need to handle both
-        let firstElement: (any TupleElement)? = tuple[0]
-        let bitmap: Int64
-        if let int64Value = firstElement as? Int64 {
-            bitmap = int64Value
-        } else if let intValue = firstElement as? Int {
-            bitmap = Int64(intValue)
-        } else {
-            let actualType = firstElement.map { String(describing: type(of: $0)) } ?? "nil"
-            throw TupleDecodingError.invalidFormat("First element must be Int64 or Int bitmap, got \(actualType)")
-        }
-        let presenceBitmap = UInt64(bitmap)
-
-        // Decode values based on bitmap
-        var properties: [String: any Sendable] = [:]
-        var valueIndex = 1  // Start after bitmap
-
-        for (fieldIndex, fieldName) in storedFieldNames.enumerated() {
-            let bitMask: UInt64 = 1 << fieldIndex
-
-            if presenceBitmap & bitMask != 0 {
-                // Field is present
-                guard valueIndex < tuple.count else {
-                    throw TupleDecodingError.invalidFormat(
-                        "Bitmap indicates field '\(fieldName)' present but no value at index \(valueIndex)"
-                    )
-                }
-                properties[fieldName] = tuple[valueIndex]
-                valueIndex += 1
-            } else {
-                // Field is nil
-                properties[fieldName] = nil
+        let rootFieldNames = Set(storedFieldNames.map(rootFieldName))
+        let frame = try DatabaseRecordFieldFrameCodec.decodeSelected(
+            bytes,
+            magic: magic,
+            version: formatVersion,
+            selectedFieldNames: rootFieldNames,
+            limits: try wireLimits()
+        )
+        var properties: [String: DatabaseValue] = [:]
+        properties.reserveCapacity(storedFieldNames.count)
+        for fieldPath in storedFieldNames {
+            guard let value = value(at: fieldPath, in: frame.fieldsByName) else {
+                throw CanonicalIndexProjectionError.projectionFieldMismatch(
+                    entity: frame.entity,
+                    missingFields: [fieldPath],
+                    unexpectedFields: []
+                )
             }
+            properties[fieldPath] = value
         }
-
         return properties
     }
+
+    package static func decodeFields(
+        _ bytes: Bytes,
+        expectedEntity: String
+    ) throws -> [DatabaseRecordField] {
+        guard !bytes.isEmpty else {
+            throw CanonicalIndexProjectionError.missingProjection(index: "unknown")
+        }
+        return try DatabaseRecordFieldFrameCodec.decode(
+            bytes,
+            magic: magic,
+            version: formatVersion,
+            expectedEntity: expectedEntity,
+            limits: try wireLimits()
+        ).fields
+    }
+
+    private static func validatedSchemas<Item: Persistable>(
+        for type: Item.Type
+    ) throws -> [FieldSchema] {
+        guard !type.fieldSchemas.isEmpty else {
+            throw CanonicalIndexProjectionError.missingCompiledSchema(
+                entity: type.persistableType
+            )
+        }
+
+        var names = Set<String>()
+        var numbers = Set<Int>()
+        for schema in type.fieldSchemas {
+            guard schema.fieldNumber > 0 else {
+                throw CanonicalIndexProjectionError.invalidSchema(
+                    entity: type.persistableType,
+                    reason: "field '\(schema.name)' has invalid number \(schema.fieldNumber)"
+                )
+            }
+            guard names.insert(schema.name).inserted else {
+                throw CanonicalIndexProjectionError.invalidSchema(
+                    entity: type.persistableType,
+                    reason: "field name '\(schema.name)' is duplicated"
+                )
+            }
+            guard numbers.insert(schema.fieldNumber).inserted else {
+                throw CanonicalIndexProjectionError.invalidSchema(
+                    entity: type.persistableType,
+                    reason: "field number \(schema.fieldNumber) is duplicated"
+                )
+            }
+        }
+        return type.fieldSchemas
+    }
+
+    private static func rootFieldName(_ path: String) -> String {
+        String(path.split(separator: ".", maxSplits: 1).first ?? "")
+    }
+
+    private static func orderedUnique(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0).inserted }
+    }
+
+    private static func value(
+        at path: String,
+        in fieldsByName: [String: DatabaseValue]
+    ) -> DatabaseValue? {
+        let components = path.split(separator: ".").map(String.init)
+        guard let first = components.first,
+              var current = fieldsByName[first] else {
+            return nil
+        }
+        for component in components.dropFirst() {
+            guard case .object(let fields) = current,
+                  let next = fields.first(where: { $0.name == component }) else {
+                return nil
+            }
+            current = next.value
+        }
+        return current
+    }
+
 }

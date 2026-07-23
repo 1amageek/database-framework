@@ -9,6 +9,7 @@ import Foundation
 import StorageKit
 import PostgreSQLStorage
 import Core
+import DatabaseValue
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -33,19 +34,19 @@ struct PGStatement {
     ))
 }
 
-@Suite("PostgreSQL SPARQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
+@Suite("PostgreSQL SPARQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
 struct PostgreSQLSPARQLTests {
 
     // MARK: - Setup
 
     private func setupContainer() async throws -> DBContainer {
         let schema = Schema([PGStatement.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLTestSetup.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
     }
 
     private func cleanupAndSetup() async throws -> (DBContainer, FDBContext) {
         let container = try await setupContainer()
-        try await container.engine.directoryService.remove(path: ["test", "pg", "sparql", "statements"])
+        try await container.engine.removeDirectory(path: ["test", "pg", "sparql", "statements"])
         let container2 = try await setupContainer()
         let context = container2.newContext()
         return (container2, context)
@@ -70,7 +71,7 @@ struct PostgreSQLSPARQLTests {
 
     @Test("Single pattern: subject bound")
     func singlePatternSubjectBound() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let (_, context) = try await cleanupAndSetup()
 
             let stmts = [
@@ -97,7 +98,7 @@ struct PostgreSQLSPARQLTests {
 
     @Test("Single pattern: object bound")
     func singlePatternObjectBound() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let (_, context) = try await cleanupAndSetup()
 
             let stmts = [
@@ -125,7 +126,7 @@ struct PostgreSQLSPARQLTests {
 
     @Test("Two-pattern join: friend of a friend")
     func twoPatternJoin() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let (_, context) = try await cleanupAndSetup()
 
             let stmts = [
@@ -153,7 +154,7 @@ struct PostgreSQLSPARQLTests {
 
     @Test("Query with no matches returns empty")
     func noMatches() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let (_, context) = try await cleanupAndSetup()
 
             let stmts = [
@@ -176,7 +177,7 @@ struct PostgreSQLSPARQLTests {
 
     @Test("All variables returns all triples")
     func allVariables() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let (_, context) = try await cleanupAndSetup()
 
             let stmts = [
@@ -199,7 +200,7 @@ struct PostgreSQLSPARQLTests {
 
     @Test("Traverse graph: two-hop path")
     func graphTraversal() async throws {
-        try await PostgreSQLTestSetup.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let (_, context) = try await cleanupAndSetup()
 
             // A -> B -> C -> D

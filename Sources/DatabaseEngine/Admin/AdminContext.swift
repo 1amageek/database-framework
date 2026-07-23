@@ -1,5 +1,10 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseValue
 import StorageKit
 
 // Type aliases to match protocol (avoiding naming conflicts with internal types)
@@ -7,10 +12,7 @@ import StorageKit
 public typealias PublicPlanType = Core.PlanType
 public typealias PublicIndexBuildState = Core.IndexBuildState
 
-/// AdminContext - 管理操作の統合実装
-///
-/// StatisticsManager、QueryPlanner、WatchManagerなどの内部コンポーネントを
-/// 統一されたAPIで公開する。
+/// Administrative operations for statistics, query analysis, and indexes.
 ///
 /// **Usage**:
 /// ```swift
@@ -21,28 +23,21 @@ public typealias PublicIndexBuildState = Core.IndexBuildState
 ///
 /// // クエリ分析
 /// let plan = try await admin.explain(Query<User>().where(\.age > 18))
-///
-/// // 変更監視
-/// for await event in admin.watch(User.self, id: userId) {
-///     // ...
-/// }
 /// ```
 public final class AdminContext: AdminContextProtocol, Sendable {
     // MARK: - Properties
 
     private let container: DBContainer
-    private let watchManager: WatchManager
 
     // MARK: - Initialization
 
     public init(container: DBContainer) {
         self.container = container
-        self.watchManager = WatchManager(container: container)
     }
 
     // MARK: - Private: Index State
 
-    /// Get index build state from IndexStateManager
+    /// Get index build state from IndexLifecycleStore
     ///
     /// Uses the entity's directory subspace for index state storage,
     /// consistent with FDBDataStore and DBContainer.ensureIndexesReady().
@@ -51,8 +46,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     ///   - indexName: Name of the index
     ///   - entitySubspace: The entity's resolved directory subspace
     private func getIndexBuildState(_ indexName: String, entitySubspace: Subspace) async throws -> PublicIndexBuildState {
-        let indexStateManager = IndexStateManager(container: container, subspace: entitySubspace)
-        let internalState = try await indexStateManager.state(of: indexName)
+        let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: entitySubspace)
+        let internalState = try await indexLifecycleStore.state(of: indexName)
 
         switch internalState {
         case .readable:
@@ -100,8 +95,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             storageSize: storageSize,
             avgDocumentSize: avgDocumentSize,
             lastModified: nil,
-            keyRangeStart: begin,
-            keyRangeEnd: end
+            keyRangeStart: DatabaseBytes(retaining: begin),
+            keyRangeEnd: DatabaseBytes(retaining: end)
         )
     }
 
@@ -143,7 +138,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             return (count, Int64(sizeBytes))
         }
 
-        // Determine index state from IndexStateManager (using entity subspace)
+        // Determine index state from IndexLifecycleStore (using entity subspace)
         let state = try await getIndexBuildState(indexName, entitySubspace: subspace)
 
         return IndexStatisticsPublic(
@@ -236,7 +231,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     ///
     /// - Parameters:
     ///   - indexName: Name of the index to rebuild
-    ///   - progress: Optional progress callback (0.0 to 1.0)
+    ///   - progress: Optional progress reporting action (0.0 to 1.0)
     public func rebuildIndex(_ indexName: String, progress: (@Sendable (Double) -> Void)?) async throws {
         // Find the index and its owning entity
         guard let (entity, indexDescriptor) = findEntityAndIndex(name: indexName) else {
@@ -249,8 +244,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let subspace = try await resolveDirectoryForEntity(entity)
         let indexSubspace = subspace.subspace(SubspaceKey.indexes)
 
-        // Create IndexStateManager using entity subspace (consistent with FDBDataStore)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
+        // Create IndexLifecycleStore using entity subspace (consistent with FDBDataStore)
+        let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
 
         progress?(0.1)
 
@@ -260,13 +255,13 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             // Disable index (from any state)
-            try await indexStateManager.disable(indexName, transaction: transaction)
+            try await indexLifecycleStore.disable(indexName, transaction: transaction)
 
             // Clear existing index data
-            transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
+            try transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
 
             // Enable index (disabled → writeOnly)
-            try await indexStateManager.enable(indexName, transaction: transaction)
+            try await indexLifecycleStore.enable(indexName, transaction: transaction)
         }
 
         progress?(0.2)
@@ -287,25 +282,15 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             )
         }
 
-        do {
-            try await EntityIndexBuilder.buildIndex(
-                forPersistableType: persistableType,
-                container: container,
-                storeSubspace: subspace,
-                index: index,
-                indexStateManager: indexStateManager,
-                batchSize: 100,
-                configurations: configs
-            )
-        } catch EntityIndexBuilderError.entityNotRegistered {
-            throw AdminError.operationFailed(
-                "Cannot rebuild index '\(indexName)' for entity '\(entity.name)': " +
-                "Entity not registered in IndexBuilderRegistry. " +
-                "Ensure DBContainer is created with Schema([YourType.self, ...])"
-            )
-        } catch EntityIndexBuilderError.typeNotBuildable(_, let reason) {
-            throw AdminError.operationFailed("Cannot rebuild index '\(indexName)': \(reason)")
-        }
+        try await EntityIndexBuilder.buildIndex(
+            for: persistableType,
+            container: container,
+            storeSubspace: subspace,
+            index: index,
+            indexLifecycleStore: indexLifecycleStore,
+            batchSize: 100,
+            configurations: configs
+        )
 
         progress?(1.0)
     }
@@ -316,23 +301,10 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     private func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> Index {
         let rootExpression = KeyExpressionFactory.from(keyPaths: descriptor.fieldNames)
 
-        if descriptor.keyPaths.isEmpty {
-            return Index(
-                name: descriptor.name,
-                kind: descriptor.kind,
-                rootExpression: rootExpression,
-                subspaceKey: descriptor.name,
-                itemTypes: Set([persistableType]),
-                isUnique: descriptor.isUnique,
-                storedFieldNames: descriptor.storedFieldNames
-            )
-        }
-
         return Index(
             name: descriptor.name,
             kind: descriptor.kind,
             rootExpression: rootExpression,
-            keyPaths: descriptor.keyPaths,
             subspaceKey: descriptor.name,
             itemTypes: Set([persistableType]),
             isUnique: descriptor.isUnique,
@@ -355,7 +327,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     public func updateStatistics() async throws {
         // Get statistics subspace from metadata
         let statisticsSubspace = try await getStatisticsSubspace()
-        let manager = StatisticsManager(
+        let statisticsService = QueryStatisticsService(
             container: container,
             subspace: statisticsSubspace,
             configuration: .default
@@ -368,7 +340,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
             for indexDescriptor in entity.indexDescriptors {
                 let indexDataSubspace = indexSubspace.subspace(indexDescriptor.name)
-                try await manager.collectIndexStatistics(
+                try await statisticsService.collectIndexStatistics(
                     index: indexDescriptor,
                     indexSubspace: indexDataSubspace
                 )
@@ -388,7 +360,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     public func updateStatistics<T: Persistable>(for type: T.Type) async throws {
         // Get statistics subspace from metadata
         let statisticsSubspace = try await getStatisticsSubspace()
-        let manager = StatisticsManager(
+        let statisticsService = QueryStatisticsService(
             container: container,
             subspace: statisticsSubspace,
             configuration: .default
@@ -397,8 +369,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         // Get data store for this type
         let dataStore = try await container.store(for: type)
 
-        // Collect statistics using StatisticsManager
-        try await manager.collectStatistics(
+        // Collect statistics through the query-planning statistics service.
+        try await statisticsService.collectStatistics(
             for: type,
             using: dataStore,
             sampleRate: nil,
@@ -408,14 +380,12 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
     /// Get statistics subspace from DirectoryLayer
     private func getStatisticsSubspace() async throws -> Subspace {
-        return try await container.engine.directoryService.createOrOpen(path: ["_metadata", "statistics"])
+        return try await container.engine.createOrOpenDirectory(
+            path: ["_metadata", "statistics"]
+        )
     }
 
     // MARK: - FDB-Specific Features
-
-    public func watch<T: Persistable>(_ type: T.Type, id: T.ID) -> AsyncStream<WatchEvent<T>> {
-        watchManager.watch(type, id: id)
-    }
 
     public func currentReadVersion() async throws -> UInt64 {
         let version: Int64 = try await container.engine.withTransaction(configuration: .batch) { transaction in

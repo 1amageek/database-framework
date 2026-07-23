@@ -8,148 +8,120 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 @testable import Core
-@testable import Core
 @testable import DatabaseEngine
 
 /// Tests for IndexConfiguration functionality
 @Suite("IndexConfiguration Tests", .heartbeat)
 struct IndexConfigurationTests {
 
-    // MARK: - IndexConfigurationApplicable Tests
+    // MARK: - Provider Configuration Tests
 
-    @Test("IndexConfigurationApplicable apply is called with correct configuration")
+    @Test("Provider applies the matching configuration")
     func indexConfigurationApplicableApply() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-
-        // Create mock configuration
-        let mockConfig = MockVectorIndexConfig(
+        let configuration = DimensionIndexConfiguration(
             fieldName: "embedding",
-            modelTypeName: "ConfigTestItem",
+            modelTypeName: "IndexConfigurationRecord",
             dimensions: 384,
-            testParameter: "test-value"
+            distanceMetric: "cosine"
         )
 
-        // Create index
         let index = Index(
-            name: "ConfigTestItem_embedding",
-            kind: MockConfigurableIndexKind(dimensions: 384),
+            name: "IndexConfigurationRecord_embedding",
+            kind: DimensionConfiguredIndexKind(dimensions: 384),
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "ConfigTestItem_embedding"
+            subspaceKey: "IndexConfigurationRecord_embedding"
         )
-
-        // Cast to IndexKindMaintainable and create maintainer
-        guard let maintainable = index.kind as? any IndexKindMaintainable else {
-            Issue.record("IndexKind does not conform to IndexKindMaintainable")
-            return
-        }
 
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
         let idExpression = FieldKeyExpression(fieldName: "id")
-
-        let maintainer: any IndexMaintainer<ConfigTestItem> = try maintainable.makeIndexMaintainer(
+        let registry = try IndexMaintainerProviderRegistry(
+            providers: [DimensionConfiguredIndexMaintainerProvider()]
+        )
+        let maintainer: any IndexMaintainer<IndexConfigurationRecord> = try registry.makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            configurations: [mockConfig]
+            configurations: [configuration]
         )
 
-        // Verify the configuration was applied
-        if let mockMaintainer = maintainer as? MockConfigurableIndexMaintainer<ConfigTestItem> {
-            #expect(mockMaintainer.appliedDimensions == 384)
-            #expect(mockMaintainer.appliedTestParameter == "test-value")
-            #expect(mockMaintainer.configurationApplied == true)
+        if let recordingMaintainer = maintainer as? ConfigurationRecordingIndexMaintainer<IndexConfigurationRecord> {
+            #expect(recordingMaintainer.appliedDimensions == 384)
+            #expect(recordingMaintainer.appliedDistanceMetric == "cosine")
+            #expect(recordingMaintainer.configurationApplied == true)
         } else {
-            Issue.record("Expected MockConfigurableIndexMaintainer but got \(type(of: maintainer))")
+            Issue.record("Expected ConfigurationRecordingIndexMaintainer but got \(type(of: maintainer))")
         }
     }
 
-    @Test("MultiIndexConfigurationApplicable apply is called with multiple configurations")
+    @Test("Provider applies all matching configurations")
     func multiIndexConfigurationApplicableApply() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-
-        // Create multiple configurations (simulating multi-language full-text)
         let configs: [any IndexConfiguration] = [
-            MockMultiLanguageIndexConfig(fieldName: "content", modelTypeName: "ConfigTestItem", language: "en"),
-            MockMultiLanguageIndexConfig(fieldName: "content", modelTypeName: "ConfigTestItem", language: "ja"),
-            MockMultiLanguageIndexConfig(fieldName: "content", modelTypeName: "ConfigTestItem", language: "zh")
+            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationRecord", language: "en"),
+            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationRecord", language: "ja"),
+            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationRecord", language: "zh")
         ]
 
         let index = Index(
-            name: "ConfigTestItem_content",
-            kind: MockMultiConfigIndexKind(),
+            name: "IndexConfigurationRecord_content",
+            kind: LanguageConfiguredIndexKind(),
             rootExpression: FieldKeyExpression(fieldName: "content"),
-            subspaceKey: "ConfigTestItem_content"
+            subspaceKey: "IndexConfigurationRecord_content"
         )
-
-        guard let maintainable = index.kind as? any IndexKindMaintainable else {
-            Issue.record("IndexKind does not conform to IndexKindMaintainable")
-            return
-        }
 
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
         let idExpression = FieldKeyExpression(fieldName: "id")
-
-        let maintainer: any IndexMaintainer<ConfigTestItem> = try maintainable.makeIndexMaintainer(
+        let registry = try IndexMaintainerProviderRegistry(
+            providers: [LanguageConfiguredIndexMaintainerProvider()]
+        )
+        let maintainer: any IndexMaintainer<IndexConfigurationRecord> = try registry.makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
             configurations: configs
         )
 
-        // Verify all configurations were applied
-        if let mockMaintainer = maintainer as? MockMultiConfigIndexMaintainer<ConfigTestItem> {
-            #expect(mockMaintainer.appliedLanguages.count == 3)
-            #expect(mockMaintainer.appliedLanguages.contains("en"))
-            #expect(mockMaintainer.appliedLanguages.contains("ja"))
-            #expect(mockMaintainer.appliedLanguages.contains("zh"))
+        if let recordingMaintainer = maintainer as? LanguageRecordingIndexMaintainer<IndexConfigurationRecord> {
+            #expect(recordingMaintainer.appliedLanguages.count == 3)
+            #expect(recordingMaintainer.appliedLanguages.contains("en"))
+            #expect(recordingMaintainer.appliedLanguages.contains("ja"))
+            #expect(recordingMaintainer.appliedLanguages.contains("zh"))
         } else {
-            Issue.record("Expected MockMultiConfigIndexMaintainer but got \(type(of: maintainer))")
+            Issue.record("Expected LanguageRecordingIndexMaintainer but got \(type(of: maintainer))")
         }
     }
 
     @Test("Configuration not applied when index name doesn't match")
     func configurationNotAppliedForMismatchedIndex() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-
-        // Create configuration for a DIFFERENT index
-        let mockConfig = MockVectorIndexConfig(
+        let configuration = DimensionIndexConfiguration(
             fieldName: "embedding",
-            modelTypeName: "ConfigTestItem",
+            modelTypeName: "IndexConfigurationRecord",
             dimensions: 768,
-            testParameter: "wrong-index"
+            distanceMetric: "euclidean"
         )
-        // Note: This config will have indexName "ConfigTestItem_embedding" but we're creating
-        // a different index
-
         let index = Index(
-            name: "ConfigTestItem_otherField",  // Different index name
-            kind: MockConfigurableIndexKind(dimensions: 128),
+            name: "IndexConfigurationRecord_otherField",
+            kind: DimensionConfiguredIndexKind(dimensions: 128),
             rootExpression: FieldKeyExpression(fieldName: "otherField"),
-            subspaceKey: "ConfigTestItem_otherField"
+            subspaceKey: "IndexConfigurationRecord_otherField"
         )
-
-        guard let maintainable = index.kind as? any IndexKindMaintainable else {
-            Issue.record("IndexKind does not conform to IndexKindMaintainable")
-            return
-        }
 
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
         let idExpression = FieldKeyExpression(fieldName: "id")
-
-        let maintainer: any IndexMaintainer<ConfigTestItem> = try maintainable.makeIndexMaintainer(
+        let registry = try IndexMaintainerProviderRegistry(
+            providers: [DimensionConfiguredIndexMaintainerProvider()]
+        )
+        let maintainer: any IndexMaintainer<IndexConfigurationRecord> = try registry.makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            configurations: [mockConfig]  // Config for different index
+            configurations: [configuration]
         )
 
-        // Verify configuration was NOT applied (uses defaults)
-        if let mockMaintainer = maintainer as? MockConfigurableIndexMaintainer<ConfigTestItem> {
-            #expect(mockMaintainer.configurationApplied == false)
-            // Default values should be used
-            #expect(mockMaintainer.appliedDimensions == 128)  // From IndexKind
+        if let recordingMaintainer = maintainer as? ConfigurationRecordingIndexMaintainer<IndexConfigurationRecord> {
+            #expect(recordingMaintainer.configurationApplied == false)
+            #expect(recordingMaintainer.appliedDimensions == 128)
         } else {
-            Issue.record("Expected MockConfigurableIndexMaintainer but got \(type(of: maintainer))")
+            Issue.record("Expected ConfigurationRecordingIndexMaintainer but got \(type(of: maintainer))")
         }
     }
 
@@ -157,70 +129,72 @@ struct IndexConfigurationTests {
 
     @Test("IndexConfiguration indexName is computed correctly")
     func indexConfigurationIndexName() {
-        let config = MockVectorIndexConfig(
+        let configuration = DimensionIndexConfiguration(
             fieldName: "embedding",
-            modelTypeName: "ConfigTestItem",
+            modelTypeName: "IndexConfigurationRecord",
             dimensions: 384,
-            testParameter: "test"
+            distanceMetric: "cosine"
         )
 
         // indexName should be "{modelTypeName}_{fieldName}"
-        #expect(config.indexName == "ConfigTestItem_embedding")
+        #expect(configuration.indexName == "IndexConfigurationRecord_embedding")
     }
 
     @Test("IndexConfiguration kindIdentifier matches expected kind")
     func indexConfigurationKindIdentifier() {
-        #expect(MockVectorIndexConfig.kindIdentifier == "mock-configurable")
-        #expect(MockMultiLanguageIndexConfig.kindIdentifier == "mock-multi-config")
+        #expect(DimensionIndexConfiguration.kindIdentifier == "dimension-configured")
+        #expect(LanguageIndexConfiguration.kindIdentifier == "language-configured")
     }
 }
 
-// MARK: - Test Fixtures
+// MARK: - Configuration Record
 
-/// Test item for configuration tests
 @Persistable
-struct ConfigTestItem {
+struct IndexConfigurationRecord {
     var content: String = ""
     var embedding: [Float] = []
     var otherField: String = ""
 }
 
-// MARK: - Mock IndexConfiguration
+// MARK: - Index Configuration Scenarios
 
-/// Mock IndexConfiguration for testing single configuration application (no generic KeyPath)
-struct MockVectorIndexConfig: IndexConfiguration, Sendable {
-    static var kindIdentifier: String { "mock-configurable" }
+/// Dimension-bearing configuration for single-configuration application.
+struct DimensionIndexConfiguration: IndexConfiguration, Sendable {
+    static var kindIdentifier: String { "dimension-configured" }
 
     let fieldName: String
     let _modelTypeName: String
     var modelTypeName: String { _modelTypeName }
 
-    // Dummy keyPath for protocol conformance
-    var keyPath: AnyKeyPath { \ConfigTestItem.embedding }
+    var keyPath: AnyKeyPath { \IndexConfigurationRecord.embedding }
 
     var indexName: String { "\(_modelTypeName)_\(fieldName)" }
 
     let dimensions: Int
-    let testParameter: String
+    let distanceMetric: String
 
-    init(fieldName: String, modelTypeName: String, dimensions: Int, testParameter: String) {
+    init(
+        fieldName: String,
+        modelTypeName: String,
+        dimensions: Int,
+        distanceMetric: String
+    ) {
         self.fieldName = fieldName
         self._modelTypeName = modelTypeName
         self.dimensions = dimensions
-        self.testParameter = testParameter
+        self.distanceMetric = distanceMetric
     }
 }
 
-/// Mock IndexConfiguration for testing multi-configuration application
-struct MockMultiLanguageIndexConfig: IndexConfiguration, Sendable {
-    static var kindIdentifier: String { "mock-multi-config" }
+/// Language-bearing configuration used to verify multi-configuration application.
+struct LanguageIndexConfiguration: IndexConfiguration, Sendable {
+    static var kindIdentifier: String { "language-configured" }
 
     let fieldName: String
     let _modelTypeName: String
     var modelTypeName: String { _modelTypeName }
 
-    // Dummy keyPath for protocol conformance
-    var keyPath: AnyKeyPath { \ConfigTestItem.content }
+    var keyPath: AnyKeyPath { \IndexConfigurationRecord.content }
 
     var indexName: String { "\(_modelTypeName)_\(fieldName)" }
 
@@ -233,16 +207,19 @@ struct MockMultiLanguageIndexConfig: IndexConfiguration, Sendable {
     }
 }
 
-// MARK: - Mock IndexKind
+// MARK: - Configured Index Kinds
 
-/// Mock IndexKind that creates a configurable maintainer
-struct MockConfigurableIndexKind: IndexKind {
-    static let identifier = "mock-configurable"
+/// Index kind carrying an expected vector dimension.
+struct DimensionConfiguredIndexKind: IndexKind {
+    static let identifier = "dimension-configured"
     static let subspaceStructure = SubspaceStructure.hierarchical
 
     let dimensions: Int
     var fieldNames: [String] = []
-    var indexName: String { "MockConfigurableIndex" }
+    var indexName: String { Self.identifier }
+    var metadata: [String: IndexMetadataValue] {
+        ["dimensions": .int(dimensions)]
+    }
 
     init(dimensions: Int = 0) {
         self.dimensions = dimensions
@@ -253,36 +230,37 @@ struct MockConfigurableIndexKind: IndexKind {
     }
 }
 
-extension MockConfigurableIndexKind: IndexKindMaintainable {
+struct DimensionConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
+    let kindIdentifier = DimensionConfiguredIndexKind.identifier
+
     func makeIndexMaintainer<Item: Persistable>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexConfiguration]
-    ) -> any IndexMaintainer<Item> {
-        let maintainer = MockConfigurableIndexMaintainer<Item>(
+    ) throws -> any IndexMaintainer<Item> {
+        let dimensions = try index.kind.requireInt("dimensions")
+        let configuration = configurations.first(where: {
+            $0.indexName == index.name
+        }) as? DimensionIndexConfiguration
+        return ConfigurationRecordingIndexMaintainer<Item>(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            defaultDimensions: dimensions
+            configurationApplied: configuration != nil,
+            appliedDimensions: configuration?.dimensions ?? dimensions,
+            appliedDistanceMetric: configuration?.distanceMetric ?? ""
         )
-
-        // Apply matching configuration
-        if let config = configurations.first(where: { $0.indexName == index.name }) as? MockVectorIndexConfig {
-            maintainer.applyConfig(dimensions: config.dimensions, testParameter: config.testParameter)
-        }
-
-        return maintainer
     }
 }
 
-/// Mock IndexKind that creates a multi-configuration maintainer
-struct MockMultiConfigIndexKind: IndexKind {
-    static let identifier = "mock-multi-config"
+/// Index kind accepting one configuration per language.
+struct LanguageConfiguredIndexKind: IndexKind {
+    static let identifier = "language-configured"
     static let subspaceStructure = SubspaceStructure.flat
 
     var fieldNames: [String] = []
-    var indexName: String { "MockMultiConfigIndex" }
+    var indexName: String { Self.identifier }
 
     static func validateTypes(_ types: [Any.Type]) throws {
         // Accept any types for testing
@@ -291,64 +269,47 @@ struct MockMultiConfigIndexKind: IndexKind {
     init() {}
 }
 
-extension MockMultiConfigIndexKind: IndexKindMaintainable {
+struct LanguageConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
+    let kindIdentifier = LanguageConfiguredIndexKind.identifier
+
     func makeIndexMaintainer<Item: Persistable>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexConfiguration]
-    ) -> any IndexMaintainer<Item> {
-        let maintainer = MockMultiConfigIndexMaintainer<Item>(
+    ) throws -> any IndexMaintainer<Item> {
+        let languages = Set(
+            configurations
+                .filter { $0.indexName == index.name }
+                .compactMap { ($0 as? LanguageIndexConfiguration)?.language }
+        )
+        return LanguageRecordingIndexMaintainer<Item>(
             index: index,
             subspace: subspace,
-            idExpression: idExpression
+            idExpression: idExpression,
+            appliedLanguages: languages
         )
-
-        // Apply all matching configurations
-        let matchingConfigs = configurations
-            .filter { $0.indexName == index.name }
-            .compactMap { $0 as? MockMultiLanguageIndexConfig }
-
-        for config in matchingConfigs {
-            maintainer.addLanguage(config.language)
-        }
-
-        return maintainer
     }
 }
 
-// MARK: - Mock IndexMaintainer
+// MARK: - Recording Index Maintainers
 
-/// Mock IndexMaintainer with configuration tracking
-final class MockConfigurableIndexMaintainer<Item: Persistable>: IndexMaintainer, @unchecked Sendable {
+/// Records the dimension configuration selected by the provider.
+struct ConfigurationRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer {
     let index: Index
     let subspace: Subspace
     let idExpression: KeyExpression
 
-    // Track applied configuration
-    var configurationApplied: Bool = false
-    var appliedDimensions: Int
-    var appliedTestParameter: String = ""
-
-    init(index: Index, subspace: Subspace, idExpression: KeyExpression, defaultDimensions: Int = 0) {
-        self.index = index
-        self.subspace = subspace
-        self.idExpression = idExpression
-        self.appliedDimensions = defaultDimensions
-    }
-
-    func applyConfig(dimensions: Int, testParameter: String) {
-        self.configurationApplied = true
-        self.appliedDimensions = dimensions
-        self.appliedTestParameter = testParameter
-    }
+    let configurationApplied: Bool
+    let appliedDimensions: Int
+    let appliedDistanceMetric: String
 
     func updateIndex(
         oldItem: Item?,
         newItem: Item?,
         transaction: any Transaction
     ) async throws {
-        // No-op for testing
+        // Configuration observation does not mutate index data.
     }
 
     func scanItem(
@@ -356,35 +317,24 @@ final class MockConfigurableIndexMaintainer<Item: Persistable>: IndexMaintainer,
         id: Tuple,
         transaction: any Transaction
     ) async throws {
-        // No-op for testing
+        // Configuration observation does not scan index data.
     }
 }
 
-/// Mock IndexMaintainer with multi-configuration tracking
-final class MockMultiConfigIndexMaintainer<Item: Persistable>: IndexMaintainer, @unchecked Sendable {
+/// Records every language configuration selected by the provider.
+struct LanguageRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer {
     let index: Index
     let subspace: Subspace
     let idExpression: KeyExpression
 
-    // Track applied configurations
-    var appliedLanguages: Set<String> = []
-
-    init(index: Index, subspace: Subspace, idExpression: KeyExpression) {
-        self.index = index
-        self.subspace = subspace
-        self.idExpression = idExpression
-    }
-
-    func addLanguage(_ language: String) {
-        appliedLanguages.insert(language)
-    }
+    let appliedLanguages: Set<String>
 
     func updateIndex(
         oldItem: Item?,
         newItem: Item?,
         transaction: any Transaction
     ) async throws {
-        // No-op for testing
+        // Language configuration observation does not mutate index data.
     }
 
     func scanItem(
@@ -392,7 +342,7 @@ final class MockMultiConfigIndexMaintainer<Item: Persistable>: IndexMaintainer, 
         id: Tuple,
         transaction: any Transaction
     ) async throws {
-        // No-op for testing
+        // Language configuration observation does not scan index data.
     }
 }
 #endif

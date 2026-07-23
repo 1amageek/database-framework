@@ -1,7 +1,7 @@
 /// DatabaseREPL - Interactive database shell powered by schema entities
 ///
-/// Connects to FDB, loads Schema.Entity entries, and provides a REPL
-/// for data operations using dynamic Protobuf codec.
+/// Connects to a storage engine, loads schema entries, and provides a
+/// read-only catalog inspection REPL using the canonical database record codec.
 ///
 /// **Standalone mode** (no compiled types needed):
 /// ```swift
@@ -10,13 +10,11 @@
 /// import DatabaseEngine
 ///
 /// let database = try FDBClient.openDatabase()
-/// let registry = SchemaRegistry(database: database)
-/// let entities = try await registry.loadAll()
-/// let repl = DatabaseREPL(database: database, entities: entities)
+/// let repl = try await DatabaseREPL(database: database)
 /// try await repl.run()
 /// ```
 ///
-/// **Embedded mode** (with DBContainer for backward compatibility):
+/// **Container mode**:
 /// ```swift
 /// let container = try await DBContainer(for: schema)
 /// let repl = try await DatabaseREPL(container: container)
@@ -33,10 +31,11 @@ public final class DatabaseREPL: Sendable {
     private let dataAccess: CatalogDataAccess
     private let entities: [Schema.Entity]
 
-    /// Initialize with database and pre-loaded entities (standalone mode)
-    public init(database: any StorageEngine, entities: [Schema.Entity]) {
-        self.entities = entities
-        self.dataAccess = CatalogDataAccess(database: database, entities: entities)
+    /// Initialize from a standalone storage engine.
+    public init(database: any StorageEngine) async throws {
+        let dataAccess = try await CatalogDataAccess.open(database: database)
+        self.entities = dataAccess.allEntities
+        self.dataAccess = dataAccess
     }
 
     /// Initialize from DBContainer (embedded mode)
@@ -45,7 +44,10 @@ public final class DatabaseREPL: Sendable {
     public init(container: DBContainer) async throws {
         let registry = SchemaRegistry(database: container.engine)
         self.entities = try await registry.loadAll()
-        self.dataAccess = CatalogDataAccess(database: container.engine, entities: self.entities)
+        self.dataAccess = try CatalogDataAccess(
+            database: container.engine,
+            entities: self.entities
+        )
     }
 
     /// Start the interactive REPL loop

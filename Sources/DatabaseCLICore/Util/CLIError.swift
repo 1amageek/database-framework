@@ -13,6 +13,7 @@ public enum CLIError: Error, CustomStringConvertible {
     case initializationFailed(String)
     case portInUse(UInt16)
     case missingPartition(String)
+    case invalidPartition(String)
     case unsupportedPlatform(String)
 
     public var description: String {
@@ -39,6 +40,8 @@ public enum CLIError: Error, CustomStringConvertible {
             return "Port \(port) is already in use. Use --port <port> or stop the process using that port."
         case .missingPartition(let field):
             return "Missing --partition value for dynamic directory field: '\(field)'. Use --partition \(field)=<value>"
+        case .invalidPartition(let message):
+            return "Invalid --partition argument: \(message)"
         case .unsupportedPlatform(let message):
             return "Unsupported platform: \(message)"
         }

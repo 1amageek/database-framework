@@ -10,6 +10,8 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseRuntime
+import DatabaseValue
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -22,15 +24,14 @@ import TestSupport
 struct ExecOrderEdge {
     #Directory<ExecOrderEdge>("sparql_execution_order_tests")
     var id: String = UUID().uuidString
-    var from: String = ""
-    var edge: String = ""
-    var to: String = ""
+    var subject: DatabaseRDFTerm = .iri("https://example.invalid/resource/default-subject")
+    var predicate: DatabaseRDFTerm = .iri("https://example.invalid/predicate/default")
+    var object: DatabaseRDFTerm = .string("")
 
-    #Index(GraphIndexKind<ExecOrderEdge>(
-        from: \.from,
-        edge: \.edge,
-        to: \.to,
-        strategy: .tripleStore
+    #Index(RDFQuadIndexKind<ExecOrderEdge>(
+        subject: \.subject,
+        predicate: \.predicate,
+        object: \.object
     ))
 }
 
@@ -40,7 +41,7 @@ struct ExecOrderEdge {
 struct SPARQLExecutionOrderTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Helpers
@@ -49,12 +50,37 @@ struct SPARQLExecutionOrderTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
+    private func resource(_ identifier: String) -> DatabaseRDFTerm {
+        .iri("https://example.invalid/resource/\(identifier)")
+    }
+
+    private func predicate(_ identifier: String) throws -> DatabaseRDFPredicateIRI {
+        try DatabaseRDFPredicateIRI(
+            "https://example.invalid/predicate/\(identifier)"
+        )
+    }
+
+    private func value(_ term: DatabaseRDFTerm) -> ExecutionTerm {
+        .value(.rdfTerm(term))
+    }
+
+    private func literalValue(
+        _ binding: VariableBinding,
+        for variable: String
+    ) -> String? {
+        guard case .rdfTerm(.literal(let literal)) = binding[variable] else {
+            return nil
+        }
+        return literal.lexicalForm
+    }
+
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([ExecOrderEdge.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
@@ -66,12 +92,16 @@ struct SPARQLExecutionOrderTests {
         try await context.save()
     }
 
-    private func makeEdge(from: String, edge: String, to: String) -> ExecOrderEdge {
-        var e = ExecOrderEdge()
-        e.from = from
-        e.edge = edge
-        e.to = to
-        return e
+    private func makeEdge(
+        from: String,
+        edge: DatabaseRDFPredicateIRI,
+        to: DatabaseRDFTerm
+    ) -> ExecOrderEdge {
+        var statement = ExecOrderEdge()
+        statement.subject = resource(from)
+        statement.predicate = edge.term
+        statement.object = to
+        return statement
     }
 
     // MARK: - ORDER BY Tests
@@ -82,24 +112,26 @@ struct SPARQLExecutionOrderTests {
 
         let context = container.newContext()
 
-        let agePred = uniqueID("age")
+        let agePred = try predicate(uniqueID("age"))
         let edges = [
-            makeEdge(from: "Alice", edge: agePred, to: "30"),
-            makeEdge(from: "Bob", edge: agePred, to: "25"),
-            makeEdge(from: "Charlie", edge: agePred, to: "35"),
-            makeEdge(from: "Diana", edge: agePred, to: "20"),
+            makeEdge(from: "Alice", edge: agePred, to: .string("30")),
+            makeEdge(from: "Bob", edge: agePred, to: .string("25")),
+            makeEdge(from: "Charlie", edge: agePred, to: .string("35")),
+            makeEdge(from: "Diana", edge: agePred, to: .string("20")),
         ]
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(ExecOrderEdge.self)
             .defaultIndex()
-            .where("?person", agePred, "?age")
+            .where(.variable("?person"), value(agePred.term), .variable("?age"))
             .orderBy("?age")
             .execute()
 
         #expect(result.count == 4)
 
-        let ages = result.bindings.compactMap { $0.string("?age") }
+        let ages = result.bindings.compactMap {
+            literalValue($0, for: "?age")
+        }
         #expect(ages == ["20", "25", "30", "35"])
     }
 
@@ -109,23 +141,25 @@ struct SPARQLExecutionOrderTests {
 
         let context = container.newContext()
 
-        let scorePred = uniqueID("score")
+        let scorePred = try predicate(uniqueID("score"))
         let edges = [
-            makeEdge(from: "P1", edge: scorePred, to: "100"),
-            makeEdge(from: "P2", edge: scorePred, to: "300"),
-            makeEdge(from: "P3", edge: scorePred, to: "200"),
+            makeEdge(from: "P1", edge: scorePred, to: .string("100")),
+            makeEdge(from: "P2", edge: scorePred, to: .string("300")),
+            makeEdge(from: "P3", edge: scorePred, to: .string("200")),
         ]
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(ExecOrderEdge.self)
             .defaultIndex()
-            .where("?player", scorePred, "?score")
+            .where(.variable("?player"), value(scorePred.term), .variable("?score"))
             .orderByDesc("?score")
             .execute()
 
         #expect(result.count == 3)
 
-        let scores = result.bindings.compactMap { $0.string("?score") }
+        let scores = result.bindings.compactMap {
+            literalValue($0, for: "?score")
+        }
         #expect(scores == ["300", "200", "100"])
     }
 
@@ -135,28 +169,30 @@ struct SPARQLExecutionOrderTests {
 
         let context = container.newContext()
 
-        let rankPred = uniqueID("rank")
+        let rankPred = try predicate(uniqueID("rank"))
         // Create numeric ranks for consistent ordering
         let edges = [
-            makeEdge(from: "ItemA", edge: rankPred, to: "3"),
-            makeEdge(from: "ItemB", edge: rankPred, to: "1"),
-            makeEdge(from: "ItemC", edge: rankPred, to: "5"),
-            makeEdge(from: "ItemD", edge: rankPred, to: "2"),
-            makeEdge(from: "ItemE", edge: rankPred, to: "4"),
+            makeEdge(from: "ItemA", edge: rankPred, to: .string("3")),
+            makeEdge(from: "ItemB", edge: rankPred, to: .string("1")),
+            makeEdge(from: "ItemC", edge: rankPred, to: .string("5")),
+            makeEdge(from: "ItemD", edge: rankPred, to: .string("2")),
+            makeEdge(from: "ItemE", edge: rankPred, to: .string("4")),
         ]
         try await insertEdges(edges, context: context)
 
         // Get top 3 by rank (ascending)
         let result = try await context.sparql(ExecOrderEdge.self)
             .defaultIndex()
-            .where("?item", rankPred, "?rank")
+            .where(.variable("?item"), value(rankPred.term), .variable("?rank"))
             .orderBy("?rank")
             .limit(3)
             .execute()
 
         #expect(result.count == 3)
 
-        let ranks = result.bindings.compactMap { $0.string("?rank") }
+        let ranks = result.bindings.compactMap {
+            literalValue($0, for: "?rank")
+        }
         #expect(ranks == ["1", "2", "3"])
     }
 
@@ -166,30 +202,32 @@ struct SPARQLExecutionOrderTests {
 
         let context = container.newContext()
 
-        let deptPred = uniqueID("department")
-        let namePred = uniqueID("name")
+        let deptPred = try predicate(uniqueID("department"))
+        let namePred = try predicate(uniqueID("name"))
 
         let edges = [
-            makeEdge(from: "E1", edge: deptPred, to: "Sales"),
-            makeEdge(from: "E1", edge: namePred, to: "Zach"),
-            makeEdge(from: "E2", edge: deptPred, to: "Sales"),
-            makeEdge(from: "E2", edge: namePred, to: "Alice"),
-            makeEdge(from: "E3", edge: deptPred, to: "Engineering"),
-            makeEdge(from: "E3", edge: namePred, to: "Bob"),
+            makeEdge(from: "E1", edge: deptPred, to: .string("Sales")),
+            makeEdge(from: "E1", edge: namePred, to: .string("Zach")),
+            makeEdge(from: "E2", edge: deptPred, to: .string("Sales")),
+            makeEdge(from: "E2", edge: namePred, to: .string("Alice")),
+            makeEdge(from: "E3", edge: deptPred, to: .string("Engineering")),
+            makeEdge(from: "E3", edge: namePred, to: .string("Bob")),
         ]
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(ExecOrderEdge.self)
             .defaultIndex()
-            .where("?emp", deptPred, "?dept")
-            .where("?emp", namePred, "?name")
+            .where(.variable("?emp"), value(deptPred.term), .variable("?dept"))
+            .where(.variable("?emp"), value(namePred.term), .variable("?name"))
             .orderBy("?dept")
             .orderBy("?name")
             .execute()
 
         #expect(result.count == 3)
 
-        let names = result.bindings.compactMap { $0.string("?name") }
+        let names = result.bindings.compactMap {
+            literalValue($0, for: "?name")
+        }
         // Engineering first, then Sales; within Sales: Alice before Zach
         #expect(names == ["Bob", "Alice", "Zach"])
     }
@@ -202,23 +240,31 @@ struct SPARQLExecutionOrderTests {
 
         let context = container.newContext()
 
-        let typePred = uniqueID("type")
-        let bannedPred = uniqueID("banned")
+        let typePred = try predicate(uniqueID("type"))
+        let bannedPred = try predicate(uniqueID("banned"))
 
         let edges = [
-            makeEdge(from: "User1", edge: typePred, to: "User"),
-            makeEdge(from: "User2", edge: typePred, to: "User"),
-            makeEdge(from: "User3", edge: typePred, to: "User"),
-            makeEdge(from: "User2", edge: bannedPred, to: "true"),
+            makeEdge(from: "User1", edge: typePred, to: resource("User")),
+            makeEdge(from: "User2", edge: typePred, to: resource("User")),
+            makeEdge(from: "User3", edge: typePred, to: resource("User")),
+            makeEdge(from: "User2", edge: bannedPred, to: .boolean(true)),
         ]
         try await insertEdges(edges, context: context)
 
         // Build MINUS pattern: all users MINUS banned users
         let leftPattern = ExecutionPattern.basic([
-            ExecutionTriple("?person", typePred, "User")
+            ExecutionTriple(
+                subject: .variable("?person"),
+                predicate: value(typePred.term),
+                object: value(resource("User"))
+            )
         ])
         let rightPattern = ExecutionPattern.basic([
-            ExecutionTriple("?person", bannedPred, "true")
+            ExecutionTriple(
+                subject: .variable("?person"),
+                predicate: value(bannedPred.term),
+                object: value(.boolean(true))
+            )
         ])
         let minusPattern = ExecutionPattern.minus(leftPattern, rightPattern)
 
@@ -227,11 +273,11 @@ struct SPARQLExecutionOrderTests {
             on: ExecOrderEdge.self
         )
 
-        let users = Set(result.bindings.compactMap { $0.string("?person") })
+        let users = Set(result.bindings.compactMap { $0["?person"] })
         #expect(users.count == 2)
-        #expect(users.contains("User1"))
-        #expect(users.contains("User3"))
-        #expect(!users.contains("User2"))
+        #expect(users.contains(.rdfTerm(resource("User1"))))
+        #expect(users.contains(.rdfTerm(resource("User3"))))
+        #expect(!users.contains(.rdfTerm(resource("User2"))))
     }
 
     @Test("MINUS with no shared variables keeps all left bindings")
@@ -240,22 +286,30 @@ struct SPARQLExecutionOrderTests {
 
         let context = container.newContext()
 
-        let predA = uniqueID("hasA")
-        let predB = uniqueID("hasB")
+        let predA = try predicate(uniqueID("hasA"))
+        let predB = try predicate(uniqueID("hasB"))
 
         let edges = [
-            makeEdge(from: "X1", edge: predA, to: "V1"),
-            makeEdge(from: "X2", edge: predA, to: "V2"),
-            makeEdge(from: "Y1", edge: predB, to: "V3"),
+            makeEdge(from: "X1", edge: predA, to: .string("V1")),
+            makeEdge(from: "X2", edge: predA, to: .string("V2")),
+            makeEdge(from: "Y1", edge: predB, to: .string("V3")),
         ]
         try await insertEdges(edges, context: context)
 
         // ?x hasA ?a MINUS ?y hasB ?b (no shared variables)
         let leftPattern = ExecutionPattern.basic([
-            ExecutionTriple("?x", predA, "?a")
+            ExecutionTriple(
+                subject: .variable("?x"),
+                predicate: value(predA.term),
+                object: .variable("?a")
+            )
         ])
         let rightPattern = ExecutionPattern.basic([
-            ExecutionTriple("?y", predB, "?b")
+            ExecutionTriple(
+                subject: .variable("?y"),
+                predicate: value(predB.term),
+                object: .variable("?b")
+            )
         ])
         let minusPattern = ExecutionPattern.minus(leftPattern, rightPattern)
 
@@ -274,23 +328,31 @@ struct SPARQLExecutionOrderTests {
 
         let context = container.newContext()
 
-        let typePred = uniqueID("type")
-        let flagPred = uniqueID("flag")
+        let typePred = try predicate(uniqueID("type"))
+        let flagPred = try predicate(uniqueID("flag"))
 
         let edges = [
-            makeEdge(from: "Item1", edge: typePred, to: "Widget"),
-            makeEdge(from: "Item2", edge: typePred, to: "Widget"),
-            makeEdge(from: "Item1", edge: flagPred, to: "true"),
-            makeEdge(from: "Item2", edge: flagPred, to: "true"),
+            makeEdge(from: "Item1", edge: typePred, to: resource("Widget")),
+            makeEdge(from: "Item2", edge: typePred, to: resource("Widget")),
+            makeEdge(from: "Item1", edge: flagPred, to: .boolean(true)),
+            makeEdge(from: "Item2", edge: flagPred, to: .boolean(true)),
         ]
         try await insertEdges(edges, context: context)
 
         // All widgets MINUS flagged items (all are flagged)
         let leftPattern = ExecutionPattern.basic([
-            ExecutionTriple("?item", typePred, "Widget")
+            ExecutionTriple(
+                subject: .variable("?item"),
+                predicate: value(typePred.term),
+                object: value(resource("Widget"))
+            )
         ])
         let rightPattern = ExecutionPattern.basic([
-            ExecutionTriple("?item", flagPred, "true")
+            ExecutionTriple(
+                subject: .variable("?item"),
+                predicate: value(flagPred.term),
+                object: value(.boolean(true))
+            )
         ])
         let minusPattern = ExecutionPattern.minus(leftPattern, rightPattern)
 
@@ -305,37 +367,52 @@ struct SPARQLExecutionOrderTests {
     // MARK: - BindingSorter Unit Tests
 
     @Test("BindingSorter sorts by single key ascending")
-    func testBindingSorterSingleKeyAsc() {
+    func testBindingSorterSingleKeyAsc() throws {
         let b1 = VariableBinding().binding("?x", to: .string("C"))
         let b2 = VariableBinding().binding("?x", to: .string("A"))
         let b3 = VariableBinding().binding("?x", to: .string("B"))
+        let workMeter = DatabaseWorkMeter(budget: .init())
 
-        let sorted = BindingSorter.sort([b1, b2, b3], by: [.variable("?x")])
+        let sorted = try BindingSorter.sort(
+            [b1, b2, b3],
+            by: [.variable("?x")],
+            workMeter: workMeter
+        )
 
         let values = sorted.compactMap { $0.string("?x") }
         #expect(values == ["A", "B", "C"])
     }
 
     @Test("BindingSorter sorts by single key descending")
-    func testBindingSorterSingleKeyDesc() {
+    func testBindingSorterSingleKeyDesc() throws {
         let b1 = VariableBinding().binding("?x", to: .int64(1))
         let b2 = VariableBinding().binding("?x", to: .int64(3))
         let b3 = VariableBinding().binding("?x", to: .int64(2))
+        let workMeter = DatabaseWorkMeter(budget: .init())
 
-        let sorted = BindingSorter.sort([b1, b2, b3], by: [.variable("?x", ascending: false)])
+        let sorted = try BindingSorter.sort(
+            [b1, b2, b3],
+            by: [.variable("?x", ascending: false)],
+            workMeter: workMeter
+        )
 
         let values = sorted.compactMap { $0.int("?x") }
         #expect(values == [3, 2, 1])
     }
 
     @Test("BindingSorter handles nulls correctly - nulls first by default")
-    func testBindingSorterNullsFirst() {
+    func testBindingSorterNullsFirst() throws {
         let b1 = VariableBinding().binding("?x", to: .string("B"))
         let b2 = VariableBinding().binding("?x", to: .null)
         let b3 = VariableBinding().binding("?x", to: .string("A"))
         let b4 = VariableBinding()  // unbound
+        let workMeter = DatabaseWorkMeter(budget: .init())
 
-        let sorted = BindingSorter.sort([b1, b2, b3, b4], by: [.variable("?x")])
+        let sorted = try BindingSorter.sort(
+            [b1, b2, b3, b4],
+            by: [.variable("?x")],
+            workMeter: workMeter
+        )
 
         // nil and .null should come first
         let first = sorted[0]["?x"]
@@ -347,14 +424,17 @@ struct SPARQLExecutionOrderTests {
     }
 
     @Test("BindingSorter nullsLast option")
-    func testBindingSorterNullsLast() {
+    func testBindingSorterNullsLast() throws {
         let b1 = VariableBinding().binding("?x", to: .string("B"))
         let b2 = VariableBinding()  // unbound
         let b3 = VariableBinding().binding("?x", to: .string("A"))
+        let workMeter = DatabaseWorkMeter(budget: .init())
 
-        let sorted = BindingSorter.sort([b1, b2, b3], by: [
-            .variable("?x", ascending: true, nullsLast: true)
-        ])
+        let sorted = try BindingSorter.sort(
+            [b1, b2, b3],
+            by: [.variable("?x", ascending: true, nullsLast: true)],
+            workMeter: workMeter
+        )
 
         #expect(sorted[0]["?x"] == .string("A"))
         #expect(sorted[1]["?x"] == .string("B"))
@@ -362,7 +442,7 @@ struct SPARQLExecutionOrderTests {
     }
 
     @Test("BindingSorter multiple keys")
-    func testBindingSorterMultipleKeys() {
+    func testBindingSorterMultipleKeys() throws {
         let b1 = VariableBinding()
             .binding("?dept", to: .string("B"))
             .binding("?name", to: .string("Zach"))
@@ -375,11 +455,13 @@ struct SPARQLExecutionOrderTests {
         let b4 = VariableBinding()
             .binding("?dept", to: .string("A"))
             .binding("?name", to: .string("Charlie"))
+        let workMeter = DatabaseWorkMeter(budget: .init())
 
-        let sorted = BindingSorter.sort([b1, b2, b3, b4], by: [
-            .variable("?dept"),
-            .variable("?name")
-        ])
+        let sorted = try BindingSorter.sort(
+            [b1, b2, b3, b4],
+            by: [.variable("?dept"), .variable("?name")],
+            workMeter: workMeter
+        )
 
         let names = sorted.compactMap { $0.string("?name") }
         #expect(names == ["Bob", "Charlie", "Alice", "Zach"])
@@ -393,25 +475,43 @@ struct SPARQLExecutionOrderTests {
 
         let context = container.newContext()
 
-        let memberPred = uniqueID("hasMember")
+        let memberPred = try predicate(uniqueID("hasMember"))
         var edges: [ExecOrderEdge] = []
 
         // GroupA: 3 members
         for i in 0..<3 {
-            edges.append(makeEdge(from: "GroupA", edge: memberPred, to: uniqueID("M\(i)")))
+            edges.append(
+                makeEdge(
+                    from: "GroupA",
+                    edge: memberPred,
+                    to: resource(uniqueID("M\(i)"))
+                )
+            )
         }
         // GroupB: 5 members
         for i in 0..<5 {
-            edges.append(makeEdge(from: "GroupB", edge: memberPred, to: uniqueID("M\(i)")))
+            edges.append(
+                makeEdge(
+                    from: "GroupB",
+                    edge: memberPred,
+                    to: resource(uniqueID("M\(i)"))
+                )
+            )
         }
         // GroupC: 1 member
-        edges.append(makeEdge(from: "GroupC", edge: memberPred, to: uniqueID("M0")))
+        edges.append(
+            makeEdge(
+                from: "GroupC",
+                edge: memberPred,
+                to: resource(uniqueID("M0"))
+            )
+        )
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(ExecOrderEdge.self)
             .defaultIndex()
-            .where("?group", memberPred, "?member")
+            .where(.variable("?group"), value(memberPred.term), .variable("?member"))
             .groupBy("?group")
             .count("?member", as: "cnt")
             .orderByDesc("cnt")
@@ -441,14 +541,14 @@ struct SPARQLExecutionOrderTests {
 
         let context = container.newContext()
 
-        let knowsPred = uniqueID("knows")
-        let namePred = uniqueID("name")
+        let knowsPred = try predicate(uniqueID("knows"))
+        let namePred = try predicate(uniqueID("name"))
 
         let edges = [
-            makeEdge(from: "Alice", edge: knowsPred, to: "Bob"),
-            makeEdge(from: "Alice", edge: knowsPred, to: "Charlie"),
-            makeEdge(from: "Bob", edge: namePred, to: "Robert"),
-            makeEdge(from: "Charlie", edge: namePred, to: "Charles"),
+            makeEdge(from: "Alice", edge: knowsPred, to: resource("Bob")),
+            makeEdge(from: "Alice", edge: knowsPred, to: resource("Charlie")),
+            makeEdge(from: "Bob", edge: namePred, to: .string("Robert")),
+            makeEdge(from: "Charlie", edge: namePred, to: .string("Charles")),
         ]
         try await insertEdges(edges, context: context)
 
@@ -456,13 +556,13 @@ struct SPARQLExecutionOrderTests {
         // Filter on ?name
         let result = try await context.sparql(ExecOrderEdge.self)
             .defaultIndex()
-            .where("Alice", knowsPred, "?friend")
-            .where("?friend", namePred, "?name")
-            .filter(.equals("?name", .string("Robert")))
+            .where(value(resource("Alice")), value(knowsPred.term), .variable("?friend"))
+            .where(.variable("?friend"), value(namePred.term), .variable("?name"))
+            .filter(.equals("?name", .rdfTerm(.string("Robert"))))
             .execute()
 
         #expect(result.count == 1)
-        #expect(result.bindings.first?.string("?friend") == "Bob")
+        #expect(result.bindings.first?["?friend"] == .rdfTerm(resource("Bob")))
     }
 }
 #endif

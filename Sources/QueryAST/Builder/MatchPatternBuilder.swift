@@ -5,7 +5,6 @@
 /// - ISO/IEC 9075-16:2023 (SQL/PGQ)
 /// - GQL (Graph Query Language)
 
-import Foundation
 import QueryIR
 
 /// Result builder for constructing MATCH patterns

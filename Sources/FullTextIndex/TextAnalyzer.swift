@@ -3,8 +3,6 @@
 //
 // Reference: Lucene Analyzer, Elasticsearch Analysis
 
-import Foundation
-
 // MARK: - AnalyzedToken
 
 /// A token produced by text analysis
@@ -155,30 +153,6 @@ public struct MaxLengthFilter: TokenFilter {
     }
 }
 
-/// ASCII folding filter - converts Unicode to ASCII equivalents
-///
-/// Removes diacritics: é→e, ü→u, ñ→n
-///
-/// **Reference**: Lucene ASCIIFoldingFilter
-public struct ASCIIFoldingFilter: TokenFilter {
-    public static var identifier: String { "ascii_folding" }
-
-    public init() {}
-
-    public func filter(_ tokens: [AnalyzedToken]) -> [AnalyzedToken] {
-        tokens.map { token in
-            let folded = token.text.folding(options: .diacriticInsensitive, locale: nil)
-            return AnalyzedToken(
-                text: folded,
-                position: token.position,
-                startOffset: token.startOffset,
-                endOffset: token.endOffset,
-                type: token.type
-            )
-        }
-    }
-}
-
 /// Trim filter - trims whitespace from tokens
 public struct TrimFilter: TokenFilter {
     public static var identifier: String { "trim" }
@@ -187,8 +161,11 @@ public struct TrimFilter: TokenFilter {
 
     public func filter(_ tokens: [AnalyzedToken]) -> [AnalyzedToken] {
         tokens.map { token in
-            AnalyzedToken(
-                text: token.text.trimmingCharacters(in: .whitespaces),
+            let trimmed = FullTextTextUtilities.trimmingWhitespace(
+                token.text
+            )
+            return AnalyzedToken(
+                text: String(trimmed),
                 position: token.position,
                 startOffset: token.startOffset,
                 endOffset: token.endOffset,
@@ -297,28 +274,6 @@ public struct StandardTokenizer: Tokenizer {
     public init() {}
 
     public func tokenize(_ text: String) -> [AnalyzedToken] {
-#if canImport(Darwin)
-        var tokens: [AnalyzedToken] = []
-        var position = 0
-
-        // Use word boundary enumeration for proper Unicode handling
-        text.enumerateSubstrings(in: text.startIndex..., options: .byWords) { substring, range, _, _ in
-            guard let word = substring else { return }
-
-            let startOffset = text.distance(from: text.startIndex, to: range.lowerBound)
-            let endOffset = text.distance(from: text.startIndex, to: range.upperBound)
-
-            tokens.append(AnalyzedToken(
-                text: word,
-                position: position,
-                startOffset: startOffset,
-                endOffset: endOffset
-            ))
-            position += 1
-        }
-
-        return tokens
-#else
         var tokens: [AnalyzedToken] = []
         var position = 0
         var currentIndex = text.startIndex
@@ -351,14 +306,11 @@ public struct StandardTokenizer: Tokenizer {
         }
 
         return tokens
-#endif
     }
 
-#if !canImport(Darwin)
     private func isTokenCharacter(_ character: Character) -> Bool {
-        character.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+        FullTextTextUtilities.isTokenCharacter(character)
     }
-#endif
 }
 
 /// N-gram tokenizer - generates character n-grams

@@ -5,8 +5,10 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 
 private actor FDBMigrationEventRecorder {
     private var events: [String] = []
@@ -270,8 +272,8 @@ enum FDBStageFailureMigrationPlan: SchemaMigrationPlan {
 @Suite("Migration Execution FDB Tests", .serialized, .heartbeat)
 struct MigrationExecutionFDBTests {
     private func makeSystemPriorityEngine() async throws -> any StorageEngine {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let engine = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let database = FDBSystemPriorityDatabase(wrapping: engine.database)
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
@@ -281,25 +283,25 @@ struct MigrationExecutionFDBTests {
         typeNames: [String]
     ) async throws {
         do {
-            try await database.directoryService.remove(path: ["test", "migration"])
+            try await database.removeDirectory(path: ["test", "migration"])
         } catch {
         }
 
         do {
-            try await database.directoryService.remove(path: ["_metadata"])
+            try await database.removeDirectory(path: ["_metadata"])
         } catch {
         }
 
         try await database.withTransaction { transaction in
             for typeName in typeNames {
-                transaction.clear(key: Tuple(["_schema", typeName]).pack())
+                try transaction.clear(key: Tuple(["_schema", typeName]).pack())
             }
         }
     }
 
     @Test("Multi-stage migration executes in order and persists stage boundaries on FDB")
     func multiStageMigrationExecutesInOrderAndPersistsBetweenStages() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await makeSystemPriorityEngine()
             await fdbMigrationEventRecorder.reset()
 
@@ -308,6 +310,7 @@ struct MigrationExecutionFDBTests {
             let initialContainer = try await DBContainer(
                 for: FDBStageBoundarySchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -321,7 +324,8 @@ struct MigrationExecutionFDBTests {
             let migratedContainer = try await DBContainer(
                 for: FDBStageBoundarySchemaV3.self,
                 migrationPlan: FDBStageBoundaryMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -331,6 +335,7 @@ struct MigrationExecutionFDBTests {
             let verificationContainer = try await DBContainer(
                 for: FDBStageBoundarySchemaV3.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let migratedUsers = try await verificationContainer.newContext()
@@ -348,13 +353,14 @@ struct MigrationExecutionFDBTests {
 
     @Test("Lightweight migration adds and removes indexes end-to-end on FDB")
     func lightweightMigrationAddsAndRemovesIndexesEndToEnd() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await makeSystemPriorityEngine()
             try await clearState(in: engine, typeNames: [FDBIndexLifecycleUserV2.persistableType])
 
             let initialContainer = try await DBContainer(
                 for: FDBIndexLifecycleSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let subspace = try await initialContainer.resolveDirectory(for: FDBIndexLifecycleUserV2.self)
@@ -377,7 +383,8 @@ struct MigrationExecutionFDBTests {
             let migratedContainer = try await DBContainer(
                 for: FDBIndexLifecycleSchemaV3.self,
                 migrationPlan: FDBIndexLifecycleMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -389,12 +396,13 @@ struct MigrationExecutionFDBTests {
                 .subspace("formerIndexes")
                 .pack(Tuple("FDBIndexLifecycleUser_age"))
             let formerIndexValue = try await value(for: formerIndexKey, engine: engine)
-            let indexManager = IndexManager(container: migratedContainer, subspace: subspace)
-            let removedIndexState = try await indexManager.state(of: "FDBIndexLifecycleUser_age")
+            let indexRegistry = DatabaseIndexRegistry(container: migratedContainer, subspace: subspace)
+            let removedIndexState = try await indexRegistry.state(of: "FDBIndexLifecycleUser_age")
 
             let verificationContainer = try await DBContainer(
                 for: FDBIndexLifecycleSchemaV3.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let migratedUsers = try await verificationContainer.newContext()
@@ -416,7 +424,7 @@ struct MigrationExecutionFDBTests {
 
     @Test("Failed later stage keeps earlier stage committed on FDB")
     func failedLaterStageKeepsEarlierStageCommitted() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await makeSystemPriorityEngine()
             await fdbMigrationEventRecorder.reset()
 
@@ -425,6 +433,7 @@ struct MigrationExecutionFDBTests {
             let initialContainer = try await DBContainer(
                 for: FDBStageFailureSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -438,7 +447,8 @@ struct MigrationExecutionFDBTests {
             let migratedContainer = try await DBContainer(
                 for: FDBStageFailureSchemaV3.self,
                 migrationPlan: FDBStageFailureMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
 
             do {
@@ -456,6 +466,7 @@ struct MigrationExecutionFDBTests {
             let verificationContainer = try await DBContainer(
                 for: FDBStageFailureSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled
             )
             let migratedUsers = try await verificationContainer.newContext()
@@ -474,7 +485,7 @@ struct MigrationExecutionFDBTests {
 
     @Test("Empty database bootstraps to latest schema without executing stages on FDB")
     func emptyDatabaseBootstrapsWithoutExecutingStages() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await makeSystemPriorityEngine()
             await fdbMigrationEventRecorder.reset()
 
@@ -483,7 +494,8 @@ struct MigrationExecutionFDBTests {
             let migratedContainer = try await DBContainer(
                 for: FDBStageBoundarySchemaV3.self,
                 migrationPlan: FDBStageBoundaryMigrationPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 

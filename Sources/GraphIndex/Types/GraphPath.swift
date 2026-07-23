@@ -4,9 +4,6 @@
 // Provides data structures for representing paths through graphs,
 // including shortest path results and path traversal information.
 
-import Foundation
-import Core
-
 // MARK: - GraphPath
 
 /// Represents a path through the graph with all nodes and edges
@@ -31,7 +28,7 @@ import Core
 /// print("Source: \(path.source)")  // "alice"
 /// print("Target: \(path.target)")  // "charlie"
 /// ```
-public struct GraphPath<T: Persistable>: Sendable {
+public struct GraphPath: Sendable {
 
     // MARK: - Properties
 
@@ -39,13 +36,13 @@ public struct GraphPath<T: Persistable>: Sendable {
     ///
     /// The first element is the source node, the last is the target.
     /// For a path of length N, this array contains N+1 elements.
-    public let nodeIDs: [String]
+    public let nodeIDs: [GraphIdentity]
 
     /// Edge labels connecting consecutive nodes
     ///
     /// For a path with N nodes, this array contains N-1 edge labels.
     /// `edgeLabels[i]` is the label of the edge from `nodeIDs[i]` to `nodeIDs[i+1]`.
-    public let edgeLabels: [String]
+    public let edgeLabels: [GraphIdentity]
 
     /// Optional edge weights for weighted algorithms
     ///
@@ -75,14 +72,14 @@ public struct GraphPath<T: Persistable>: Sendable {
     /// Source node ID (first node in the path)
     ///
     /// Returns nil if the path is empty.
-    public var source: String? {
+    public var source: GraphIdentity? {
         nodeIDs.first
     }
 
     /// Target node ID (last node in the path)
     ///
     /// Returns nil if the path is empty.
-    public var target: String? {
+    public var target: GraphIdentity? {
         nodeIDs.last
     }
 
@@ -99,7 +96,44 @@ public struct GraphPath<T: Persistable>: Sendable {
     ///   - nodeIDs: Ordered list of node IDs from source to target
     ///   - edgeLabels: Edge labels connecting consecutive nodes
     ///   - weights: Optional edge weights for weighted algorithms
-    public init(nodeIDs: [String], edgeLabels: [String], weights: [Double]?) {
+    public init(
+        nodeIDs: [GraphIdentity],
+        edgeLabels: [GraphIdentity],
+        weights: [Double]?
+    ) throws {
+        guard !nodeIDs.isEmpty else {
+            throw GraphPathError.emptyPath
+        }
+        let expectedEdgeCount = nodeIDs.count - 1
+        guard edgeLabels.count == expectedEdgeCount else {
+            throw GraphPathError.edgeCountMismatch(
+                expected: expectedEdgeCount,
+                actual: edgeLabels.count
+            )
+        }
+        if let weights {
+            guard weights.count == expectedEdgeCount else {
+                throw GraphPathError.weightCountMismatch(
+                    expected: expectedEdgeCount,
+                    actual: weights.count
+                )
+            }
+            for (index, weight) in weights.enumerated() where !weight.isFinite {
+                throw GraphPathError.nonFiniteWeight(index: index, value: weight)
+            }
+        }
+        self.init(
+            validatedNodeIDs: nodeIDs,
+            edgeLabels: edgeLabels,
+            weights: weights
+        )
+    }
+
+    private init(
+        validatedNodeIDs nodeIDs: [GraphIdentity],
+        edgeLabels: [GraphIdentity],
+        weights: [Double]?
+    ) {
         self.nodeIDs = nodeIDs
         self.edgeLabels = edgeLabels
         self.weights = weights
@@ -108,7 +142,7 @@ public struct GraphPath<T: Persistable>: Sendable {
     /// Create a single-node path (length 0)
     ///
     /// - Parameter nodeID: The single node in the path
-    public init(singleNode nodeID: String) {
+    public init(singleNode nodeID: GraphIdentity) {
         self.nodeIDs = [nodeID]
         self.edgeLabels = []
         self.weights = nil
@@ -120,7 +154,7 @@ public struct GraphPath<T: Persistable>: Sendable {
     ///
     /// - Parameter nodeID: The node ID to search for
     /// - Returns: true if the node is in the path
-    public func contains(node nodeID: String) -> Bool {
+    public func contains(node nodeID: GraphIdentity) -> Bool {
         nodeIDs.contains(nodeID)
     }
 
@@ -130,7 +164,7 @@ public struct GraphPath<T: Persistable>: Sendable {
     ///   - from: Source node of the edge
     ///   - to: Target node of the edge
     /// - Returns: true if the edge exists in the path
-    public func containsEdge(from: String, to: String) -> Bool {
+    public func containsEdge(from: GraphIdentity, to: GraphIdentity) -> Bool {
         for i in 0..<length {
             if nodeIDs[i] == from && nodeIDs[i + 1] == to {
                 return true
@@ -143,7 +177,7 @@ public struct GraphPath<T: Persistable>: Sendable {
     ///
     /// - Parameter index: Position (0-based)
     /// - Returns: Node ID at the position, or nil if out of bounds
-    public func node(at index: Int) -> String? {
+    public func node(at index: Int) -> GraphIdentity? {
         guard index >= 0 && index < nodeIDs.count else { return nil }
         return nodeIDs[index]
     }
@@ -152,7 +186,7 @@ public struct GraphPath<T: Persistable>: Sendable {
     ///
     /// - Parameter index: Edge index (0-based, where edge 0 connects nodes 0 and 1)
     /// - Returns: Edge label, or nil if out of bounds
-    public func edgeLabel(at index: Int) -> String? {
+    public func edgeLabel(at index: Int) -> GraphIdentity? {
         guard index >= 0 && index < edgeLabels.count else { return nil }
         return edgeLabels[index]
     }
@@ -172,13 +206,13 @@ public struct GraphPath<T: Persistable>: Sendable {
     ///   - startIndex: Starting node index
     ///   - endIndex: Ending node index
     /// - Returns: Subpath, or nil if indices are invalid
-    public func subpath(from startIndex: Int, to endIndex: Int) -> GraphPath<T>? {
+    public func subpath(from startIndex: Int, to endIndex: Int) -> GraphPath? {
         guard startIndex >= 0 && endIndex < nodeIDs.count && startIndex <= endIndex else {
             return nil
         }
 
         let subNodeIDs = Array(nodeIDs[startIndex...endIndex])
-        let subEdgeLabels: [String]
+        let subEdgeLabels: [GraphIdentity]
         let subWeights: [Double]?
 
         if startIndex < endIndex {
@@ -189,25 +223,36 @@ public struct GraphPath<T: Persistable>: Sendable {
             subWeights = nil
         }
 
-        return GraphPath(nodeIDs: subNodeIDs, edgeLabels: subEdgeLabels, weights: subWeights)
+        return GraphPath(
+            validatedNodeIDs: subNodeIDs,
+            edgeLabels: subEdgeLabels,
+            weights: subWeights
+        )
     }
 
     /// Reverse the path (swap source and target)
     ///
     /// - Returns: A new path with reversed direction
-    public func reversed() -> GraphPath<T> {
+    public func reversed() -> GraphPath {
         GraphPath(
-            nodeIDs: nodeIDs.reversed(),
-            edgeLabels: edgeLabels.reversed(),
-            weights: weights?.reversed()
+            validatedNodeIDs: Array(nodeIDs.reversed()),
+            edgeLabels: Array(edgeLabels.reversed()),
+            weights: weights.map { Array($0.reversed()) }
         )
     }
+}
+
+public enum GraphPathError: Error, Sendable, Equatable {
+    case emptyPath
+    case edgeCountMismatch(expected: Int, actual: Int)
+    case weightCountMismatch(expected: Int, actual: Int)
+    case nonFiniteWeight(index: Int, value: Double)
 }
 
 // MARK: - Equatable
 
 extension GraphPath: Equatable {
-    public static func == (lhs: GraphPath<T>, rhs: GraphPath<T>) -> Bool {
+    public static func == (lhs: GraphPath, rhs: GraphPath) -> Bool {
         lhs.nodeIDs == rhs.nodeIDs &&
         lhs.edgeLabels == rhs.edgeLabels &&
         lhs.weights == rhs.weights
@@ -238,7 +283,7 @@ extension GraphPath: CustomStringConvertible {
 
         var parts: [String] = []
         for i in 0..<nodeIDs.count {
-            parts.append(nodeIDs[i])
+            parts.append(nodeIDs[i].description)
             if i < edgeLabels.count {
                 let label = edgeLabels[i]
                 if let weights = weights, i < weights.count {
@@ -272,12 +317,12 @@ extension GraphPath: CustomStringConvertible {
 ///
 /// print("Explored \(result.nodesExplored) nodes in \(result.durationNs / 1_000_000)ms")
 /// ```
-public struct ShortestPathResult<T: Persistable>: Sendable {
+public struct ShortestPathResult: Sendable {
 
     // MARK: - Properties
 
     /// The shortest path (nil if no path exists)
-    public let path: GraphPath<T>?
+    public let path: GraphPath?
 
     /// Distance (hop count for unweighted, total weight for weighted)
     ///
@@ -344,7 +389,7 @@ public struct ShortestPathResult<T: Persistable>: Sendable {
     ///   - isComplete: Whether the search completed without hitting limits
     ///   - limitReason: Reason for incompleteness (if any)
     public init(
-        path: GraphPath<T>?,
+        path: GraphPath?,
         distance: Double?,
         nodesExplored: Int,
         durationNs: UInt64,
@@ -371,7 +416,7 @@ public struct ShortestPathResult<T: Persistable>: Sendable {
         durationNs: UInt64,
         isComplete: Bool = true,
         limitReason: LimitReason? = nil
-    ) -> ShortestPathResult<T> {
+    ) -> ShortestPathResult {
         ShortestPathResult(
             path: nil,
             distance: nil,
@@ -389,10 +434,10 @@ public struct ShortestPathResult<T: Persistable>: Sendable {
 ///
 /// When multiple shortest paths of equal length exist, this structure
 /// captures all of them.
-public struct AllShortestPathsResult<T: Persistable>: Sendable {
+public struct AllShortestPathsResult: Sendable {
 
     /// All shortest paths found (empty if no path exists)
-    public let paths: [GraphPath<T>]
+    public let paths: [GraphPath]
 
     /// Shortest distance (nil if no path exists)
     public let distance: Double?
@@ -437,7 +482,7 @@ public struct AllShortestPathsResult<T: Persistable>: Sendable {
     }
 
     public init(
-        paths: [GraphPath<T>],
+        paths: [GraphPath],
         distance: Double?,
         nodesExplored: Int,
         durationNs: UInt64,

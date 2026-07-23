@@ -5,10 +5,12 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import ScalarIndex
 import TestSupport
 import TestHeartbeat
 @testable import DatabaseEngine
+import DatabaseRuntime
 
 // MARK: - Schema Versions With Different #Directory Paths
 
@@ -96,7 +98,7 @@ enum DirectoryIndexedCopyPlan: SchemaMigrationPlan {
     }
 
     static func purgeLegacyDirectory(context: MigrationContext) async throws {
-        try await context.purgeLegacyStorage(DirectoryIndexedUserV1.self)
+        try await context.purgeSourceSchemaStorage(DirectoryIndexedUserV1.self)
         try await context.rebuildIndex(indexName: "DirectoryIndexedUser_email")
     }
 }
@@ -158,7 +160,7 @@ enum DirectoryAddIdxPlan: SchemaMigrationPlan {
     }
 
     static func purgeLegacyDirectory(context: MigrationContext) async throws {
-        try await context.purgeLegacyStorage(DirectoryAddIdxUserV1.self)
+        try await context.purgeSourceSchemaStorage(DirectoryAddIdxUserV1.self)
     }
 }
 
@@ -219,7 +221,7 @@ enum DirectoryRemIdxPlan: SchemaMigrationPlan {
     }
 
     static func purgeLegacyDirectory(context: MigrationContext) async throws {
-        try await context.purgeLegacyStorage(DirectoryRemIdxUserV1.self)
+        try await context.purgeSourceSchemaStorage(DirectoryRemIdxUserV1.self)
     }
 }
 
@@ -295,7 +297,7 @@ enum DirectoryMigrationCopyPlan: SchemaMigrationPlan {
     }
 
     static func purgeLegacyDirectory(context: MigrationContext) async throws {
-        try await context.purgeLegacyStorage(DirectoryMigrationUserV1.self)
+        try await context.purgeSourceSchemaStorage(DirectoryMigrationUserV1.self)
     }
 }
 
@@ -304,32 +306,33 @@ enum DirectoryMigrationCopyPlan: SchemaMigrationPlan {
 @Suite("Directory Migration Tests", .serialized, .heartbeat)
 struct DirectoryMigrationTests {
     private func makeSystemPriorityEngine() async throws -> any StorageEngine {
-        let engine = try await FDBTestSetup.shared.makeEngine()
+        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let database = FDBSystemPriorityDatabase(wrapping: engine.database)
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
 
     private func cleanDirectories(engine: any StorageEngine) async throws {
         for path in [["directory_migration_test_legacy"], ["directory_migration_test_current"]] {
-            if try await engine.directoryService.exists(path: path) {
-                try await engine.directoryService.remove(path: path)
+            if try await engine.directoryExists(path: path) {
+                try await engine.removeDirectory(path: path)
             }
         }
     }
 
     @Test("Custom migration copies data across changed #Directory paths")
     func customMigrationCopiesAcrossDirectoryChange() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
             try await cleanDirectories(engine: engine)
 
             let seededID = "dir-migration-\(UUID().uuidString)"
 
-            // 1. Insert V1 data into the legacy directory.
+            // 1. Insert V1 data into the source-schema directory.
             let initialContainer = try await DBContainer(
                 testing: DirectoryMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled,
             )
             let initialContext = initialContainer.newContext()
@@ -359,7 +362,8 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer(
                 for: DirectoryMigrationSchemaV2.self,
                 migrationPlan: DirectoryMigrationCopyPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -367,6 +371,7 @@ struct DirectoryMigrationTests {
             let verificationContainer = try await DBContainer(
                 testing: DirectoryMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled,
             )
             let verificationContext = verificationContainer.newContext()
@@ -379,7 +384,7 @@ struct DirectoryMigrationTests {
             #expect(migratedUser.name == "Alice")
             #expect(migratedUser.email == "alice@example.com")
 
-            // 4. Legacy directory must be empty after purgeLegacyStorage.
+            // 4. Legacy directory must be empty after purgeSourceSchemaStorage.
             let legacyCountAfter = try await engine.withTransaction { transaction in
                 let pairs = try await transaction.collectRange(
                     from: .firstGreaterOrEqual(legacyBegin),
@@ -414,8 +419,8 @@ struct DirectoryMigrationTests {
 
     @Test("Running migration twice leaves data consistent (idempotent)")
     func rerunningMigrationIsIdempotent() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
             try await cleanDirectories(engine: engine)
 
@@ -424,6 +429,7 @@ struct DirectoryMigrationTests {
             let initialContainer = try await DBContainer(
                 testing: DirectoryMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled,
             )
             let initialContext = initialContainer.newContext()
@@ -437,7 +443,8 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer(
                 for: DirectoryMigrationSchemaV2.self,
                 migrationPlan: DirectoryMigrationCopyPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -447,6 +454,7 @@ struct DirectoryMigrationTests {
             let verificationContainer = try await DBContainer(
                 testing: DirectoryMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled,
             )
             let rows = try await verificationContainer.newContext()
@@ -461,14 +469,14 @@ struct DirectoryMigrationTests {
         }
     }
 
-    @Test("purgeLegacyStorage clears both items and index keys from the legacy directory")
+    @Test("purgeSourceSchemaStorage clears both items and index keys from the source-schema directory")
     func purgeLegacyStorageClearsIndexKeys() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
             for path in [["directory_indexed_migration_test_legacy"], ["directory_indexed_migration_test_current"]] {
-                if try await engine.directoryService.exists(path: path) {
-                    try await engine.directoryService.remove(path: path)
+                if try await engine.directoryExists(path: path) {
+                    try await engine.removeDirectory(path: path)
                 }
             }
 
@@ -477,6 +485,7 @@ struct DirectoryMigrationTests {
             let initialContainer = try await DBContainer(
                 testing: DirectoryIndexedSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled,
             )
             let initialContext = initialContainer.newContext()
@@ -505,11 +514,12 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer(
                 for: DirectoryIndexedSchemaV2.self,
                 migrationPlan: DirectoryIndexedCopyPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 
-            // V1 index subspace must be empty after purgeLegacyStorage.
+            // V1 index subspace must be empty after purgeSourceSchemaStorage.
             let legacyIndexAfter = try await engine.withTransaction { transaction in
                 let pairs = try await transaction.collectRange(
                     from: .firstGreaterOrEqual(legacyIndexBegin),
@@ -539,8 +549,8 @@ struct DirectoryMigrationTests {
             #expect(targetIndexCount == 1)
 
             for path in [["directory_indexed_migration_test_legacy"], ["directory_indexed_migration_test_current"]] {
-                if try await engine.directoryService.exists(path: path) {
-                    try await engine.directoryService.remove(path: path)
+                if try await engine.directoryExists(path: path) {
+                    try await engine.removeDirectory(path: path)
                 }
             }
         }
@@ -548,12 +558,12 @@ struct DirectoryMigrationTests {
 
     @Test("Custom stage builds a newly added index in the target directory after copying data")
     func addIndexRunsAfterDirectoryChange() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
             for path in [["directory_add_idx_test_legacy"], ["directory_add_idx_test_current"]] {
-                if try await engine.directoryService.exists(path: path) {
-                    try await engine.directoryService.remove(path: path)
+                if try await engine.directoryExists(path: path) {
+                    try await engine.removeDirectory(path: path)
                 }
             }
 
@@ -562,6 +572,7 @@ struct DirectoryMigrationTests {
             let initialContainer = try await DBContainer(
                 testing: DirectoryAddIdxSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled,
             )
             let initialContext = initialContainer.newContext()
@@ -574,7 +585,8 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer(
                 for: DirectoryAddIdxSchemaV2.self,
                 migrationPlan: DirectoryAddIdxPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -597,21 +609,21 @@ struct DirectoryMigrationTests {
             #expect(targetIndexCount == 1)
 
             for path in [["directory_add_idx_test_legacy"], ["directory_add_idx_test_current"]] {
-                if try await engine.directoryService.exists(path: path) {
-                    try await engine.directoryService.remove(path: path)
+                if try await engine.directoryExists(path: path) {
+                    try await engine.removeDirectory(path: path)
                 }
             }
         }
     }
 
-    @Test("Custom stage clears the dropped index from the legacy directory")
+    @Test("Custom stage clears the dropped index from the source-schema directory")
     func removeIndexRunsAfterDirectoryChange() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
             for path in [["directory_rem_idx_test_legacy"], ["directory_rem_idx_test_current"]] {
-                if try await engine.directoryService.exists(path: path) {
-                    try await engine.directoryService.remove(path: path)
+                if try await engine.directoryExists(path: path) {
+                    try await engine.removeDirectory(path: path)
                 }
             }
 
@@ -620,6 +632,7 @@ struct DirectoryMigrationTests {
             let initialContainer = try await DBContainer(
                 testing: DirectoryRemIdxSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled,
             )
             let initialContext = initialContainer.newContext()
@@ -629,7 +642,7 @@ struct DirectoryMigrationTests {
             try await initialContext.save()
             try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
 
-            // Sanity: legacy index subspace holds one entry before migration.
+            // Sanity: source-schema index subspace holds one entry before migration.
             let legacySubspace = try await initialContainer.resolveDirectory(for: DirectoryRemIdxUserV1.self)
             let legacyIndexPrefix = legacySubspace.subspace(SubspaceKey.indexes).subspace("DirectoryRemIdxUser_tag")
             let (legacyIndexBegin, legacyIndexEnd) = legacyIndexPrefix.range()
@@ -648,12 +661,13 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer(
                 for: DirectoryRemIdxSchemaV2.self,
                 migrationPlan: DirectoryRemIdxPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
             try await migratedContainer.migrateIfNeeded()
 
-            // removeIndex targets the *source* registry (the legacy directory).
-            // Combined with didMigrate purgeLegacyStorage, the legacy index
+            // removeIndex targets the *source* registry (the source-schema directory).
+            // Combined with didMigrate purgeSourceSchemaStorage, the source-schema index
             // subspace must be empty after migration.
             let legacyIndexAfter = try await engine.withTransaction { transaction in
                 let pairs = try await transaction.collectRange(
@@ -671,6 +685,7 @@ struct DirectoryMigrationTests {
             let verificationContainer = try await DBContainer(
                 testing: DirectoryRemIdxSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled,
             )
             let rows = try await verificationContainer.newContext()
@@ -679,8 +694,8 @@ struct DirectoryMigrationTests {
             #expect(rows.count == 1)
 
             for path in [["directory_rem_idx_test_legacy"], ["directory_rem_idx_test_current"]] {
-                if try await engine.directoryService.exists(path: path) {
-                    try await engine.directoryService.remove(path: path)
+                if try await engine.directoryExists(path: path) {
+                    try await engine.removeDirectory(path: path)
                 }
             }
         }
@@ -688,18 +703,19 @@ struct DirectoryMigrationTests {
 
     @Test("Lightweight stage with changed #Directory is rejected with actionable error")
     func lightweightStageRejectsDirectoryChange() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
             for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"]] {
-                if try await engine.directoryService.exists(path: path) {
-                    try await engine.directoryService.remove(path: path)
+                if try await engine.directoryExists(path: path) {
+                    try await engine.removeDirectory(path: path)
                 }
             }
 
             let initialContainer = try await DBContainer(
                 testing: DirectoryLightweightSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled,
             )
             try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
@@ -707,7 +723,8 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer(
                 for: DirectoryLightweightSchemaV2.self,
                 migrationPlan: DirectoryLightweightPlan.self,
-                configuration: .init(backend: .custom(engine))
+                configuration: .init(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             )
 
             await #expect(throws: MigrationPlanError.self) {
@@ -715,8 +732,8 @@ struct DirectoryMigrationTests {
             }
 
             for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"]] {
-                if try await engine.directoryService.exists(path: path) {
-                    try await engine.directoryService.remove(path: path)
+                if try await engine.directoryExists(path: path) {
+                    try await engine.removeDirectory(path: path)
                 }
             }
         }

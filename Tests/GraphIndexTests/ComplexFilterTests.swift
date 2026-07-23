@@ -9,6 +9,8 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -18,14 +20,14 @@ import TestSupport
 // MARK: - Test Model
 
 @Persistable
-struct FilterTestEdge {
-    #Directory<FilterTestEdge>("complex_filter_tests")
+struct FilterEdge {
+    #Directory<FilterEdge>("complex_filter_tests")
     var id: String = UUID().uuidString
     var from: String = ""
     var relationship: String = ""
     var to: String = ""
 
-    #Index(GraphIndexKind<FilterTestEdge>(
+    #Index(GraphIndexKind<FilterEdge>(
         from: \.from,
         edge: \.relationship,
         to: \.to,
@@ -39,7 +41,7 @@ struct FilterTestEdge {
 struct ComplexFilterTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Helpers
@@ -49,24 +51,25 @@ struct ComplexFilterTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([FilterTestEdge.self], version: Schema.Version(1, 0, 0))
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([FilterEdge.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
 
-    private func insertEdges(_ edges: [FilterTestEdge], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [FilterEdge], context: FDBContext) async throws {
         for edge in edges {
             context.insert(edge)
         }
         try await context.save()
     }
 
-    private func makeEdge(from: String, relationship: String, to: String) -> FilterTestEdge {
-        var edge = FilterTestEdge()
+    private func makeEdge(from: String, relationship: String, to: String) -> FilterEdge {
+        var edge = FilterEdge()
         edge.from = from
         edge.relationship = relationship
         edge.to = to
@@ -99,7 +102,7 @@ struct ComplexFilterTests {
         try await insertEdges(edges, context: context)
 
         // Query with compound FILTER
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", predA, "?a")
             .filter(.greaterThan("?a", 10))
@@ -131,7 +134,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", predValue, "?val")
             .filter(.greaterThan("?val", 10))
@@ -160,7 +163,7 @@ struct ComplexFilterTests {
         try await insertEdges(edges, context: context)
 
         // Filter for scores between 5 and 10
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?entity", pred, "?score")
             .filter(.greaterThan("?score", 5))
@@ -196,7 +199,7 @@ struct ComplexFilterTests {
         try await insertEdges(edges, context: context)
 
         // Apply multiple filters: 0 < x < 100
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", predValue, "?val")
             .filter(.greaterThan("?val", 0))
@@ -229,7 +232,7 @@ struct ComplexFilterTests {
         try await insertEdges(edges, context: context)
 
         // Filters: > 20, < 60, != 35
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?n", pred, "?val")
             .filter(.greaterThan("?val", 20))
@@ -271,7 +274,7 @@ struct ComplexFilterTests {
         try await insertEdges(edges, context: context)
 
         // Query with price filter
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?product", predPrice, "?price")
             .filter(.greaterThanOrEqual("?price", 100))
@@ -301,7 +304,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?product", pred, "?name")
             .filter("?name", contains: "Premium")
@@ -335,7 +338,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?task", pred, "?status")
             .filter(.custom { binding in
@@ -367,7 +370,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?entity", pred, "?type")
             .filter("?type", equals: "TypeA")
@@ -399,7 +402,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", pred, "?category")
             .filter(.custom { binding in
@@ -434,7 +437,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", pred, "?color")
             .filter("?color", equals: "red")
@@ -459,7 +462,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", pred, "?status")
             .filter(.notEquals("?status", "disabled"))
@@ -487,7 +490,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?person", pred, "?name")
             .filter("?name", startsWith: "Alice")
@@ -514,7 +517,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?user", pred, "?email")
             .filter("?email", endsWith: ".com")
@@ -542,7 +545,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?entity", pred, "?code")
             .filter(.regex("?code", "^ABC"))
@@ -570,7 +573,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", pred, "?label")
             .filter(.regexWithFlags("?label", "hello", "i"))
@@ -601,7 +604,7 @@ struct ComplexFilterTests {
         try await insertEdges(edges, context: context)
 
         // Query users with name
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?user", predName, "?name")
             .execute()
@@ -628,7 +631,7 @@ struct ComplexFilterTests {
 
         try await insertEdges(edges, context: context)
 
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", pred, "?note")
             .filter(.notEquals("?note", ""))
@@ -657,7 +660,7 @@ struct ComplexFilterTests {
         try await insertEdges(edges, context: context)
 
         // Numeric filter > 5
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", pred, "?val")
             .filter(.greaterThan("?val", 5))
@@ -683,7 +686,7 @@ struct ComplexFilterTests {
         try await insertEdges(edges, context: context)
 
         // Filter that no value can pass
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", pred, "?score")
             .filter(.greaterThan("?score", 100))
@@ -709,7 +712,7 @@ struct ComplexFilterTests {
         try await insertEdges(edges, context: context)
 
         // Filter that everything passes
-        let result = try await context.sparql(FilterTestEdge.self)
+        let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
             .where("?item", pred, "?val")
             .filter(.greaterThan("?val", 0))

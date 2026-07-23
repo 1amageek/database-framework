@@ -3,6 +3,7 @@ import Testing
 import Foundation
 import Database
 import TestHeartbeat
+import DatabaseRuntime
 
 @Persistable(type: "SQLiteSchemaEvolutionUser")
 struct SQLiteSchemaEvolutionUserV1 {
@@ -117,6 +118,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLiteSchemaEvolutionSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -129,13 +131,15 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let migratedContainer = try await DBContainer(
             for: SQLiteSchemaEvolutionSchemaV2.self,
             migrationPlan: SQLiteAppendOnlyMigrationPlan.self,
-            configuration: .init(backend: .custom(engine))
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer(
             for: SQLiteSchemaEvolutionSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let migratedContext = verificationContainer.newContext()
@@ -200,6 +204,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLiteMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -212,7 +217,8 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let migratedContainer = try await DBContainer(
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
-            configuration: .init(backend: .custom(engine))
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
         )
         try await migratedContainer.migrateIfNeeded()
 
@@ -228,6 +234,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let verificationContainer = try await DBContainer(
             for: SQLiteMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let migratedUsers = try await verificationContainer.newContext()
@@ -247,6 +254,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLiteMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -265,13 +273,15 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let migratedContainer = try await DBContainer(
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
-            configuration: .init(backend: .custom(engine))
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer(
             for: SQLiteMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let migratedContext = verificationContainer.newContext()

@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import VersionIndex
 
 // MARK: - Test Model
 
-struct PerfTestDocument: Persistable {
+struct VersionedBenchmarkDocument: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ struct PerfTestDocument: Persistable {
         self.version = version
     }
 
-    static var persistableType: String { "PerfTestDocument" }
+    static var persistableType: String { "VersionedBenchmarkDocument" }
     static var allFields: [String] { ["id", "title", "content", "version"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,35 +46,35 @@ struct PerfTestDocument: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<PerfTestDocument, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<VersionedBenchmarkDocument, Value>) -> String {
         switch keyPath {
-        case \PerfTestDocument.id: return "id"
-        case \PerfTestDocument.title: return "title"
-        case \PerfTestDocument.content: return "content"
-        case \PerfTestDocument.version: return "version"
+        case \VersionedBenchmarkDocument.id: return "id"
+        case \VersionedBenchmarkDocument.title: return "title"
+        case \VersionedBenchmarkDocument.content: return "content"
+        case \VersionedBenchmarkDocument.version: return "version"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<PerfTestDocument>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<VersionedBenchmarkDocument>) -> String {
         switch keyPath {
-        case \PerfTestDocument.id: return "id"
-        case \PerfTestDocument.title: return "title"
-        case \PerfTestDocument.content: return "content"
-        case \PerfTestDocument.version: return "version"
+        case \VersionedBenchmarkDocument.id: return "id"
+        case \VersionedBenchmarkDocument.title: return "title"
+        case \VersionedBenchmarkDocument.content: return "content"
+        case \VersionedBenchmarkDocument.version: return "version"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PerfTestDocument> {
+        if let partial = keyPath as? PartialKeyPath<VersionedBenchmarkDocument> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Benchmark Helper
+// MARK: - Benchmark Measurement
 
 private struct BenchmarkResult {
     let operation: String
@@ -108,33 +109,33 @@ private func benchmark<T>(
     ))
 }
 
-// MARK: - Test Context Helper
+// MARK: - Version Index Benchmark Context
 
-private struct TestContext {
+private struct VersionIndexBenchmarkContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: VersionIndexMaintainer<PerfTestDocument>
-    let kind: VersionIndexKind<PerfTestDocument>
+    let maintainer: VersionIndexMaintainer<VersionedBenchmarkDocument>
+    let kind: VersionIndexKind<VersionedBenchmarkDocument>
 
     init(strategy: VersionHistoryStrategy = .keepAll, testId: String? = nil) async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let id = testId ?? String(UUID().uuidString.prefix(8))
         self.subspace = Subspace(prefix: Tuple("test", "version", "perf", id).pack())
-        let indexName = "PerfTestDocument_version"
+        let indexName = "VersionedBenchmarkDocument_version"
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = VersionIndexKind<PerfTestDocument>(field: \.id, strategy: strategy)
+        self.kind = VersionIndexKind<VersionedBenchmarkDocument>(field: \.id, strategy: strategy)
 
         let index = Index(
             name: indexName,
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "id"),
             subspaceKey: indexName,
-            itemTypes: Set(["PerfTestDocument"])
+            itemTypes: Set(["VersionedBenchmarkDocument"])
         )
 
-        self.maintainer = VersionIndexMaintainer<PerfTestDocument>(
+        self.maintainer = VersionIndexMaintainer<VersionedBenchmarkDocument>(
             index: index,
             strategy: kind.strategy,
             subspace: indexSubspace,
@@ -145,7 +146,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -170,15 +171,15 @@ struct VersionIndexPerformanceTests {
 
     @Test("Version insert performance (keepAll)")
     func testVersionInsertPerformanceKeepAll() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepAll)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepAll)
 
         let itemCount = 100
-        var documents: [PerfTestDocument] = []
+        var documents: [VersionedBenchmarkDocument] = []
 
         // Generate unique documents
         for i in 0..<itemCount {
-            documents.append(PerfTestDocument(
+            documents.append(VersionedBenchmarkDocument(
                 id: "doc-\(i)",
                 title: "Document \(i)",
                 content: "Content for document \(i)",
@@ -211,14 +212,14 @@ struct VersionIndexPerformanceTests {
 
     @Test("Version insert performance (keepLast)")
     func testVersionInsertPerformanceKeepLast() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepLast(5))
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepLast(5))
 
         let itemCount = 50
-        var documents: [PerfTestDocument] = []
+        var documents: [VersionedBenchmarkDocument] = []
 
         for i in 0..<itemCount {
-            documents.append(PerfTestDocument(
+            documents.append(VersionedBenchmarkDocument(
                 id: "doc-\(i)",
                 title: "Document \(i)",
                 content: "Content for document \(i)",
@@ -248,8 +249,8 @@ struct VersionIndexPerformanceTests {
 
     @Test("Multiple versions per document performance")
     func testMultipleVersionsPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepAll)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepAll)
 
         let docCount = 10
         let versionsPerDoc = 10
@@ -258,10 +259,10 @@ struct VersionIndexPerformanceTests {
         // Create documents with multiple versions each
         let (_, versionBenchmark) = try await benchmark("Multiple versions", itemCount: totalVersions) {
             for docIndex in 0..<docCount {
-                var previousDoc: PerfTestDocument? = nil
+                var previousDoc: VersionedBenchmarkDocument? = nil
 
                 for versionNum in 1...versionsPerDoc {
-                    let doc = PerfTestDocument(
+                    let doc = VersionedBenchmarkDocument(
                         id: "doc-\(docIndex)",
                         title: "Doc \(docIndex) v\(versionNum)",
                         content: "Version \(versionNum) content",
@@ -295,18 +296,18 @@ struct VersionIndexPerformanceTests {
 
     @Test("Get latest version performance")
     func testGetLatestVersionPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepAll)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepAll)
 
         // Create 20 documents with 10 versions each
         let docCount = 20
         let versionsPerDoc = 10
 
         for docIndex in 0..<docCount {
-            var previousDoc: PerfTestDocument? = nil
+            var previousDoc: VersionedBenchmarkDocument? = nil
 
             for versionNum in 1...versionsPerDoc {
-                let doc = PerfTestDocument(
+                let doc = VersionedBenchmarkDocument(
                     id: "doc-\(docIndex)",
                     title: "Doc \(docIndex) v\(versionNum)",
                     content: "Version \(versionNum)",
@@ -346,18 +347,18 @@ struct VersionIndexPerformanceTests {
 
     @Test("Get version history performance")
     func testGetVersionHistoryPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepAll)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepAll)
 
         // Create 10 documents with 20 versions each
         let docCount = 10
         let versionsPerDoc = 20
 
         for docIndex in 0..<docCount {
-            var previousDoc: PerfTestDocument? = nil
+            var previousDoc: VersionedBenchmarkDocument? = nil
 
             for versionNum in 1...versionsPerDoc {
-                let doc = PerfTestDocument(
+                let doc = VersionedBenchmarkDocument(
                     id: "doc-\(docIndex)",
                     title: "Doc \(docIndex) v\(versionNum)",
                     content: "Version \(versionNum) with some content",
@@ -416,17 +417,17 @@ struct VersionIndexPerformanceTests {
 
     @Test("KeepLast retention cleanup performance")
     func testKeepLastRetentionPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepLast(5))
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepLast(5))
 
         let docId = "retention-test-doc"
         let totalUpdates = 20
-        var previousDoc: PerfTestDocument? = nil
+        var previousDoc: VersionedBenchmarkDocument? = nil
 
         // Create many versions (retention cleanup happens on each update)
         let (_, retentionBenchmark) = try await benchmark("KeepLast retention", itemCount: totalUpdates) {
             for versionNum in 1...totalUpdates {
-                let doc = PerfTestDocument(
+                let doc = VersionedBenchmarkDocument(
                     id: docId,
                     title: "Doc v\(versionNum)",
                     content: "Version \(versionNum) content",
@@ -463,17 +464,17 @@ struct VersionIndexPerformanceTests {
 
     @Test("KeepForDuration retention performance")
     func testKeepForDurationRetentionPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
         // Very short duration for testing (retention won't actually clean up recent items)
-        let ctx = try await TestContext(strategy: .keepForDuration(3600)) // 1 hour
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepForDuration(3600)) // 1 hour
 
         let docId = "duration-test-doc"
         let totalUpdates = 20
-        var previousDoc: PerfTestDocument? = nil
+        var previousDoc: VersionedBenchmarkDocument? = nil
 
         let (_, retentionBenchmark) = try await benchmark("KeepForDuration retention", itemCount: totalUpdates) {
             for versionNum in 1...totalUpdates {
-                let doc = PerfTestDocument(
+                let doc = VersionedBenchmarkDocument(
                     id: docId,
                     title: "Doc v\(versionNum)",
                     content: "Version \(versionNum) content",
@@ -512,14 +513,14 @@ struct VersionIndexPerformanceTests {
 
     @Test("ScanItem performance")
     func testScanItemPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepAll)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepAll)
 
         let itemCount = 100
-        var documents: [PerfTestDocument] = []
+        var documents: [VersionedBenchmarkDocument] = []
 
         for i in 0..<itemCount {
-            documents.append(PerfTestDocument(
+            documents.append(VersionedBenchmarkDocument(
                 id: "doc-\(i)",
                 title: "Document \(i)",
                 content: "Content for document \(i)",
@@ -550,15 +551,15 @@ struct VersionIndexPerformanceTests {
 
     @Test("Delete marker performance")
     func testDeleteMarkerPerformance() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepAll)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepAll)
 
         let itemCount = 50
-        var documents: [PerfTestDocument] = []
+        var documents: [VersionedBenchmarkDocument] = []
 
         // First, insert documents
         for i in 0..<itemCount {
-            let doc = PerfTestDocument(
+            let doc = VersionedBenchmarkDocument(
                 id: "doc-\(i)",
                 title: "Document \(i)",
                 content: "Content",
@@ -602,17 +603,17 @@ struct VersionIndexPerformanceTests {
 
     @Test("Large history scale test")
     func testLargeHistoryScaleTest() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepAll)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepAll)
 
         let docId = "scale-test-doc"
         let versionCount = 100
-        var previousDoc: PerfTestDocument? = nil
+        var previousDoc: VersionedBenchmarkDocument? = nil
 
         // Create many versions of a single document
         let (_, scaleBenchmark) = try await benchmark("Large history creation", itemCount: versionCount) {
             for versionNum in 1...versionCount {
-                let doc = PerfTestDocument(
+                let doc = VersionedBenchmarkDocument(
                     id: docId,
                     title: "Doc v\(versionNum)",
                     content: String(repeating: "Content ", count: 10), // ~80 bytes content
@@ -671,8 +672,8 @@ struct VersionIndexPerformanceTests {
 
     @Test("Concurrent version updates")
     func testConcurrentVersionUpdates() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(strategy: .keepAll)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepAll)
 
         let docCount = 20
         let versionsPerDoc = 5
@@ -682,10 +683,10 @@ struct VersionIndexPerformanceTests {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 for docIndex in 0..<docCount {
                     group.addTask {
-                        var previousDoc: PerfTestDocument? = nil
+                        var previousDoc: VersionedBenchmarkDocument? = nil
 
                         for versionNum in 1...versionsPerDoc {
-                            let doc = PerfTestDocument(
+                            let doc = VersionedBenchmarkDocument(
                                 id: "concurrent-doc-\(docIndex)",
                                 title: "Doc \(docIndex) v\(versionNum)",
                                 content: "Version \(versionNum)",

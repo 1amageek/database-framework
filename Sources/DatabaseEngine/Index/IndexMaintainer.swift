@@ -137,12 +137,9 @@ public protocol IndexMaintainer<Item>: Sendable {
     /// - Returns: Array of index keys that should exist for this item
     /// - Throws: Error if computation fails
     ///
-    /// **Default**: Empty array — treated by the scrubber as
-    /// "verification opt-out for this maintainer". Maintainers whose index keys
-    /// depend on transactional state that cannot be reproduced from `item` + `id`
-    /// alone (e.g. HNSW's monotonically-allocated integer labels, or indexes that
-    /// must read cross-type data) return `[]` here and override the transaction-aware
-    /// variant below instead.
+    /// The default implementation throws an explicit unsupported-capability
+    /// error. An empty result from a concrete implementation means that the item
+    /// is intentionally absent from a sparse index.
     ///
     /// **Implementation Notes**:
     /// - For VALUE indexes: Return key like [indexSubspace]/[indexName]/[value]/[id]
@@ -195,16 +192,15 @@ extension IndexMaintainer {
         return nil
     }
 
-    /// Default: empty array — interpreted by the scrubber as "skip verification
-    /// for this maintainer". Concrete implementations should override this to
-    /// enable scrubber verification. Returning `[]` is a deliberate opt-out,
-    /// not an error condition — see the protocol requirement's docstring for
-    /// when this is appropriate.
+    /// Default: verification is unsupported until the maintainer implements the
+    /// physical expectation for its index kind.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [Bytes] {
-        return []
+        throw IndexVerificationError.expectedKeysUnsupported(
+            maintainerType: String(reflecting: Self.self)
+        )
     }
 
     /// Default: calls the non-transaction version

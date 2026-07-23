@@ -3,7 +3,11 @@
 //
 // Provides exact nearest neighbor search using brute force linear scan.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -64,7 +68,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
         if let oldItem = oldItem {
             do {
                 let oldKey = try buildIndexKey(for: oldItem)
-                transaction.clear(key: oldKey)
+                try transaction.clear(key: oldKey)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil vector was not indexed
             }
@@ -76,7 +80,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
             do {
                 let newKey = try buildIndexKey(for: newItem)
                 let value = try buildIndexValue(for: newItem)
-                transaction.setValue(value, for: newKey)
+                try transaction.setValue(value, for: newKey)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil vector is not indexed
             }
@@ -92,7 +96,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
         do {
             let indexKey = try buildIndexKey(for: item, id: id)
             let value = try buildIndexValue(for: item)
-            transaction.setValue(value, for: indexKey)
+            try transaction.setValue(value, for: indexKey)
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index: nil vector is not indexed
         }
@@ -169,8 +173,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
             } catch {
                 throw VectorIndexError.invalidStructure("Invalid Flat vector primary key")
             }
-            // Avoid pack/unpack cycle: convert Tuple to array directly
-            let primaryKey: [any TupleElement] = (0..<primaryKeyTuple.count).compactMap { primaryKeyTuple[$0] }
+            let primaryKey = try primaryKeyTuple.elements()
 
             let vector = try VectorConversion.decodeFloatArray(value, expectedCount: dimensions)
 
@@ -187,7 +190,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
     // MARK: - Private Methods
 
     /// Build index key using only primary key
-    private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> [UInt8] {
+    private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> Bytes {
         let primaryKeyTuple: Tuple
         if let providedId = id {
             primaryKeyTuple = providedId
@@ -205,12 +208,11 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
-    private func buildIndexValue(for item: Item) throws -> [UInt8] {
+    private func buildIndexValue(for item: Item) throws -> Bytes {
         // Evaluate expression using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
-        let fieldValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
+        let fieldValues = try DataAccess.evaluate(
+            item: item,
             expression: index.rootExpression
         )
 

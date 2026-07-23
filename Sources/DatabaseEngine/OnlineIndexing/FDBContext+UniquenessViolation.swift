@@ -5,7 +5,11 @@
 // during online index building. It is separated from the core FDBContext to
 // follow the extension pattern for optional features.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import StorageKit
 
@@ -210,7 +214,7 @@ extension FDBContext {
     public func clearUniquenessViolation<T: Persistable>(
         for type: T.Type,
         indexName: String,
-        valueKey: [UInt8]
+        valueKey: Bytes
     ) async throws {
         let store = try await container.store(for: type)
         guard let fdbStore = store as? FDBDataStore else {
@@ -234,7 +238,7 @@ extension FDBContext {
     public func clearUniquenessViolation<T: Persistable>(
         for type: T.Type,
         indexName: String,
-        valueKey: [UInt8],
+        valueKey: Bytes,
         partition: DirectoryPath<T>
     ) async throws {
         let store = try await container.store(for: type, path: partition)
@@ -314,7 +318,7 @@ extension FDBContext {
     public func verifyUniquenessViolationResolution<T: Persistable>(
         for type: T.Type,
         indexName: String,
-        valueKey: [UInt8]
+        valueKey: Bytes
     ) async throws -> ViolationResolution {
         let store = try await container.store(for: type)
         guard let fdbStore = store as? FDBDataStore else {
@@ -342,7 +346,7 @@ extension FDBContext {
     public func verifyUniquenessViolationResolution<T: Persistable>(
         for type: T.Type,
         indexName: String,
-        valueKey: [UInt8],
+        valueKey: Bytes,
         partition: DirectoryPath<T>
     ) async throws -> ViolationResolution {
         let store = try await container.store(for: type, path: partition)

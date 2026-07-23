@@ -1,17 +1,16 @@
 // PlanExecutor.swift
 // QueryPlanner - Query plan execution
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import StorageKit
 
 /// Errors that can occur during query plan execution
 public enum PlanExecutionError: Error, Sendable {
-    /// Aggregation operations are not yet implemented
-    /// Aggregations return computed values (COUNT, SUM, etc.) rather than records,
-    /// requiring a different return type than `[T]`
-    case aggregationNotImplemented(type: String)
-
     /// The operation is not supported
     case unsupportedOperation(String)
 }
@@ -19,8 +18,6 @@ public enum PlanExecutionError: Error, Sendable {
 extension PlanExecutionError: CustomStringConvertible {
     public var description: String {
         switch self {
-        case .aggregationNotImplemented(let type):
-            return "Aggregation '\(type)' is not implemented. Aggregation operations require a different API that returns computed values rather than records."
         case .unsupportedOperation(let message):
             return "Unsupported operation: \(message)"
         }
@@ -135,9 +132,6 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         case .spatialScan(let spatialOp):
             return try await executeSpatialScan(spatialOp)
 
-        case .aggregation(let aggOp):
-            return try await executeAggregation(aggOp)
-
         case .inUnion(let inUnionOp):
             return try await executeInUnion(inUnionOp)
 
@@ -196,7 +190,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             // Then extract IDs from filtered results
             let input = try await executeOperator(filterOp.input)
             let filtered = input.filter { evaluatePredicate(filterOp.predicate, on: $0) }
-            return Set(filtered.map { extractItemId($0) })
+            return Set(try filtered.map { try extractItemID($0) })
 
         case .sort(let sortOp):
             // Sort doesn't change which IDs are present
@@ -212,7 +206,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             if let limit = limitOp.limit {
                 result = Array(result.prefix(limit))
             }
-            return Set(result.map { extractItemId($0) })
+            return Set(try result.map { try extractItemID($0) })
 
         case .project(let projectOp):
             return try await executeOperatorIdsOnly(projectOp.input)
@@ -226,10 +220,6 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         case .spatialScan(let spatialOp):
             return try await executeSpatialScanIdsOnly(spatialOp)
 
-        case .aggregation:
-            // Aggregations don't return IDs
-            return []
-
         case .inUnion(let inUnionOp):
             return try await executeInUnionIdsOnly(inUnionOp)
 
@@ -239,14 +229,8 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     }
 
     /// Extract item ID as Tuple from a Persistable item
-    private func extractItemId(_ item: T) -> Tuple {
-        // Create a Tuple from the item's ID
-        // Persistable.ID must be convertible to TupleElement
-        if let element = item.id as? any TupleElement {
-            return Tuple(element)
-        }
-        // Fallback: use string representation (less efficient but always works)
-        return Tuple("\(item.id)")
+    private func extractItemID(_ item: T) throws -> Tuple {
+        try item.recordIdentifierTuple()
     }
 
     // MARK: - Table Scan
@@ -290,7 +274,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         let indexSubspace = typeSubspace.subspace(op.index.name)
 
         // Use IndexSearcher for index access
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
         let entries = try await searcher.search(
             query: query,
             in: indexSubspace,
@@ -340,17 +324,10 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         )
     }
 
-    /// Convert Any to TupleElement
-    ///
-    /// Uses TupleEncoder for consistent type conversion across all modules.
-    private func anyToTupleElement(_ value: Any) -> (any TupleElement)? {
-        return TupleEncoder.encodeOrNil(value)
-    }
-
     // MARK: - Index Seek
 
     private func executeIndexSeek(_ op: IndexSeekOperator<T>) async throws -> [T] {
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
 
         // Get index subspace via DirectoryLayer based on Persistable type
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
@@ -396,52 +373,23 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         let indexSubspace = typeSubspace.subspace(op.index.name)
 
         // Use IndexSearcher for index access
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
         let entries = try await searcher.search(
             query: query,
             in: indexSubspace,
             using: executionContext.storageReader
         )
 
-        // Check if we can use true index-only scan (no item fetch)
-        if op.metadata.isFullyCovering {
-            // True Index-Only Scan: Reconstruct items from index data
-            let decoder = IndexEntryDecoder<T>(metadata: op.metadata)
-            var results: [T] = []
-            var failedIds: [Tuple] = []
-
-            for entry in entries {
-                do {
-                    let item = try decoder.decode(from: entry)
-                    results.append(item)
-                } catch {
-                    // Decoding failed - collect for batch fallback fetch
-                    failedIds.append(entry.itemID)
-                }
-            }
-
-            // Batch fetch any entries that failed to decode
-            if !failedIds.isEmpty {
-                let fallbackItems = try await context.indexQueryContext.batchFetchItems(
-                    ids: failedIds,
-                    type: T.self,
-                    configuration: .default
-                )
-                results.append(contentsOf: fallbackItems)
-            }
-
-            return results
-        } else {
-            // Partial coverage - must fetch items from storage using batch fetch
-            // This path should not normally be reached if PlanEnumerator is correct,
-            // as it should only generate index-only plans for fully covering indexes
-            let ids = entries.map { $0.itemID }
-            return try await context.indexQueryContext.batchFetchItems(
-                ids: ids,
-                type: T.self,
-                configuration: .default
+        guard op.metadata.isFullyCovering else {
+            throw CanonicalIndexProjectionError.incompleteProjection(
+                entity: T.persistableType,
+                missingFields: Set(T.fieldSchemas.map(\.name))
+                    .subtracting(op.metadata.allFields)
+                    .sorted()
             )
         }
+        let decoder = try IndexEntryDecoder<T>(metadata: op.metadata)
+        return try entries.map { try decoder.decode(from: $0) }
     }
 
     // MARK: - Union
@@ -456,22 +404,20 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     /// Reference: FDB Record Layer "remote fetch" optimization pattern
     private func executeUnion(_ op: UnionOperator<T>) async throws -> [T] {
         // ID-first approach: collect IDs first, then batch fetch
-        var allIds: Set<Tuple> = []
+        var allIDs: Set<Tuple> = []
 
         for child in op.children {
-            let childIds = try await executeOperatorIdsOnly(child)
+            let childIDs = try await executeOperatorIdsOnly(child)
             if op.deduplicate {
-                allIds.formUnion(childIds)
+                allIDs.formUnion(childIDs)
             } else {
-                // For non-deduplicated union, we can't use ID-first optimization
-                // because we need to preserve duplicates - fall back to legacy approach
-                return try await executeLegacyUnion(op)
+                return try await executeDuplicatePreservingUnion(op)
             }
         }
 
         // Batch fetch only the unique records
         return try await context.indexQueryContext.batchFetchItems(
-            ids: Array(allIds),
+            ids: Array(allIDs),
             type: T.self,
             configuration: .default
         )
@@ -487,23 +433,25 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     /// **Note**: For scan-only children, this fetches each unique record once.
     /// For complex children (with filters, sorts, limits), we must execute fully
     /// to preserve correct ordering.
-    private func executeLegacyUnion(_ op: UnionOperator<T>) async throws -> [T] {
+    private func executeDuplicatePreservingUnion(
+        _ op: UnionOperator<T>
+    ) async throws -> [T] {
         // Check if all children are simple scans (can use ID-first approach)
         let allSimpleScans = op.children.allSatisfy { isSimpleScanOperator($0) }
 
         if allSimpleScans {
             // Optimized path: collect all IDs preserving order, batch fetch unique
-            var allIds: [Tuple] = []
+            var allIDs: [Tuple] = []
 
             for child in op.children {
-                let childIds = try await executeOperatorIdsOnly(child)
+                let childIDs = try await executeOperatorIdsOnly(child)
                 // Convert Set to Array (order within child doesn't matter for scans)
-                allIds.append(contentsOf: childIds)
+                allIDs.append(contentsOf: childIDs)
             }
 
             // Batch fetch all (some IDs may be duplicated across children)
             return try await context.indexQueryContext.batchFetchItems(
-                ids: allIds,
+                ids: allIDs,
                 type: T.self,
                 configuration: .default
             )
@@ -581,7 +529,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         // For table scan, we need to fetch records to get IDs
         // (unless we have a separate ID-only scan API)
         let results = try await executeTableScan(op)
-        return Set(results.map { extractItemId($0) })
+        return Set(try results.map { try extractItemID($0) })
     }
 
     /// Execute index scan returning only IDs (no record fetch)
@@ -591,7 +539,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(op.index.name)
 
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
         let entries = try await searcher.search(
             query: query,
             in: indexSubspace,
@@ -605,7 +553,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     /// Execute index seek returning only IDs (no record fetch)
     private func executeIndexSeekIdsOnly(_ op: IndexSeekOperator<T>) async throws -> Set<Tuple> {
         var ids: Set<Tuple> = []
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
 
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(op.index.name)
@@ -637,7 +585,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(op.index.name)
 
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
         let entries = try await searcher.search(
             query: query,
             in: indexSubspace,
@@ -790,63 +738,6 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         return results
     }
 
-    // MARK: - Aggregation
-
-    /// Execute an aggregation operation
-    ///
-    /// **⚠️ CURRENT LIMITATION**: This is a placeholder implementation that returns an empty array.
-    ///
-    /// Aggregation operations (COUNT, SUM, AVG, MIN, MAX) fundamentally differ from record queries:
-    /// - They return computed scalar values, not `T` records
-    /// - The return type should be something like `AggregationResult` rather than `[T]`
-    ///
-    /// **To properly implement aggregations**, consider:
-    /// 1. Create a separate `executeAggregation() -> AggregationResult` method
-    /// 2. Use a different operator type that doesn't fit in `PlanOperator<T>`
-    /// 3. Or use a type-erased result wrapper
-    ///
-    /// **Example proper implementation**:
-    /// ```swift
-    /// struct AggregationResult {
-    ///     let aggregationType: AggregationType
-    ///     let value: Any  // Int for COUNT, Double for SUM/AVG, etc.
-    ///     let groupKey: [String: Any]?  // For GROUP BY queries
-    /// }
-    ///
-    /// func executeAggregation(_ op: AggregationOperator<T>) async throws -> [AggregationResult] {
-    ///     switch op.aggregationType {
-    ///     case .count:
-    ///         let count = try await executionReader.countIndex(name: op.index.name)
-    ///         return [AggregationResult(aggregationType: .count, value: count, groupKey: nil)]
-    ///     case .sum(let field):
-    ///         // Read from pre-computed aggregation index or scan and compute
-    ///         ...
-    ///     }
-    /// }
-    /// ```
-    private func executeAggregation(_ op: AggregationOperator<T>) async throws -> [T] {
-        // Aggregation operations are not yet implemented
-        // They require a different return type (computed values vs records)
-        let typeName: String
-        switch op.aggregationType {
-        case .count:
-            typeName = "COUNT"
-        case .sum(let field):
-            typeName = "SUM(\(field))"
-        case .min(let field):
-            typeName = "MIN(\(field))"
-        case .max(let field):
-            typeName = "MAX(\(field))"
-        case .avg(let field):
-            typeName = "AVG(\(field))"
-        case .distinct(let field):
-            typeName = "DISTINCT(\(field))"
-        case .percentile(let field, let percentile):
-            typeName = "PERCENTILE(\(field), \(percentile))"
-        }
-        throw PlanExecutionError.aggregationNotImplemented(type: typeName)
-    }
-
     // MARK: - IN-Union Execution
 
     /// Execute IN-Union: parallel index seeks for each value in the IN list
@@ -863,7 +754,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(op.index.name)
 
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
 
         // Get values as TupleElements for index seeks
         let tupleElements = op.valuesAsTupleElements()
@@ -917,7 +808,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(op.index.name)
 
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
 
         // Get values as TupleElements for index seeks
         let tupleElements = op.valuesAsTupleElements()
@@ -1001,7 +892,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
 
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(op.index.name)
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
 
         let query = ScalarIndexQuery(
             start: [range.min],
@@ -1023,7 +914,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     private func executeInJoinFullScan(op: any InOperatorExecutable<T>) async throws -> [Tuple] {
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(op.index.name)
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
 
         let query = ScalarIndexQuery.all
         let entries = try await searcher.search(
@@ -1173,7 +1064,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         let indexSubspace = typeSubspace.subspace(op.index.name)
 
         // Use IndexSearcher for index access
-        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
         let entries = try await searcher.search(
             query: query,
             in: indexSubspace,

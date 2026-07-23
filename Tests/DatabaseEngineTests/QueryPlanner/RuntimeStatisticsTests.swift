@@ -10,7 +10,7 @@ import Foundation
 @testable import ScalarIndex
 @testable import Core
 
-// Re-use QPTestUser from QueryPlannerTests.swift
+// Re-use QueryPlannerUser from QueryPlannerTests.swift
 
 @Suite("RuntimeStatistics Tests", .heartbeat)
 struct RuntimeStatisticsTests {
@@ -21,7 +21,7 @@ struct RuntimeStatisticsTests {
     func testExecutionRecordErrorRatio() {
         let record = ExecutionRecord(
             planId: UUID(),
-            typeName: "QPTestUser",
+            typeName: "QueryPlannerUser",
             timestamp: Date(),
             estimatedRowCount: 100,
             actualRowCount: 50,
@@ -39,7 +39,7 @@ struct RuntimeStatisticsTests {
     func testExecutionRecordErrorRatioZeroActual() {
         let record = ExecutionRecord(
             planId: UUID(),
-            typeName: "QPTestUser",
+            typeName: "QueryPlannerUser",
             timestamp: Date(),
             estimatedRowCount: 100,
             actualRowCount: 0,
@@ -58,10 +58,10 @@ struct RuntimeStatisticsTests {
     @Test("Tracker records execution statistics")
     func testTrackerRecordsStatistics() throws {
         let tracker = RuntimeStatisticsTracker(autoUpdateStatistics: false)
-        let planner = QueryPlanner<QPTestUser>(indexes: QPTestUser.indexDescriptors)
+        let planner = QueryPlanner<QueryPlannerUser>(indexes: QueryPlannerUser.indexDescriptors)
 
-        var query = Query<QPTestUser>()
-        query = query.where(\QPTestUser.age > 18)
+        var query = Query<QueryPlannerUser>()
+        query = query.where(\QueryPlannerUser.age > 18)
 
         let plan = try planner.plan(query: query)
 
@@ -85,10 +85,10 @@ struct RuntimeStatisticsTests {
             autoUpdateStatistics: false,
             maxHistorySize: 5
         )
-        let planner = QueryPlanner<QPTestUser>(indexes: QPTestUser.indexDescriptors)
+        let planner = QueryPlanner<QueryPlannerUser>(indexes: QueryPlannerUser.indexDescriptors)
 
-        var query = Query<QPTestUser>()
-        query = query.where(\QPTestUser.age > 18)
+        var query = Query<QueryPlannerUser>()
+        query = query.where(\QueryPlannerUser.age > 18)
         let plan = try planner.plan(query: query)
 
         // Record 10 executions
@@ -107,10 +107,10 @@ struct RuntimeStatisticsTests {
     @Test("Tracker tracks index usage")
     func testTrackerTracksIndexUsage() throws {
         let tracker = RuntimeStatisticsTracker(autoUpdateStatistics: false)
-        let planner = QueryPlanner<QPTestUser>(indexes: QPTestUser.indexDescriptors)
+        let planner = QueryPlanner<QueryPlannerUser>(indexes: QueryPlannerUser.indexDescriptors)
 
-        var query = Query<QPTestUser>()
-        query = query.where(\QPTestUser.email == "test@example.com")
+        var query = Query<QueryPlannerUser>()
+        query = query.where(\QueryPlannerUser.email == "test@example.com")
         let plan = try planner.plan(query: query)
 
         // Record multiple executions
@@ -131,10 +131,10 @@ struct RuntimeStatisticsTests {
     @Test("Tracker clears history")
     func testTrackerClearsHistory() throws {
         let tracker = RuntimeStatisticsTracker(autoUpdateStatistics: false)
-        let planner = QueryPlanner<QPTestUser>(indexes: QPTestUser.indexDescriptors)
+        let planner = QueryPlanner<QueryPlannerUser>(indexes: QueryPlannerUser.indexDescriptors)
 
-        var query = Query<QPTestUser>()
-        query = query.where(\QPTestUser.age > 18)
+        var query = Query<QueryPlannerUser>()
+        query = query.where(\QueryPlannerUser.age > 18)
         let plan = try planner.plan(query: query)
 
         tracker.record(plan: plan, actualRowCount: 100, executionTime: 0.05)
@@ -160,10 +160,10 @@ struct RuntimeStatisticsTests {
     @Test("Analyze estimation accuracy with history")
     func testAnalyzeEstimationAccuracyWithData() throws {
         let tracker = RuntimeStatisticsTracker(autoUpdateStatistics: false)
-        let planner = QueryPlanner<QPTestUser>(indexes: QPTestUser.indexDescriptors)
+        let planner = QueryPlanner<QueryPlannerUser>(indexes: QueryPlannerUser.indexDescriptors)
 
-        var query = Query<QPTestUser>()
-        query = query.where(\QPTestUser.age > 18)
+        var query = Query<QueryPlannerUser>()
+        query = query.where(\QueryPlannerUser.age > 18)
         let plan = try planner.plan(query: query)
 
         // Record executions with varying accuracy
@@ -227,7 +227,7 @@ struct RuntimeStatisticsTests {
         let records = (0..<5).map { _ in
             ExecutionRecord(
                 planId: UUID(),
-                typeName: "QPTestUser",
+                typeName: "QueryPlannerUser",
                 timestamp: Date(),
                 estimatedRowCount: 100,
                 actualRowCount: 50,
@@ -251,7 +251,7 @@ struct RuntimeStatisticsTests {
         let records = (0..<10).map { _ in
             ExecutionRecord(
                 planId: UUID(),
-                typeName: "QPTestUser",
+                typeName: "QueryPlannerUser",
                 timestamp: Date(),
                 estimatedRowCount: 100,
                 actualRowCount: 10,
@@ -276,7 +276,7 @@ struct RuntimeStatisticsTests {
         let records = (0..<10).map { _ in
             ExecutionRecord(
                 planId: UUID(),
-                typeName: "QPTestUser",
+                typeName: "QueryPlannerUser",
                 timestamp: Date(),
                 estimatedRowCount: 100,
                 actualRowCount: 95, // Within 5% error
@@ -332,7 +332,7 @@ struct CollectedStatisticsProviderTests {
     @Test("Provider integrates with tracker updates")
     func testProviderIntegration() {
         let provider = CollectedStatisticsProvider()
-        provider.updateTableStats(for: QPTestUser.self, rowCount: 10000, sampleSize: 1000)
+        provider.updateTableStats(for: QueryPlannerUser.self, rowCount: 10000, sampleSize: 1000)
 
         _ = RuntimeStatisticsTracker(
             statisticsProvider: provider,
@@ -341,7 +341,7 @@ struct CollectedStatisticsProviderTests {
         )
 
         // Provider should have initial stats
-        #expect(provider.estimatedRowCount(for: QPTestUser.self) == 10000)
+        #expect(provider.estimatedRowCount(for: QueryPlannerUser.self) == 10000)
     }
 
     @Test("Provider stores and retrieves index statistics")
@@ -355,17 +355,17 @@ struct CollectedStatisticsProviderTests {
         provider.updateIndexStats(stats2)
 
         // Create IndexDescriptors to query the stored stats
-        let emailKind = ScalarIndexKind<QPTestUser>(fields: [\.email])
+        let emailKind = ScalarIndexKind<QueryPlannerUser>(fields: [\.email])
         let emailDescriptor = IndexDescriptor(
             name: "idx_email",
-            keyPaths: [\QPTestUser.email],
+            keyPaths: [\QueryPlannerUser.email],
             kind: emailKind
         )
 
-        let ageKind = ScalarIndexKind<QPTestUser>(fields: [\.age])
+        let ageKind = ScalarIndexKind<QueryPlannerUser>(fields: [\.age])
         let ageDescriptor = IndexDescriptor(
             name: "idx_age",
-            keyPaths: [\QPTestUser.age],
+            keyPaths: [\QueryPlannerUser.age],
             kind: ageKind
         )
 
@@ -382,10 +382,10 @@ struct CollectedStatisticsProviderTests {
         let initialStats = IndexStatistics(indexName: "idx_email", entryCount: 1000, avgEntriesPerKey: 1.0)
         provider.updateIndexStats(initialStats)
 
-        let kind = ScalarIndexKind<QPTestUser>(fields: [\.email])
+        let kind = ScalarIndexKind<QueryPlannerUser>(fields: [\.email])
         let descriptor = IndexDescriptor(
             name: "idx_email",
-            keyPaths: [\QPTestUser.email],
+            keyPaths: [\QueryPlannerUser.email],
             kind: kind
         )
 

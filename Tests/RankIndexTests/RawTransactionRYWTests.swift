@@ -18,7 +18,7 @@ import TestSupport
 struct RawTransactionRYWTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     /// Within a single transaction, clear followed by setValue on the same key
@@ -26,30 +26,30 @@ struct RawTransactionRYWTests {
     /// the new value. After commit, a fresh transaction also sees the new value.
     @Test("Clear then setValue on same key — RYW + cross-commit visibility")
     func clearThenSetSameKey() async throws {
-        let engine = try await FDBTestSetup.shared.makeEngine()
+        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "ryw", String(testId)).pack())
         let key = subspace.pack(Tuple("k"))
-        let v1: [UInt8] = [0x01, 0x02, 0x03]
-        let v2: [UInt8] = [0xAA, 0xBB, 0xCC]
+        let v1 = Bytes([0x01, 0x02, 0x03])
+        let v2 = Bytes([0xAA, 0xBB, 0xCC])
 
         // Seed: write V1 and commit
         try await engine.withTransaction { transaction in
-            transaction.setValue(v1, for: key)
+            try transaction.setValue(v1, for: key)
         }
 
         // In a single transaction: clear, setValue, read. Then commit.
-        let readWithinTx = try await engine.withTransaction { transaction -> [UInt8]? in
-            transaction.clear(key: key)
-            transaction.setValue(v2, for: key)
+        let readWithinTx = try await engine.withTransaction { transaction -> Bytes? in
+            try transaction.clear(key: key)
+            try transaction.setValue(v2, for: key)
             return try await transaction.getValue(for: key, snapshot: false)
         }
 
         #expect(readWithinTx == v2, "RYW must return new value inside same tx (got \(String(describing: readWithinTx)))")
 
         // Fresh transaction: read after commit
-        let readAfterCommit = try await engine.withTransaction { transaction -> [UInt8]? in
+        let readAfterCommit = try await engine.withTransaction { transaction -> Bytes? in
             try await transaction.getValue(for: key, snapshot: false)
         }
 
@@ -58,7 +58,7 @@ struct RawTransactionRYWTests {
         // Cleanup
         try await engine.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -67,35 +67,35 @@ struct RawTransactionRYWTests {
     /// where the old score key is cleared and a new (different) score key is set.
     @Test("Clear key A + setValue key B in same tx — scan shows only B")
     func clearOneSetAnother() async throws {
-        let engine = try await FDBTestSetup.shared.makeEngine()
+        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "ryw", String(testId)).pack())
         let keyA = subspace.pack(Tuple("A"))
         let keyB = subspace.pack(Tuple("B"))
-        let v1: [UInt8] = [0x11]
-        let v2: [UInt8] = [0x22]
+        let v1 = Bytes([0x11])
+        let v2 = Bytes([0x22])
 
         // Seed: write A=V1
         try await engine.withTransaction { transaction in
-            transaction.setValue(v1, for: keyA)
+            try transaction.setValue(v1, for: keyA)
         }
 
         // In single tx: clear A, set B=V2
         try await engine.withTransaction { transaction in
-            transaction.clear(key: keyA)
-            transaction.setValue(v2, for: keyB)
+            try transaction.clear(key: keyA)
+            try transaction.setValue(v2, for: keyB)
         }
 
         // Fresh tx: range scan entire subspace
-        let collected: [([UInt8], [UInt8])] = try await engine.withTransaction { transaction -> [([UInt8], [UInt8])] in
+        let collected: [(Bytes, Bytes)] = try await engine.withTransaction { transaction -> [(Bytes, Bytes)] in
             let (begin, end) = subspace.range()
             let seq = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 snapshot: false
             )
-            var out: [([UInt8], [UInt8])] = []
+            var out: [(Bytes, Bytes)] = []
             for (k, v) in seq {
                 out.append((k, v))
             }
@@ -111,7 +111,7 @@ struct RawTransactionRYWTests {
         // Cleanup
         try await engine.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }

@@ -5,7 +5,7 @@
 // FDBContextError.preconditionFailed instead of silently falling back
 // (per CLAUDE.md "silent fallback 禁止").
 
-import Foundation
+import DatabaseValue
 
 /// Precondition that a write operation asserts about the stored row at commit time.
 ///
@@ -31,10 +31,10 @@ public enum WritePrecondition: Sendable, Equatable {
     case exists
 
     /// The stored row's version token must equal the given bytes.
-    case matchesStored(version: [UInt8])
+    case matchesStored(version: DatabaseBytes)
 
     /// Either the key is absent, or its version token matches the given bytes.
-    case matchesStoredOrAbsent(version: [UInt8])
+    case matchesStoredOrAbsent(version: DatabaseBytes)
 
     /// Whether evaluating this precondition requires reading the row from
     /// storage first. `.none` skips the read entirely.

@@ -4,7 +4,11 @@
 // Provides data structures for PageRank, Community Detection,
 // and other graph algorithm results.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 // MARK: - PageRank
 
@@ -42,7 +46,7 @@ public struct PageRankResult: Sendable {
     ///
     /// All scores sum to approximately 1.0 (may vary slightly due to
     /// floating-point precision and dangling node handling).
-    public let scores: [String: Double]
+    public let scores: [GraphIdentity: Double]
 
     /// Number of iterations until convergence (or max iterations)
     public let iterations: Int
@@ -92,13 +96,13 @@ public struct PageRankResult: Sendable {
     /// - Parameter threshold: Convergence threshold used in computation
     /// - Returns: true if convergenceDelta < threshold
     public func hasConverged(threshold: Double = 1e-6) -> Bool {
-        convergenceDelta < threshold
+        convergenceDelta <= threshold
     }
 
     // MARK: - Initialization
 
     public init(
-        scores: [String: Double],
+        scores: [GraphIdentity: Double],
         iterations: Int,
         convergenceDelta: Double,
         durationNs: UInt64,
@@ -119,7 +123,7 @@ public struct PageRankResult: Sendable {
     ///
     /// - Parameter k: Number of nodes to return
     /// - Returns: Array of (nodeID, score) tuples sorted by score descending
-    public func topK(_ k: Int) -> [(nodeID: String, score: Double)] {
+    public func topK(_ k: Int) -> [(nodeID: GraphIdentity, score: Double)] {
         scores
             .sorted { $0.value > $1.value }
             .prefix(k)
@@ -130,7 +134,7 @@ public struct PageRankResult: Sendable {
     ///
     /// - Parameter k: Number of nodes to return
     /// - Returns: Array of (nodeID, score) tuples sorted by score ascending
-    public func bottomK(_ k: Int) -> [(nodeID: String, score: Double)] {
+    public func bottomK(_ k: Int) -> [(nodeID: GraphIdentity, score: Double)] {
         scores
             .sorted { $0.value < $1.value }
             .prefix(k)
@@ -141,7 +145,7 @@ public struct PageRankResult: Sendable {
     ///
     /// - Parameter nodeID: Node ID to look up
     /// - Returns: PageRank score, or nil if node not in results
-    public func score(for nodeID: String) -> Double? {
+    public func score(for nodeID: GraphIdentity) -> Double? {
         scores[nodeID]
     }
 
@@ -149,7 +153,7 @@ public struct PageRankResult: Sendable {
     ///
     /// - Parameter nodeID: Node ID to look up
     /// - Returns: Rank (1 = highest score), or nil if node not in results
-    public func rank(for nodeID: String) -> Int? {
+    public func rank(for nodeID: GraphIdentity) -> Int? {
         guard scores[nodeID] != nil else { return nil }
         let sorted = scores.sorted { $0.value > $1.value }
         for (index, item) in sorted.enumerated() {
@@ -164,7 +168,7 @@ public struct PageRankResult: Sendable {
     ///
     /// - Parameter threshold: Minimum score threshold
     /// - Returns: Array of (nodeID, score) tuples
-    public func nodesAbove(threshold: Double) -> [(nodeID: String, score: Double)] {
+    public func nodesAbove(threshold: Double) -> [(nodeID: GraphIdentity, score: Double)] {
         scores
             .filter { $0.value >= threshold }
             .sorted { $0.value > $1.value }
@@ -309,12 +313,12 @@ public struct CommunityResult: Sendable {
     ///
     /// Each node is assigned to exactly one community.
     /// Community labels are strings (typically derived from node IDs).
-    public let assignments: [String: String]
+    public let assignments: [GraphIdentity: GraphIdentity]
 
     /// Community label to member node IDs mapping
     ///
     /// Inverse of `assignments` for efficient community lookups.
-    public let communities: [String: [String]]
+    public let communities: [GraphIdentity: [GraphIdentity]]
 
     /// Number of iterations until convergence (or max iterations)
     public let iterations: Int
@@ -330,6 +334,12 @@ public struct CommunityResult: Sendable {
     /// **Reference**: Newman, M.E.J., "Modularity and community structure
     /// in networks" (2006)
     public let modularity: Double?
+
+    /// Whether label propagation converged before reaching its iteration bound.
+    public let isComplete: Bool
+
+    /// Limit that stopped the algorithm, when incomplete.
+    public let limitReason: LimitReason?
 
     // MARK: - Computed Properties
 
@@ -367,33 +377,41 @@ public struct CommunityResult: Sendable {
     // MARK: - Initialization
 
     public init(
-        assignments: [String: String],
-        communities: [String: [String]],
+        assignments: [GraphIdentity: GraphIdentity],
+        communities: [GraphIdentity: [GraphIdentity]],
         iterations: Int,
         durationNs: UInt64,
-        modularity: Double? = nil
+        modularity: Double? = nil,
+        isComplete: Bool = true,
+        limitReason: LimitReason? = nil
     ) {
         self.assignments = assignments
         self.communities = communities
         self.iterations = iterations
         self.durationNs = durationNs
         self.modularity = modularity
+        self.isComplete = isComplete
+        self.limitReason = limitReason
     }
 
     /// Create from assignments only (computes communities mapping)
     public init(
-        assignments: [String: String],
+        assignments: [GraphIdentity: GraphIdentity],
         iterations: Int,
         durationNs: UInt64,
-        modularity: Double? = nil
+        modularity: Double? = nil,
+        isComplete: Bool = true,
+        limitReason: LimitReason? = nil
     ) {
         self.assignments = assignments
         self.iterations = iterations
         self.durationNs = durationNs
         self.modularity = modularity
+        self.isComplete = isComplete
+        self.limitReason = limitReason
 
         // Build communities from assignments
-        var communitiesBuilder: [String: [String]] = [:]
+        var communitiesBuilder: [GraphIdentity: [GraphIdentity]] = [:]
         for (nodeID, communityLabel) in assignments {
             communitiesBuilder[communityLabel, default: []].append(nodeID)
         }
@@ -406,7 +424,7 @@ public struct CommunityResult: Sendable {
     ///
     /// - Parameter nodeID: Node ID to look up
     /// - Returns: Community label, or nil if node not in results
-    public func community(for nodeID: String) -> String? {
+    public func community(for nodeID: GraphIdentity) -> GraphIdentity? {
         assignments[nodeID]
     }
 
@@ -414,7 +432,7 @@ public struct CommunityResult: Sendable {
     ///
     /// - Parameter nodeID: Node ID to look up
     /// - Returns: Array of node IDs in the same community (including the node itself)
-    public func communityMembers(for nodeID: String) -> [String] {
+    public func communityMembers(for nodeID: GraphIdentity) -> [GraphIdentity] {
         guard let label = assignments[nodeID] else { return [] }
         return communities[label] ?? []
     }
@@ -423,7 +441,7 @@ public struct CommunityResult: Sendable {
     ///
     /// - Parameter label: Community label
     /// - Returns: Array of member node IDs
-    public func members(ofCommunity label: String) -> [String] {
+    public func members(ofCommunity label: GraphIdentity) -> [GraphIdentity] {
         communities[label] ?? []
     }
 
@@ -431,7 +449,7 @@ public struct CommunityResult: Sendable {
     ///
     /// - Parameter label: Community label
     /// - Returns: Number of members, or 0 if community not found
-    public func size(ofCommunity label: String) -> Int {
+    public func size(ofCommunity label: GraphIdentity) -> Int {
         communities[label]?.count ?? 0
     }
 
@@ -441,7 +459,7 @@ public struct CommunityResult: Sendable {
     ///   - nodeA: First node ID
     ///   - nodeB: Second node ID
     /// - Returns: true if both nodes are in the same community
-    public func inSameCommunity(_ nodeA: String, _ nodeB: String) -> Bool {
+    public func inSameCommunity(_ nodeA: GraphIdentity, _ nodeB: GraphIdentity) -> Bool {
         guard let labelA = assignments[nodeA],
               let labelB = assignments[nodeB] else {
             return false
@@ -453,7 +471,7 @@ public struct CommunityResult: Sendable {
     ///
     /// - Parameter k: Number of communities to return
     /// - Returns: Array of (label, memberCount) tuples sorted by size descending
-    public func largestCommunities(k: Int) -> [(label: String, memberCount: Int)] {
+    public func largestCommunities(k: Int) -> [(label: GraphIdentity, memberCount: Int)] {
         communities
             .map { ($0.key, $0.value.count) }
             .sorted { $0.1 > $1.1 }
@@ -465,7 +483,7 @@ public struct CommunityResult: Sendable {
     ///
     /// - Parameter minSize: Minimum community size
     /// - Returns: Dictionary of community label to members
-    public func communitiesWithMinSize(_ minSize: Int) -> [String: [String]] {
+    public func communitiesWithMinSize(_ minSize: Int) -> [GraphIdentity: [GraphIdentity]] {
         communities.filter { $0.value.count >= minSize }
     }
 

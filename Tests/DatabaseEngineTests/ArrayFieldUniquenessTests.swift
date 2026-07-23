@@ -7,6 +7,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import Core
 
 /// Tests for Array Field Uniqueness Enforcement
@@ -79,8 +80,8 @@ struct ArrayFieldUniquenessTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema(
             [TaggedDocument.self, UniqueEmail.self, UUIDTaggedDocument.self, Int64TaggedDocument.self],
@@ -90,53 +91,54 @@ struct ArrayFieldUniquenessTests {
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
 
         // Make indexes readable via store
         let tagStore = try await container.store(for: TaggedDocument.self)
         if let fdbStore = tagStore as? FDBDataStore {
-            let state = try await fdbStore.indexStateManager.state(of: "TaggedDocument_tags")
+            let state = try await fdbStore.indexLifecycleStore.state(of: "TaggedDocument_tags")
             if state != .readable {
                 if state == .disabled {
-                    try await fdbStore.indexStateManager.enable("TaggedDocument_tags")
+                    try await fdbStore.indexLifecycleStore.enable("TaggedDocument_tags")
                 }
-                try await fdbStore.indexStateManager.makeReadable("TaggedDocument_tags")
+                try await fdbStore.indexLifecycleStore.makeReadable("TaggedDocument_tags")
             }
         }
 
         let emailStore = try await container.store(for: UniqueEmail.self)
         if let fdbStore = emailStore as? FDBDataStore {
-            let state = try await fdbStore.indexStateManager.state(of: "UniqueEmail_email")
+            let state = try await fdbStore.indexLifecycleStore.state(of: "UniqueEmail_email")
             if state != .readable {
                 if state == .disabled {
-                    try await fdbStore.indexStateManager.enable("UniqueEmail_email")
+                    try await fdbStore.indexLifecycleStore.enable("UniqueEmail_email")
                 }
-                try await fdbStore.indexStateManager.makeReadable("UniqueEmail_email")
+                try await fdbStore.indexLifecycleStore.makeReadable("UniqueEmail_email")
             }
         }
 
         // UUID ID model index
         let uuidStore = try await container.store(for: UUIDTaggedDocument.self)
         if let fdbStore = uuidStore as? FDBDataStore {
-            let state = try await fdbStore.indexStateManager.state(of: "UUIDTaggedDocument_tags")
+            let state = try await fdbStore.indexLifecycleStore.state(of: "UUIDTaggedDocument_tags")
             if state != .readable {
                 if state == .disabled {
-                    try await fdbStore.indexStateManager.enable("UUIDTaggedDocument_tags")
+                    try await fdbStore.indexLifecycleStore.enable("UUIDTaggedDocument_tags")
                 }
-                try await fdbStore.indexStateManager.makeReadable("UUIDTaggedDocument_tags")
+                try await fdbStore.indexLifecycleStore.makeReadable("UUIDTaggedDocument_tags")
             }
         }
 
         // Int64 ID model index
         let int64Store = try await container.store(for: Int64TaggedDocument.self)
         if let fdbStore = int64Store as? FDBDataStore {
-            let state = try await fdbStore.indexStateManager.state(of: "Int64TaggedDocument_tags")
+            let state = try await fdbStore.indexLifecycleStore.state(of: "Int64TaggedDocument_tags")
             if state != .readable {
                 if state == .disabled {
-                    try await fdbStore.indexStateManager.enable("Int64TaggedDocument_tags")
+                    try await fdbStore.indexLifecycleStore.enable("Int64TaggedDocument_tags")
                 }
-                try await fdbStore.indexStateManager.makeReadable("Int64TaggedDocument_tags")
+                try await fdbStore.indexLifecycleStore.makeReadable("Int64TaggedDocument_tags")
             }
         }
 

@@ -4,7 +4,12 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseMath
 
 /// Parameters for IVF (Inverted File Index) algorithm
 ///
@@ -128,17 +133,17 @@ public struct IVFParameters: Sendable, Codable, Hashable {
     public static func auto(estimatedVectorCount n: Int) -> IVFParameters {
         let nlist: Int
         if n < 10_000 {
-            nlist = max(16, min(64, Int(sqrt(Double(n)))))
+            nlist = max(16, min(64, Int(DatabaseMath.squareRoot(Double(n)))))
         } else if n < 100_000 {
-            nlist = max(64, min(256, Int(sqrt(Double(n)) * 2)))
+            nlist = max(64, min(256, Int(DatabaseMath.squareRoot(Double(n)) * 2)))
         } else if n < 1_000_000 {
-            nlist = max(256, min(1024, Int(sqrt(Double(n)) * 4)))
+            nlist = max(256, min(1024, Int(DatabaseMath.squareRoot(Double(n)) * 4)))
         } else {
-            nlist = min(4096, Int(sqrt(Double(n)) * 4))
+            nlist = min(4096, Int(DatabaseMath.squareRoot(Double(n)) * 4))
         }
 
         // nprobe for ~90% recall
-        let nprobe = max(1, Int(sqrt(Double(nlist))))
+        let nprobe = max(1, Int(DatabaseMath.squareRoot(Double(nlist))))
 
         return IVFParameters(nlist: nlist, nprobe: nprobe)
     }

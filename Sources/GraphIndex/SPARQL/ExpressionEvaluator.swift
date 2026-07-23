@@ -1,31 +1,36 @@
 // ExpressionEvaluator.swift
 // GraphIndex - Evaluates QueryIR.Expression against VariableBinding
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import Crypto
+import DatabaseDigest
 import QueryIR
 import Core
+import DatabaseValue
 import DatabaseEngine
+import Graph
+import OntologyIndex
 
 /// Evaluates QueryIR.Expression against a VariableBinding (SPARQL solution row).
 ///
-/// This bridges QueryIR's unified expression representation to GraphIndex's
-/// VariableBinding-based evaluation. Used for FILTER clause evaluation
+/// Applies VariableBinding-based evaluation to QueryIR's unified expressions.
+/// Used for FILTER clause evaluation
 /// when expressions are represented as QueryIR types rather than FilterExpression.
 ///
-/// Follows SPARQL §17.2 Effective Boolean Value semantics:
-/// - Errors in filter expressions evaluate to `false` (not thrown)
-/// - Null in comparisons yields `false`
-/// - Type promotion for numeric comparisons
+/// Follows SPARQL §17.2 Effective Boolean Value and expression-error semantics.
+/// Local SPARQL expression errors become `false` only at a FILTER boundary.
+/// Resource exhaustion, unsupported expressions, and runtime failures propagate.
 public struct ExpressionEvaluator: Sendable {
 
     private init() {}
 
-    /// Normalize a QueryIR variable name to VariableBinding key format ("?"-prefixed).
-    ///
-    /// QueryIR.Variable strips the "?" prefix during init, but VariableBinding
-    /// keys use "?"-prefixed names (set by GraphPatternConverter.convertTerm).
+    /// Convert a canonical sigil-free QueryIR variable into a binding key.
     private static func bindingKey(_ v: QueryIR.Variable) -> String {
-        v.name.hasPrefix("?") ? v.name : "?\(v.name)"
+        "?\(v.name)"
     }
 
     // MARK: - Boolean Evaluation (FILTER)
@@ -37,186 +42,250 @@ public struct ExpressionEvaluator: Sendable {
     public static func evaluateAsBoolean(
         _ expr: QueryIR.Expression,
         binding: VariableBinding
-    ) -> Bool {
-        guard let value = evaluate(expr, binding: binding) else {
+    ) throws -> Bool {
+        do {
+            return try effectiveBooleanValue(
+                evaluate(expr, binding: binding)
+            )
+        } catch let error as SPARQLExpressionEvaluationError
+            where error.isSPARQLEvaluationError {
             return false
         }
-        return effectiveBooleanValue(value)
+    }
+
+    /// Evaluates an ORDER BY expression. SPARQL expression errors produce an
+    /// unbound sort key; resource and runtime failures remain thrown.
+    public static func evaluateForOrdering(
+        _ expr: QueryIR.Expression,
+        binding: VariableBinding
+    ) throws -> FieldValue? {
+        do {
+            return try evaluate(expr, binding: binding)
+        } catch let error as SPARQLExpressionEvaluationError
+            where error.isSPARQLEvaluationError {
+            return nil
+        }
     }
 
     // MARK: - General Evaluation
 
     /// Evaluate an expression to a FieldValue.
     ///
-    /// Returns `nil` on evaluation error (type mismatch, unbound variable, etc.).
+    /// Expression errors are typed and never collapsed into an absent value.
     public static func evaluate(
         _ expr: QueryIR.Expression,
         binding: VariableBinding
-    ) -> FieldValue? {
+    ) throws -> FieldValue {
         switch expr {
         // Identifiers
         case .variable(let v):
-            return binding[bindingKey(v)]
+            let key = bindingKey(v)
+            guard let value = binding[key] else {
+                throw SPARQLExpressionEvaluationError.unboundVariable(key)
+            }
+            return value
         case .column(let col):
-            // Treat column references as variable lookups in SPARQL context
-            return binding[col.column]
+            guard let value = binding[col.column] else {
+                throw SPARQLExpressionEvaluationError.unboundVariable(col.column)
+            }
+            return value
         case .literal(let lit):
-            return lit.toSPARQLFieldValue()
+            do {
+                return try lit.toSPARQLFieldValue()
+            } catch let error as SPARQLLiteralConversionError {
+                throw mapLiteralConversionError(error)
+            }
 
         // Arithmetic
         case .add(let lhs, let rhs):
-            return numericBinary(lhs, rhs, binding: binding, op: +)
+            return try numericBinary(lhs, rhs, binding: binding, operation: .add)
         case .subtract(let lhs, let rhs):
-            return numericBinary(lhs, rhs, binding: binding, op: -)
+            return try numericBinary(lhs, rhs, binding: binding, operation: .subtract)
         case .multiply(let lhs, let rhs):
-            return numericBinary(lhs, rhs, binding: binding, op: *)
+            return try numericBinary(lhs, rhs, binding: binding, operation: .multiply)
         case .divide(let lhs, let rhs):
-            guard let r = evaluateAsDouble(rhs, binding: binding), r != 0 else { return nil }
-            return numericBinary(lhs, rhs, binding: binding, op: /)
+            return try numericBinary(lhs, rhs, binding: binding, operation: .divide)
         case .modulo(let lhs, let rhs):
-            guard let l = evaluateAsInt64(lhs, binding: binding),
-                  let r = evaluateAsInt64(rhs, binding: binding), r != 0 else { return nil }
-            return .int64(l % r)
+            return try numericBinary(lhs, rhs, binding: binding, operation: .modulo)
         case .negate(let inner):
-            guard let val = evaluate(inner, binding: binding) else { return nil }
-            switch val {
-            case .int64(let v): return .int64(-v)
-            case .double(let v): return .double(-v)
-            default: return nil
+            let value = try evaluate(inner, binding: binding)
+            guard let numeric = SPARQLNumericValue(value) else {
+                throw typeError("unary negation requires a numeric operand")
+            }
+            do {
+                return try numeric.negated().fieldValue()
+            } catch let error {
+                throw mapNumericError(error)
             }
 
         // Comparisons → Bool
         case .equal(let lhs, let rhs):
-            return boolResult(compareValues(lhs, rhs, binding: binding) == .orderedSame)
+            return try booleanValue(equalValues(lhs, rhs, binding: binding))
         case .notEqual(let lhs, let rhs):
-            return boolResult(compareValues(lhs, rhs, binding: binding) != .orderedSame)
+            return try booleanValue(!equalValues(lhs, rhs, binding: binding))
         case .lessThan(let lhs, let rhs):
-            return boolResult(compareValues(lhs, rhs, binding: binding) == .orderedAscending)
+            let comparison = try compareValues(lhs, rhs, binding: binding)
+            return try booleanValue(comparison == .orderedAscending)
         case .lessThanOrEqual(let lhs, let rhs):
-            guard let cmp = compareValues(lhs, rhs, binding: binding) else { return nil }
-            return boolResult(cmp == .orderedAscending || cmp == .orderedSame)
+            let comparison = try compareValues(lhs, rhs, binding: binding)
+            return try booleanValue(
+                comparison == .orderedAscending || comparison == .orderedSame
+            )
         case .greaterThan(let lhs, let rhs):
-            return boolResult(compareValues(lhs, rhs, binding: binding) == .orderedDescending)
+            let comparison = try compareValues(lhs, rhs, binding: binding)
+            return try booleanValue(comparison == .orderedDescending)
         case .greaterThanOrEqual(let lhs, let rhs):
-            guard let cmp = compareValues(lhs, rhs, binding: binding) else { return nil }
-            return boolResult(cmp == .orderedDescending || cmp == .orderedSame)
+            let comparison = try compareValues(lhs, rhs, binding: binding)
+            return try booleanValue(
+                comparison == .orderedDescending || comparison == .orderedSame
+            )
 
         // Logical
         case .and(let lhs, let rhs):
-            let left = evaluateAsBoolean(lhs, binding: binding)
-            let right = evaluateAsBoolean(rhs, binding: binding)
-            return .bool(left && right)
+            return try evaluateLogicalAnd(lhs, rhs, binding: binding)
         case .or(let lhs, let rhs):
-            let left = evaluateAsBoolean(lhs, binding: binding)
-            let right = evaluateAsBoolean(rhs, binding: binding)
-            return .bool(left || right)
+            return try evaluateLogicalOr(lhs, rhs, binding: binding)
         case .not(let inner):
-            return .bool(!evaluateAsBoolean(inner, binding: binding))
+            return try booleanValue(
+                !effectiveBooleanValue(evaluate(inner, binding: binding))
+            )
 
         // Null / Bound checks
         case .isNull(let inner):
-            return .bool(evaluate(inner, binding: binding) == nil || evaluate(inner, binding: binding) == .null)
+            return try booleanValue(evaluate(inner, binding: binding) == .null)
         case .isNotNull(let inner):
-            guard let val = evaluate(inner, binding: binding) else { return .bool(false) }
-            return .bool(val != .null)
+            return try booleanValue(evaluate(inner, binding: binding) != .null)
         case .bound(let v):
-            return .bool(binding.isBound(bindingKey(v)))
+            return try booleanValue(binding.isBound(bindingKey(v)))
 
         // Pattern matching
         case .regex(let inner, let pattern, let flags):
-            guard let str = evaluateAsString(inner, binding: binding) else { return nil }
-            return .bool(matchRegex(str, pattern: pattern, flags: flags))
+            let string = try evaluateAsString(inner, binding: binding)
+            return try booleanValue(
+                matchRegex(string, pattern: pattern, flags: flags)
+            )
         case .like(let inner, let pattern):
-            guard let str = evaluateAsString(inner, binding: binding) else { return nil }
-            let regex = likeToRegex(pattern)
-            return .bool(matchRegex(str, pattern: regex, flags: nil))
+            let string = try evaluateAsString(inner, binding: binding)
+            let regex = try likeToRegex(pattern)
+            return try booleanValue(
+                matchRegex(string, pattern: regex, flags: nil)
+            )
 
         // IN list
         case .inList(let inner, let values):
-            guard let val = evaluate(inner, binding: binding) else { return nil }
-            for v in values {
-                if let candidate = evaluate(v, binding: binding),
-                   val.isEqual(to: candidate) {
-                    return .bool(true)
-                }
-            }
-            return .bool(false)
+            return try evaluateInList(
+                inner,
+                values: values,
+                binding: binding,
+                negated: false
+            )
 
         // NOT IN list
         case .notInList(let inner, let values):
-            guard let val = evaluate(inner, binding: binding) else { return nil }
-            for v in values {
-                if let candidate = evaluate(v, binding: binding),
-                   val.isEqual(to: candidate) {
-                    return .bool(false)
-                }
-            }
-            return .bool(true)
+            return try evaluateInList(
+                inner,
+                values: values,
+                binding: binding,
+                negated: true
+            )
 
         // Functions
         case .function(let call):
-            return evaluateFunction(call, binding: binding)
+            return try evaluateFunction(call, binding: binding)
 
         // Conditional
         case .caseWhen(let cases, let elseResult):
             for pair in cases {
-                if evaluateAsBoolean(pair.condition, binding: binding) {
-                    return evaluate(pair.result, binding: binding)
+                let condition = try effectiveBooleanValue(
+                    evaluate(pair.condition, binding: binding)
+                )
+                if condition {
+                    return try evaluate(pair.result, binding: binding)
                 }
             }
             if let elseExpr = elseResult {
-                return evaluate(elseExpr, binding: binding)
+                return try evaluate(elseExpr, binding: binding)
             }
             return .null
 
         case .coalesce(let exprs):
             for expr in exprs {
-                if let val = evaluate(expr, binding: binding), val != .null {
-                    return val
+                do {
+                    let value = try evaluate(expr, binding: binding)
+                    if value != .null { return value }
+                } catch let error as SPARQLExpressionEvaluationError
+                    where error.isSPARQLEvaluationError {
+                    continue
                 }
             }
-            return .null
+            throw typeError("COALESCE has no expression without an error")
 
         case .nullIf(let lhs, let rhs):
-            guard let l = evaluate(lhs, binding: binding),
-                  let r = evaluate(rhs, binding: binding) else { return nil }
-            return l.isEqual(to: r) ? .null : l
+            let left = try evaluate(lhs, binding: binding)
+            let right = try evaluate(rhs, binding: binding)
+            return try equalFieldValues(left, right) ? .null : left
 
         // RDF-star operations (W3C RDF-star / SPARQL-star)
         case .triple(let s, let p, let o):
-            guard let sv = evaluate(s, binding: binding),
-                  let pv = evaluate(p, binding: binding),
-                  let ov = evaluate(o, binding: binding) else { return nil }
-            return .string(QuotedTripleEncoding.encode(subject: sv, predicate: pv, object: ov))
+            let sv = try evaluate(s, binding: binding)
+            let pv = try evaluate(p, binding: binding)
+            let ov = try evaluate(o, binding: binding)
+            guard
+                  case .rdfTerm(let subject) = sv,
+                  case .rdfTerm(let predicate) = pv,
+                  case .rdfTerm(let object) = ov,
+                  subject.isRDFSubject,
+                  predicate.isRDFPredicate,
+                  object.isRDFObject else {
+                throw typeError("TRIPLE requires RDF subject, predicate, and object terms")
+            }
+            return .rdfTerm(
+                .tripleTerm(
+                    subject: subject,
+                    predicate: predicate,
+                    object: object
+                )
+            )
 
         case .isTriple(let e):
-            guard let val = evaluate(e, binding: binding) else { return nil }
-            if case .string(let s) = val {
-                return .bool(QuotedTripleEncoding.isQuotedTriple(s))
+            let value = try evaluate(e, binding: binding)
+            guard case .rdfTerm(.tripleTerm) = value else {
+                return try booleanValue(false)
             }
-            return .bool(false)
+            return try booleanValue(true)
 
         case .subject(let e):
-            guard let val = evaluate(e, binding: binding),
-                  case .string(let s) = val,
-                  let components = QuotedTripleEncoding.decode(s) else { return nil }
-            return components.subject
+            let value = try evaluate(e, binding: binding)
+            guard case .rdfTerm(.tripleTerm(let subject, _, _)) = value else {
+                throw typeError("SUBJECT requires an RDF triple term")
+            }
+            return .rdfTerm(subject)
 
         case .predicate(let e):
-            guard let val = evaluate(e, binding: binding),
-                  case .string(let s) = val,
-                  let components = QuotedTripleEncoding.decode(s) else { return nil }
-            return components.predicate
+            let value = try evaluate(e, binding: binding)
+            guard case .rdfTerm(.tripleTerm(_, let predicate, _)) = value else {
+                throw typeError("PREDICATE requires an RDF triple term")
+            }
+            return .rdfTerm(predicate)
 
         case .object(let e):
-            guard let val = evaluate(e, binding: binding),
-                  case .string(let s) = val,
-                  let components = QuotedTripleEncoding.decode(s) else { return nil }
-            return components.object
+            let value = try evaluate(e, binding: binding)
+            guard case .rdfTerm(.tripleTerm(_, _, let object)) = value else {
+                throw typeError("OBJECT requires an RDF triple term")
+            }
+            return .rdfTerm(object)
 
-        // Unsupported (subqueries, aggregates, cast, etc.)
-        default:
-            return nil
+        case .between(let value, let low, let high):
+            let lower = try compareValues(value, low, binding: binding)
+            let upper = try compareValues(value, high, binding: binding)
+            return try booleanValue(
+                lower != .orderedAscending && upper != .orderedDescending
+            )
+
+        case .parameter, .inSubquery, .aggregate, .cast, .subquery, .exists:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                String(describing: expr)
+            )
         }
     }
 
@@ -225,196 +294,498 @@ public struct ExpressionEvaluator: Sendable {
     private static func evaluateFunction(
         _ call: QueryIR.FunctionCall,
         binding: VariableBinding
-    ) -> FieldValue? {
-        let name = call.name.uppercased()
+    ) throws -> FieldValue {
         let args = call.arguments
+        let identifier: SPARQLFunctionIdentifier
+        do {
+            identifier = try SPARQLFunctionIdentifier.resolve(call.name)
+        } catch {
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "function \(call.name)"
+            )
+        }
+
+        switch identifier {
+        case .extensionFunction:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "extension function \(call.name) requires a runtime resolver"
+            )
+        case .datatypeConstructor(let datatype):
+            try requireArgumentCount(
+                args,
+                count: 1,
+                function: datatype.rawValue
+            )
+            return try SPARQLDatatypeConstructor.evaluate(
+                identifier: datatype,
+                argument: evaluate(args[0], binding: binding)
+            )
+        case .builtIn(let builtIn):
+            return try evaluateBuiltIn(
+                builtIn,
+                arguments: args,
+                binding: binding
+            )
+        }
+    }
+
+    private static func evaluateBuiltIn(
+        _ builtIn: SPARQLFunctionIdentifier.BuiltIn,
+        arguments args: [QueryIR.Expression],
+        binding: VariableBinding
+    ) throws -> FieldValue {
+        let name = builtIn.rawValue
 
         switch name {
-        // String functions
         case "STR":
-            guard args.count == 1,
-                  let val = evaluate(args[0], binding: binding) else { return nil }
-            return .string(stringRepresentation(val))
-        case "STRLEN":
-            guard args.count == 1,
-                  let str = evaluateAsString(args[0], binding: binding) else { return nil }
-            return .int64(Int64(str.count))
-        case "UCASE":
-            guard args.count == 1,
-                  let str = evaluateAsString(args[0], binding: binding) else { return nil }
-            return .string(str.uppercased())
-        case "LCASE":
-            guard args.count == 1,
-                  let str = evaluateAsString(args[0], binding: binding) else { return nil }
-            return .string(str.lowercased())
-        case "CONTAINS":
-            guard args.count == 2,
-                  let str = evaluateAsString(args[0], binding: binding),
-                  let substr = evaluateAsString(args[1], binding: binding) else { return nil }
-            return .bool(str.contains(substr))
-        case "STRSTARTS":
-            guard args.count == 2,
-                  let str = evaluateAsString(args[0], binding: binding),
-                  let prefix = evaluateAsString(args[1], binding: binding) else { return nil }
-            return .bool(str.hasPrefix(prefix))
-        case "STRENDS":
-            guard args.count == 2,
-                  let str = evaluateAsString(args[0], binding: binding),
-                  let suffix = evaluateAsString(args[1], binding: binding) else { return nil }
-            return .bool(str.hasSuffix(suffix))
-        case "SUBSTR":
-            guard args.count >= 2,
-                  let str = evaluateAsString(args[0], binding: binding),
-                  let start = evaluateAsInt64(args[1], binding: binding) else { return nil }
-            let startIndex = max(Int(start) - 1, 0)  // SPARQL is 1-based
-            guard startIndex <= str.count else { return .string("") }
-            let from = str.index(str.startIndex, offsetBy: startIndex)
-            if args.count >= 3, let length = evaluateAsInt64(args[2], binding: binding) {
-                let endOffset = min(startIndex + Int(length), str.count)
-                let to = str.index(str.startIndex, offsetBy: endOffset)
-                return .string(String(str[from..<to]))
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard let string = stringRepresentation(value) else {
+                throw typeError("STR requires an RDF term or scalar value")
             }
-            return .string(String(str[from...]))
+            return try stringValue(string)
+        case "STRLEN":
+            try requireArgumentCount(args, count: 1, function: name)
+            let string = try evaluateAsString(args[0], binding: binding)
+            guard let length = Int64(exactly: string.unicodeScalars.count) else {
+                throw resourceLimit(stage: "STRLEN", required: UInt64(string.utf8.count))
+            }
+            return try integerValue(length)
+        case "UCASE":
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluateStringValue(args[0], binding: binding)
+            return try stringValue(
+                value.replacingLexicalForm(value.lexicalForm.uppercased())
+            )
+        case "LCASE":
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluateStringValue(args[0], binding: binding)
+            return try stringValue(
+                value.replacingLexicalForm(value.lexicalForm.lowercased())
+            )
+        case "CONTAINS":
+            try requireArgumentCount(args, count: 2, function: name)
+            let string = try evaluateStringValue(args[0], binding: binding)
+            let substring = try evaluateStringValue(args[1], binding: binding)
+            guard string.acceptsArgument(substring) else {
+                throw typeError("CONTAINS arguments have incompatible language annotations")
+            }
+            return try booleanValue(
+                DatabaseText.contains(
+                    substring.lexicalForm,
+                    in: string.lexicalForm
+                )
+            )
+        case "STRSTARTS":
+            try requireArgumentCount(args, count: 2, function: name)
+            let string = try evaluateStringValue(args[0], binding: binding)
+            let prefix = try evaluateStringValue(args[1], binding: binding)
+            guard string.acceptsArgument(prefix) else {
+                throw typeError("STRSTARTS arguments have incompatible language annotations")
+            }
+            return try booleanValue(
+                string.lexicalForm.hasPrefix(prefix.lexicalForm)
+            )
+        case "STRENDS":
+            try requireArgumentCount(args, count: 2, function: name)
+            let string = try evaluateStringValue(args[0], binding: binding)
+            let suffix = try evaluateStringValue(args[1], binding: binding)
+            guard string.acceptsArgument(suffix) else {
+                throw typeError("STRENDS arguments have incompatible language annotations")
+            }
+            return try booleanValue(
+                string.lexicalForm.hasSuffix(suffix.lexicalForm)
+            )
+        case "SUBSTR":
+            guard args.count == 2 || args.count == 3 else {
+                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
+            }
+            let string = try evaluateStringValue(args[0], binding: binding)
+            let start = try evaluateAsInt64(args[1], binding: binding)
+            guard let platformStart = Int(exactly: start) else {
+                throw typeError("SUBSTR start is outside the platform index range")
+            }
+            let startOffset = max(platformStart - 1, 0)
+            let scalars = string.lexicalForm.unicodeScalars
+            guard startOffset <= scalars.count else {
+                return try stringValue(string.replacingLexicalForm(""))
+            }
+            let from = scalars.index(scalars.startIndex, offsetBy: startOffset)
+            if args.count == 3 {
+                let length = try evaluateAsInt64(args[2], binding: binding)
+                guard length >= 0, let platformLength = Int(exactly: length) else {
+                    throw typeError("SUBSTR length must be a representable non-negative integer")
+                }
+                let remaining = scalars.count - startOffset
+                let endOffset = startOffset + min(platformLength, remaining)
+                let to = scalars.index(scalars.startIndex, offsetBy: endOffset)
+                return try stringValue(
+                    string.replacingLexicalForm(String(scalars[from..<to]))
+                )
+            }
+            return try stringValue(
+                string.replacingLexicalForm(String(scalars[from...]))
+            )
         case "CONCAT":
             var result = ""
-            for arg in args {
-                guard let str = evaluateAsString(arg, binding: binding) else { return nil }
-                result += str
+            let values = try args.map {
+                try evaluateStringValue($0, binding: binding)
             }
-            return .string(result)
+            let requiredUTF8Count = try values.reduce(UInt64(0)) { partial, value in
+                let count = UInt64(value.lexicalForm.utf8.count)
+                let (sum, overflow) = partial.addingReportingOverflow(count)
+                guard !overflow else {
+                    throw resourceLimit(stage: "CONCAT", required: UInt64.max)
+                }
+                return sum
+            }
+            guard requiredUTF8Count <= SPARQLExecutionLimits.maximumLiteralUTF8Count else {
+                throw resourceLimit(stage: "CONCAT", required: requiredUTF8Count)
+            }
+            if let capacity = Int(exactly: requiredUTF8Count) {
+                result.reserveCapacity(capacity)
+            }
+            for value in values {
+                result.append(value.lexicalForm)
+            }
+            return try stringValue(
+                SPARQLStringValue(
+                    lexicalForm: result,
+                    kind: SPARQLStringValue.concatenationKind(values)
+                )
+            )
         case "REPLACE":
-            guard args.count >= 3,
-                  let str = evaluateAsString(args[0], binding: binding),
-                  let pattern = evaluateAsString(args[1], binding: binding),
-                  let replacement = evaluateAsString(args[2], binding: binding) else { return nil }
-            let flags = args.count >= 4 ? evaluateAsString(args[3], binding: binding) : nil
-            return .string(replaceRegex(str, pattern: pattern, replacement: replacement, flags: flags))
+            guard args.count == 3 || args.count == 4 else {
+                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
+            }
+            let string = try evaluateStringValue(args[0], binding: binding)
+            let pattern = try evaluateStringValue(args[1], binding: binding)
+            let replacement = try evaluateStringValue(args[2], binding: binding)
+            guard pattern.kind == .string, replacement.kind == .string else {
+                throw typeError("REPLACE pattern and replacement must be xsd:string")
+            }
+            let flags = args.count == 4
+                ? try evaluateAsString(args[3], binding: binding)
+                : nil
+            return try stringValue(
+                string.replacingLexicalForm(
+                    replaceRegex(
+                    string.lexicalForm,
+                    pattern: pattern.lexicalForm,
+                    replacement: replacement.lexicalForm,
+                    flags: flags
+                    )
+                )
+            )
 
-        // Numeric functions
+        case "STRBEFORE", "STRAFTER":
+            try requireArgumentCount(args, count: 2, function: name)
+            let source = try evaluateStringValue(args[0], binding: binding)
+            let search = try evaluateStringValue(args[1], binding: binding)
+            guard source.acceptsArgument(search) else {
+                throw typeError("\(name) arguments have incompatible language annotations")
+            }
+            guard let range = DatabaseText.firstRange(
+                of: search.lexicalForm,
+                in: source.lexicalForm
+            ) else {
+                return try stringValue("")
+            }
+            let lexicalForm = name == "STRBEFORE"
+                ? String(source.lexicalForm[..<range.lowerBound])
+                : String(source.lexicalForm[range.upperBound...])
+            return try stringValue(
+                source.replacingLexicalForm(lexicalForm)
+            )
+
+        case "ENCODE_FOR_URI":
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluateStringValue(args[0], binding: binding)
+            guard value.kind == .string else {
+                throw typeError("ENCODE_FOR_URI requires an xsd:string argument")
+            }
+            return try stringValue(percentEncodeForURI(value.lexicalForm))
+
+        case "IRI", "URI":
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            if case .rdfTerm(.iri) = value { return value }
+            guard let string = SPARQLStringValue(value),
+                  string.kind == .string else {
+                throw typeError("\(name) requires an IRI or xsd:string argument")
+            }
+            do {
+                return .rdfTerm(.iri(try DatabaseRDFIRI(string.lexicalForm).rawValue))
+            } catch {
+                throw typeError("\(name) requires an absolute IRI when no base IRI is configured")
+            }
+
+        case "LANGMATCHES":
+            try requireArgumentCount(args, count: 2, function: name)
+            let language = try evaluateAsString(args[0], binding: binding)
+            let range = try evaluateAsString(args[1], binding: binding)
+            return try booleanValue(languageMatches(language, range: range))
+
+        case "SAMETERM":
+            try requireArgumentCount(args, count: 2, function: name)
+            let lhs = try evaluate(args[0], binding: binding)
+            let rhs = try evaluate(args[1], binding: binding)
+            guard case .rdfTerm(let lhsTerm) = lhs,
+                  case .rdfTerm(let rhsTerm) = rhs else {
+                throw typeError("sameTerm requires RDF terms")
+            }
+            return try booleanValue(lhsTerm == rhsTerm)
+
+        case "STRDT":
+            try requireArgumentCount(args, count: 2, function: name)
+            let lexical = try evaluateStringValue(args[0], binding: binding)
+            let datatype = try evaluate(args[1], binding: binding)
+            guard lexical.kind == .string,
+                  case .rdfTerm(.iri(let datatypeIRI)) = datatype else {
+                throw typeError("STRDT requires xsd:string and IRI arguments")
+            }
+            do {
+                return try QueryIR.Literal.typedLiteral(
+                    value: lexical.lexicalForm,
+                    datatype: datatypeIRI
+                ).toSPARQLFieldValue()
+            } catch let error as SPARQLLiteralConversionError {
+                throw mapLiteralConversionError(error)
+            }
+
+        case "STRLANG":
+            try requireArgumentCount(args, count: 2, function: name)
+            let lexical = try evaluateStringValue(args[0], binding: binding)
+            let language = try evaluateStringValue(args[1], binding: binding)
+            guard lexical.kind == .string, language.kind == .string else {
+                throw typeError("STRLANG requires xsd:string arguments")
+            }
+            do {
+                return try QueryIR.Literal.langLiteral(
+                    value: lexical.lexicalForm,
+                    language: language.lexicalForm
+                ).toSPARQLFieldValue()
+            } catch let error as SPARQLLiteralConversionError {
+                throw mapLiteralConversionError(error)
+            }
+
+        case "REGEX":
+            guard args.count == 2 || args.count == 3 else {
+                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
+            }
+            let text = try evaluateAsString(args[0], binding: binding)
+            let pattern = try evaluateStringValue(args[1], binding: binding)
+            guard pattern.kind == .string else {
+                throw typeError("REGEX pattern must be xsd:string")
+            }
+            let flags: String?
+            if args.count == 3 {
+                let flagValue = try evaluateStringValue(args[2], binding: binding)
+                guard flagValue.kind == .string else {
+                    throw typeError("REGEX flags must be xsd:string")
+                }
+                flags = flagValue.lexicalForm
+            } else {
+                flags = nil
+            }
+            return try booleanValue(
+                matchRegex(text, pattern: pattern.lexicalForm, flags: flags)
+            )
+
         case "ABS":
-            guard args.count == 1, let val = evaluate(args[0], binding: binding) else { return nil }
-            switch val {
-            case .int64(let v): return .int64(abs(v))
-            case .double(let v): return .double(abs(v))
-            default: return nil
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard let numeric = SPARQLNumericValue(value) else {
+                throw typeError("ABS requires a numeric operand")
+            }
+            do {
+                return try numeric.magnitude().fieldValue()
+            } catch let error {
+                throw mapNumericError(error)
             }
         case "ROUND":
-            guard args.count == 1, let v = evaluateAsDouble(args[0], binding: binding) else { return nil }
-            return .double(v.rounded())
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard let numeric = SPARQLNumericValue(value) else {
+                throw typeError("ROUND requires a numeric operand")
+            }
+            do {
+                return try numeric.rounded(.round).fieldValue()
+            } catch let error {
+                throw mapNumericError(error)
+            }
         case "CEIL":
-            guard args.count == 1, let v = evaluateAsDouble(args[0], binding: binding) else { return nil }
-            return .double(ceil(v))
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard let numeric = SPARQLNumericValue(value) else {
+                throw typeError("CEIL requires a numeric operand")
+            }
+            do {
+                return try numeric.rounded(.ceiling).fieldValue()
+            } catch let error {
+                throw mapNumericError(error)
+            }
         case "FLOOR":
-            guard args.count == 1, let v = evaluateAsDouble(args[0], binding: binding) else { return nil }
-            return .double(floor(v))
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard let numeric = SPARQLNumericValue(value) else {
+                throw typeError("FLOOR requires a numeric operand")
+            }
+            do {
+                return try numeric.rounded(.floor).fieldValue()
+            } catch let error {
+                throw mapNumericError(error)
+            }
 
-        // Type checking
         case "ISIRI", "ISURI":
-            guard args.count == 1, let val = evaluate(args[0], binding: binding) else { return nil }
-            if case .string(let s) = val {
-                return .bool(s.hasPrefix("http://") || s.hasPrefix("https://") || s.hasPrefix("urn:"))
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard case .rdfTerm(.iri) = value else {
+                return try booleanValue(false)
             }
-            return .bool(false)
+            return try booleanValue(true)
         case "ISBLANK":
-            guard args.count == 1, let val = evaluate(args[0], binding: binding) else { return nil }
-            if case .string(let s) = val {
-                return .bool(s.hasPrefix("_:"))
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard case .rdfTerm(.blankNode) = value else {
+                return try booleanValue(false)
             }
-            return .bool(false)
+            return try booleanValue(true)
         case "ISLITERAL":
-            guard args.count == 1 else { return nil }
-            let val = evaluate(args[0], binding: binding)
-            return .bool(val != nil)
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard case .rdfTerm(.literal) = value else {
+                return try booleanValue(false)
+            }
+            return try booleanValue(true)
         case "ISNUMERIC":
-            guard args.count == 1, let val = evaluate(args[0], binding: binding) else { return nil }
-            switch val {
-            case .int64, .double: return .bool(true)
-            default: return .bool(false)
-            }
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            return try booleanValue(SPARQLNumericValue(value) != nil)
 
-        // Hash functions
         case "MD5", "SHA1", "SHA256", "SHA384", "SHA512":
-            guard args.count == 1,
-                  let str = evaluateAsString(args[0], binding: binding) else { return nil }
-            return .string(hashFunction(name, str))
+            try requireArgumentCount(args, count: 1, function: name)
+            let string = try evaluateStringValue(args[0], binding: binding)
+            guard string.kind == .string else {
+                throw typeError("\(name) requires an xsd:string argument")
+            }
+            guard let digest = hashFunction(name, string.lexicalForm) else {
+                throw SPARQLExpressionEvaluationError.runtimeInvariant(
+                    "registered hash function was not implemented: \(name)"
+                )
+            }
+            return try stringValue(digest)
 
-        // Type conversion
         case "DATATYPE":
-            guard args.count == 1, let val = evaluate(args[0], binding: binding) else { return nil }
-            return .string(xsdDatatype(val))
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard let datatype = xsdDatatype(value) else {
+                throw typeError("DATATYPE requires a literal")
+            }
+            return .rdfTerm(.iri(datatype))
 
-        // LANG (1-arg): returns language tag of a literal
         case "LANG":
-            guard args.count == 1, let val = evaluate(args[0], binding: binding) else { return nil }
-            // In SPARQL, LANG returns the language tag; we return "" for non-language-tagged values
-            if case .string(let s) = val {
-                // Check if this is a language-tagged literal stored with tag metadata
-                // For now, return empty string (full support requires literal metadata tracking)
-                _ = s
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard case .rdfTerm(.literal(let literal)) = value else {
+                throw typeError("LANG requires an RDF literal")
             }
-            return .string("")
+            return try stringValue(literal.language ?? "")
 
-        // SPARQL 1.2: LANGDIR — returns direction of a dirLangLiteral, "" otherwise
         case "LANGDIR":
-            guard args.count == 1 else { return nil }
-            // Direction info would need to be carried through FieldValue
-            // Return "" as default (direction not tracked in FieldValue)
-            return .string("")
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard case .rdfTerm(.literal(let literal)) = value else {
+                throw typeError("LANGDIR requires an RDF literal")
+            }
+            return try stringValue(literal.direction ?? "")
 
-        // SPARQL 1.2: hasLANG — returns true if literal has a language tag
         case "HASLANG":
-            guard args.count == 1 else { return nil }
-            // Would need language metadata; return false as default
-            return .bool(false)
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard case .rdfTerm(.literal(let literal)) = value else {
+                return try booleanValue(false)
+            }
+            return try booleanValue(literal.language != nil)
 
-        // SPARQL 1.2: hasLANGDIR — returns true if literal has language direction
         case "HASLANGDIR":
-            guard args.count == 1 else { return nil }
-            return .bool(false)
+            try requireArgumentCount(args, count: 1, function: name)
+            let value = try evaluate(args[0], binding: binding)
+            guard case .rdfTerm(.literal(let literal)) = value else {
+                return try booleanValue(false)
+            }
+            return try booleanValue(literal.direction != nil)
 
-        // Trigram similarity: TRIGRAM_SIM(str, pattern) → Double [0,1]
         case "TRIGRAM_SIM":
-            guard args.count == 2,
-                  let str = evaluateAsString(args[0], binding: binding),
-                  let pattern = evaluateAsString(args[1], binding: binding) else { return nil }
-            return .double(TrigramSimilarity.score(str, pattern))
+            try requireArgumentCount(args, count: 2, function: name)
+            let string = try evaluateAsString(args[0], binding: binding)
+            let pattern = try evaluateAsString(args[1], binding: binding)
+            guard let numeric = SPARQLNumericValue(
+                .double(TrigramSimilarity.score(string, pattern))
+            ) else {
+                throw SPARQLExpressionEvaluationError.runtimeInvariant(
+                    "TRIGRAM_SIM result was not numeric"
+                )
+            }
+            return try numeric.fieldValue()
 
-        // SPARQL 1.2: STRLANGDIR(string, lang, dir) — constructs direction-tagged literal
         case "STRLANGDIR":
-            guard args.count == 3,
-                  let str = evaluateAsString(args[0], binding: binding),
-                  let lang = evaluateAsString(args[1], binding: binding),
-                  let dir = evaluateAsString(args[2], binding: binding) else { return nil }
-            // Return the string value (direction metadata cannot be preserved in FieldValue)
-            _ = lang
-            _ = dir
-            return .string(str)
-
-        // IF
-        case "IF":
-            guard args.count == 3 else { return nil }
-            if evaluateAsBoolean(args[0], binding: binding) {
-                return evaluate(args[1], binding: binding)
-            } else {
-                return evaluate(args[2], binding: binding)
+            try requireArgumentCount(args, count: 3, function: name)
+            let string = try evaluateAsString(args[0], binding: binding)
+            let languageValue = try evaluateAsString(args[1], binding: binding)
+            let directionValue = try evaluateAsString(args[2], binding: binding)
+            do {
+                let language = try DatabaseRDFLanguageTag(languageValue)
+                guard let direction = DatabaseRDFDirection(rawValue: directionValue) else {
+                    throw SPARQLExpressionEvaluationError.typeError(
+                        "STRLANGDIR direction must be ltr or rtl"
+                    )
+                }
+                return .rdfTerm(
+                    .literal(
+                        DatabaseRDFLiteral(
+                            lexicalForm: string,
+                            language: language,
+                            direction: direction
+                        )
+                    )
+                )
+            } catch let error as SPARQLExpressionEvaluationError {
+                throw error
+            } catch {
+                throw typeError("STRLANGDIR language tag is invalid")
             }
 
-        // BOUND (function form)
-        case "BOUND":
-            guard args.count == 1, case .variable(let v) = args[0] else { return nil }
-            return .bool(binding.isBound(bindingKey(v)))
+        case "IF":
+            try requireArgumentCount(args, count: 3, function: name)
+            let condition = try effectiveBooleanValue(
+                evaluate(args[0], binding: binding)
+            )
+            return try evaluate(args[condition ? 1 : 2], binding: binding)
 
-        // COALESCE (function form)
+        case "BOUND":
+            try requireArgumentCount(args, count: 1, function: name)
+            guard case .variable(let variable) = args[0] else {
+                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
+            }
+            return try booleanValue(binding.isBound(bindingKey(variable)))
+
         case "COALESCE":
             for arg in args {
-                if let val = evaluate(arg, binding: binding), val != .null {
-                    return val
+                do {
+                    let value = try evaluate(arg, binding: binding)
+                    if value != .null { return value }
+                } catch let error as SPARQLExpressionEvaluationError
+                    where error.isSPARQLEvaluationError {
+                    continue
                 }
             }
-            return .null
+            throw typeError("COALESCE has no expression without an error")
 
         default:
-            return nil
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "function \(name)"
+            )
         }
     }
 
@@ -423,123 +794,494 @@ public struct ExpressionEvaluator: Sendable {
     private static func evaluateAsString(
         _ expr: QueryIR.Expression,
         binding: VariableBinding
-    ) -> String? {
-        guard let val = evaluate(expr, binding: binding) else { return nil }
-        return stringRepresentation(val)
+    ) throws -> String {
+        try evaluateStringValue(expr, binding: binding).lexicalForm
     }
 
-    private static func evaluateAsDouble(
+    private static func evaluateStringValue(
         _ expr: QueryIR.Expression,
         binding: VariableBinding
-    ) -> Double? {
-        guard let val = evaluate(expr, binding: binding) else { return nil }
-        switch val {
-        case .double(let v): return v
-        case .int64(let v): return Double(v)
-        case .string(let s): return Double(s)
-        default: return nil
+    ) throws -> SPARQLStringValue {
+        let value = try evaluate(expr, binding: binding)
+        guard let string = SPARQLStringValue(value) else {
+            throw typeError("string function requires a string literal")
         }
+        return string
     }
 
     private static func evaluateAsInt64(
         _ expr: QueryIR.Expression,
         binding: VariableBinding
-    ) -> Int64? {
-        guard let val = evaluate(expr, binding: binding) else { return nil }
-        switch val {
-        case .int64(let v): return v
-        case .double(let v): return Int64(exactly: v)
-        case .string(let s): return Int64(s)
-        default: return nil
+    ) throws -> Int64 {
+        let value = try evaluate(expr, binding: binding)
+        guard let integer = SPARQLNumericValue(value)?.exactInteger else {
+            throw typeError("integer argument is required")
         }
+        return integer
     }
 
-    private static func stringRepresentation(_ value: FieldValue) -> String {
+    private static func stringRepresentation(_ value: FieldValue) -> String? {
         switch value {
         case .string(let s): return s
         case .int64(let v): return String(v)
+        case .uint64(let v): return String(v)
         case .double(let v): return String(v)
         case .bool(let v): return v ? "true" : "false"
-        case .null: return ""
-        default: return String(describing: value)
+        case .rdfTerm(.iri(let iri)): return iri
+        case .rdfTerm(.literal(let literal)): return literal.lexicalForm
+        case .data, .rdfTerm, .null, .array: return nil
         }
     }
 
-    private static func boolResult(_ value: Bool?) -> FieldValue? {
-        guard let v = value else { return nil }
-        return .bool(v)
-    }
+    private static let xsdNamespace = "http://www.w3.org/2001/XMLSchema#"
 
-    private static func effectiveBooleanValue(_ value: FieldValue) -> Bool {
+    static func effectiveBooleanValue(_ value: FieldValue) throws -> Bool {
         switch value {
         case .bool(let v): return v
-        case .int64(let v): return v != 0
-        case .double(let v): return v != 0 && !v.isNaN
         case .string(let s): return !s.isEmpty
-        case .null: return false
-        default: return false
+        case .rdfTerm(.literal(let literal)):
+            if literal.datatype == xsdNamespace + "boolean" {
+                switch literal.lexicalForm {
+                case "true", "1": return true
+                case "false", "0": return false
+                default:
+                    throw typeError("invalid xsd:boolean lexical form")
+                }
+            }
+            if literal.datatype == xsdNamespace + "string"
+            {
+                return !literal.lexicalForm.isEmpty
+            }
+            guard let numeric = SPARQLNumericValue(value) else {
+                throw typeError("literal datatype has no effective boolean value")
+            }
+            return !numeric.isZero && !numeric.isNaN
+        case .null:
+            throw typeError("null has no SPARQL effective boolean value")
+        default:
+            guard let numeric = SPARQLNumericValue(value) else {
+                throw typeError("value has no SPARQL effective boolean value")
+            }
+            return !numeric.isZero && !numeric.isNaN
         }
+    }
+
+    private enum EffectiveBooleanResult {
+        case value(Bool)
+        case expressionError(SPARQLExpressionEvaluationError)
+    }
+
+    private static func recoverableEffectiveBooleanValue(
+        _ expression: QueryIR.Expression,
+        binding: VariableBinding
+    ) throws -> EffectiveBooleanResult {
+        do {
+            return try .value(
+                effectiveBooleanValue(evaluate(expression, binding: binding))
+            )
+        } catch let error as SPARQLExpressionEvaluationError
+            where error.isSPARQLEvaluationError {
+            return .expressionError(error)
+        }
+    }
+
+    private static func evaluateLogicalAnd(
+        _ lhs: QueryIR.Expression,
+        _ rhs: QueryIR.Expression,
+        binding: VariableBinding
+    ) throws -> FieldValue {
+        let left = try recoverableEffectiveBooleanValue(lhs, binding: binding)
+        switch left {
+        case .value(false):
+            return try booleanValue(false)
+        case .value(true):
+            return try booleanValue(
+                effectiveBooleanValue(evaluate(rhs, binding: binding))
+            )
+        case .expressionError(let leftError):
+            let right = try recoverableEffectiveBooleanValue(rhs, binding: binding)
+            if case .value(false) = right {
+                return try booleanValue(false)
+            }
+            throw leftError
+        }
+    }
+
+    private static func evaluateLogicalOr(
+        _ lhs: QueryIR.Expression,
+        _ rhs: QueryIR.Expression,
+        binding: VariableBinding
+    ) throws -> FieldValue {
+        let left = try recoverableEffectiveBooleanValue(lhs, binding: binding)
+        switch left {
+        case .value(true):
+            return try booleanValue(true)
+        case .value(false):
+            return try booleanValue(
+                effectiveBooleanValue(evaluate(rhs, binding: binding))
+            )
+        case .expressionError(let leftError):
+            let right = try recoverableEffectiveBooleanValue(rhs, binding: binding)
+            if case .value(true) = right {
+                return try booleanValue(true)
+            }
+            throw leftError
+        }
+    }
+
+    private static func evaluateInList(
+        _ expression: QueryIR.Expression,
+        values: [QueryIR.Expression],
+        binding: VariableBinding,
+        negated: Bool
+    ) throws -> FieldValue {
+        let value = try evaluate(expression, binding: binding)
+        var firstExpressionError: SPARQLExpressionEvaluationError?
+        for candidateExpression in values {
+            do {
+                let candidate = try evaluate(candidateExpression, binding: binding)
+                if try equalFieldValues(value, candidate) {
+                    return try booleanValue(!negated)
+                }
+            } catch let error as SPARQLExpressionEvaluationError
+                where error.isSPARQLEvaluationError {
+                if firstExpressionError == nil { firstExpressionError = error }
+            }
+        }
+        if let firstExpressionError { throw firstExpressionError }
+        return try booleanValue(negated)
+    }
+
+    private static func equalValues(
+        _ lhs: QueryIR.Expression,
+        _ rhs: QueryIR.Expression,
+        binding: VariableBinding
+    ) throws -> Bool {
+        try equalFieldValues(
+            evaluate(lhs, binding: binding),
+            evaluate(rhs, binding: binding)
+        )
     }
 
     private static func compareValues(
         _ lhs: QueryIR.Expression,
         _ rhs: QueryIR.Expression,
         binding: VariableBinding
-    ) -> ComparisonResult? {
-        guard let l = evaluate(lhs, binding: binding),
-              let r = evaluate(rhs, binding: binding) else { return nil }
-        if l == .null || r == .null { return nil }
-        return l.compare(to: r)
+    ) throws -> ComparisonResult? {
+        try compareFieldValues(
+            evaluate(lhs, binding: binding),
+            evaluate(rhs, binding: binding)
+        )
+    }
+
+    private static func compareFieldValues(
+        _ left: FieldValue,
+        _ right: FieldValue
+    ) throws -> ComparisonResult? {
+        guard left != .null, right != .null else {
+            throw typeError("null values are not comparable")
+        }
+        if case .rdfTerm(.literal(let leftLiteral)) = left,
+           case .rdfTerm(.literal(let rightLiteral)) = right {
+            do {
+                switch try SPARQLValueComparator().compare(
+                    leftLiteral,
+                    rightLiteral
+                ) {
+                case .less: return .orderedAscending
+                case .equal: return .orderedSame
+                case .greater: return .orderedDescending
+                case .unordered:
+                    return nil
+                case .typeError:
+                    throw typeError("RDF literals are not order-comparable")
+                }
+            } catch let failure as XSDValidationFailure {
+                throw mapXSDValidationFailure(failure)
+            }
+        }
+        if let leftNumeric = SPARQLNumericValue(left),
+           let rightNumeric = SPARQLNumericValue(right) {
+            guard let comparison = leftNumeric.compare(to: rightNumeric) else {
+                return nil
+            }
+            return comparison
+        }
+        if case .rdfTerm = left {
+            throw typeError("RDF terms are not relationally comparable")
+        }
+        if case .rdfTerm = right {
+            throw typeError("RDF terms are not relationally comparable")
+        }
+        guard let comparison = left.compare(to: right) else {
+            throw typeError("values are not order-comparable")
+        }
+        return comparison
+    }
+
+    static func equalFieldValues(
+        _ left: FieldValue,
+        _ right: FieldValue
+    ) throws -> Bool {
+        guard left != .null, right != .null else {
+            throw typeError("null values are not comparable")
+        }
+        if case .rdfTerm(let leftTerm) = left,
+           case .rdfTerm(let rightTerm) = right {
+            return try equalRDFTerms(leftTerm, rightTerm)
+        }
+        if let leftNumeric = SPARQLNumericValue(left),
+           let rightNumeric = SPARQLNumericValue(right) {
+            guard let comparison = leftNumeric.compare(to: rightNumeric) else {
+                throw typeError("numeric values are unordered")
+            }
+            return comparison == .orderedSame
+        }
+        return left == right
+    }
+
+    private static func equalRDFTerms(
+        _ left: DatabaseRDFTerm,
+        _ right: DatabaseRDFTerm
+    ) throws -> Bool {
+        switch (left, right) {
+        case (.iri(let lhs), .iri(let rhs)):
+            return lhs == rhs
+        case (.blankNode(let lhs), .blankNode(let rhs)):
+            return lhs == rhs
+        case (.literal(let lhs), .literal(let rhs)):
+            if lhs.language != nil || rhs.language != nil
+                || lhs.direction != nil || rhs.direction != nil {
+                return lhs == rhs
+            }
+            do {
+                switch try SPARQLValueComparator().compare(lhs, rhs) {
+                case .equal: return true
+                case .less, .greater, .unordered: return false
+                case .typeError:
+                    throw typeError("RDF literals are not value-comparable")
+                }
+            } catch let failure as XSDValidationFailure {
+                throw mapXSDValidationFailure(failure)
+            }
+        case (
+            .tripleTerm(let leftSubject, let leftPredicate, let leftObject),
+            .tripleTerm(let rightSubject, let rightPredicate, let rightObject)
+        ):
+            return try equalRDFTerms(leftSubject, rightSubject)
+                && equalRDFTerms(leftPredicate, rightPredicate)
+                && equalRDFTerms(leftObject, rightObject)
+        default:
+            return false
+        }
     }
 
     private static func numericBinary(
         _ lhs: QueryIR.Expression,
         _ rhs: QueryIR.Expression,
         binding: VariableBinding,
-        op: (Double, Double) -> Double
-    ) -> FieldValue? {
-        guard let l = evaluate(lhs, binding: binding),
-              let r = evaluate(rhs, binding: binding) else { return nil }
-        // If both are integers, try integer arithmetic
-        if case .int64(let lv) = l, case .int64(let rv) = r {
-            let result = op(Double(lv), Double(rv))
-            if let intResult = Int64(exactly: result) {
-                return .int64(intResult)
-            }
-            return .double(result)
+        operation: SPARQLNumericValue.ArithmeticOperation
+    ) throws -> FieldValue {
+        let lhsValue = try evaluate(lhs, binding: binding)
+        let rhsValue = try evaluate(rhs, binding: binding)
+        guard let left = SPARQLNumericValue(lhsValue),
+              let right = SPARQLNumericValue(rhsValue) else {
+            throw typeError("arithmetic requires numeric operands")
         }
-        // Otherwise promote to double
-        guard let ld = asDouble(l), let rd = asDouble(r) else { return nil }
-        return .double(op(ld, rd))
+        do {
+            return try left.applying(operation, to: right).fieldValue()
+        } catch let error {
+            throw mapNumericError(error)
+        }
     }
 
-    private static func asDouble(_ value: FieldValue) -> Double? {
-        switch value {
-        case .double(let v): return v
-        case .int64(let v): return Double(v)
-        case .string(let s): return Double(s)
-        default: return nil
+    private static func requireArgumentCount(
+        _ arguments: [QueryIR.Expression],
+        count: Int,
+        function: String
+    ) throws {
+        guard arguments.count == count else {
+            throw SPARQLExpressionEvaluationError.invalidFunctionArguments(function)
         }
+    }
+
+    private static func booleanValue(_ value: Bool) throws -> FieldValue {
+        try rdfLiteralValue(
+            value ? "true" : "false",
+            datatype: xsdNamespace + "boolean"
+        )
+    }
+
+    private static func integerValue(_ value: Int64) throws -> FieldValue {
+        try rdfLiteralValue(
+            String(value),
+            datatype: xsdNamespace + "integer"
+        )
+    }
+
+    private static func stringValue(_ value: String) throws -> FieldValue {
+        let count = UInt64(value.utf8.count)
+        guard count <= SPARQLExecutionLimits.maximumLiteralUTF8Count else {
+            throw resourceLimit(stage: "string result", required: count)
+        }
+        return try rdfLiteralValue(value, datatype: xsdNamespace + "string")
+    }
+
+    private static func stringValue(
+        _ value: SPARQLStringValue
+    ) throws -> FieldValue {
+        let count = UInt64(value.lexicalForm.utf8.count)
+        guard count <= SPARQLExecutionLimits.maximumLiteralUTF8Count else {
+            throw resourceLimit(stage: "string result", required: count)
+        }
+        return try value.fieldValue()
+    }
+
+    private static func rdfLiteralValue(
+        _ lexicalForm: String,
+        datatype: String
+    ) throws -> FieldValue {
+        do {
+            return .rdfTerm(
+                .literal(
+                    try DatabaseRDFLiteral(
+                        lexicalForm: lexicalForm,
+                        datatype: datatype
+                    )
+                )
+            )
+        } catch {
+            throw SPARQLExpressionEvaluationError.runtimeInvariant(
+                "canonical RDF datatype IRI was rejected: \(datatype)"
+            )
+        }
+    }
+
+    private static func typeError(
+        _ detail: String
+    ) -> SPARQLExpressionEvaluationError {
+        .typeError(detail)
+    }
+
+    private static func resourceLimit(
+        stage: String,
+        required: UInt64? = nil,
+        maximum: UInt64? = UInt64(SPARQLExecutionLimits.maximumLiteralUTF8Count)
+    ) -> SPARQLExpressionEvaluationError {
+        .resourceLimitExceeded(
+            stage: stage,
+            required: required,
+            maximum: maximum
+        )
+    }
+
+    private static func mapLiteralConversionError(
+        _ error: SPARQLLiteralConversionError
+    ) -> SPARQLExpressionEvaluationError {
+        switch error {
+        case .literalTooLarge(let required, let maximum):
+            return .resourceLimitExceeded(
+                stage: "literal conversion",
+                required: required,
+                maximum: maximum
+            )
+        case .nullTermUnsupported, .arrayTermUnsupported, .invalidLexicalForm:
+            return .typeError(String(describing: error))
+        }
+    }
+
+    private static func mapNumericError(
+        _ error: SPARQLNumericError
+    ) -> SPARQLExpressionEvaluationError {
+        switch error {
+        case .resultLiteralTooLarge(let required, let maximum):
+            return .resourceLimitExceeded(
+                stage: "numeric result",
+                required: required,
+                maximum: maximum
+            )
+        case .numericOverflow, .divisionByZero, .inexactDecimalResult,
+             .invalidResultLiteral:
+            return .typeError(String(describing: error))
+        }
+    }
+
+    private static func mapXSDValidationFailure(
+        _ error: XSDValidationFailure
+    ) -> SPARQLExpressionEvaluationError {
+        switch error {
+        case .resourceLimitExceeded(let resource, let limit, let actual):
+            return .resourceLimitExceeded(
+                stage: resource,
+                required: UInt64(actual),
+                maximum: UInt64(limit)
+            )
+        case .invalidLexicalForm, .unsupportedDatatype:
+            return .typeError(error.description)
+        case .invalidRestriction:
+            return .runtimeInvariant(error.description)
+        }
+    }
+
+    private static func percentEncodeForURI(_ value: String) -> String {
+        var encodedByteCount = 0
+        for byte in value.utf8 {
+            encodedByteCount += isURIUnreserved(byte) ? 1 : 3
+        }
+        return String(unsafeUninitializedCapacity: encodedByteCount) { output in
+            var offset = 0
+            for byte in value.utf8 {
+                if isURIUnreserved(byte) {
+                    output[offset] = byte
+                    offset += 1
+                } else {
+                    output[offset] = 37
+                    output[offset + 1] = hexadecimalCharacter(byte >> 4)
+                    output[offset + 2] = hexadecimalCharacter(byte & 0x0f)
+                    offset += 3
+                }
+            }
+            return offset
+        }
+    }
+
+    private static func isURIUnreserved(_ byte: UInt8) -> Bool {
+        switch byte {
+        case 65...90, 97...122, 48...57, 45, 46, 95, 126:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func hexadecimalCharacter(_ value: UInt8) -> UInt8 {
+        value < 10 ? 48 + value : 55 + value
+    }
+
+    private static func languageMatches(
+        _ language: String,
+        range: String
+    ) -> Bool {
+        let normalizedLanguage = language.lowercased()
+        let normalizedRange = range.lowercased()
+        if normalizedRange == "*" { return !normalizedLanguage.isEmpty }
+        guard !normalizedRange.isEmpty else { return normalizedLanguage.isEmpty }
+        return normalizedLanguage == normalizedRange
+            || normalizedLanguage.hasPrefix(normalizedRange + "-")
     }
 
     // MARK: - Regex
 
-    private static func matchRegex(_ string: String, pattern: String, flags: String?) -> Bool {
-        var options: NSRegularExpression.Options = []
-        if let flags = flags {
-            if flags.contains("i") { options.insert(.caseInsensitive) }
-            if flags.contains("m") { options.insert(.anchorsMatchLines) }
-            if flags.contains("s") { options.insert(.dotMatchesLineSeparators) }
-            if flags.contains("x") { options.insert(.allowCommentsAndWhitespace) }
-        }
-        let regex: NSRegularExpression
-        do {
-            regex = try NSRegularExpression(pattern: pattern, options: options)
-        } catch {
-            return false
-        }
-        let range = NSRange(string.startIndex..., in: string)
-        return regex.firstMatch(in: string, range: range) != nil
+    private static func matchRegex(
+        _ string: String,
+        pattern: String,
+        flags: String?
+    ) throws -> Bool {
+        try SPARQLRegularExpression.evaluateMatch(
+            string,
+            pattern: pattern,
+            flags: flags
+        )
     }
 
     private static func replaceRegex(
@@ -547,66 +1289,181 @@ public struct ExpressionEvaluator: Sendable {
         pattern: String,
         replacement: String,
         flags: String?
-    ) -> String {
-        var options: NSRegularExpression.Options = []
-        if let flags = flags {
-            if flags.contains("i") { options.insert(.caseInsensitive) }
-            if flags.contains("m") { options.insert(.anchorsMatchLines) }
-            if flags.contains("s") { options.insert(.dotMatchesLineSeparators) }
-        }
-        let regex: NSRegularExpression
-        do {
-            regex = try NSRegularExpression(pattern: pattern, options: options)
-        } catch {
-            return string
-        }
-        let range = NSRange(string.startIndex..., in: string)
-        return regex.stringByReplacingMatches(in: string, range: range, withTemplate: replacement)
+    ) throws -> String {
+        try SPARQLRegularExpression.evaluateReplacement(
+            string,
+            pattern: pattern,
+            replacement: replacement,
+            flags: flags
+        )
     }
 
-    private static func likeToRegex(_ pattern: String) -> String {
-        var result = "^"
-        for char in pattern {
-            switch char {
-            case "%": result += ".*"
-            case "_": result += "."
-            case ".": result += "\\."
-            case "\\": result += "\\\\"
-            case "[": result += "\\["
-            case "]": result += "\\]"
-            case "(": result += "\\("
-            case ")": result += "\\)"
-            case "{": result += "\\{"
-            case "}": result += "\\}"
-            case "^": result += "\\^"
-            case "$": result += "\\$"
-            case "+": result += "\\+"
-            case "?": result += "\\?"
-            case "|": result += "\\|"
-            case "*": result += "\\*"
-            default: result += String(char)
+    private static func likeToRegex(_ pattern: String) throws -> String {
+        let maximum = UInt64(
+            SPARQLExecutionLimits.maximumRegularExpressionPatternUTF8Count
+        )
+        var inputByteCount: UInt64 = 0
+        for scalar in pattern.unicodeScalars {
+            let (next, overflow) = inputByteCount.addingReportingOverflow(
+                UInt64(regexUTF8Width(of: scalar.value))
+            )
+            guard !overflow, next <= maximum else {
+                throw resourceLimit(
+                    stage: "LIKE regular expression pattern",
+                    required: overflow ? UInt64.max : next,
+                    maximum: maximum
+                )
+            }
+            inputByteCount = next
+        }
+
+        var requiredByteCount: UInt64 = 2
+        for scalar in pattern.unicodeScalars {
+            let scalarByteCount = UInt64(regexUTF8Width(of: scalar.value))
+            let escapedByteCount: UInt64
+            switch scalar.value {
+            case 0x25:
+                escapedByteCount = 2
+            case 0x5F:
+                escapedByteCount = 1
+            case 0x2E, 0x5C, 0x5B, 0x5D, 0x28, 0x29, 0x7B, 0x7D,
+                 0x5E, 0x24, 0x2B, 0x3F, 0x7C, 0x2A:
+                escapedByteCount = scalarByteCount + 1
+            default:
+                escapedByteCount = scalarByteCount
+            }
+            let (next, overflow) = requiredByteCount.addingReportingOverflow(
+                escapedByteCount
+            )
+            guard !overflow, next <= maximum else {
+                throw resourceLimit(
+                    stage: "LIKE regular expression pattern",
+                    required: overflow ? UInt64.max : next,
+                    maximum: maximum
+                )
+            }
+            requiredByteCount = next
+        }
+
+        guard let capacity = Int(exactly: requiredByteCount) else {
+            throw resourceLimit(
+                stage: "LIKE regular expression pattern",
+                required: requiredByteCount,
+                maximum: maximum
+            )
+        }
+
+        // The bounded regex source is the required compilation boundary copy;
+        // the LIKE input itself remains a Unicode-scalar view during conversion.
+        var result = ""
+        result.reserveCapacity(capacity)
+        result.append("^")
+        for scalar in pattern.unicodeScalars {
+            switch scalar.value {
+            case 0x25:
+                result.append(".*")
+            case 0x5F:
+                result.append(".")
+            case 0x2E, 0x5C, 0x5B, 0x5D, 0x28, 0x29, 0x7B, 0x7D,
+                 0x5E, 0x24, 0x2B, 0x3F, 0x7C, 0x2A:
+                result.append("\\")
+                result.unicodeScalars.append(scalar)
+            default:
+                result.unicodeScalars.append(scalar)
             }
         }
-        result += "$"
+        result.append("$")
         return result
+    }
+
+    private static func regexUTF8Width(of value: UInt32) -> Int {
+        switch value {
+        case 0...0x7F: return 1
+        case 0x80...0x7FF: return 2
+        case 0x800...0xFFFF: return 3
+        default: return 4
+        }
     }
 
     // MARK: - Type Helpers
 
-    private static func xsdDatatype(_ value: FieldValue) -> String {
+    private static func xsdDatatype(_ value: FieldValue) -> String? {
         switch value {
         case .bool: return "http://www.w3.org/2001/XMLSchema#boolean"
         case .int64: return "http://www.w3.org/2001/XMLSchema#integer"
+        case .uint64: return "http://www.w3.org/2001/XMLSchema#unsignedLong"
         case .double: return "http://www.w3.org/2001/XMLSchema#double"
         case .string: return "http://www.w3.org/2001/XMLSchema#string"
         case .data: return "http://www.w3.org/2001/XMLSchema#base64Binary"
-        default: return ""
+        case .rdfTerm(.literal(let literal)): return literal.datatype
+        case .rdfTerm, .null, .array: return nil
         }
     }
 
-    private static func hashFunction(_ name: String, _ input: String) -> String {
-        // Placeholder — actual crypto hashing requires import Crypto
-        // Returns empty string for unsupported hash functions
-        return ""
+    private static func hashFunction(_ name: String, _ input: String) -> String? {
+        switch name {
+        case "MD5":
+            return hash(input, using: Insecure.MD5.self)
+        case "SHA1":
+            return hash(input, using: Insecure.SHA1.self)
+        case "SHA256":
+            return sha256(input)
+        case "SHA384":
+            return hash(input, using: SHA384.self)
+        case "SHA512":
+            return hash(input, using: SHA512.self)
+        default:
+            return nil
+        }
+    }
+
+    private static func sha256(_ input: String) -> String {
+        var accumulator = SHA256Accumulator()
+        accumulator.update(utf8: input)
+        return accumulator.withUnsafeDigestBytes(lowercaseHex)
+    }
+
+    private static func hash<Hasher: HashFunction>(
+        _ input: String,
+        using hasherType: Hasher.Type
+    ) -> String {
+        var hasher = hasherType.init()
+        let usedContiguousStorage = input.utf8.withContiguousStorageIfAvailable {
+            bytes -> Bool in
+            hasher.update(bufferPointer: UnsafeRawBufferPointer(bytes))
+            return true
+        } ?? false
+
+        if !usedContiguousStorage {
+            for byte in input.utf8 {
+                withUnsafeBytes(of: byte) {
+                    hasher.update(bufferPointer: $0)
+                }
+            }
+        }
+
+        return lowercaseHex(hasher.finalize())
+    }
+
+    private static func lowercaseHex<DigestBytes: ContiguousBytes>(
+        _ digest: DigestBytes
+    ) -> String {
+        digest.withUnsafeBytes { source in
+            // Hex text is the output boundary, so allocate its final UTF-8 storage once.
+            var result = [UInt8](repeating: 0, count: source.count * 2)
+            var destinationIndex = 0
+
+            for byte in source {
+                result[destinationIndex] = lowercaseHexDigit(byte >> 4)
+                result[destinationIndex + 1] = lowercaseHexDigit(byte & 0x0F)
+                destinationIndex += 2
+            }
+
+            return String(decoding: result, as: UTF8.self)
+        }
+    }
+
+    private static func lowercaseHexDigit(_ nibble: UInt8) -> UInt8 {
+        nibble < 10 ? 48 + nibble : 87 + nibble
     }
 }

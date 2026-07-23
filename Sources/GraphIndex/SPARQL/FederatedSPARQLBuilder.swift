@@ -3,25 +3,20 @@
 //
 // Type-erased counterpart of `SPARQLQueryBuilder<T>`. Evaluates a SPARQL
 // pattern against the union of all triple-producing indexes bound to a named
-// graph — OWL materialized individuals (per-type OWLTripleIndexKind subspaces)
-// plus free-form GraphIndexKind tables with a graph column.
+// graph — OWL class projections plus canonical RDF quad indexes.
 //
-// Design highlights:
-// - `TripleSourcePlanner` enumerates and statically prunes candidate sources
-//   using BGP predicate and subject-IRI analysis, so typical recall queries
-//   (`?e rdfs:label ?l FILTER contains(?l, ...)`) fan out to only the handful
-//   of OWL types that actually declare `rdfs:label`.
-// - Multi-source execution runs per-source `SPARQLQueryExecutor` calls in a
-//   single shared transaction via `TaskGroup`, giving snapshot isolation and
-//   parallel I/O with no pre-compute barrier.
-// - LIMIT is pushed down to each executor whenever it's safe (no DISTINCT and
-//   no ORDER BY); the builder still applies the final LIMIT/OFFSET at the
-//   union level because we conservatively oversample.
-// - Single-source queries take a fast path that bypasses the union machinery.
+// Atomic triple scans are evaluated against the union of every participating
+// RDF source. This permits joins and property paths to cross physical indexes
+// while retaining one transaction snapshot and one active named graph.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
+import DatabaseWire
 import Graph
 import StorageKit
 
@@ -35,7 +30,7 @@ public struct FederatedSPARQLBuilder: Sendable {
     // MARK: - Configuration
 
     private let queryContext: IndexQueryContext
-    private let graph: String
+    private let namedGraph: RDFGraphName
 
     // MARK: - Query State
 
@@ -48,9 +43,12 @@ public struct FederatedSPARQLBuilder: Sendable {
 
     // MARK: - Initialization
 
-    internal init(queryContext: IndexQueryContext, graph: String) {
+    internal init(
+        queryContext: IndexQueryContext,
+        namedGraph: RDFGraphName
+    ) {
         self.queryContext = queryContext
-        self.graph = graph
+        self.namedGraph = namedGraph
         self.graphPattern = .basic([])
         self.projectedVariables = nil
         self.limitCount = nil
@@ -130,7 +128,12 @@ public struct FederatedSPARQLBuilder: Sendable {
         _ configure: (FederatedSPARQLBuilder) -> FederatedSPARQLBuilder
     ) -> Self {
         var copy = self
-        let inner = configure(FederatedSPARQLBuilder(queryContext: queryContext, graph: graph))
+        let inner = configure(
+            FederatedSPARQLBuilder(
+                queryContext: queryContext,
+                namedGraph: namedGraph
+            )
+        )
         copy.graphPattern = .optional(copy.graphPattern, inner.graphPattern)
         return copy
     }
@@ -139,7 +142,12 @@ public struct FederatedSPARQLBuilder: Sendable {
         _ configure: (FederatedSPARQLBuilder) -> FederatedSPARQLBuilder
     ) -> Self {
         var copy = self
-        let inner = configure(FederatedSPARQLBuilder(queryContext: queryContext, graph: graph))
+        let inner = configure(
+            FederatedSPARQLBuilder(
+                queryContext: queryContext,
+                namedGraph: namedGraph
+            )
+        )
         copy.graphPattern = .union(copy.graphPattern, inner.graphPattern)
         return copy
     }
@@ -240,23 +248,24 @@ public struct FederatedSPARQLBuilder: Sendable {
 
     // MARK: - Execution
 
-    /// Execute the query, unioning results from every candidate `TripleSource`.
+    /// Execute the query against one logical RDF dataset.
     ///
     /// Follows W3C SPARQL 1.1 §15 execution order: pattern → ORDER BY →
     /// projection → DISTINCT → OFFSET/LIMIT.
-    public func execute() async throws -> SPARQLResult {
-        if graphPattern.isEmpty {
-            throw SPARQLQueryError.noPatterns
+    public func execute(
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+    ) async throws -> SPARQLResult {
+        guard offsetCount >= 0, limitCount.map({ $0 >= 0 }) ?? true else {
+            throw SPARQLQueryError.invalidPagination
         }
-
-        let sources = try await TripleSourcePlanner.plan(
-            pattern: graphPattern,
-            graph: graph,
+        let sources = try await RDFDatasetSourcePlanner.plan(
+            namedGraph: namedGraph,
             queryContext: queryContext
         )
 
         let startTime = MonotonicClock.now()
         let projectedVars = resolveProjection()
+        let workMeter = DatabaseWorkMeter(budget: budget)
 
         if sources.isEmpty {
             return SPARQLResult(
@@ -268,35 +277,55 @@ public struct FederatedSPARQLBuilder: Sendable {
             )
         }
 
-        let (bindings, stats) = try await evaluate(sources: sources)
+        let (bindings, stats) = try await evaluate(
+            sources: sources,
+            workMeter: workMeter
+        )
 
-        return finalize(
+        let result = try finalize(
             bindings: bindings,
             stats: stats,
             projectedVars: projectedVars,
-            startTime: startTime
+            startTime: startTime,
+            workMeter: workMeter
         )
+        guard let outputRows = UInt32(exactly: result.bindings.count) else {
+            throw DatabaseWorkLimitError.maximumRows(
+                stage: .resultMaterialization,
+                consumed: workMeter.consumedRows,
+                requested: UInt32.max,
+                maximum: budget.maximumRows
+            )
+        }
+        try workMeter.recordOutputRows(outputRows)
+        return result
     }
 
     /// Execute and return just the first result (or nil).
-    public func first() async throws -> VariableBinding? {
-        try await limit(1).execute().bindings.first
+    public func first(
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+    ) async throws -> VariableBinding? {
+        try await limit(1).execute(budget: budget).bindings.first
     }
 
     /// Execute and return the total count.
-    public func count() async throws -> Int {
-        try await execute().count
+    public func count(
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+    ) async throws -> Int {
+        try await execute(budget: budget).count
     }
 
     /// Check if any results exist.
-    public func exists() async throws -> Bool {
-        try await first() != nil
+    public func exists(
+        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+    ) async throws -> Bool {
+        try await first(budget: budget) != nil
     }
 
     // MARK: - Query Info
 
     public var variables: Set<String> {
-        graphPattern.variables
+        graphPattern.outputVariables
     }
 
     public var pattern: ExecutionPattern {
@@ -309,114 +338,80 @@ public struct FederatedSPARQLBuilder: Sendable {
         if let projectedVariables {
             return projectedVariables
         }
-        return Array(graphPattern.variables).sorted()
+        return Array(graphPattern.outputVariables).sorted()
     }
 
-    /// Run each source's executor in parallel under a shared transaction and
-    /// return the concatenated bindings and merged statistics.
+    /// Evaluate algebra once while atomic scans fan out across all sources.
     private func evaluate(
-        sources: [TripleSource]
+        sources: [RDFDatasetSource],
+        workMeter: DatabaseWorkMeter
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         let engine = queryContext.context.container.engine
-        let pattern = graphPattern
-        let graph = graph
+        let pattern = ExecutionPattern.graph(
+            .named(namedGraph),
+            graphPattern
+        )
         let hasOrderBy = !sortKeys.isEmpty
         let needsAllResults = hasOrderBy || isDistinct
-        let pushdownLimit: Int? = needsAllResults ? nil : limitCount.map { $0 + offsetCount }
+        let pushdownLimit: Int?
+        if needsAllResults {
+            pushdownLimit = nil
+        } else if let limitCount {
+            let (combined, overflow) = limitCount.addingReportingOverflow(
+                offsetCount
+            )
+            guard !overflow else {
+                throw SPARQLQueryError.invalidPagination
+            }
+            pushdownLimit = combined
+        } else {
+            pushdownLimit = nil
+        }
 
         return try await engine.withTransaction(configuration: .default) { sharedTxn in
-            if sources.count == 1 {
-                let source = sources[0]
-                let executor = Self.makeExecutor(
-                    for: source,
-                    graph: graph,
-                    engine: engine
-                )
-                return try await executor.executeInTransaction(
-                    pattern: pattern,
-                    transaction: sharedTxn,
-                    limit: pushdownLimit,
-                    offset: 0
-                )
-            }
-
-            return try await withThrowingTaskGroup(
-                of: ([VariableBinding], ExecutionStatistics).self
-            ) { group in
-                for source in sources {
-                    group.addTask {
-                        let executor = Self.makeExecutor(
-                            for: source,
-                            graph: graph,
-                            engine: engine
-                        )
-                        return try await executor.executeInTransaction(
-                            pattern: pattern,
-                            transaction: sharedTxn,
-                            limit: pushdownLimit,
-                            offset: 0
-                        )
-                    }
-                }
-
-                var allBindings: [VariableBinding] = []
-                var mergedStats = ExecutionStatistics()
-                for try await (bindings, stats) in group {
-                    allBindings.append(contentsOf: bindings)
-                    Self.merge(&mergedStats, with: stats)
-                }
-                return (allBindings, mergedStats)
-            }
+            let executor = SPARQLQueryExecutor(
+                database: engine,
+                sources: sources
+            )
+            return try await executor.executeInTransaction(
+                pattern: pattern,
+                transaction: sharedTxn,
+                limit: pushdownLimit,
+                offset: 0,
+                workMeter: workMeter
+            )
         }
-    }
-
-    private static func makeExecutor(
-        for source: TripleSource,
-        graph: String,
-        engine: any StorageEngine
-    ) -> SPARQLQueryExecutor {
-        SPARQLQueryExecutor(
-            database: engine,
-            indexSubspace: source.indexSubspace,
-            strategy: source.strategy,
-            fromFieldName: source.fromField.isEmpty ? "subject" : source.fromField,
-            edgeFieldName: source.edgeField.isEmpty ? "predicate" : source.edgeField,
-            toFieldName: source.toField.isEmpty ? "object" : source.toField,
-            graphFieldName: source.graphFieldName,
-            storedFieldNames: source.storedFieldNames,
-            ontologyContext: nil,
-            defaultGraph: source.graphFieldName != nil ? graph : nil
-        )
-    }
-
-    private static func merge(_ base: inout ExecutionStatistics, with other: ExecutionStatistics) {
-        base.indexScans += other.indexScans
-        base.joinOperations += other.joinOperations
-        base.intermediateResults += other.intermediateResults
-        base.patternsEvaluated += other.patternsEvaluated
-        base.optionalMisses += other.optionalMisses
-        base.joinStrategies.append(contentsOf: other.joinStrategies)
-        base.joinFallbackReasons.append(contentsOf: other.joinFallbackReasons)
     }
 
     private func finalize(
         bindings: [VariableBinding],
         stats: ExecutionStatistics,
         projectedVars: [String],
-        startTime: MonotonicTimestamp
-    ) -> SPARQLResult {
+        startTime: MonotonicTimestamp,
+        workMeter: DatabaseWorkMeter
+    ) throws -> SPARQLResult {
         var ordered = bindings
 
         if !sortKeys.isEmpty {
-            ordered = BindingSorter.sort(ordered, by: sortKeys)
+            ordered = try BindingSorter.sort(
+                ordered,
+                by: sortKeys,
+                workMeter: workMeter
+            )
         }
 
         let projectionSet = Set(projectedVars)
-        var projected = ordered.map { $0.project(projectionSet) }
+        var projected = try ordered.map { binding in
+            try workMeter.consume(at: .projection)
+            return binding.project(projectionSet)
+        }
 
         if isDistinct {
             var seen = Set<VariableBinding>()
-            projected = projected.filter { seen.insert($0).inserted }
+            projected = try projected.filter { binding in
+                try workMeter.consume(at: .deduplication)
+                return seen.insert(binding).inserted
+            }
         }
 
         if offsetCount > 0 {
@@ -430,10 +425,9 @@ public struct FederatedSPARQLBuilder: Sendable {
         finalStats.durationNs = elapsed(since: startTime)
 
         let resultCount = projected.count
-        let isComplete = limitCount == nil || resultCount < limitCount!
-        let limitReason: SPARQLLimitReason? = (limitCount != nil && resultCount >= limitCount!)
-            ? .explicitLimit
-            : nil
+        let reachedLimit = limitCount.map { resultCount >= $0 } ?? false
+        let isComplete = !reachedLimit
+        let limitReason: SPARQLLimitReason? = reachedLimit ? .explicitLimit : nil
 
         return SPARQLResult(
             bindings: projected,

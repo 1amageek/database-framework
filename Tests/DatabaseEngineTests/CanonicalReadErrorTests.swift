@@ -2,6 +2,7 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import QueryIR
 import TestSupport
 @testable import DatabaseEngine
@@ -26,30 +27,64 @@ struct CanonicalReadErrorTests {
 
     // MARK: - CanonicalPartitionBinding
 
-    @Test("Unknown partition field throws invalidPartitionField")
+    @Test("Unknown partition field is rejected")
     func invalidPartitionFieldRejected() {
         #expect(throws: CanonicalReadError.self) {
             _ = try CanonicalPartitionBinding.makeBinding(
                 for: TenantOrder.self,
-                partitionValues: ["nonexistentField": "value"]
+                partitions: [
+                    DatabaseObjectField(
+                        number: 99,
+                        name: "nonexistentField",
+                        value: .string("value")
+                    ),
+                ]
             )
         }
     }
 
     @Test("Valid partition field succeeds")
     func validPartitionFieldAccepted() throws {
+        let field = try #require(
+            TenantOrder.fieldSchemas.first { $0.name == "tenantID" }
+        )
         let binding = try CanonicalPartitionBinding.makeBinding(
             for: TenantOrder.self,
-            partitionValues: ["tenantID": "tenant-1"]
+            partitions: [
+                DatabaseObjectField(
+                    number: UInt32(field.fieldNumber),
+                    name: field.name,
+                    value: .string("tenant-1")
+                ),
+            ]
         )
         #expect(binding != nil)
     }
 
-    @Test("Static-directory model with nil partition returns nil binding")
-    func staticDirectoryWithNilBinding() throws {
+    @Test("Partition value must match the compiled field type")
+    func invalidPartitionTypeRejected() throws {
+        let field = try #require(
+            TenantOrder.fieldSchemas.first { $0.name == "tenantID" }
+        )
+        #expect(throws: CanonicalReadError.self) {
+            _ = try CanonicalPartitionBinding.makeBinding(
+                for: TenantOrder.self,
+                partitions: [
+                    DatabaseObjectField(
+                        number: UInt32(field.fieldNumber),
+                        name: field.name,
+                        value: .int64(1)
+                    ),
+                ]
+            )
+        }
+    }
+
+    @Test("Static-directory model with an empty partition returns nil binding")
+    func staticDirectoryWithEmptyBinding() throws {
         let binding = try CanonicalPartitionBinding.makeBinding(
             for: StaticModel.self,
-            partitionValues: nil
+            partitions: []
         )
         #expect(binding == nil)
     }
@@ -57,15 +92,15 @@ struct CanonicalReadErrorTests {
     // MARK: - ReadExecutorRegistry
 
     @Test("Unknown index kind returns nil executor")
-    func unknownIndexKindReturnsNilExecutor() {
-        let registry = ReadExecutorRegistry()
+    func unknownIndexKindReturnsNilExecutor() throws {
+        let registry = try ReadExecutorRegistry()
         let executor = registry.indexExecutor(for: "__does_not_exist__")
         #expect(executor == nil)
     }
 
     @Test("Unknown fusion strategy returns nil executor")
-    func unknownFusionStrategyReturnsNilExecutor() {
-        let registry = ReadExecutorRegistry()
+    func unknownFusionStrategyReturnsNilExecutor() throws {
+        let registry = try ReadExecutorRegistry()
         let executor = registry.fusionExecutor(for: "__does_not_exist__")
         #expect(executor == nil)
     }

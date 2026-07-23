@@ -10,6 +10,8 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -19,15 +21,15 @@ import TestSupport
 
 /// RDF-like statement for SPARQL testing
 @Persistable
-struct SPARQLTestStatement {
-    #Directory<SPARQLTestStatement>("test", "sparql", "statements")
+struct SPARQLQueryStatement {
+    #Directory<SPARQLQueryStatement>("test", "sparql", "statements")
 
     var id: String = ULID().ulidString
     var subject: String = ""
     var predicate: String = ""
     var object: String = ""
 
-    #Index(GraphIndexKind<SPARQLTestStatement>(
+    #Index(GraphIndexKind<SPARQLQueryStatement>(
         from: \.subject,
         edge: \.predicate,
         to: \.object,
@@ -43,25 +45,25 @@ struct SPARQLIntegrationTests {
     // MARK: - Setup Helpers
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([SPARQLTestStatement.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([SPARQLQueryStatement.self], version: Schema.Version(1, 0, 0))
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "sparql", "statements"])
+        try? await container.engine.removeDirectory(path: ["test", "sparql", "statements"])
         try await container.ensureIndexesReady()
     }
 
-    private func insertStatements(_ statements: [SPARQLTestStatement], context: FDBContext) async throws {
+    private func insertStatements(_ statements: [SPARQLQueryStatement], context: FDBContext) async throws {
         for statement in statements {
             context.insert(statement)
         }
         try await context.save()
     }
 
-    private func makeStatement(subject: String, predicate: String, object: String) -> SPARQLTestStatement {
-        var stmt = SPARQLTestStatement()
+    private func makeStatement(subject: String, predicate: String, object: String) -> SPARQLQueryStatement {
+        var stmt = SPARQLQueryStatement()
         stmt.subject = subject
         stmt.predicate = predicate
         stmt.object = object
@@ -72,7 +74,7 @@ struct SPARQLIntegrationTests {
 
     @Test("Single pattern: subject bound")
     func testSinglePatternSubjectBound() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -87,7 +89,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?friend WHERE { "Alice" "knows" ?friend }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("Alice", "knows", "?friend")
                 .select("?friend")
@@ -105,7 +107,7 @@ struct SPARQLIntegrationTests {
 
     @Test("Single pattern: object bound")
     func testSinglePatternObjectBound() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -118,7 +120,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?person WHERE { ?person "knows" "Bob" }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "knows", "Bob")
                 .select("?person")
@@ -136,7 +138,7 @@ struct SPARQLIntegrationTests {
 
     @Test("Single pattern: no results")
     func testSinglePatternNoResults() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -147,7 +149,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?person WHERE { ?person "knows" "NonExistent" }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "knows", "NonExistent")
                 .execute()
@@ -159,9 +161,9 @@ struct SPARQLIntegrationTests {
         }
     }
 
-    @Test("exists() helper")
-    func testExistsHelper() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+    @Test("EXISTS evaluates the current solution bindings")
+    func existsExpressionEvaluatesBindings() async throws {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -172,7 +174,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // First verify with a variable pattern (this works in other tests)
-            let checkResults = try await context.sparql(SPARQLTestStatement.self)
+            let checkResults = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("Alice", "knows", "?obj")
                 .execute()
@@ -182,7 +184,7 @@ struct SPARQLIntegrationTests {
 
             // Now test fully bound pattern
             // ASK { "Alice" "knows" "Bob" }
-            let aliceKnowsBobResults = try await context.sparql(SPARQLTestStatement.self)
+            let aliceKnowsBobResults = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("Alice", "knows", "Bob")
                 .execute()
@@ -190,7 +192,7 @@ struct SPARQLIntegrationTests {
             let aliceKnowsBob = !aliceKnowsBobResults.isEmpty
 
             // ASK { "Alice" "knows" "Carol" }
-            let aliceKnowsCarolResults = try await context.sparql(SPARQLTestStatement.self)
+            let aliceKnowsCarolResults = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("Alice", "knows", "Carol")
                 .execute()
@@ -208,7 +210,7 @@ struct SPARQLIntegrationTests {
 
     @Test("JOIN: two patterns with shared variable")
     func testJoinSharedVariable() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -224,7 +226,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?person ?city WHERE { ?person "knows" "Bob" . ?person "lives" ?city }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "knows", "Bob")
                 .where("?person", "lives", "?city")
@@ -242,7 +244,7 @@ struct SPARQLIntegrationTests {
 
     @Test("JOIN: friends of friends")
     func testFriendsOfFriends() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -258,7 +260,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?fof WHERE { "Alice" "knows" ?friend . ?friend "knows" ?fof }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("Alice", "knows", "?friend")
                 .where("?friend", "knows", "?fof")
@@ -279,13 +281,13 @@ struct SPARQLIntegrationTests {
 
     @Test("JOIN strategy: hash join selected when right side is bounded")
     func testHashJoinStrategySelected() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
             let context = container.newContext()
 
-            var statements: [SPARQLTestStatement] = []
+            var statements: [SPARQLQueryStatement] = []
             for i in 0..<80 {
                 statements.append(makeStatement(subject: "u\(i)", predicate: "type", object: "User"))
                 if i < 10 {
@@ -294,7 +296,7 @@ struct SPARQLIntegrationTests {
             }
             try await insertStatements(statements, context: context)
 
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "type", "User")
                 .where("?person", "knows", "Target")
@@ -311,20 +313,20 @@ struct SPARQLIntegrationTests {
 
     @Test("JOIN strategy: hash join falls back with explicit reason")
     func testHashJoinFallbackReasonRecorded() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
             let context = container.newContext()
 
-            var statements: [SPARQLTestStatement] = []
+            var statements: [SPARQLQueryStatement] = []
             for i in 0..<80 {
                 statements.append(makeStatement(subject: "u\(i)", predicate: "type", object: "User"))
                 statements.append(makeStatement(subject: "u\(i)", predicate: "knows", object: "Target"))
             }
             try await insertStatements(statements, context: context)
 
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "type", "User")
                 .where("?person", "knows", "Target")
@@ -343,7 +345,7 @@ struct SPARQLIntegrationTests {
 
     @Test("OPTIONAL: some match, some don't")
     func testOptionalPattern() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -359,7 +361,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?person ?email WHERE { ?person "type" "User" } OPTIONAL { ?person "email" ?email }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "type", "User")
                 .optional { $0.where("?person", "email", "?email") }
@@ -389,7 +391,7 @@ struct SPARQLIntegrationTests {
 
     @Test("OPTIONAL: batched evaluation does not duplicate unmatched left rows")
     func testOptionalBatchedNoDuplicateUnmatchedRows() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -406,7 +408,7 @@ struct SPARQLIntegrationTests {
             // Bob yields two left bindings with the same optional lookup key:
             // {?person=Bob, ?item=Coffee}, {?person=Bob, ?item=Cake}
             // OPTIONAL must keep each unmatched left row exactly once.
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "likes", "?item")
                 .optional { $0.where("?person", "email", "?email") }
@@ -434,7 +436,7 @@ struct SPARQLIntegrationTests {
 
     @Test("UNION: alternative patterns")
     func testUnionPattern() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -447,7 +449,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?person WHERE { { ?person "knows" "Bob" } UNION { ?person "follows" "Bob" } }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "knows", "Bob")
                 .union { $0.where("?person", "follows", "Bob") }
@@ -468,7 +470,7 @@ struct SPARQLIntegrationTests {
 
     @Test("FILTER: exclude specific value")
     func testFilterNotEquals() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -482,7 +484,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?fof WHERE { "Alice" "knows" ?friend . ?friend "knows" ?fof . FILTER(?fof != "Alice") }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("Alice", "knows", "?friend")
                 .where("?friend", "knows", "?fof")
@@ -499,7 +501,7 @@ struct SPARQLIntegrationTests {
 
     @Test("FILTER: regex pattern")
     func testFilterRegex() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -512,7 +514,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?person ?name WHERE { ?person "name" ?name . FILTER(REGEX(?name, "^A")) }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "name", "?name")
                 .filter("?name", matches: "^A")
@@ -531,7 +533,7 @@ struct SPARQLIntegrationTests {
 
     @Test("FILTER: bound check with OPTIONAL")
     func testFilterBoundWithOptional() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -545,7 +547,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?person WHERE { ?person "type" "User" } OPTIONAL { ?person "email" ?email } FILTER(BOUND(?email))
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "type", "User")
                 .optional { $0.where("?person", "email", "?email") }
@@ -565,7 +567,7 @@ struct SPARQLIntegrationTests {
 
     @Test("DISTINCT: removes duplicates after projection")
     func testDistinct() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -579,7 +581,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT DISTINCT ?pred WHERE { ?s ?pred ?o }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?s", "knows", "?o")
                 .select("?s")
@@ -596,21 +598,21 @@ struct SPARQLIntegrationTests {
 
     @Test("LIMIT and OFFSET")
     func testLimitOffset() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
             let context = container.newContext()
 
             // Insert 10 triples
-            var statements: [SPARQLTestStatement] = []
+            var statements: [SPARQLQueryStatement] = []
             for i in 1...10 {
                 statements.append(makeStatement(subject: "Person\(i)", predicate: "type", object: "User"))
             }
             try await insertStatements(statements, context: context)
 
             // Query with LIMIT 3
-            let limitResults = try await context.sparql(SPARQLTestStatement.self)
+            let limitResults = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "type", "User")
                 .select("?person")
@@ -621,7 +623,7 @@ struct SPARQLIntegrationTests {
             #expect(!limitResults.isComplete)
 
             // Query with LIMIT 3 OFFSET 5
-            let offsetResults = try await context.sparql(SPARQLTestStatement.self)
+            let offsetResults = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?person", "type", "User")
                 .select("?person")
@@ -637,7 +639,7 @@ struct SPARQLIntegrationTests {
 
     @Test("SELECT projection")
     func testSelectProjection() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -648,7 +650,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // Query: SELECT ?s WHERE { ?s ?p ?o }
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?s", "?p", "?o")
                 .select("?s")
@@ -669,13 +671,13 @@ struct SPARQLIntegrationTests {
 
     @Test("Empty database")
     func testEmptyDatabase() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
             let context = container.newContext()
 
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?s", "?p", "?o")
                 .execute()
@@ -690,14 +692,14 @@ struct SPARQLIntegrationTests {
 
     @Test("Large dataset (100 edges)")
     func testLargeDataset() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
             let context = container.newContext()
 
             // Insert 100 edges: Person1 -> Person2 -> ... -> Person100
-            var statements: [SPARQLTestStatement] = []
+            var statements: [SPARQLQueryStatement] = []
             for i in 1..<100 {
                 statements.append(makeStatement(
                     subject: "Person\(i)",
@@ -708,7 +710,7 @@ struct SPARQLIntegrationTests {
             try await insertStatements(statements, context: context)
 
             // Query all edges
-            let allResults = try await context.sparql(SPARQLTestStatement.self)
+            let allResults = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("?s", "knows", "?o")
                 .execute()
@@ -716,7 +718,7 @@ struct SPARQLIntegrationTests {
             #expect(allResults.count == 99)
 
             // Query specific person's friends
-            let person50Friends = try await context.sparql(SPARQLTestStatement.self)
+            let person50Friends = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("Person50", "knows", "?friend")
                 .execute()
@@ -730,7 +732,7 @@ struct SPARQLIntegrationTests {
 
     @Test("Cyclic graph")
     func testCyclicGraph() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -744,7 +746,7 @@ struct SPARQLIntegrationTests {
             ], context: context)
 
             // 2-hop query from A
-            let results = try await context.sparql(SPARQLTestStatement.self)
+            let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
                 .where("A", "knows", "?x")
                 .where("?x", "knows", "?y")

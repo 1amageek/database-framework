@@ -6,12 +6,13 @@ import Testing
 import TestHeartbeat
 import Foundation
 import Core
+import DatabaseValue
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
 // Test model for aggregate index tests
 @Persistable
-private struct AggTestItem {
+private struct AggregateIndexRecord {
     var category: String
     var subcategory: String
     var value: Int64
@@ -26,37 +27,35 @@ struct CountIndexKindTests {
 
     @Test("CountIndexKind has correct identifier")
     func testIdentifier() {
-        #expect(CountIndexKind<AggTestItem>.identifier == "count")
+        #expect(CountIndexKind<AggregateIndexRecord>.identifier == "count")
     }
 
     @Test("CountIndexKind has aggregation subspace structure")
     func testSubspaceStructure() {
-        #expect(CountIndexKind<AggTestItem>.subspaceStructure == .aggregation)
+        #expect(CountIndexKind<AggregateIndexRecord>.subspaceStructure == .aggregation)
     }
 
     @Test("CountIndexKind validates single grouping field")
     func testValidateSingleGroupingField() throws {
-        try CountIndexKind<AggTestItem>.validateTypes([String.self])
-        try CountIndexKind<AggTestItem>.validateTypes([Int64.self])
+        try CountIndexKind<AggregateIndexRecord>.validateTypes([String.self])
+        try CountIndexKind<AggregateIndexRecord>.validateTypes([Int64.self])
     }
 
     @Test("CountIndexKind validates composite grouping fields")
     func testValidateCompositeGroupingFields() throws {
-        try CountIndexKind<AggTestItem>.validateTypes([String.self, String.self])
-        try CountIndexKind<AggTestItem>.validateTypes([String.self, Int64.self])
+        try CountIndexKind<AggregateIndexRecord>.validateTypes([String.self, String.self])
+        try CountIndexKind<AggregateIndexRecord>.validateTypes([String.self, Int64.self])
     }
 
-    @Test("CountIndexKind rejects empty fields")
-    func testRejectEmptyFields() {
-        #expect(throws: IndexTypeValidationError.self) {
-            try CountIndexKind<AggTestItem>.validateTypes([])
-        }
+    @Test("CountIndexKind accepts an empty global grouping")
+    func testAcceptEmptyGlobalGrouping() throws {
+        try CountIndexKind<AggregateIndexRecord>.validateTypes([])
     }
 
     @Test("CountIndexKind rejects non-Comparable grouping fields")
     func testRejectNonComparableGroupingFields() {
         #expect(throws: IndexTypeValidationError.self) {
-            try CountIndexKind<AggTestItem>.validateTypes([[Int].self])
+            try CountIndexKind<AggregateIndexRecord>.validateTypes([[Int].self])
         }
     }
 }
@@ -68,43 +67,39 @@ struct SumIndexKindTests {
 
     @Test("SumIndexKind has correct identifier")
     func testIdentifier() {
-        #expect(SumIndexKind<AggTestItem, Int64>.identifier == "sum")
+        #expect(SumIndexKind<AggregateIndexRecord, Int64>.identifier == "sum")
     }
 
     @Test("SumIndexKind has aggregation subspace structure")
     func testSubspaceStructure() {
-        #expect(SumIndexKind<AggTestItem, Int64>.subspaceStructure == .aggregation)
+        #expect(SumIndexKind<AggregateIndexRecord, Int64>.subspaceStructure == .aggregation)
     }
 
     @Test("SumIndexKind validates grouping + numeric value field")
     func testValidateGroupingAndNumericField() throws {
         // String + Int64
-        try SumIndexKind<AggTestItem, Int64>.validateTypes([String.self, Int64.self])
+        try SumIndexKind<AggregateIndexRecord, Int64>.validateTypes([String.self, Int64.self])
 
         // String + Double
-        try SumIndexKind<AggTestItem, Double>.validateTypes([String.self, Double.self])
+        try SumIndexKind<AggregateIndexRecord, Double>.validateTypes([String.self, Double.self])
 
         // String + String + Int64 (composite grouping + value)
-        try SumIndexKind<AggTestItem, Int64>.validateTypes([String.self, String.self, Int64.self])
+        try SumIndexKind<AggregateIndexRecord, Int64>.validateTypes([String.self, String.self, Int64.self])
     }
 
-    @Test("SumIndexKind rejects less than 2 fields")
-    func testRejectLessThanTwoFields() {
-        // 0 fields
-        #expect(throws: IndexTypeValidationError.self) {
-            try SumIndexKind<AggTestItem, Int64>.validateTypes([])
-        }
+    @Test("SumIndexKind accepts one global value field and rejects no fields")
+    func testValidateGlobalValueField() throws {
+        try SumIndexKind<AggregateIndexRecord, Int64>.validateTypes([Int64.self])
 
-        // 1 field
         #expect(throws: IndexTypeValidationError.self) {
-            try SumIndexKind<AggTestItem, Int64>.validateTypes([Int64.self])
+            try SumIndexKind<AggregateIndexRecord, Int64>.validateTypes([])
         }
     }
 
     @Test("SumIndexKind rejects non-Comparable grouping fields")
     func testRejectNonComparableGroupingFields() {
         #expect(throws: IndexTypeValidationError.self) {
-            try SumIndexKind<AggTestItem, Int64>.validateTypes([[Int].self, Int64.self])
+            try SumIndexKind<AggregateIndexRecord, Int64>.validateTypes([[Int].self, Int64.self])
         }
     }
 
@@ -112,12 +107,12 @@ struct SumIndexKindTests {
     func testRejectNonNumericValueField() {
         // Value field is String (not numeric)
         #expect(throws: IndexTypeValidationError.self) {
-            try SumIndexKind<AggTestItem, Int64>.validateTypes([String.self, String.self])
+            try SumIndexKind<AggregateIndexRecord, Int64>.validateTypes([String.self, String.self])
         }
 
         // Value field is Date (not numeric)
         #expect(throws: IndexTypeValidationError.self) {
-            try SumIndexKind<AggTestItem, Int64>.validateTypes([String.self, Date.self])
+            try SumIndexKind<AggregateIndexRecord, Int64>.validateTypes([String.self, Date.self])
         }
     }
 }
@@ -129,36 +124,32 @@ struct MinIndexKindTests {
 
     @Test("MinIndexKind has correct identifier")
     func testIdentifier() {
-        #expect(MinIndexKind<AggTestItem, Int64>.identifier == "min")
+        #expect(MinIndexKind<AggregateIndexRecord, Int64>.identifier == "min")
     }
 
     @Test("MinIndexKind has flat subspace structure")
     func testSubspaceStructure() {
-        #expect(MinIndexKind<AggTestItem, Int64>.subspaceStructure == .flat)
+        #expect(MinIndexKind<AggregateIndexRecord, Int64>.subspaceStructure == .flat)
     }
 
     @Test("MinIndexKind validates grouping + Comparable value field")
     func testValidateGroupingAndComparableField() throws {
         // String + Double
-        try MinIndexKind<AggTestItem, Double>.validateTypes([String.self, Double.self])
+        try MinIndexKind<AggregateIndexRecord, Double>.validateTypes([String.self, Double.self])
 
         // String + Int64
-        try MinIndexKind<AggTestItem, Int64>.validateTypes([String.self, Int64.self])
+        try MinIndexKind<AggregateIndexRecord, Int64>.validateTypes([String.self, Int64.self])
 
         // String + String + Date (composite grouping + value)
-        try MinIndexKind<AggTestItem, Date>.validateTypes([String.self, String.self, Date.self])
+        try MinIndexKind<AggregateIndexRecord, Date>.validateTypes([String.self, String.self, Date.self])
     }
 
-    @Test("MinIndexKind rejects less than 2 fields")
-    func testRejectLessThanTwoFields() {
-        // 0 fields
-        #expect(throws: IndexTypeValidationError.self) {
-            try MinIndexKind<AggTestItem, Double>.validateTypes([])
-        }
+    @Test("MinIndexKind accepts one global value field and rejects no fields")
+    func testValidateGlobalValueField() throws {
+        try MinIndexKind<AggregateIndexRecord, Double>.validateTypes([Double.self])
 
-        // 1 field
         #expect(throws: IndexTypeValidationError.self) {
-            try MinIndexKind<AggTestItem, Double>.validateTypes([Double.self])
+            try MinIndexKind<AggregateIndexRecord, Double>.validateTypes([])
         }
     }
 
@@ -166,12 +157,12 @@ struct MinIndexKindTests {
     func testRejectNonComparableFields() {
         // Grouping field is not Comparable
         #expect(throws: IndexTypeValidationError.self) {
-            try MinIndexKind<AggTestItem, Double>.validateTypes([[Int].self, Double.self])
+            try MinIndexKind<AggregateIndexRecord, Double>.validateTypes([[Int].self, Double.self])
         }
 
         // Value field is not Comparable
         #expect(throws: IndexTypeValidationError.self) {
-            try MinIndexKind<AggTestItem, Int64>.validateTypes([String.self, [Int].self])
+            try MinIndexKind<AggregateIndexRecord, Int64>.validateTypes([String.self, [Int].self])
         }
     }
 }
@@ -183,36 +174,32 @@ struct MaxIndexKindTests {
 
     @Test("MaxIndexKind has correct identifier")
     func testIdentifier() {
-        #expect(MaxIndexKind<AggTestItem, Int64>.identifier == "max")
+        #expect(MaxIndexKind<AggregateIndexRecord, Int64>.identifier == "max")
     }
 
     @Test("MaxIndexKind has flat subspace structure")
     func testSubspaceStructure() {
-        #expect(MaxIndexKind<AggTestItem, Int64>.subspaceStructure == .flat)
+        #expect(MaxIndexKind<AggregateIndexRecord, Int64>.subspaceStructure == .flat)
     }
 
     @Test("MaxIndexKind validates grouping + Comparable value field")
     func testValidateGroupingAndComparableField() throws {
         // String + Double
-        try MaxIndexKind<AggTestItem, Double>.validateTypes([String.self, Double.self])
+        try MaxIndexKind<AggregateIndexRecord, Double>.validateTypes([String.self, Double.self])
 
         // String + Int64
-        try MaxIndexKind<AggTestItem, Int64>.validateTypes([String.self, Int64.self])
+        try MaxIndexKind<AggregateIndexRecord, Int64>.validateTypes([String.self, Int64.self])
 
         // String + String + Date (composite grouping + value)
-        try MaxIndexKind<AggTestItem, Date>.validateTypes([String.self, String.self, Date.self])
+        try MaxIndexKind<AggregateIndexRecord, Date>.validateTypes([String.self, String.self, Date.self])
     }
 
-    @Test("MaxIndexKind rejects less than 2 fields")
-    func testRejectLessThanTwoFields() {
-        // 0 fields
-        #expect(throws: IndexTypeValidationError.self) {
-            try MaxIndexKind<AggTestItem, Double>.validateTypes([])
-        }
+    @Test("MaxIndexKind accepts one global value field and rejects no fields")
+    func testValidateGlobalValueField() throws {
+        try MaxIndexKind<AggregateIndexRecord, Double>.validateTypes([Double.self])
 
-        // 1 field
         #expect(throws: IndexTypeValidationError.self) {
-            try MaxIndexKind<AggTestItem, Double>.validateTypes([Double.self])
+            try MaxIndexKind<AggregateIndexRecord, Double>.validateTypes([])
         }
     }
 
@@ -220,12 +207,12 @@ struct MaxIndexKindTests {
     func testRejectNonComparableFields() {
         // Grouping field is not Comparable
         #expect(throws: IndexTypeValidationError.self) {
-            try MaxIndexKind<AggTestItem, Double>.validateTypes([[Int].self, Double.self])
+            try MaxIndexKind<AggregateIndexRecord, Double>.validateTypes([[Int].self, Double.self])
         }
 
         // Value field is not Comparable
         #expect(throws: IndexTypeValidationError.self) {
-            try MaxIndexKind<AggTestItem, Int64>.validateTypes([String.self, [Int].self])
+            try MaxIndexKind<AggregateIndexRecord, Int64>.validateTypes([String.self, [Int].self])
         }
     }
 }

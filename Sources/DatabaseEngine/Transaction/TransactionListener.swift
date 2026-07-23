@@ -4,7 +4,11 @@
 // Reference: FDB Record Layer TransactionListener
 // Provides hooks for transaction lifecycle events at the database level.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Synchronization
 
@@ -38,13 +42,13 @@ public enum TransactionEvent: Sendable, CustomStringConvertible {
             return "Transaction[\(id ?? "unnamed")] committing at \(ts)"
         case .committed(let id, let ts, let duration, let version):
             let versionStr = version.map { ", version=\($0)" } ?? ""
-            return "Transaction[\(id ?? "unnamed")] committed at \(ts) (duration=\(String(format: "%.3f", duration * 1000))ms\(versionStr))"
+            return "Transaction[\(id ?? "unnamed")] committed at \(ts) (duration=\(DatabaseTextFormatting.fixedDecimal(duration * 1000, fractionDigits: 3))ms\(versionStr))"
         case .failed(let id, let ts, let duration, let error):
-            return "Transaction[\(id ?? "unnamed")] failed at \(ts) (duration=\(String(format: "%.3f", duration * 1000))ms, error=\(error))"
+            return "Transaction[\(id ?? "unnamed")] failed at \(ts) (duration=\(DatabaseTextFormatting.fixedDecimal(duration * 1000, fractionDigits: 3))ms, error=\(error))"
         case .cancelled(let id, let ts, let duration):
-            return "Transaction[\(id ?? "unnamed")] cancelled at \(ts) (duration=\(String(format: "%.3f", duration * 1000))ms)"
+            return "Transaction[\(id ?? "unnamed")] cancelled at \(ts) (duration=\(DatabaseTextFormatting.fixedDecimal(duration * 1000, fractionDigits: 3))ms)"
         case .closed(let id, let ts, let totalDuration):
-            return "Transaction[\(id ?? "unnamed")] closed at \(ts) (total=\(String(format: "%.3f", totalDuration * 1000))ms)"
+            return "Transaction[\(id ?? "unnamed")] closed at \(ts) (total=\(DatabaseTextFormatting.fixedDecimal(totalDuration * 1000, fractionDigits: 3))ms)"
         }
     }
 
@@ -119,10 +123,10 @@ public protocol TransactionListener: Sendable {
     func onEvent(_ event: TransactionEvent)
 }
 
-// MARK: - Built-in Listeners
+// MARK: - Transaction Event Handlers
 
-/// Closure-based transaction listener
-public struct ClosureTransactionListener: TransactionListener {
+/// Delivers each transaction lifecycle event to an application handler.
+public struct TransactionEventHandler: TransactionListener {
     private let handler: @Sendable (TransactionEvent) -> Void
 
     public init(_ handler: @escaping @Sendable (TransactionEvent) -> Void) {
@@ -285,8 +289,8 @@ public struct TransactionListenerMetrics: Sendable, CustomStringConvertible {
         """
         TransactionMetrics:
           Total: \(totalTransactions) (committed: \(committedTransactions), failed: \(failedTransactions), cancelled: \(cancelledTransactions))
-          Success rate: \(String(format: "%.1f%%", successRate * 100))
-          Duration: avg=\(String(format: "%.2f", avgDurationMs))ms, min=\(String(format: "%.2f", minDurationMs))ms, max=\(String(format: "%.2f", maxDurationMs))ms
+          Success rate: \(DatabaseTextFormatting.fixedDecimal(successRate * 100, fractionDigits: 1))%
+          Duration: avg=\(DatabaseTextFormatting.fixedDecimal(avgDurationMs, fractionDigits: 2))ms, min=\(DatabaseTextFormatting.fixedDecimal(minDurationMs, fractionDigits: 2))ms, max=\(DatabaseTextFormatting.fixedDecimal(maxDurationMs, fractionDigits: 2))ms
         """
     }
 }
@@ -327,9 +331,9 @@ public final class TransactionListenerRegistry: Sendable {
         listeners.withLock { $0.append(listener) }
     }
 
-    /// Add a closure-based listener
+    /// Add an application-defined transaction event handler.
     public func add(_ handler: @escaping @Sendable (TransactionEvent) -> Void) {
-        add(ClosureTransactionListener(handler))
+        add(TransactionEventHandler(handler))
     }
 
     /// Remove all listeners

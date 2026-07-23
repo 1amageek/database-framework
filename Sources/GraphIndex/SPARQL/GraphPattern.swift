@@ -3,7 +3,11 @@
 //
 // Represents composed graph patterns following SPARQL algebra.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Represents a graph pattern that can be composed
 ///
@@ -44,6 +48,17 @@ public indirect enum ExecutionPattern: Sendable {
     /// Pattern must match AND filter expression must evaluate to true.
     case filter(ExecutionPattern, FilterExpression)
 
+    /// Extend every input solution with the value of a canonical SPARQL
+    /// expression. Expression errors leave the target variable unbound while
+    /// resource and runtime failures abort execution.
+    case extend(ExecutionPattern, variable: String, expression: SPARQLExpressionPlan)
+
+    /// A compiled inline solution relation from SPARQL VALUES.
+    case values(SPARQLValuesTable)
+
+    /// Evaluate a pattern with a named graph as its active graph.
+    case graph(ExecutionGraphSelector, ExecutionPattern)
+
     /// Group by pattern with aggregation
     ///
     /// Groups results by specified variables and applies aggregate functions.
@@ -51,10 +66,15 @@ public indirect enum ExecutionPattern: Sendable {
     ///
     /// - Parameters:
     ///   - pattern: The source pattern to group
-    ///   - groupVariables: Variables to group by
+    ///   - grouping: Explicit keys or the implicit aggregate grouping mode
     ///   - aggregates: Aggregate expressions to compute
     ///   - having: Optional filter on aggregate results
-    case groupBy(ExecutionPattern, groupVariables: [String], aggregates: [AggregateExpression], having: FilterExpression?)
+    case groupBy(
+        ExecutionPattern,
+        grouping: SPARQLGroupingPlan,
+        aggregates: [AggregateExpression],
+        having: FilterExpression?
+    )
 
     /// Property path pattern
     ///
@@ -82,82 +102,148 @@ public indirect enum ExecutionPattern: Sendable {
     /// with the left's variable bindings injected. Results are unioned.
     case lateral(ExecutionPattern, ExecutionPattern)
 
+    /// An independently compiled Select algebra boundary.
+    case subquery(SPARQLSubqueryExecutionPlan)
+
     // MARK: - Variables
 
-    /// All variables referenced in this pattern
-    public var variables: Set<String> {
+    /// Variables made visible to the enclosing algebra node.
+    public var outputVariables: Set<String> {
         switch self {
         case .basic(let patterns):
             return patterns.reduce(into: Set<String>()) { result, pattern in
                 result.formUnion(pattern.variables)
             }
         case .join(let left, let right):
-            return left.variables.union(right.variables)
+            return left.outputVariables.union(right.outputVariables)
         case .optional(let left, let right):
-            return left.variables.union(right.variables)
+            return left.outputVariables.union(right.outputVariables)
         case .union(let left, let right):
-            return left.variables.union(right.variables)
-        case .filter(let pattern, let expression):
-            return pattern.variables.union(expression.variables)
-        case .groupBy(_, let groupVariables, let aggregates, _):
-            // Output variables are group variables + aggregate aliases
-            var result = Set(groupVariables)
+            return left.outputVariables.union(right.outputVariables)
+        case .filter(let pattern, _):
+            return pattern.outputVariables
+        case .extend(let pattern, let variable, _):
+            return pattern.outputVariables.union([variable])
+        case .values(let table):
+            return Set(table.variables)
+        case .graph(let selector, let pattern):
+            return selector.variables.union(pattern.outputVariables)
+        case .groupBy(_, let grouping, let aggregates, _):
+            var result = Set(grouping.keys.lazy.map(\.outputVariable))
             for agg in aggregates {
                 result.insert(agg.alias)
             }
             return result
         case .minus(let left, _):
-            return left.variables  // MINUS does not project right variables
+            return left.outputVariables
         case .propertyPath(let subject, _, let object):
             var result = Set<String>()
             if case .variable(let name) = subject { result.insert(name) }
             if case .variable(let name) = object { result.insert(name) }
             return result
         case .lateral(let left, let right):
-            return left.variables.union(right.variables)
+            return left.outputVariables.union(right.outputVariables)
+        case .subquery(let plan):
+            return Set(plan.select.projectionVariables)
+        }
+    }
+
+    /// Every variable mentioned by this algebra tree, including expression-only
+    /// references that are not projected by the node.
+    public var referencedVariables: Set<String> {
+        switch self {
+        case .basic(let patterns):
+            return patterns.reduce(into: Set<String>()) { result, pattern in
+                result.formUnion(pattern.variables)
+            }
+        case .join(let left, let right), .optional(let left, let right),
+             .union(let left, let right), .minus(let left, let right),
+             .lateral(let left, let right):
+            return left.referencedVariables.union(right.referencedVariables)
+        case .filter(let pattern, let expression):
+            return pattern.referencedVariables.union(expression.variables)
+        case .extend(let pattern, _, let expression):
+            return pattern.referencedVariables.union(
+                expression.referencedVariables
+            )
+        case .values(let table):
+            return Set(table.variables)
+        case .graph(let selector, let pattern):
+            return selector.variables.union(pattern.referencedVariables)
+        case .groupBy(let pattern, let grouping, let aggregates, let having):
+            var result = pattern.referencedVariables
+            for key in grouping.keys {
+                result.formUnion(key.expression.referencedVariables)
+            }
+            for aggregate in aggregates {
+                if let expression = aggregate.inputExpression {
+                    result.formUnion(expression.referencedVariables)
+                }
+            }
+            if let having {
+                result.formUnion(having.variables)
+            }
+            return result
+        case .propertyPath(let subject, _, let object):
+            var result = Set<String>()
+            if case .variable(let name) = subject { result.insert(name) }
+            if case .variable(let name) = object { result.insert(name) }
+            return result
+        case .subquery(let plan):
+            return plan.select.ordered.algebra.referencedVariables
         }
     }
 
     /// Variables that must be bound (appear in required patterns)
     ///
     /// For OPTIONAL, only variables from the left side are required.
-    public var requiredVariables: Set<String> {
+    public var requiredOutputVariables: Set<String> {
         switch self {
         case .basic(let patterns):
             return patterns.reduce(into: Set<String>()) { result, pattern in
                 result.formUnion(pattern.variables)
             }
         case .join(let left, let right):
-            return left.requiredVariables.union(right.requiredVariables)
+            return left.requiredOutputVariables.union(
+                right.requiredOutputVariables
+            )
         case .optional(let left, _):
-            return left.requiredVariables  // Only left is required
+            return left.requiredOutputVariables
         case .union(let left, let right):
-            // Variables required in BOTH branches are required overall
-            return left.requiredVariables.intersection(right.requiredVariables)
+            return left.requiredOutputVariables.intersection(
+                right.requiredOutputVariables
+            )
         case .filter(let pattern, _):
-            return pattern.requiredVariables
-        case .groupBy(_, let groupVariables, let aggregates, _):
-            // All output variables are required after grouping
-            var result = Set(groupVariables)
-            for agg in aggregates {
-                result.insert(agg.alias)
-            }
-            return result
+            return pattern.requiredOutputVariables
+        case .extend(let pattern, _, _):
+            return pattern.requiredOutputVariables
+        case .values(let table):
+            return table.alwaysBoundVariables
+        case .graph(let selector, let pattern):
+            return selector.variables.union(pattern.requiredOutputVariables)
+        case .groupBy:
+            // Group expressions and aggregate evaluation can leave individual
+            // outputs unbound under SPARQL expression-error semantics.
+            return []
         case .minus(let left, _):
-            return left.requiredVariables
+            return left.requiredOutputVariables
         case .propertyPath(let subject, _, let object):
             var result = Set<String>()
             if case .variable(let name) = subject { result.insert(name) }
             if case .variable(let name) = object { result.insert(name) }
             return result
         case .lateral(let left, let right):
-            return left.requiredVariables.union(right.requiredVariables)
+            return left.requiredOutputVariables.union(
+                right.requiredOutputVariables
+            )
+        case .subquery(let plan):
+            return Set(plan.select.projectionVariables)
         }
     }
 
     /// Variables that might be unbound (from OPTIONAL or UNION)
     public var optionalVariables: Set<String> {
-        variables.subtracting(requiredVariables)
+        outputVariables.subtracting(requiredOutputVariables)
     }
 
     // MARK: - Pattern Analysis
@@ -175,6 +261,12 @@ public indirect enum ExecutionPattern: Sendable {
             return left.isEmpty && right.isEmpty
         case .filter(let pattern, _):
             return pattern.isEmpty
+        case .extend(let pattern, _, _):
+            return pattern.isEmpty
+        case .values(let table):
+            return table.rowCount == 0
+        case .graph(_, let pattern):
+            return pattern.isEmpty
         case .groupBy(let pattern, _, _, _):
             return pattern.isEmpty
         case .minus(let left, _):
@@ -183,36 +275,41 @@ public indirect enum ExecutionPattern: Sendable {
             return false  // Property paths are never empty
         case .lateral(let left, _):
             return left.isEmpty
+        case .subquery:
+            return false
         }
     }
 
-    /// Extract all triple patterns (flattening the structure)
-    public var allExecutionTriples: [ExecutionTriple] {
+    /// Number of atomic triple patterns contained in this algebra tree.
+    public var patternCount: Int {
         switch self {
         case .basic(let patterns):
-            return patterns
+            return patterns.count
         case .join(let left, let right):
-            return left.allExecutionTriples + right.allExecutionTriples
+            return left.patternCount + right.patternCount
         case .optional(let left, let right):
-            return left.allExecutionTriples + right.allExecutionTriples
+            return left.patternCount + right.patternCount
         case .union(let left, let right):
-            return left.allExecutionTriples + right.allExecutionTriples
+            return left.patternCount + right.patternCount
         case .filter(let pattern, _):
-            return pattern.allExecutionTriples
+            return pattern.patternCount
+        case .extend(let pattern, _, _):
+            return pattern.patternCount
+        case .values:
+            return 1
+        case .graph(_, let pattern):
+            return pattern.patternCount
         case .groupBy(let pattern, _, _, _):
-            return pattern.allExecutionTriples
+            return pattern.patternCount
         case .minus(let left, let right):
-            return left.allExecutionTriples + right.allExecutionTriples
+            return left.patternCount + right.patternCount
         case .propertyPath:
-            return []  // Property paths don't have direct triple patterns
+            return 1
         case .lateral(let left, let right):
-            return left.allExecutionTriples + right.allExecutionTriples
+            return left.patternCount + right.patternCount
+        case .subquery(let plan):
+            return plan.select.ordered.algebra.patternCount
         }
-    }
-
-    /// Number of triple patterns
-    public var patternCount: Int {
-        allExecutionTriples.count
     }
 
     // MARK: - Convenience Constructors
@@ -232,29 +329,6 @@ public indirect enum ExecutionPattern: Sendable {
         .basic([])
     }
 
-    /// Return a new pattern with graph term set on all contained triples
-    public func withGraph(_ graphTerm: ExecutionTerm) -> ExecutionPattern {
-        switch self {
-        case .basic(let triples):
-            return .basic(triples.map { $0.withGraph(graphTerm) })
-        case .join(let left, let right):
-            return .join(left.withGraph(graphTerm), right.withGraph(graphTerm))
-        case .optional(let left, let right):
-            return .optional(left.withGraph(graphTerm), right.withGraph(graphTerm))
-        case .union(let left, let right):
-            return .union(left.withGraph(graphTerm), right.withGraph(graphTerm))
-        case .filter(let pattern, let expression):
-            return .filter(pattern.withGraph(graphTerm), expression)
-        case .groupBy(let pattern, let groupVars, let aggs, let having):
-            return .groupBy(pattern.withGraph(graphTerm), groupVariables: groupVars, aggregates: aggs, having: having)
-        case .minus(let left, let right):
-            return .minus(left.withGraph(graphTerm), right.withGraph(graphTerm))
-        case .propertyPath(let subject, let path, let object):
-            return .propertyPath(subject: subject, path: path, object: object)
-        case .lateral(let left, let right):
-            return .lateral(left.withGraph(graphTerm), right.withGraph(graphTerm))
-        }
-    }
 }
 
 // MARK: - CustomStringConvertible
@@ -273,8 +347,17 @@ extension ExecutionPattern: CustomStringConvertible {
             return "\(left) UNION \(right)"
         case .filter(let pattern, let expr):
             return "\(pattern) FILTER(\(expr))"
-        case .groupBy(let pattern, let groupVars, let aggregates, let having):
-            var result = "\(pattern) GROUP BY \(groupVars.joined(separator: ", "))"
+        case .extend(let pattern, let variable, let expression):
+            return "\(pattern) EXTEND(\(variable) := \(expression.expression))"
+        case .values(let table):
+            return "VALUES[\(table.rowCount)x\(table.variables.count)]"
+        case .graph(let selector, let pattern):
+            return "GRAPH \(selector) \(pattern)"
+        case .groupBy(let pattern, let grouping, let aggregates, let having):
+            let keys = grouping.keys.map {
+                "\($0.expression.expression) AS \($0.outputVariable)"
+            }
+            var result = "\(pattern) GROUP BY \(keys.joined(separator: ", "))"
             if !aggregates.isEmpty {
                 result += " AGGREGATES(\(aggregates.map { $0.description }.joined(separator: ", ")))"
             }
@@ -288,6 +371,8 @@ extension ExecutionPattern: CustomStringConvertible {
             return "{ \(subject) \(path) \(object) }"
         case .lateral(let left, let right):
             return "\(left) LATERAL \(right)"
+        case .subquery(let plan):
+            return "SUBQUERY[\(plan.occurrenceIdentifier)](\(plan.select.ordered.algebra))"
         }
     }
 }
@@ -307,6 +392,15 @@ extension ExecutionPattern: Equatable {
             return ll == rl && lr == rr
         case (.filter(let lp, let le), .filter(let rp, let re)):
             return lp == rp && le == re
+        case (
+            .extend(let lp, let lv, let le),
+            .extend(let rp, let rv, let re)
+        ):
+            return lp == rp && lv == rv && le == re
+        case (.values(let left), .values(let right)):
+            return left == right
+        case (.graph(let ls, let lp), .graph(let rs, let rp)):
+            return ls == rs && lp == rp
         case (.groupBy(let lp, let lgv, let lagg, let lh), .groupBy(let rp, let rgv, let ragg, let rh)):
             return lp == rp && lgv == rgv && lagg == ragg && lh == rh
         case (.minus(let ll, let lr), .minus(let rl, let rr)):
@@ -315,6 +409,8 @@ extension ExecutionPattern: Equatable {
             return ls == rs && lp == rp && lo == ro
         case (.lateral(let ll, let lr), .lateral(let rl, let rr)):
             return ll == rl && lr == rr
+        case (.subquery(let lhs), .subquery(let rhs)):
+            return lhs == rhs
         default:
             return false
         }

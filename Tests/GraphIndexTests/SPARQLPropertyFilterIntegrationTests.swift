@@ -5,6 +5,8 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import Graph
 import DatabaseEngine
 import StorageKit
@@ -61,7 +63,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     // MARK: - Setup
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     private func uniqueID(_ prefix: String) -> String {
@@ -87,12 +89,18 @@ struct SPARQLPropertyFilterIntegrationTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([SocialConnection.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
 
 
-        try? await database.directoryService.remove(path: ["test", "sparql_property"])
+        if try await database.directoryExists(
+            path: ["test", "sparql_property"]
+        ) {
+            try await database.removeDirectory(
+                path: ["test", "sparql_property"]
+            )
+        }
         try await container.ensureIndexesReady()
 
         return container
@@ -133,8 +141,7 @@ struct SPARQLPropertyFilterIntegrationTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .equals("?since", .int64(2020))
@@ -174,8 +181,7 @@ struct SPARQLPropertyFilterIntegrationTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .greaterThanOrEqual("?since", .int64(2020))
@@ -213,8 +219,7 @@ struct SPARQLPropertyFilterIntegrationTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .contains("?status", "active")
@@ -248,8 +253,7 @@ struct SPARQLPropertyFilterIntegrationTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .and(
@@ -284,8 +288,7 @@ struct SPARQLPropertyFilterIntegrationTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .and(
@@ -307,24 +310,30 @@ struct SPARQLPropertyFilterIntegrationTests {
 
     @Test("Backward compatibility - no stored fields")
     func testBackwardCompatibilityNoStoredFields() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([BasicEdge.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
 
         
-        try? await database.directoryService.remove(path: ["test", "basic_edge"])
+        if try await database.directoryExists(
+            path: ["test", "basic_edge"]
+        ) {
+            try await database.removeDirectory(
+                path: ["test", "basic_edge"]
+            )
+        }
 
         // Set index to readable
         let subspace = try await container.resolveDirectory(for: BasicEdge.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
+        let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
 
         for descriptor in BasicEdge.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
+            let currentState = try await indexLifecycleStore.state(of: descriptor.name)
             if currentState == .disabled {
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
+                try await indexLifecycleStore.enable(descriptor.name)
+                try await indexLifecycleStore.makeReadable(descriptor.name)
             } else if currentState == .writeOnly {
-                try await indexStateManager.makeReadable(descriptor.name)
+                try await indexLifecycleStore.makeReadable(descriptor.name)
             }
         }
 
@@ -342,8 +351,7 @@ struct SPARQLPropertyFilterIntegrationTests {
             ExecutionTriple(
                 subject: .value(.string(alice)),
                 predicate: .value(.string("knows")),
-                object: .variable("?target"),
-                graph: nil
+                    object: .variable("?target")
             )
         ])
 
@@ -387,8 +395,7 @@ struct SPARQLPropertyFilterIntegrationTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             .equals("?since", .int64(2025))
@@ -422,8 +429,7 @@ struct SPARQLPropertyFilterIntegrationTests {
                 ExecutionTriple(
                     subject: .value(.string(alice)),
                     predicate: .value(.string("knows")),
-                    object: .variable("?target"),
-                    graph: nil
+                    object: .variable("?target")
                 )
             ]),
             on: SocialConnection.self,
@@ -459,8 +465,7 @@ struct SPARQLPropertyFilterIntegrationTests {
             ExecutionTriple(
                 subject: .value(.string(alice)),
                 predicate: .value(.string("knows")),
-                object: .variable("?target"),
-                graph: nil
+                    object: .variable("?target")
             )
         ])
 

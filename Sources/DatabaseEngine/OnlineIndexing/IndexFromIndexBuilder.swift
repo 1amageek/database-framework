@@ -6,7 +6,11 @@
 // This can significantly reduce I/O when the source index contains
 // all the information needed for the target index.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Core
 import Metrics
@@ -48,7 +52,7 @@ public enum IndexSourceCompatibility: Sendable {
 ///     targetIndex: emailDomainIndex,
 ///     sourceMaintainer: emailMaintainer,
 ///     targetMaintainer: emailDomainMaintainer,
-///     stateManager: stateManager
+///     lifecycleStore: lifecycleStore
 /// )
 ///
 /// // Check compatibility first
@@ -90,7 +94,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     private let targetMaintainer: any IndexMaintainer<Item>
 
     /// Index state manager
-    private let stateManager: IndexStateManager
+    private let lifecycleStore: IndexLifecycleStore
 
     /// Throttler for batch operations
     private let throttler: AdaptiveThrottler
@@ -127,7 +131,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         targetIndex: Index,
         sourceMaintainer: any IndexMaintainer<Item>,
         targetMaintainer: any IndexMaintainer<Item>,
-        stateManager: IndexStateManager,
+        lifecycleStore: IndexLifecycleStore,
         throttleConfiguration: ThrottleConfiguration = .default
     ) {
         self.container = container
@@ -139,8 +143,11 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         self.targetIndex = targetIndex
         self.sourceMaintainer = sourceMaintainer
         self.targetMaintainer = targetMaintainer
-        self.stateManager = stateManager
-        self.throttler = AdaptiveThrottler(configuration: throttleConfiguration)
+        self.lifecycleStore = lifecycleStore
+        self.throttler = AdaptiveThrottler(
+            configuration: throttleConfiguration,
+            clock: container.engine.monotonicClock
+        )
         self.state = Mutex(State())
 
         // Progress key
@@ -187,14 +194,9 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         // In a real implementation, we would check the actual index state
 
         // Check if source index provides enough information
-        guard let sourceKeyPaths = sourceIndex.keyPaths,
-              let targetKeyPaths = targetIndex.keyPaths else {
-            return .incompatible(reason: "Cannot determine index field paths")
-        }
-
         // Check if target fields are subset of source fields
-        let sourceFields = Set(sourceKeyPaths)
-        let targetFields = Set(targetKeyPaths)
+        let sourceFields = Set(sourceIndex.kind.fieldNames)
+        let targetFields = Set(targetIndex.kind.fieldNames)
 
         if targetFields.isSubset(of: sourceFields) {
             return .compatible
@@ -230,7 +232,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         }
 
         // Set target index to write-only state
-        try await stateManager.enable(targetIndex.name)
+        try await lifecycleStore.enable(targetIndex.name)
 
         // Clear if requested
         if clearFirst {
@@ -255,7 +257,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         }
 
         // Transition to readable
-        try await stateManager.makeReadable(targetIndex.name)
+        try await lifecycleStore.makeReadable(targetIndex.name)
 
         // Clear progress
         try await clearProgress()
@@ -310,7 +312,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                         // Build target index entry
                         try await self.buildTargetEntry(pk: pk, fieldValues: fieldValues, transaction: transaction)
 
-                        lastProcessedKey = Array(key)
+                        lastProcessedKey = key
                         itemsInBatch += 1
 
                         // Break after batchSize items to limit transaction size
@@ -407,7 +409,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     )
 
                     // Use ItemStorage to handle ItemEnvelope format (inline/external)
-                    let storage = ItemStorage(
+                    let storage = self.container.itemStorageFactory.make(
                         transaction: transaction,
                         blobsSubspace: self.blobsSubspace
                     )
@@ -434,7 +436,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
 
                         batchEntries.append((item: item, id: pk))
 
-                        lastProcessedKey = Array(key)
+                        lastProcessedKey = key
                         itemsInBatch += 1
 
                         // Break after batchSize items to limit transaction size
@@ -549,7 +551,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         }
 
         let targetKey = targetSubspace.pack(Tuple(targetElements))
-        transaction.setValue([], for: targetKey)
+        try transaction.setValue([], for: targetKey)
     }
 
     // MARK: - Progress Management
@@ -559,18 +561,17 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
             guard let bytes = try await transaction.getValue(for: self.progressKey) else {
                 return nil
             }
-            return try JSONDecoder().decode(RangeSet.self, from: Data(bytes))
+            return try RangeSetCodec.decode(bytes)
         }
     }
 
     private func saveProgress(_ rangeSet: RangeSet, transaction: any Transaction) throws {
-        let data = try JSONEncoder().encode(rangeSet)
-        transaction.setValue(Array(data), for: progressKey)
+        try transaction.setValue(try RangeSetCodec.encode(rangeSet), for: progressKey)
     }
 
     private func clearProgress() async throws {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
-            transaction.clear(key: self.progressKey)
+            try transaction.clear(key: self.progressKey)
         }
     }
 
@@ -579,7 +580,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     private func clearTargetIndex() async throws {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             let targetRange = self.indexSubspace.subspace(self.targetIndex.name).range()
-            transaction.clearRange(beginKey: targetRange.begin, endKey: targetRange.end)
+            try transaction.clearRange(beginKey: targetRange.begin, endKey: targetRange.end)
         }
     }
 
@@ -618,12 +619,12 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
 
                 if reservoir.count < sampleSize {
                     // Fill reservoir
-                    reservoir.append((Array(key), Array(value)))
+                    reservoir.append((key, value))
                 } else {
                     // Reservoir sampling: replace with probability sampleSize/itemsSeen
                     let randomIndex = Int.random(in: 0..<itemsSeen)
                     if randomIndex < sampleSize {
-                        reservoir[randomIndex] = (Array(key), Array(value))
+                    reservoir[randomIndex] = (key, value)
                     }
                 }
             }
@@ -687,8 +688,8 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         if errorRate > errorThreshold {
             throw IndexFromIndexError.buildFailed(
                 "Verification failed: \(missingCount)/\(verifiedCount) entries missing " +
-                "(\(String(format: "%.2f", errorRate * 100))% error rate exceeds " +
-                "\(String(format: "%.2f", errorThreshold * 100))% threshold)"
+                "(\(DatabaseTextFormatting.fixedDecimal(errorRate * 100, fractionDigits: 2))% error rate exceeds " +
+                "\(DatabaseTextFormatting.fixedDecimal(errorThreshold * 100, fractionDigits: 2))% threshold)"
             )
         }
     }

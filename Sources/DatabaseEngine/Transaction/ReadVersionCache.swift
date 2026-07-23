@@ -4,7 +4,11 @@
 // Reference: FDB Record Layer FDBDatabase.java - lastSeenVersion caching
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBDatabase.java
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Synchronization
 
 // MARK: - ReadVersionCache

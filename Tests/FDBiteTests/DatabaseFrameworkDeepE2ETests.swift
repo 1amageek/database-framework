@@ -52,8 +52,8 @@ private struct DeepE2ERelationshipOrder {
     var id: String = UUID().uuidString
     var total: Double = 0
 
-    @Relationship(DeepE2ECustomer.self)
-    var customerID: String = ""
+    @Relationship(deleteRule: .nullify)
+    var customer: DatabaseReference<DeepE2ECustomer>? = nil
 }
 
 @Persistable
@@ -381,8 +381,8 @@ struct DatabaseFrameworkDeepE2ETests {
         #expect(!thirdPage.hasMore)
     }
 
-    @Test("SQLite relationship updates tolerate orphan references and clear FK indexes on delete")
-    func sqliteRelationshipUpdatesTolerateOrphansAndClearFKIndexesOnDelete() async throws {
+    @Test("SQLite relationship updates maintain canonical references and nullify on delete")
+    func sqliteRelationshipUpdatesMaintainCanonicalReferences() async throws {
         let schema = Schema(
             [DeepE2ECustomer.self, DeepE2ERelationshipOrder.self],
             version: .init(1, 0, 0)
@@ -394,52 +394,62 @@ struct DatabaseFrameworkDeepE2ETests {
         alice.id = "deep-customer-alice"
         var bob = DeepE2ECustomer(name: "Bob")
         bob.id = "deep-customer-bob"
-        var order = DeepE2ERelationshipOrder(total: 125, customerID: alice.id)
-        order.id = "deep-order-1"
-
         let context = container.newContext()
+        var order = DeepE2ERelationshipOrder(
+            total: 125,
+            customer: try context.reference(to: alice)
+        )
+        order.id = "deep-order-1"
         context.insert(alice)
         context.insert(bob)
         context.insert(order)
         try await context.save()
 
-        let initialRelated = try await context.related(order, \.customerID, as: DeepE2ECustomer.self)
+        let initialRelated = try await context.related(order, \.customer)
         #expect(initialRelated?.id == alice.id)
 
         var movedOrder = order
-        movedOrder.customerID = bob.id
+        movedOrder.customer = try context.reference(to: bob)
         context.replace(old: order, with: movedOrder)
         try await context.save()
 
-        let oldCustomerOrders = try await context.fetch(DeepE2ERelationshipOrder.self)
-            .where(\.customerID == alice.id)
-            .execute()
-        let newCustomerOrders = try await context.fetch(DeepE2ERelationshipOrder.self)
-            .where(\.customerID == bob.id)
-            .execute()
-        let movedRelated = try await context.related(movedOrder, \.customerID, as: DeepE2ECustomer.self)
+        let inverse = context.inverseRelationshipResolver()
+        let oldCustomerOrders = try await inverse.referencedBy(
+            try context.reference(to: alice),
+            from: DeepE2ERelationshipOrder.self,
+            via: \.customer,
+            limit: 10
+        )
+        let newCustomerOrders = try await inverse.referencedBy(
+            try context.reference(to: bob),
+            from: DeepE2ERelationshipOrder.self,
+            via: \.customer,
+            limit: 10
+        )
+        let movedRelated = try await context.related(movedOrder, \.customer)
 
-        #expect(oldCustomerOrders.isEmpty)
-        #expect(newCustomerOrders.map(\.id) == [order.id])
+        #expect(oldCustomerOrders.records.isEmpty)
+        #expect(newCustomerOrders.records.map(\.id) == [order.id])
         #expect(movedRelated?.id == bob.id)
 
         context.delete(bob)
         try await context.save()
 
-        let orphanRelated = try await context.related(movedOrder, \.customerID, as: DeepE2ECustomer.self)
-        let orphanOrderHits = try await context.fetch(DeepE2ERelationshipOrder.self)
-            .where(\.customerID == bob.id)
-            .execute()
-        #expect(orphanRelated == nil)
-        #expect(orphanOrderHits.map(\.id) == [order.id])
+        let nullifiedOrder = try await context.model(
+            for: order.id,
+            as: DeepE2ERelationshipOrder.self
+        )
+        #expect(nullifiedOrder?.customer == nil)
 
         context.delete(movedOrder)
         try await context.save()
 
-        let afterOrderDelete = try await context.fetch(DeepE2ERelationshipOrder.self)
-            .where(\.customerID == bob.id)
-            .execute()
-        #expect(afterOrderDelete.isEmpty)
+        #expect(
+            try await context.model(
+                for: order.id,
+                as: DeepE2ERelationshipOrder.self
+            ) == nil
+        )
     }
 
     @Test("SQLite secure dynamic directory enforces stored-owner security during tenant moves")

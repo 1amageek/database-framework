@@ -97,8 +97,6 @@ public struct PlanOptimizer<T: Persistable> {
             return op.index.name == indexName
         case .spatialScan(let op):
             return op.index.name == indexName
-        case .aggregation(let op):
-            return op.index.name == indexName
         case .union(let op):
             return op.children.contains { planUsesIndex($0, named: indexName) }
         case .intersection(let op):
@@ -237,10 +235,9 @@ public struct EliminateRedundantSortRule<T: Persistable>: OptimizationRule {
         sortDescriptors: [SortDescriptor<T>]
     ) -> Bool {
         for (i, sortDesc) in sortDescriptors.enumerated() {
-            guard i < index.keyPaths.count else { return false }
+            guard i < index.fieldNames.count else { return false }
 
-            let indexFieldName = T.fieldName(for: index.keyPaths[i])
-            if indexFieldName != sortDesc.fieldName {
+            if index.fieldNames[i] != sortDesc.fieldName {
                 return false
             }
 

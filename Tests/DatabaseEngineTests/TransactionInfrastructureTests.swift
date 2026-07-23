@@ -115,228 +115,6 @@ final class ConcurrentExecutionTracker: Sendable {
     }
 }
 
-// MARK: - CommitCheck Tests
-
-@Suite("CommitCheck Tests", .serialized, .heartbeat)
-struct CommitCheckTests {
-
-    // MARK: - CommitCheckRegistry Basic Tests
-
-    @Test("CommitCheckRegistry starts empty")
-    func registryStartsEmpty() {
-        let registry = CommitCheckRegistry()
-        #expect(registry.count == 0)
-    }
-
-    @Test("CommitCheckRegistry.add increases count")
-    func addIncreasesCount() {
-        let registry = CommitCheckRegistry()
-        registry.add(PassingCommitCheck(), name: "test1")
-        #expect(registry.count == 1)
-
-        registry.add(PassingCommitCheck(), name: "test2")
-        #expect(registry.count == 2)
-    }
-
-    @Test("CommitCheckRegistry.clear removes all checks")
-    func clearRemovesAllChecks() {
-        let registry = CommitCheckRegistry()
-        registry.add(PassingCommitCheck(), name: "test1")
-        registry.add(PassingCommitCheck(), name: "test2")
-        #expect(registry.count == 2)
-
-        registry.clear()
-        #expect(registry.count == 0)
-    }
-
-    @Test("CommitCheckRegistry.add with closure works")
-    func addWithClosureWorks() async throws {
-        let registry = CommitCheckRegistry()
-        let executed = AtomicBool(false)
-
-        registry.add(name: "closure-check") { _ in
-            executed.set(true)
-        }
-
-        #expect(registry.count == 1)
-
-        // Execute to verify closure works
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
-        try await database.withTransaction { tx in
-            try await registry.executeAll(transaction: tx)
-        }
-        #expect(executed.current == true)
-    }
-
-    // MARK: - CommitCheck Execution Tests
-
-    @Test("CommitCheckRegistry.executeAll runs all passing checks")
-    func executeAllRunsPassingChecks() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
-
-        let registry = CommitCheckRegistry()
-        let executionOrder = AtomicArray<String>()
-
-        registry.add(name: "check1", priority: 100) { _ in
-            executionOrder.append("check1")
-        }
-        registry.add(name: "check2", priority: 50) { _ in
-            executionOrder.append("check2")
-        }
-        registry.add(name: "check3", priority: 200) { _ in
-            executionOrder.append("check3")
-        }
-
-        try await database.withTransaction { tx in
-            try await registry.executeAll(transaction: tx)
-        }
-
-        // Should execute in priority order (lower first)
-        #expect(executionOrder.current == ["check2", "check1", "check3"])
-    }
-
-    @Test("CommitCheckRegistry.executeAll throws on first failure")
-    func executeAllThrowsOnFailure() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
-
-        let registry = CommitCheckRegistry()
-        let executionOrder = AtomicArray<String>()
-
-        registry.add(name: "check1", priority: 100) { _ in
-            executionOrder.append("check1")
-        }
-        registry.add(name: "check2-fails", priority: 200) { _ in
-            executionOrder.append("check2")
-            throw TestCommitCheckError.validationFailed("test failure")
-        }
-        registry.add(name: "check3-should-not-run", priority: 300) { _ in
-            executionOrder.append("check3")
-        }
-
-        do {
-            try await database.withTransaction { tx in
-                try await registry.executeAll(transaction: tx)
-            }
-            Issue.record("Expected error to be thrown")
-        } catch {
-            // Check that check3 was not executed
-            #expect(executionOrder.current == ["check1", "check2"])
-        }
-    }
-
-    // MARK: - CompositeCommitCheck Tests
-
-    @Test("CompositeCommitCheck failFast=true stops on first failure")
-    func compositeFailFastStopsOnFirstFailure() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
-
-        let executed = AtomicArray<Int>()
-
-        let composite = CompositeCommitCheck(checks: [
-            TrackingCommitCheck(id: 1, tracker: executed),
-            FailingCommitCheck(id: 2, tracker: executed),
-            TrackingCommitCheck(id: 3, tracker: executed)
-        ], failFast: true)
-
-        do {
-            try await database.withTransaction { tx in
-                try await composite.check(transaction: tx)
-            }
-            Issue.record("Expected error")
-        } catch {
-            #expect(executed.current == [1, 2])
-        }
-    }
-
-    @Test("CompositeCommitCheck failFast=false collects all failures")
-    func compositeNoFailFastCollectsAllFailures() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
-
-        let executed = AtomicArray<Int>()
-
-        let composite = CompositeCommitCheck(checks: [
-            FailingCommitCheck(id: 1, tracker: executed),
-            TrackingCommitCheck(id: 2, tracker: executed),
-            FailingCommitCheck(id: 3, tracker: executed)
-        ], failFast: false)
-
-        do {
-            try await database.withTransaction { tx in
-                try await composite.check(transaction: tx)
-            }
-            Issue.record("Expected error")
-        } catch let error as CommitCheckError {
-            // All checks should have executed
-            #expect(executed.current == [1, 2, 3])
-
-            // Error should be multipleFailures
-            if case .multipleFailures(let failures) = error {
-                #expect(failures.count == 2)
-            } else {
-                Issue.record("Expected multipleFailures error")
-            }
-        }
-    }
-
-    // MARK: - ConditionalCommitCheck Tests
-
-    @Test("ConditionalCommitCheck executes when condition is true")
-    func conditionalExecutesWhenTrue() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
-
-        let innerExecuted = AtomicBool(false)
-        let inner = SettingCommitCheck(flag: innerExecuted)
-        let conditional = ConditionalCommitCheck(if: { true }, then: inner)
-
-        try await database.withTransaction { tx in
-            try await conditional.check(transaction: tx)
-        }
-
-        #expect(innerExecuted.current == true)
-    }
-
-    @Test("ConditionalCommitCheck skips when condition is false")
-    func conditionalSkipsWhenFalse() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
-
-        let innerExecuted = AtomicBool(false)
-        let inner = SettingCommitCheck(flag: innerExecuted)
-        let conditional = ConditionalCommitCheck(if: { false }, then: inner)
-
-        try await database.withTransaction { tx in
-            try await conditional.check(transaction: tx)
-        }
-
-        #expect(innerExecuted.current == false)
-    }
-
-    // MARK: - CommitCheckError Tests
-
-    @Test("CommitCheckError.validationFailed has correct description")
-    func validationFailedDescription() {
-        let error = CommitCheckError.validationFailed(checkName: "email-unique", reason: "duplicate email")
-        #expect(error.description.contains("email-unique"))
-        #expect(error.description.contains("duplicate email"))
-    }
-
-    @Test("CommitCheckError.multipleFailures has correct description")
-    func multipleFailuresDescription() {
-        let error = CommitCheckError.multipleFailures(failures: [
-            ("check1", "reason1"),
-            ("check2", "reason2")
-        ])
-        #expect(error.description.contains("check1"))
-        #expect(error.description.contains("check2"))
-    }
-}
-
 // MARK: - PostCommit Tests
 
 @Suite("PostCommit Tests", .serialized, .heartbeat)
@@ -416,7 +194,7 @@ struct PostCommitTests {
         let registry = PostCommitRegistry()
 
         registry.add(name: "failing-hook") {
-            throw TestPostCommitError.intentionalFailure
+            throw PostCommitFailure.intentionalFailure
         }
         registry.add(name: "passing-hook") {
             // Success
@@ -489,7 +267,7 @@ struct PostCommitTests {
     func delayedPostCommitWaits() async throws {
         let executed = AtomicBool(false)
         let inner = SettingPostCommit(flag: executed)
-        let delayed = DelayedPostCommit(inner, delay: 0.05) // 50ms
+        let delayed = DelayedPostCommit(inner, delay: .milliseconds(50))
 
         let startTime = Date()
         try await delayed.run()
@@ -606,7 +384,7 @@ struct TransactionListenerTests {
             .created(id: "id1", timestamp: Date()),
             .committing(id: "id2", timestamp: Date()),
             .committed(id: "id3", timestamp: Date(), duration: 0.1, version: 123),
-            .failed(id: "id4", timestamp: Date(), duration: 0.1, error: TransactionTestError.test),
+            .failed(id: "id4", timestamp: Date(), duration: 0.1, error: TransactionFailure.injected),
             .cancelled(id: "id5", timestamp: Date(), duration: 0.1),
             .closed(id: "id6", timestamp: Date(), totalDuration: 0.1)
         ]
@@ -714,7 +492,7 @@ struct TransactionListenerTests {
         tracker.markCommitted(version: 123)
 
         // These should be ignored (already committed)
-        tracker.markFailed(error: TransactionTestError.test)
+        tracker.markFailed(error: TransactionFailure.injected)
         tracker.markCancelled()
         tracker.markCommitted(version: 456)
 
@@ -783,7 +561,7 @@ struct TransactionListenerTests {
         let listener = MetricsTransactionListener()
 
         listener.onEvent(.created(id: "tx1", timestamp: Date()))
-        listener.onEvent(.failed(id: "tx1", timestamp: Date(), duration: 0.1, error: TransactionTestError.test))
+        listener.onEvent(.failed(id: "tx1", timestamp: Date(), duration: 0.1, error: TransactionFailure.injected))
 
         #expect(listener.metrics.failedTransactions == 1)
     }
@@ -808,7 +586,7 @@ struct TransactionListenerTests {
         listener.onEvent(.created(id: nil, timestamp: Date()))
         listener.onEvent(.committed(id: nil, timestamp: Date(), duration: 0.1, version: nil))
         listener.onEvent(.created(id: nil, timestamp: Date()))
-        listener.onEvent(.failed(id: nil, timestamp: Date(), duration: 0.1, error: TransactionTestError.test))
+        listener.onEvent(.failed(id: nil, timestamp: Date(), duration: 0.1, error: TransactionFailure.injected))
         listener.onEvent(.created(id: nil, timestamp: Date()))
         listener.onEvent(.cancelled(id: nil, timestamp: Date(), duration: 0.1))
 
@@ -836,7 +614,7 @@ struct TransactionListenerTests {
     @Test("FilteringTransactionListener only forwards matching events")
     func filteringOnlyForwardsMatching() {
         let events = AtomicArray<TransactionEvent>()
-        let inner = ClosureTransactionListener { event in
+        let inner = TransactionEventHandler { event in
             events.append(event)
         }
 
@@ -848,7 +626,7 @@ struct TransactionListenerTests {
 
         filtering.onEvent(.created(id: nil, timestamp: Date()))
         filtering.onEvent(.committed(id: nil, timestamp: Date(), duration: 0.1, version: nil))
-        filtering.onEvent(.failed(id: nil, timestamp: Date(), duration: 0.1, error: TransactionTestError.test))
+        filtering.onEvent(.failed(id: nil, timestamp: Date(), duration: 0.1, error: TransactionFailure.injected))
         filtering.onEvent(.committed(id: nil, timestamp: Date(), duration: 0.2, version: nil))
 
         #expect(events.count == 2)
@@ -858,13 +636,13 @@ struct TransactionListenerTests {
 
     @Test("LoggingTransactionListener uses provided logger")
     func loggingUsesProvidedLogger() {
-        let mockLogger = TestLogger()
-        let listener = LoggingTransactionListener(logger: mockLogger, level: .info)
+        let recordingLogger = RecordingLogger()
+        let listener = LoggingTransactionListener(logger: recordingLogger, level: .info)
 
         listener.onEvent(.created(id: "test", timestamp: Date()))
 
-        #expect(mockLogger.infoMessages.count == 1)
-        #expect(mockLogger.infoMessages.current[0].contains("test"))
+        #expect(recordingLogger.infoMessages.count == 1)
+        #expect(recordingLogger.infoMessages.current[0].contains("test"))
     }
 }
 
@@ -999,12 +777,12 @@ struct TransactionConfigurationExtendedTests {
     @Test("TransactionConfiguration init has reasonable parameter count")
     func initHasReasonableParameterCount() {
         // The init now has 8 parameters instead of 11
-        // Core: timeout, retryLimit, maxRetryDelay, priority, readPriority, disableReadCache, cachePolicy
+        // Core: timeout, maximumAttempts, maxRetryDelay, priority, readPriority, disableReadCache, cachePolicy
         // Grouped: tracing
 
         let config = TransactionConfiguration(
             timeout: 5000,
-            retryLimit: 3,
+            maximumAttempts: 3,
             maxRetryDelay: 500,
             priority: .batch,
             readPriority: .low,
@@ -1014,7 +792,7 @@ struct TransactionConfigurationExtendedTests {
         )
 
         #expect(config.timeout == 5000)
-        #expect(config.retryLimit == 3)
+        #expect(config.maximumAttempts == 3)
         #expect(config.maxRetryDelay == 500)
         #expect(config.priority == .batch)
         #expect(config.readPriority == .low)
@@ -1025,43 +803,6 @@ struct TransactionConfigurationExtendedTests {
 }
 
 // MARK: - Test Helpers (Sendable-compliant)
-
-struct PassingCommitCheck: CommitCheck {
-    func check(transaction: any Transaction) async throws {
-        // Always passes
-    }
-}
-
-struct TrackingCommitCheck: CommitCheck {
-    let id: Int
-    let tracker: AtomicArray<Int>
-
-    func check(transaction: any Transaction) async throws {
-        tracker.append(id)
-    }
-}
-
-struct FailingCommitCheck: CommitCheck {
-    let id: Int
-    let tracker: AtomicArray<Int>
-
-    func check(transaction: any Transaction) async throws {
-        tracker.append(id)
-        throw TestCommitCheckError.validationFailed("test")
-    }
-}
-
-struct SettingCommitCheck: CommitCheck {
-    let flag: AtomicBool
-
-    func check(transaction: any Transaction) async throws {
-        flag.set(true)
-    }
-}
-
-enum TestCommitCheckError: Error {
-    case validationFailed(String)
-}
 
 struct NoOpPostCommit: PostCommit {
     func run() async throws {
@@ -1084,7 +825,7 @@ struct CountingPostCommit: PostCommit {
     func run() async throws {
         counter.increment()
         if counter.current < failUntil {
-            throw TestPostCommitError.intentionalFailure
+            throw PostCommitFailure.intentionalFailure
         }
     }
 }
@@ -1094,7 +835,7 @@ struct AlwaysFailingPostCommit: PostCommit {
 
     func run() async throws {
         counter.increment()
-        throw TestPostCommitError.intentionalFailure
+        throw PostCommitFailure.intentionalFailure
     }
 }
 
@@ -1126,7 +867,7 @@ struct TrackingPostCommit: PostCommit {
     }
 }
 
-enum TestPostCommitError: Error {
+enum PostCommitFailure: Error {
     case intentionalFailure
 }
 
@@ -1146,11 +887,11 @@ final class CollectingTransactionListener: TransactionListener {
     }
 }
 
-enum TransactionTestError: Error {
-    case test
+enum TransactionFailure: Error {
+    case injected
 }
 
-final class TestLogger: LoggerProtocol, Sendable {
+final class RecordingLogger: LoggerProtocol, Sendable {
     let debugMessages = AtomicArray<String>()
     let infoMessages = AtomicArray<String>()
     let warningMessages = AtomicArray<String>()

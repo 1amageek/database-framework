@@ -7,6 +7,7 @@ import Testing
 import Foundation
 import StorageKit
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 
@@ -43,7 +44,7 @@ struct PublicProfile {
 }
 
 /// Simple test auth context
-private struct TestAuth: AuthContext {
+private struct FieldSecurityAuthorizationContext: AuthContext {
     let userID: String
     var roles: Set<String>
 
@@ -122,8 +123,8 @@ struct StaticMetadataTests {
         #expect(salaryMeta?.writeAccess == .roles(["hr"]))
 
         // Verify evaluator uses static metadata
-        let hrAuth = TestAuth(userID: "hr1", roles: ["hr"])
-        let employeeAuth = TestAuth(userID: "emp1", roles: ["employee"])
+        let hrAuth = FieldSecurityAuthorizationContext(userID: "hr1", roles: ["hr"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "emp1", roles: ["employee"])
 
         // Should use static metadata, not instance reflection
         #expect(FieldSecurityEvaluator.canRead(field: "salary", in: decoded, auth: hrAuth) == true)
@@ -145,7 +146,7 @@ struct FieldMaskingTests {
         employee.internalNotes = "Good performer"
 
         // Regular employee - cannot see salary, ssn
-        let employeeAuth = TestAuth(userID: "emp1", roles: ["employee"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "emp1", roles: ["employee"])
         let masked = employee.masked(auth: employeeAuth)
 
         #expect(masked.name == "Alice")
@@ -162,7 +163,7 @@ struct FieldMaskingTests {
         employee.ssn = "123-45-6789"
 
         // HR user - can see everything
-        let hrAuth = TestAuth(userID: "hr1", roles: ["hr"])
+        let hrAuth = FieldSecurityAuthorizationContext(userID: "hr1", roles: ["hr"])
         let masked = employee.masked(auth: hrAuth)
 
         #expect(masked.name == "Alice")
@@ -175,7 +176,7 @@ struct FieldMaskingTests {
         var employee = SecureEmployee(name: "Alice")
         employee.salary = 100000
 
-        let employeeAuth = TestAuth(userID: "emp1", roles: ["employee"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "emp1", roles: ["employee"])
         let masked = FieldSecurityEvaluator.mask(employee, auth: employeeAuth)
 
         #expect(masked.salary == 0) // Should be masked
@@ -195,7 +196,7 @@ struct FieldMaskingTests {
         // CRITICAL: Masking should still work on decoded instance
         // This would fail if masking relied on @Restricted property wrapper's
         // instance access levels (which are lost after decode)
-        let employeeAuth = TestAuth(userID: "emp1", roles: ["employee"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "emp1", roles: ["employee"])
         let masked = decoded.masked(auth: employeeAuth)
 
         #expect(masked.salary == 0) // Should be masked even after decode
@@ -210,7 +211,7 @@ struct FieldMaskingTests {
         emp2.salary = 80000
 
         let employees = [emp1, emp2]
-        let employeeAuth = TestAuth(userID: "emp1", roles: ["employee"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "emp1", roles: ["employee"])
 
         let masked = FieldSecurityEvaluator.mask(employees, auth: employeeAuth)
 
@@ -232,8 +233,8 @@ struct FieldAccessLevelTests {
         let level = FieldAccessLevel.public
 
         #expect(level.evaluate(auth: nil) == true)
-        #expect(level.evaluate(auth: TestAuth(userID: "user1")) == true)
-        #expect(level.evaluate(auth: TestAuth(userID: "user1", roles: ["admin"])) == true)
+        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1")) == true)
+        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1", roles: ["admin"])) == true)
     }
 
     @Test("Authenticated access requires auth")
@@ -241,7 +242,7 @@ struct FieldAccessLevelTests {
         let level = FieldAccessLevel.authenticated
 
         #expect(level.evaluate(auth: nil) == false)
-        #expect(level.evaluate(auth: TestAuth(userID: "user1")) == true)
+        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1")) == true)
     }
 
     @Test("Role-based access checks roles")
@@ -249,10 +250,10 @@ struct FieldAccessLevelTests {
         let level = FieldAccessLevel.roles(["hr", "manager"])
 
         #expect(level.evaluate(auth: nil) == false)
-        #expect(level.evaluate(auth: TestAuth(userID: "user1", roles: ["employee"])) == false)
-        #expect(level.evaluate(auth: TestAuth(userID: "user1", roles: ["hr"])) == true)
-        #expect(level.evaluate(auth: TestAuth(userID: "user1", roles: ["manager"])) == true)
-        #expect(level.evaluate(auth: TestAuth(userID: "user1", roles: ["employee", "hr"])) == true)
+        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])) == false)
+        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1", roles: ["hr"])) == true)
+        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1", roles: ["manager"])) == true)
+        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee", "hr"])) == true)
     }
 
     @Test("Custom access uses predicate")
@@ -262,8 +263,8 @@ struct FieldAccessLevelTests {
         }
 
         #expect(level.evaluate(auth: nil) == false)
-        #expect(level.evaluate(auth: TestAuth(userID: "user1")) == false)
-        #expect(level.evaluate(auth: TestAuth(userID: "admin_1")) == true)
+        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1")) == false)
+        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "admin_1")) == true)
     }
 
     @Test("FieldAccessLevel equality")
@@ -305,17 +306,17 @@ struct FieldSecurityEvaluatorTests {
         #expect(FieldSecurityEvaluator.canRead(field: "internalNotes", in: employee, auth: nil) == false)
 
         // Regular employee
-        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
         #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: employeeAuth) == false)
         #expect(FieldSecurityEvaluator.canRead(field: "internalNotes", in: employee, auth: employeeAuth) == true)
 
         // HR user
-        let hrAuth = TestAuth(userID: "hr1", roles: ["hr"])
+        let hrAuth = FieldSecurityAuthorizationContext(userID: "hr1", roles: ["hr"])
         #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: hrAuth) == true)
         #expect(FieldSecurityEvaluator.canRead(field: "ssn", in: employee, auth: hrAuth) == true)
 
         // Manager
-        let managerAuth = TestAuth(userID: "mgr1", roles: ["manager"])
+        let managerAuth = FieldSecurityAuthorizationContext(userID: "mgr1", roles: ["manager"])
         #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: managerAuth) == true)
         #expect(FieldSecurityEvaluator.canRead(field: "ssn", in: employee, auth: managerAuth) == false)
     }
@@ -324,15 +325,15 @@ struct FieldSecurityEvaluatorTests {
     func canWriteEvaluates() {
         let employee = SecureEmployee(name: "Alice")
 
-        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
         #expect(FieldSecurityEvaluator.canWrite(field: "name", in: employee, auth: employeeAuth) == true)
         #expect(FieldSecurityEvaluator.canWrite(field: "salary", in: employee, auth: employeeAuth) == false)
         #expect(FieldSecurityEvaluator.canWrite(field: "department", in: employee, auth: employeeAuth) == false)
 
-        let hrAuth = TestAuth(userID: "hr1", roles: ["hr"])
+        let hrAuth = FieldSecurityAuthorizationContext(userID: "hr1", roles: ["hr"])
         #expect(FieldSecurityEvaluator.canWrite(field: "salary", in: employee, auth: hrAuth) == true)
 
-        let adminAuth = TestAuth(userID: "admin1", roles: ["admin"])
+        let adminAuth = FieldSecurityAuthorizationContext(userID: "admin1", roles: ["admin"])
         #expect(FieldSecurityEvaluator.canWrite(field: "department", in: employee, auth: adminAuth) == true)
     }
 
@@ -349,7 +350,7 @@ struct FieldSecurityEvaluatorTests {
         #expect(!unreadableNil.contains("department"))
 
         // Regular employee
-        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
         let unreadableEmployee = FieldSecurityEvaluator.unreadableFields(in: employee, auth: employeeAuth)
         #expect(unreadableEmployee.contains("salary"))
         #expect(unreadableEmployee.contains("ssn"))
@@ -363,7 +364,7 @@ struct FieldSecurityEvaluatorTests {
         var updated = original
         updated.salary = 100000
 
-        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
 
         #expect(throws: FieldSecurityError.self) {
             try FieldSecurityEvaluator.validateWrite(
@@ -381,7 +382,7 @@ struct FieldSecurityEvaluatorTests {
         var updated = original
         updated.salary = 100000
 
-        let hrAuth = TestAuth(userID: "hr1", roles: ["hr"])
+        let hrAuth = FieldSecurityAuthorizationContext(userID: "hr1", roles: ["hr"])
 
         try FieldSecurityEvaluator.validateWrite(
             original: original,
@@ -396,7 +397,7 @@ struct FieldSecurityEvaluatorTests {
         var updated = original
         updated.name = "Alice Smith"
 
-        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
 
         try FieldSecurityEvaluator.validateWrite(
             original: original,
@@ -410,7 +411,7 @@ struct FieldSecurityEvaluatorTests {
         var newEmployee = SecureEmployee(name: "Bob")
         newEmployee.salary = 75000
 
-        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
+        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
 
         #expect(throws: FieldSecurityError.self) {
             try FieldSecurityEvaluator.validateWrite(

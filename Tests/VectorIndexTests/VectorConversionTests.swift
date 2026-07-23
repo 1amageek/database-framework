@@ -1,4 +1,5 @@
 import Testing
+import DatabaseEngine
 @testable import VectorIndex
 
 @Suite("Vector Conversion")
@@ -31,14 +32,26 @@ struct VectorConversionTests {
     }
 
     @Test("Round-trips fixed-width integer payloads")
-    func roundTripsFixedWidthIntegerPayloads() {
+    func roundTripsFixedWidthIntegerPayloads() throws {
         let unsignedValue = UInt64.max - 42
         let signedValue = Int64.min + 42
 
-        #expect(VectorConversion.bytesToUInt64(VectorConversion.uint64ToBytes(unsignedValue)) == unsignedValue)
-        #expect(VectorConversion.bytesToInt64(VectorConversion.int64ToBytes(signedValue)) == signedValue)
-        #expect(VectorConversion.bytesToUInt64([0x01, 0x02]) == 0)
-        #expect(VectorConversion.bytesToInt64([0x01, 0x02]) == 0)
+        #expect(
+            try VectorConversion.bytesToUInt64(
+                VectorConversion.uint64ToBytes(unsignedValue)
+            ) == unsignedValue
+        )
+        #expect(
+            try VectorConversion.bytesToInt64(
+                VectorConversion.int64ToBytes(signedValue)
+            ) == signedValue
+        )
+        #expect(throws: ByteConversionError.self) {
+            _ = try VectorConversion.bytesToUInt64([0x01, 0x02])
+        }
+        #expect(throws: ByteConversionError.self) {
+            _ = try VectorConversion.bytesToInt64([0x01, 0x02])
+        }
     }
 
     @Test("Round-trips larger payloads without changing order")

@@ -9,6 +9,7 @@ import FoundationDB
 import FullText
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import Core
 @testable import FullTextIndex
 
@@ -28,8 +29,8 @@ protocol PolymorphicFetchDocument: Polymorphable {
 extension PolymorphicFetchDocument {
     public static var polymorphableType: String { "PolymorphicFetchDocument" }
 
-    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("polymorphic_fetch_tests_shared")]
+    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("polymorphic_fetch_tests_shared")]
     }
 
     public static var polymorphicIndexDescriptors: [IndexDescriptor] {
@@ -83,7 +84,7 @@ struct PolymorphicFetchReport: PolymorphicFetchDocument {
 ///
 /// The regression was not caught by existing tests because no test exercised
 /// the end-to-end round trip through the flat-tuple item subspace:
-/// - `PermutedReadBridge` / `VectorReadBridge` use `fetchPolymorphicItems`
+/// - `PermutedReadExecutors` / `VectorReadExecutors` use `fetchPolymorphicItems`
 ///   (a different code path that reconstructs keys from record annotations).
 /// - `CanonicalQueryRPC` tests use `scanPolymorphicItems`, which scans the
 ///   whole item subspace without reconstructing a per-type subspace.
@@ -98,8 +99,8 @@ struct PolymorphicFetchTests {
     // MARK: - Helper Methods
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema(
             [PolymorphicFetchArticle.self, PolymorphicFetchReport.self],
@@ -109,6 +110,7 @@ struct PolymorphicFetchTests {
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
@@ -119,8 +121,8 @@ struct PolymorphicFetchTests {
             ["polymorphic_fetch_tests_reports"],
             ["polymorphic_fetch_tests_shared"],
         ] {
-            if try await container.engine.directoryService.exists(path: path) {
-                try await container.engine.directoryService.remove(path: path)
+            if try await container.engine.directoryExists(path: path) {
+                try await container.engine.removeDirectory(path: path)
             }
         }
         try await container.ensureIndexesReady()

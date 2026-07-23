@@ -10,6 +10,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -17,7 +18,7 @@ import TestSupport
 
 // MARK: - Test Model (Quad)
 
-struct TestQuad: Persistable {
+struct NamedGraphQuad: Persistable {
     typealias ID = String
 
     var id: String
@@ -40,7 +41,7 @@ struct TestQuad: Persistable {
         self.graph = graph
     }
 
-    static var persistableType: String { "TestQuad" }
+    static var persistableType: String { "NamedGraphQuad" }
     static var allFields: [String] { ["id", "subject", "predicate", "object", "graph"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -58,30 +59,30 @@ struct TestQuad: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestQuad, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<NamedGraphQuad, Value>) -> String {
         switch keyPath {
-        case \TestQuad.id: return "id"
-        case \TestQuad.subject: return "subject"
-        case \TestQuad.predicate: return "predicate"
-        case \TestQuad.object: return "object"
-        case \TestQuad.graph: return "graph"
+        case \NamedGraphQuad.id: return "id"
+        case \NamedGraphQuad.subject: return "subject"
+        case \NamedGraphQuad.predicate: return "predicate"
+        case \NamedGraphQuad.object: return "object"
+        case \NamedGraphQuad.graph: return "graph"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestQuad>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<NamedGraphQuad>) -> String {
         switch keyPath {
-        case \TestQuad.id: return "id"
-        case \TestQuad.subject: return "subject"
-        case \TestQuad.predicate: return "predicate"
-        case \TestQuad.object: return "object"
-        case \TestQuad.graph: return "graph"
+        case \NamedGraphQuad.id: return "id"
+        case \NamedGraphQuad.subject: return "subject"
+        case \NamedGraphQuad.predicate: return "predicate"
+        case \NamedGraphQuad.object: return "object"
+        case \NamedGraphQuad.graph: return "graph"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestQuad> {
+        if let partial = keyPath as? PartialKeyPath<NamedGraphQuad> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
@@ -90,19 +91,19 @@ struct TestQuad: Persistable {
 
 // MARK: - Test Helper
 
-private struct QuadTestContext {
+private struct NamedGraphKeyContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: GraphIndexMaintainer<TestQuad>
-    let strategy: GraphIndexStrategy
+    let maintainer: GraphIndexMaintainer<NamedGraphQuad>
+    let strategy: PropertyGraphIndexStrategy
 
     init(
-        strategy: GraphIndexStrategy,
+        strategy: PropertyGraphIndexStrategy,
         graphField: String? = "graph",
         indexName: String = "TestQuad_graph"
     ) async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "namedgraph", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -110,7 +111,7 @@ private struct QuadTestContext {
 
         let index = Index(
             name: indexName,
-            kind: GraphIndexKind<TestQuad>(
+            kind: GraphIndexKind<NamedGraphQuad>(
                 fromField: "subject",
                 edgeField: "predicate",
                 toField: "object",
@@ -123,10 +124,10 @@ private struct QuadTestContext {
                 FieldKeyExpression(fieldName: "object"),
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["TestQuad"])
+            itemTypes: Set(["NamedGraphQuad"])
         )
 
-        self.maintainer = GraphIndexMaintainer<TestQuad>(
+        self.maintainer = GraphIndexMaintainer<NamedGraphQuad>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
@@ -138,17 +139,17 @@ private struct QuadTestContext {
         )
     }
 
-    func insert(_ quad: TestQuad) async throws {
+    func insert(_ quad: NamedGraphQuad) async throws {
         try await database.withTransaction { transaction in
             try await maintainer.updateIndex(
-                oldItem: nil as TestQuad?,
+                oldItem: nil as NamedGraphQuad?,
                 newItem: quad,
                 transaction: transaction
             )
         }
     }
 
-    func delete(_ quad: TestQuad) async throws {
+    func delete(_ quad: NamedGraphQuad) async throws {
         try await database.withTransaction { transaction in
             try await maintainer.updateIndex(
                 oldItem: quad,
@@ -191,7 +192,7 @@ private struct QuadTestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }
@@ -203,10 +204,10 @@ struct NamedGraphTripleStoreKeyTests {
 
     @Test("TripleStore with graph produces 3 entries")
     func testTripleStoreKeyCountWithGraph() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .tripleStore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .tripleStore)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         let count = try await ctx.countEntries(keys: [2, 3, 4])
@@ -217,10 +218,10 @@ struct NamedGraphTripleStoreKeyTests {
 
     @Test("SPO key has graph at end: [from, edge, to, graph]")
     func testTripleStoreSPOKeyHasGraphAtEnd() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .tripleStore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .tripleStore)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         let spoKeys = try await ctx.scanKeysInSubspace(key: 2)
@@ -237,10 +238,10 @@ struct NamedGraphTripleStoreKeyTests {
 
     @Test("POS key has graph at end: [edge, to, from, graph]")
     func testTripleStorePOSKeyHasGraphAtEnd() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .tripleStore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .tripleStore)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         let posKeys = try await ctx.scanKeysInSubspace(key: 3)
@@ -257,10 +258,10 @@ struct NamedGraphTripleStoreKeyTests {
 
     @Test("OSP key has graph at end: [to, from, edge, graph]")
     func testTripleStoreOSPKeyHasGraphAtEnd() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .tripleStore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .tripleStore)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         let ospKeys = try await ctx.scanKeysInSubspace(key: 4)
@@ -277,10 +278,10 @@ struct NamedGraphTripleStoreKeyTests {
 
     @Test("Delete removes all 3 entries")
     func testTripleStoreDeleteWithGraph() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .tripleStore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .tripleStore)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         let countBefore = try await ctx.countEntries(keys: [2, 3, 4])
@@ -296,11 +297,11 @@ struct NamedGraphTripleStoreKeyTests {
 
     @Test("Same triple in different graphs produces 6 entries")
     func testTripleStoreSameTripleDifferentGraphs() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .tripleStore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .tripleStore)
 
-        let q1 = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
-        let q2 = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g2")
+        let q1 = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let q2 = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g2")
         try await ctx.insert(q1)
         try await ctx.insert(q2)
 
@@ -324,10 +325,10 @@ struct NamedGraphHexastoreKeyTests {
 
     @Test("Hexastore with graph produces 6 entries")
     func testHexastoreKeyCountWithGraph() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .hexastore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .hexastore)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         let count = try await ctx.countEntries(keys: [2, 3, 4, 5, 6, 7])
@@ -338,10 +339,10 @@ struct NamedGraphHexastoreKeyTests {
 
     @Test("All 6 permutations have graph at end")
     func testHexastoreAllKeysHaveGraphAtEnd() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .hexastore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .hexastore)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         // SPO=2, POS=3, OSP=4, SOP=5, PSO=6, OPS=7
@@ -358,10 +359,10 @@ struct NamedGraphHexastoreKeyTests {
 
     @Test("Delete removes all 6 entries")
     func testHexastoreDeleteWithGraph() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .hexastore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .hexastore)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
         try await ctx.delete(quad)
 
@@ -373,11 +374,11 @@ struct NamedGraphHexastoreKeyTests {
 
     @Test("Same triple in different graphs produces 12 entries")
     func testHexastoreSameTripleDifferentGraphs() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .hexastore)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .hexastore)
 
-        let q1 = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
-        let q2 = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g2")
+        let q1 = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let q2 = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g2")
         try await ctx.insert(q1)
         try await ctx.insert(q2)
 
@@ -395,10 +396,10 @@ struct NamedGraphAdjacencyKeyTests {
 
     @Test("Adjacency with graph produces 2 entries")
     func testAdjacencyKeyCountWithGraph() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .adjacency)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .adjacency)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         let count = try await ctx.countEntries(keys: [0, 1])
@@ -409,10 +410,10 @@ struct NamedGraphAdjacencyKeyTests {
 
     @Test("Out key has graph at end: [edge, from, to, graph]")
     func testAdjacencyOutKeyHasGraphAtEnd() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .adjacency)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .adjacency)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         let outKeys = try await ctx.scanKeysInSubspace(key: 0)
@@ -429,10 +430,10 @@ struct NamedGraphAdjacencyKeyTests {
 
     @Test("In key has graph at end: [edge, to, from, graph]")
     func testAdjacencyInKeyHasGraphAtEnd() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .adjacency)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .adjacency)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         let inKeys = try await ctx.scanKeysInSubspace(key: 1)
@@ -449,10 +450,10 @@ struct NamedGraphAdjacencyKeyTests {
 
     @Test("Delete removes all 2 entries")
     func testAdjacencyDeleteWithGraph() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .adjacency)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .adjacency)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
         try await ctx.delete(quad)
 
@@ -470,10 +471,10 @@ struct NamedGraphBackwardCompatibilityKeyTests {
 
     @Test("TripleStore without graph produces 3-element keys")
     func testTripleStoreWithoutGraphProduces3ElementKeys() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .tripleStore, graphField: nil)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .tripleStore, graphField: nil)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         for key in [Int64(2), Int64(3), Int64(4)] {
@@ -487,10 +488,10 @@ struct NamedGraphBackwardCompatibilityKeyTests {
 
     @Test("Hexastore without graph produces 3-element keys")
     func testHexastoreWithoutGraphProduces3ElementKeys() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .hexastore, graphField: nil)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .hexastore, graphField: nil)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         for key in [Int64(2), Int64(3), Int64(4), Int64(5), Int64(6), Int64(7)] {
@@ -504,10 +505,10 @@ struct NamedGraphBackwardCompatibilityKeyTests {
 
     @Test("Adjacency without graph produces 3-element keys")
     func testAdjacencyWithoutGraphProduces3ElementKeys() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await QuadTestContext(strategy: .adjacency, graphField: nil)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await NamedGraphKeyContext(strategy: .adjacency, graphField: nil)
 
-        let quad = TestQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
+        let quad = NamedGraphQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1")
         try await ctx.insert(quad)
 
         for key in [Int64(0), Int64(1)] {

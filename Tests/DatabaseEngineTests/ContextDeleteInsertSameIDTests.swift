@@ -22,9 +22,11 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import FullText
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import ScalarIndex
 @testable import FullTextIndex
 
@@ -61,41 +63,43 @@ struct DelInsArticle {
 struct ContextDeleteInsertSameIDTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Helpers
 
     private func makeUserContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([DelInsUser.self])
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
 
     private func makeArticleContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([DelInsArticle.self])
         return try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled,
         )
     }
 
     private func cleanupUsers(_ container: DBContainer) async throws {
-        if try await container.engine.directoryService.exists(path: ["context_delete_insert_same_id", "users"]) {
-            try await container.engine.directoryService.remove(path: ["context_delete_insert_same_id", "users"])
+        if try await container.engine.directoryExists(path: ["context_delete_insert_same_id", "users"]) {
+            try await container.engine.removeDirectory(path: ["context_delete_insert_same_id", "users"])
         }
         try await container.ensureIndexesReady()
     }
 
     private func cleanupArticles(_ container: DBContainer) async throws {
-        if try await container.engine.directoryService.exists(path: ["context_delete_insert_same_id", "articles"]) {
-            try await container.engine.directoryService.remove(path: ["context_delete_insert_same_id", "articles"])
+        if try await container.engine.directoryExists(path: ["context_delete_insert_same_id", "articles"]) {
+            try await container.engine.removeDirectory(path: ["context_delete_insert_same_id", "articles"])
         }
         try await container.ensureIndexesReady()
     }
@@ -303,7 +307,7 @@ struct ContextDeleteInsertSameIDTests {
         let articleId = uniq("A")
         // Single alphabetic tokens only — the `.simple` tokenizer splits on non-word
         // characters (incl. hyphens and digits on boundaries). Using letters-only
-        // keeps the fixture resilient to tokenizer variants.
+        // keeps the indexed input resilient to tokenizer variants.
         let oldToken = randomLetters(length: 10, prefix: "alphazzz")
         let newToken = randomLetters(length: 10, prefix: "omegazzz")
         let sharedToken = "sharedzzz"

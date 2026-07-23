@@ -4,7 +4,11 @@
 // Tracks the number of times each record has been updated.
 // Reference: FDB Record Layer COUNT_UPDATES index type
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -13,7 +17,7 @@ import StorageKit
 ///
 /// **Functionality**:
 /// - Track update counts per record
-/// - Atomic increment on updates
+/// - Checked transactional increment on updates
 /// - Query by update frequency
 ///
 /// **Index Structure**:
@@ -32,6 +36,8 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression
+
+    private var maximumScanEntries: Int { 100_000 }
 
     // MARK: - Initialization
 
@@ -58,21 +64,37 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
         switch (oldKey, newKey) {
         case (nil, let key?):
             // Insert: Initialize count to 0
-            transaction.setValue(ByteConversion.int64ToBytes(0), for: key)
+            try transaction.setValue(ByteConversion.int64ToBytes(0), for: key)
 
         case (let key?, nil):
             // Delete: Remove count entry
-            transaction.clear(key: key)
+            try transaction.clear(key: key)
 
         case (let oldKey?, let newKey?) where oldKey == newKey:
-            // Same ID: Increment count
-            let increment = ByteConversion.int64ToBytes(1)
-            transaction.atomicOp(key: oldKey, param: increment, mutationType: .add)
+            // Same ID: checked read/replace preserves overflow semantics on
+            // every storage backend instead of relying on wrapping atomics.
+            guard let stored = try await transaction.getValue(for: oldKey) else {
+                throw IndexError.invalidStructure(
+                    "COUNT_UPDATES entry is missing for an existing record"
+                )
+            }
+            let current = try ByteConversion.bytesToInt64(stored)
+            guard current >= 0 else {
+                throw AggregationStorageError.negativeCount(current)
+            }
+            let (updated, overflow) = current.addingReportingOverflow(1)
+            guard !overflow else {
+                throw AggregationStorageError.integerOverflow
+            }
+            try transaction.setValue(
+                ByteConversion.int64ToBytes(updated),
+                for: oldKey
+            )
 
         case (let oldKey?, let newKey?):
             // ID changed (unusual): Remove old, initialize new
-            transaction.clear(key: oldKey)
-            transaction.setValue(ByteConversion.int64ToBytes(0), for: newKey)
+            try transaction.clear(key: oldKey)
+            try transaction.setValue(ByteConversion.int64ToBytes(0), for: newKey)
 
         case (nil, nil):
             break
@@ -85,7 +107,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
         transaction: any Transaction
     ) async throws {
         let key = try packAndValidate(id)
-        transaction.setValue(ByteConversion.int64ToBytes(0), for: key)
+        try transaction.setValue(ByteConversion.int64ToBytes(0), for: key)
     }
 
     public func computeIndexKeys(
@@ -106,30 +128,21 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
         guard let bytes = try await transaction.getValue(for: key) else {
             return nil
         }
-        return ByteConversion.bytesToInt64(bytes)
+        let count = try ByteConversion.bytesToInt64(bytes)
+        guard count >= 0 else {
+            throw AggregationStorageError.negativeCount(count)
+        }
+        return count
     }
 
     /// Get all update counts
     public func getAllUpdateCounts(
         transaction: any Transaction
     ) async throws -> [(id: Tuple, count: Int64)] {
-        let range = subspace.range()
-        var results: [(id: Tuple, count: Int64)] = []
-
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
-            snapshot: true
+        try await scanUpdateCounts(
+            minimumCount: nil,
+            transaction: transaction
         )
-
-        for (key, value) in sequence {
-            guard subspace.contains(key) else { break }
-            let idTuple = try subspace.unpack(key)
-            let count = ByteConversion.bytesToInt64(value)
-            results.append((id: idTuple, count: count))
-        }
-
-        return results
     }
 
     /// Get records with update count above threshold
@@ -137,7 +150,48 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
         threshold: Int64,
         transaction: any Transaction
     ) async throws -> [(id: Tuple, count: Int64)] {
-        let allCounts = try await getAllUpdateCounts(transaction: transaction)
-        return allCounts.filter { $0.count >= threshold }
+        try await scanUpdateCounts(
+            minimumCount: threshold,
+            transaction: transaction
+        )
+    }
+
+    private func scanUpdateCounts(
+        minimumCount: Int64?,
+        transaction: any Transaction
+    ) async throws -> [(id: Tuple, count: Int64)] {
+        let range = subspace.range()
+        var results: [(id: Tuple, count: Int64)] = []
+        var scannedEntries = 0
+        var scannedBytes = 0
+
+        try await transaction.forEachInRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
+            limit: maximumScanEntries + 1,
+            snapshot: true,
+            streamingMode: .iterator
+        ) { key, value in
+            scannedEntries += 1
+            guard scannedEntries <= maximumScanEntries else {
+                throw AggregationStorageError.scanLimitExceeded(
+                    maximumScanEntries
+                )
+            }
+            scannedBytes = try checkedAggregationScannedBytes(
+                scannedBytes,
+                adding: key.count + value.count
+            )
+
+            let count = try ByteConversion.bytesToInt64(value)
+            guard count >= 0 else {
+                throw AggregationStorageError.negativeCount(count)
+            }
+            if let minimumCount, count < minimumCount {
+                return
+            }
+            results.append((id: try subspace.unpack(key), count: count))
+        }
+        return results
     }
 }

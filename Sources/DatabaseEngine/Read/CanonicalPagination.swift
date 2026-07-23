@@ -1,7 +1,7 @@
-import Foundation
-import Core
+import DatabaseDigest
+import DatabaseValue
+import DatabaseWire
 import QueryIR
-import DatabaseClientProtocol
 
 public struct CanonicalPageWindow<Item: Sendable>: Sendable {
     public let items: [Item]
@@ -13,370 +13,337 @@ public struct CanonicalPageWindow<Item: Sendable>: Sendable {
     }
 }
 
-public struct CanonicalPaginationContext: Sendable {
-    public let continuationOffset: Int
-    public let baseOffset: Int
-    public let effectivePageSize: Int?
-    public let isExhausted: Bool
-
-    public init(
-        continuationOffset: Int,
-        baseOffset: Int,
-        effectivePageSize: Int?,
-        isExhausted: Bool
-    ) {
-        self.continuationOffset = continuationOffset
-        self.baseOffset = baseOffset
-        self.effectivePageSize = effectivePageSize
-        self.isExhausted = isExhausted
-    }
-}
-
-public enum CanonicalOffsetPagination {
-    private struct Payload: Codable, Sendable {
-        let offset: Int
-    }
-
-    public static func decode(_ continuation: QueryContinuation?) throws -> Int {
-        guard let continuation else { return 0 }
-        guard let data = Data(base64Encoded: continuation.token) else {
-            throw CanonicalReadError.invalidContinuation
-        }
-        let payload = try JSONDecoder().decode(Payload.self, from: data)
-        return payload.offset
-    }
-
-    public static func encode(offset: Int) throws -> QueryContinuation {
-        let data = try JSONEncoder().encode(Payload(offset: offset))
-        return QueryContinuation(data.base64EncodedString())
-    }
-
-    public static func window<Item: Sendable>(
-        items: [Item],
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions
-    ) throws -> CanonicalPageWindow<Item> {
-        try window(
-            items: items,
-            context: context(selectQuery: selectQuery, options: options)
-        )
-    }
-
-    public static func context(
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions
-    ) throws -> CanonicalPaginationContext {
-        let continuationOffset = try decode(options.continuation)
-        let baseOffset = (selectQuery.offset ?? 0) + continuationOffset
-        let remainingLimit = selectQuery.limit.map { max($0 - continuationOffset, 0) }
-        if let remainingLimit, remainingLimit == 0 {
-            return CanonicalPaginationContext(
-                continuationOffset: continuationOffset,
-                baseOffset: baseOffset,
-                effectivePageSize: 0,
-                isExhausted: true
-            )
-        }
-
-        let requestedPageSize: Int? = {
-            switch (options.pageSize, remainingLimit) {
-            case let (.some(pageSize), .some(limit)):
-                return min(pageSize, limit)
-            case let (.some(pageSize), .none):
-                return pageSize
-            case let (.none, .some(limit)):
-                return limit
-            case (.none, .none):
-                return nil
-            }
-        }()
-
-        return CanonicalPaginationContext(
-            continuationOffset: continuationOffset,
-            baseOffset: baseOffset,
-            effectivePageSize: requestedPageSize,
-            isExhausted: false
-        )
-    }
-
-    public static func window<Item: Sendable>(
-        items: [Item],
-        context: CanonicalPaginationContext,
-        baseOffsetAlreadyApplied: Bool = false
-    ) throws -> CanonicalPageWindow<Item> {
-        if context.isExhausted {
-            return CanonicalPageWindow(items: [], continuation: nil)
-        }
-
-        let offsetItems = baseOffsetAlreadyApplied ? items : Array(items.dropFirst(context.baseOffset))
-
-        guard let effectivePageSize = context.effectivePageSize else {
-            return CanonicalPageWindow(items: offsetItems, continuation: nil)
-        }
-
-        let window = Array(offsetItems.prefix(effectivePageSize + 1))
-        let hasMore = window.count > effectivePageSize
-        let visible = hasMore ? Array(window.prefix(effectivePageSize)) : window
-        let continuation = hasMore ? try encode(offset: context.continuationOffset + visible.count) : nil
-        return CanonicalPageWindow(items: visible, continuation: continuation)
-    }
-}
-
 public enum CanonicalQueryPagination {
-    private static let keysetSeedToken = "keyset:v1"
-    private static let keysetTokenPrefix = "keyset:v1:"
+    private static let cursorMarker: UInt32 = 0x4351_5031
+    private static let fingerprintByteCount = SHA256Accumulator.digestByteCount
 
-    private struct KeysetPayload: Codable, Sendable {
-        let returned: Int
-        let values: [FieldValue]
-    }
+    private struct Cursor: Sendable {
+        let queryFingerprint: DatabaseBytes
+        let resultFingerprint: DatabaseBytes
+        let offset: UInt64
 
-    private struct KeysetSortField: Sendable {
-        let name: String
-        let direction: SortDirection
-        let nulls: NullOrdering?
+        func encode() throws -> QueryContinuation {
+            var writer = DatabaseWireWriter()
+            writer.writeUInt32(CanonicalQueryPagination.cursorMarker)
+            try writer.writeBytes(queryFingerprint)
+            try writer.writeBytes(resultFingerprint)
+            writer.writeUInt64(offset)
+            return QueryContinuation(DatabaseBytes(writer.bytes))
+        }
+
+        static func decode(
+            _ continuation: QueryContinuation
+        ) throws -> Cursor {
+            do {
+                var reader = DatabaseWireReader(continuation.bytes)
+                guard try reader.readUInt32()
+                        == CanonicalQueryPagination.cursorMarker else {
+                    throw CanonicalReadError.invalidContinuation
+                }
+                let queryFingerprint = try reader.readBytes()
+                let resultFingerprint = try reader.readBytes()
+                let offset = try reader.readUInt64()
+                try reader.ensureFullyRead()
+                guard queryFingerprint.count
+                        == CanonicalQueryPagination.fingerprintByteCount,
+                      resultFingerprint.count
+                        == CanonicalQueryPagination.fingerprintByteCount else {
+                    throw CanonicalReadError.invalidContinuation
+                }
+                return Cursor(
+                    queryFingerprint: queryFingerprint,
+                    resultFingerprint: resultFingerprint,
+                    offset: offset
+                )
+            } catch is CanonicalReadError {
+                throw CanonicalReadError.invalidContinuation
+            } catch {
+                throw CanonicalReadError.invalidContinuation
+            }
+        }
     }
 
     public static func window(
-        rows: [QueryRow],
+        rows: consuming [QueryRow],
         selectQuery: SelectQuery,
-        options: ReadExecutionOptions
+        options: ReadExecutionContext
     ) throws -> CanonicalPageWindow<QueryRow> {
-        guard isKeysetContinuation(options.continuation) else {
-            return try CanonicalOffsetPagination.window(
-                items: rows,
-                selectQuery: selectQuery,
-                options: options
-            )
-        }
-
-        return try keysetWindow(
-            rows: rows,
-            selectQuery: selectQuery,
-            options: options
+        // Pagination can be reached from native and graph execution paths, so
+        // it performs its own bounded admission before internal wire limits are
+        // relaxed for canonical streaming.
+        try QueryStructuralValidator.validate(
+            selectQuery,
+            limits: options.queryStructuralLimits
         )
-    }
-
-    private static func isKeysetContinuation(_ continuation: QueryContinuation?) -> Bool {
-        guard let token = continuation?.token else { return false }
-        return token == keysetSeedToken || token.hasPrefix(keysetTokenPrefix)
-    }
-
-    private static func keysetWindow(
-        rows: [QueryRow],
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions
-    ) throws -> CanonicalPageWindow<QueryRow> {
-        let payload = try decodeKeysetPayload(options.continuation)
-        guard !rows.isEmpty else {
-            return CanonicalPageWindow(items: [], continuation: nil)
-        }
-        let sortFields = try keysetSortFields(
-            orderBy: selectQuery.orderBy,
-            rows: rows
-        )
-        let orderedRows = rows.sorted { lhs, rhs in
-            compare(lhs, rhs, sortFields: sortFields) == .orderedAscending
-        }
-
-        let resumedRows: [QueryRow]
-        if payload.values.isEmpty {
-            resumedRows = Array(orderedRows.dropFirst(selectQuery.offset ?? 0))
-        } else {
-            resumedRows = orderedRows.filter { row in
-                let comparison = compare(
-                    values(for: row, sortFields: sortFields),
-                    payload.values,
-                    sortFields: sortFields
-                )
-                return comparison == .orderedDescending
-            }
-        }
-
-        let remainingLimit = selectQuery.limit.map { max($0 - payload.returned, 0) }
-        if remainingLimit == 0 {
-            return CanonicalPageWindow(items: [], continuation: nil)
-        }
-
-        let effectivePageSize: Int? = {
-            switch (options.pageSize, remainingLimit) {
-            case let (.some(pageSize), .some(limit)):
-                return min(pageSize, limit)
-            case let (.some(pageSize), .none):
-                return pageSize
-            case let (.none, .some(limit)):
-                return limit
-            case (.none, .none):
-                return nil
-            }
-        }()
-
-        guard let effectivePageSize else {
-            return CanonicalPageWindow(items: resumedRows, continuation: nil)
-        }
-
-        let window = Array(resumedRows.prefix(effectivePageSize + 1))
-        let visible = Array(window.prefix(effectivePageSize))
-        let returned = payload.returned + visible.count
-        let canReturnMoreWithinLimit = selectQuery.limit.map { returned < $0 } ?? true
-        let hasMore = window.count > effectivePageSize
-            && canReturnMoreWithinLimit
-
-        guard hasMore, let last = visible.last else {
-            return CanonicalPageWindow(items: visible, continuation: nil)
-        }
-
-        return try CanonicalPageWindow(
-            items: visible,
-            continuation: encodeKeysetPayload(
-                KeysetPayload(
-                    returned: returned,
-                    values: values(for: last, sortFields: sortFields)
-                )
-            )
-        )
-    }
-
-    private static func keysetSortFields(
-        orderBy: [SortKey]?,
-        rows: [QueryRow]
-    ) throws -> [KeysetSortField] {
-        var fields: [KeysetSortField] = []
-        for sortKey in orderBy ?? [] {
-            guard case .column(let column) = sortKey.expression else {
-                throw CanonicalReadError.unsupportedSelectQuery(
-                    "Keyset pagination requires column ORDER BY expressions"
-                )
-            }
-            guard rows.contains(where: { $0.fields[column.column] != nil }) else {
-                throw CanonicalReadError.unsupportedSelectQuery(
-                    "Keyset pagination requires ORDER BY column '\(column.column)' in projected rows"
-                )
-            }
-            fields.append(
-                KeysetSortField(
-                    name: column.column,
-                    direction: sortKey.direction,
-                    nulls: sortKey.nulls
-                )
-            )
-        }
-
-        if !fields.contains(where: { $0.name == "id" }),
-           rows.contains(where: { $0.fields["id"] != nil }) {
-            fields.append(
-                KeysetSortField(
-                    name: "id",
-                    direction: .ascending,
-                    nulls: .last
-                )
-            )
-        }
-
-        guard !fields.isEmpty else {
+        let queryOffset = selectQuery.offset ?? 0
+        let requestedPageSize = try options.resolvePageSize()
+        guard queryOffset >= 0,
+              selectQuery.limit.map({ $0 >= 0 }) ?? true,
+              requestedPageSize.map({ $0 > 0 }) ?? true else {
             throw CanonicalReadError.unsupportedSelectQuery(
-                "Keyset pagination requires ORDER BY columns or an id field"
+                "Pagination limit and offset must be non-negative, and page size must be positive"
             )
         }
 
-        return fields
-    }
+        let queryFingerprint = try queryFingerprint(
+            selectQuery,
+            scope: options.options.continuationScope,
+            workMeter: options.workMeter
+        )
+        let resultFingerprint = try resultFingerprint(
+            rows,
+            workMeter: options.workMeter
+        )
 
-    private static func decodeKeysetPayload(
-        _ continuation: QueryContinuation?
-    ) throws -> KeysetPayload {
-        guard let token = continuation?.token, token != keysetSeedToken else {
-            return KeysetPayload(returned: 0, values: [])
-        }
-        guard token.hasPrefix(keysetTokenPrefix) else {
+        let cursor = try options.continuation.map(Cursor.decode(_:))
+        guard cursor?.queryFingerprint == nil
+                || cursor?.queryFingerprint == queryFingerprint,
+              cursor?.resultFingerprint == nil
+                || cursor?.resultFingerprint == resultFingerprint else {
             throw CanonicalReadError.invalidContinuation
         }
-        let encoded = String(token.dropFirst(keysetTokenPrefix.count))
-        guard let data = Data(base64Encoded: encoded) else {
+        guard let continuationOffset = Int(
+            exactly: cursor?.offset ?? 0
+        ) else {
             throw CanonicalReadError.invalidContinuation
         }
-        do {
-            return try JSONDecoder().decode(KeysetPayload.self, from: data)
-        } catch {
+        let (baseOffset, offsetOverflow) = queryOffset
+            .addingReportingOverflow(continuationOffset)
+        guard !offsetOverflow else {
             throw CanonicalReadError.invalidContinuation
         }
-    }
 
-    private static func encodeKeysetPayload(
-        _ payload: KeysetPayload
-    ) throws -> QueryContinuation {
-        let data = try JSONEncoder().encode(payload)
-        return QueryContinuation(keysetTokenPrefix + data.base64EncodedString())
-    }
+        let remainingLimit = selectQuery.limit.map {
+            continuationOffset >= $0 ? 0 : $0 - continuationOffset
+        }
+        guard remainingLimit != 0 else {
+            return CanonicalPageWindow(items: [], continuation: nil)
+        }
+        let effectivePageSize = pageSize(
+            requested: requestedPageSize,
+            remainingLimit: remainingLimit
+        )
+        guard let effectivePageSize else {
+            let visible = trimOwnedRows(
+                consume rows,
+                offset: baseOffset,
+                count: nil
+            )
+            try options.workMeter.consume(
+                UInt64(visible.count),
+                at: .resultMaterialization
+            )
+            return CanonicalPageWindow(
+                items: visible,
+                continuation: nil
+            )
+        }
 
-    private static func values(
-        for row: QueryRow,
-        sortFields: [KeysetSortField]
-    ) -> [FieldValue] {
-        sortFields.map { row.fields[$0.name] ?? .null }
-    }
-
-    private static func compare(
-        _ lhs: QueryRow,
-        _ rhs: QueryRow,
-        sortFields: [KeysetSortField]
-    ) -> ComparisonResult {
-        compare(
-            values(for: lhs, sortFields: sortFields),
-            values(for: rhs, sortFields: sortFields),
-            sortFields: sortFields
+        let (lookaheadCount, lookaheadOverflow) = effectivePageSize
+            .addingReportingOverflow(1)
+        let availableCount = baseOffset >= rows.count
+            ? 0
+            : rows.count - baseOffset
+        let inspectedCount = min(
+            availableCount,
+            lookaheadOverflow ? Int.max : lookaheadCount
+        )
+        let visibleCount = min(inspectedCount, effectivePageSize)
+        try options.workMeter.consume(
+            UInt64(visibleCount),
+            at: .resultMaterialization
+        )
+        let (nextOffset, nextOffsetOverflow) = continuationOffset
+            .addingReportingOverflow(visibleCount)
+        guard !nextOffsetOverflow else {
+            throw CanonicalReadError.invalidContinuation
+        }
+        let withinLogicalLimit = selectQuery.limit.map {
+            nextOffset < $0
+        } ?? true
+        let hasMore = inspectedCount > effectivePageSize
+            && withinLogicalLimit
+        let continuation = try hasMore
+            ? Cursor(
+                queryFingerprint: queryFingerprint,
+                resultFingerprint: resultFingerprint,
+                offset: UInt64(nextOffset)
+            ).encode()
+            : nil
+        let visible = trimOwnedRows(
+            consume rows,
+            offset: baseOffset,
+            count: visibleCount
+        )
+        return CanonicalPageWindow(
+            items: visible,
+            continuation: continuation
         )
     }
 
-    private static func compare(
-        _ lhsValues: [FieldValue],
-        _ rhsValues: [FieldValue],
-        sortFields: [KeysetSortField]
-    ) -> ComparisonResult {
-        for index in sortFields.indices {
-            let sortField = sortFields[index]
-            let comparison = compareField(
-                lhsValues[index],
-                rhsValues[index],
-                nulls: sortField.nulls
-            )
-            guard comparison != .orderedSame else { continue }
+    /// Narrows a uniquely-owned result buffer in place. The owned array is
+    /// consumed so pagination never allocates ArraySlice and Array copies for
+    /// the lookahead window and the visible page.
+    private static func trimOwnedRows(
+        _ rows: consuming [QueryRow],
+        offset: Int,
+        count requestedCount: Int?
+    ) -> [QueryRow] {
+        guard offset < rows.count else { return [] }
+        var result = consume rows
+        let availableCount = result.count - offset
+        let visibleCount = min(requestedCount ?? availableCount, availableCount)
+        let end = offset + visibleCount
+        if end < result.count {
+            result.removeLast(result.count - end)
+        }
+        if offset > 0 {
+            result.removeFirst(offset)
+        }
+        return result
+    }
 
-            switch sortField.direction {
-            case .ascending:
-                return comparison
-            case .descending:
-                return reverse(comparison)
+    private static func pageSize(
+        requested: Int?,
+        remainingLimit: Int?
+    ) -> Int? {
+        switch (requested, remainingLimit) {
+        case let (.some(pageSize), .some(limit)):
+            return min(pageSize, limit)
+        case let (.some(pageSize), .none):
+            return pageSize
+        case let (.none, .some(limit)):
+            return limit
+        case (.none, .none):
+            return nil
+        }
+    }
+
+    private static func queryFingerprint(
+        _ selectQuery: SelectQuery,
+        scope: DatabaseBytes,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseBytes {
+        var hasher = SHA256Accumulator()
+        let maximumIntermediateBytes = workMeter.budget.maximumIntermediateBytes
+        let maximumFrameBytes = Int(
+            min(maximumIntermediateBytes, UInt64(Int.max))
+        )
+        let limits = try DatabaseWireLimits(
+            maximumFrameBytes: maximumFrameBytes,
+            maximumStringBytes: maximumFrameBytes,
+            maximumByteStringBytes: maximumFrameBytes,
+            maximumCollectionCount: maximumFrameBytes,
+            maximumNestingDepth:
+                DatabaseWireLimits.maximumSupportedNestingDepth,
+            maximumObjectCount: maximumFrameBytes
+        )
+        do {
+            try QueryIRWireCodec.emitCanonicalEncoding(
+                .select(selectQuery),
+                limits: limits,
+                prepare: { queryByteCount in
+                    try claimFingerprintBytes(
+                        queryByteCount: queryByteCount,
+                        scopeByteCount: scope.count,
+                        workMeter: workMeter
+                    )
+                    updateDomain(0x0151_4244, hasher: &hasher)
+                    appendLength(queryByteCount, to: &hasher)
+                },
+                consume: { bytes in
+                    hasher.update(bytes)
+                }
+            )
+        } catch let wireError as DatabaseWireError {
+            switch wireError {
+            case .frameTooLarge(let actual, _),
+                 .stringTooLarge(let actual, _),
+                 .byteStringTooLarge(let actual, _):
+                throw DatabaseWorkLimitError.maximumIntermediateBytes(
+                    stage: .resultMaterialization,
+                    consumed: 0,
+                    requested: UInt64(actual),
+                    maximum: maximumIntermediateBytes
+                )
+            case .byteCountOverflow:
+                throw DatabaseWorkLimitError.maximumIntermediateBytes(
+                    stage: .resultMaterialization,
+                    consumed: 0,
+                    requested: UInt64.max,
+                    maximum: maximumIntermediateBytes
+                )
+            default:
+                throw wireError
             }
         }
-        return .orderedSame
+        append(scope, to: &hasher)
+        return hasher.finalize()
     }
 
-    private static func compareField(
-        _ lhs: FieldValue,
-        _ rhs: FieldValue,
-        nulls: NullOrdering?
-    ) -> ComparisonResult {
-        switch (lhs, rhs) {
-        case (.null, .null):
-            return .orderedSame
-        case (.null, _):
-            return nulls == .last ? .orderedDescending : .orderedAscending
-        case (_, .null):
-            return nulls == .last ? .orderedAscending : .orderedDescending
-        default:
-            return lhs.compare(to: rhs) ?? .orderedSame
+    private static func claimFingerprintBytes(
+        queryByteCount: Int,
+        scopeByteCount: Int,
+        workMeter: DatabaseWorkMeter
+    ) throws {
+        let queryBytes = UInt64(queryByteCount)
+        let scopeBytes = UInt64(scopeByteCount)
+        let (totalBytes, overflow) = queryBytes.addingReportingOverflow(
+            scopeBytes
+        )
+        let maximum = workMeter.budget.maximumIntermediateBytes
+        guard !overflow, totalBytes <= maximum else {
+            throw DatabaseWorkLimitError.maximumIntermediateBytes(
+                stage: .resultMaterialization,
+                consumed: 0,
+                requested: overflow ? UInt64.max : totalBytes,
+                maximum: maximum
+            )
+        }
+        try workMeter.consume(totalBytes, at: .resultMaterialization)
+    }
+
+    private static func resultFingerprint(
+        _ rows: [QueryRow],
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseBytes {
+        var hasher = SHA256Accumulator()
+        updateDomain(0x0150_4244, hasher: &hasher)
+        for row in rows {
+            let fingerprint = try CanonicalRowFingerprint.compute(
+                row,
+                workMeter: workMeter
+            )
+            hasher.update(fingerprint)
+        }
+        return hasher.finalize()
+    }
+
+    private static func append(
+        _ bytes: DatabaseBytes,
+        to hasher: inout SHA256Accumulator
+    ) {
+        appendLength(bytes.count, to: &hasher)
+        hasher.update(bytes)
+    }
+
+    private static func appendLength(
+        _ byteCount: Int,
+        to hasher: inout SHA256Accumulator
+    ) {
+        var length = UInt64(byteCount).littleEndian
+        withUnsafeBytes(of: &length) { buffer in
+            hasher.update(buffer)
         }
     }
 
-    private static func reverse(_ comparison: ComparisonResult) -> ComparisonResult {
-        switch comparison {
-        case .orderedAscending:
-            return .orderedDescending
-        case .orderedDescending:
-            return .orderedAscending
-        case .orderedSame:
-            return .orderedSame
+    private static func updateDomain(
+        _ value: UInt32,
+        hasher: inout SHA256Accumulator
+    ) {
+        var littleEndian = value.littleEndian
+        withUnsafeBytes(of: &littleEndian) { buffer in
+            hasher.update(buffer)
         }
     }
 }

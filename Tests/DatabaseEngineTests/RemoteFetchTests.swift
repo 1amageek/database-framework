@@ -79,8 +79,8 @@ struct RemoteFetchResultTests {
 
     @Test("Hit rate calculation")
     func hitRateCalculation() {
-        let result = RemoteFetchResult<TestFetchItem>(
-            items: [TestFetchItem(name: "1"), TestFetchItem(name: "2"), TestFetchItem(name: "3")],
+        let result = RemoteFetchResult<RemoteFetchItem>(
+            items: [RemoteFetchItem(name: "1"), RemoteFetchItem(name: "2"), RemoteFetchItem(name: "3")],
             notFoundKeys: [Tuple("missing1"), Tuple("missing2")],
             fetchedCount: 3,
             notFoundCount: 2,
@@ -93,8 +93,8 @@ struct RemoteFetchResultTests {
 
     @Test("Perfect hit rate")
     func perfectHitRate() {
-        let result = RemoteFetchResult<TestFetchItem>(
-            items: [TestFetchItem(name: "1")],
+        let result = RemoteFetchResult<RemoteFetchItem>(
+            items: [RemoteFetchItem(name: "1")],
             notFoundKeys: [],
             fetchedCount: 1,
             notFoundCount: 0,
@@ -106,7 +106,7 @@ struct RemoteFetchResultTests {
 
     @Test("Zero hit rate")
     func zeroHitRate() {
-        let result = RemoteFetchResult<TestFetchItem>(
+        let result = RemoteFetchResult<RemoteFetchItem>(
             items: [],
             notFoundKeys: [Tuple("missing")],
             fetchedCount: 0,
@@ -119,7 +119,7 @@ struct RemoteFetchResultTests {
 
     @Test("Empty result")
     func emptyResult() {
-        let result = RemoteFetchResult<TestFetchItem>(
+        let result = RemoteFetchResult<RemoteFetchItem>(
             items: [],
             notFoundKeys: [],
             fetchedCount: 0,
@@ -226,10 +226,11 @@ struct ArrayChunkingTests {
 // MARK: - Test Model
 
 import Core
+import DatabaseValue
 import StorageKit
 
 @Persistable
-struct TestFetchItem: Equatable {
+struct RemoteFetchItem: Equatable {
     var id: String = UUID().uuidString
     var name: String
 }

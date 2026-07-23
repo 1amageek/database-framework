@@ -4,7 +4,12 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseMath
 
 /// Product Quantizer for compressing high-dimensional vectors
 ///
@@ -384,7 +389,7 @@ private struct SubspaceKMeans {
     private func hasConverged(old: [[Float]], new: [[Float]]) -> Bool {
         let threshold: Float = 1e-4
         for (o, n) in zip(old, new) {
-            if sqrt(VectorConversion.euclideanDistanceSquaredFloat(o, n)) > threshold {
+            if DatabaseMath.squareRoot(VectorConversion.euclideanDistanceSquaredFloat(o, n)) > threshold {
                 return false
             }
         }

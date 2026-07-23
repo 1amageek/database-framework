@@ -91,14 +91,14 @@ struct BatchFetchResultTests {
 
     // Test model
     @Persistable
-    struct TestItem {
+    struct BatchFetchItem {
         var id: String = UUID().uuidString
         var name: String
     }
 
     @Test("Empty result")
     func emptyResult() {
-        let result = BatchFetchResult<TestItem>(
+        let result = BatchFetchResult<BatchFetchItem>(
             items: [],
             notFound: [],
             failed: []
@@ -114,12 +114,12 @@ struct BatchFetchResultTests {
     @Test("All items found")
     func allItemsFound() {
         let items = [
-            TestItem(name: "Item 1"),
-            TestItem(name: "Item 2"),
-            TestItem(name: "Item 3")
+            BatchFetchItem(name: "Item 1"),
+            BatchFetchItem(name: "Item 2"),
+            BatchFetchItem(name: "Item 3")
         ]
 
-        let result = BatchFetchResult<TestItem>(
+        let result = BatchFetchResult<BatchFetchItem>(
             items: items,
             notFound: [],
             failed: []
@@ -132,10 +132,10 @@ struct BatchFetchResultTests {
 
     @Test("Partial success")
     func partialSuccess() {
-        let items = [TestItem(name: "Found")]
+        let items = [BatchFetchItem(name: "Found")]
         let notFound = [Tuple("key1"), Tuple("key2")]
 
-        let result = BatchFetchResult<TestItem>(
+        let result = BatchFetchResult<BatchFetchItem>(
             items: items,
             notFound: notFound,
             failed: []
@@ -149,14 +149,14 @@ struct BatchFetchResultTests {
 
     @Test("Mixed results with failures")
     func mixedResultsWithFailures() {
-        let items = [TestItem(name: "Success")]
+        let items = [BatchFetchItem(name: "Success")]
         let notFound = [Tuple("missing")]
         let failed: [(key: Tuple, error: Error)] = [
             (key: Tuple("error1"), error: NSError(domain: "test", code: 1)),
             (key: Tuple("error2"), error: NSError(domain: "test", code: 2))
         ]
 
-        let result = BatchFetchResult<TestItem>(
+        let result = BatchFetchResult<BatchFetchItem>(
             items: items,
             notFound: notFound,
             failed: failed
@@ -243,16 +243,16 @@ struct BatchFetchStatisticsTests {
 struct BatchFetcherIntegrationTests {
 
     @Persistable
-    struct TestUser {
-        #Directory<TestUser>("test", "batchfetcher", "users")
+    struct BatchFetchUser {
+        #Directory<BatchFetchUser>("test", "batchfetcher", "users")
         var id: String = UUID().uuidString
         var name: String
         var email: String
     }
 
     private func setupDatabase() async throws -> any StorageEngine {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        return try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        return try await FoundationDBScenarioCoordinator.shared.makeEngine()
     }
 
     private func testSubspace() -> Subspace {
@@ -268,10 +268,11 @@ struct BatchFetcherIntegrationTests {
         let database = try await setupDatabase()
         let subspace = testSubspace()
 
-        let fetcher = BatchFetcher<TestUser>(
+        let fetcher = BatchFetcher<BatchFetchUser>(
             itemSubspace: subspace,
             blobsSubspace: blobsSubspace(from: subspace),
-            itemType: "TestUser",
+            itemType: "BatchFetchUser",
+            itemStorageFactory: ItemStorageFactory(configuration: .v1),
             configuration: .default
         )
 
@@ -287,10 +288,11 @@ struct BatchFetcherIntegrationTests {
         let database = try await setupDatabase()
         let subspace = testSubspace()
 
-        let fetcher = BatchFetcher<TestUser>(
+        let fetcher = BatchFetcher<BatchFetchUser>(
             itemSubspace: subspace,
             blobsSubspace: blobsSubspace(from: subspace),
-            itemType: "TestUser",
+            itemType: "BatchFetchUser",
+            itemStorageFactory: ItemStorageFactory(configuration: .v1),
             configuration: .default
         )
 
@@ -311,10 +313,11 @@ struct BatchFetcherIntegrationTests {
         let database = try await setupDatabase()
         let subspace = testSubspace()
 
-        let fetcher = BatchFetcher<TestUser>(
+        let fetcher = BatchFetcher<BatchFetchUser>(
             itemSubspace: subspace,
             blobsSubspace: blobsSubspace(from: subspace),
-            itemType: "TestUser",
+            itemType: "BatchFetchUser",
+            itemStorageFactory: ItemStorageFactory(configuration: .v1),
             configuration: .default
         )
 

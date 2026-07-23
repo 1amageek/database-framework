@@ -4,7 +4,11 @@
 // Provides Jaccard similarity over character trigrams (3-grams).
 // Used by GraphIndex (SPARQL FILTER) and ScalarIndex (Filter) for fuzzy text matching.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Trigram-based text similarity.
 ///

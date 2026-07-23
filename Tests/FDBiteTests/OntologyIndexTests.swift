@@ -1,43 +1,53 @@
 #if SQLITE
-// OntologyIndexTests.swift
-// Tests for OntologyIndex — automatic @OWLClass entity → SPO triple materialization
-//
-// Unit tests: OWLTripleIndexMaintainer key generation logic
-// Macro tests: @OWLClass auto-generates _owlTripleDescriptors, merged into descriptors
-// Integration tests: context.save() → IndexMaintenanceService → SPO entries in storage
-
 import Testing
-import Foundation
 import Database
+import DatabaseValue
+import Graph
 import StorageKit
 import TestHeartbeat
 
-// MARK: - Test Models
-
-/// @OWLClass entity: Person
-@Persistable
-@OWLClass("ex:Person")
-struct OntoPerson: Hashable {
-    #Directory<OntoPerson>("test", "ontology", "persons")
-
-    @OWLDataProperty("rdfs:label")
-    var name: String = ""
-
-    @OWLDataProperty("ex:email")
-    var email: String = ""
+private enum OntologyPersistenceVocabulary {
+    static let classBase = "https://test.example/ontology/"
+    static let individualBase = "https://test.example/individual/"
+    static let graph = "https://test.example/graph/ontology"
+    static let label = "http://www.w3.org/2000/01/rdf-schema#label"
 }
 
-/// @OWLClass entity: Organization
 @Persistable
-@OWLClass("ex:Organization")
+@OWLClass(
+    "https://test.example/ontology/Organization",
+    individualIRIBase: "https://test.example/individual/",
+    graph: "https://test.example/graph/ontology"
+)
 struct OntoOrganization: Hashable {
     #Directory<OntoOrganization>("test", "ontology", "organizations")
 
-    @OWLDataProperty("rdfs:label")
+    @OWLDataProperty("http://www.w3.org/2000/01/rdf-schema#label")
     var name: String = ""
 }
 
-/// Non-OWL entity (no @OWLClass) for comparison
+@Persistable
+@OWLClass(
+    "https://test.example/ontology/Person",
+    individualIRIBase: "https://test.example/individual/",
+    graph: "https://test.example/graph/ontology"
+)
+struct OntoPerson: Hashable {
+    #Directory<OntoPerson>("test", "ontology", "persons")
+
+    @OWLDataProperty("http://www.w3.org/2000/01/rdf-schema#label")
+    var name: String = ""
+
+    @OWLDataProperty("https://test.example/ontology/email")
+    var email: String = ""
+
+    @OWLDataProperty(
+        "https://test.example/ontology/memberOf",
+        to: \OntoOrganization.id
+    )
+    var organizationID: String? = nil
+}
+
 @Persistable
 struct PlainItem: Hashable {
     #Directory<PlainItem>("test", "ontology", "plain")
@@ -45,201 +55,142 @@ struct PlainItem: Hashable {
     var name: String = ""
 }
 
-// MARK: - Helpers
-
-private func containsSubsequence(_ haystack: [UInt8], _ needle: [UInt8]) -> Bool {
+private func containsSubsequence(
+    _ haystack: [UInt8],
+    _ needle: [UInt8]
+) -> Bool {
     guard needle.count <= haystack.count else { return false }
-    for i in 0...(haystack.count - needle.count) {
-        if haystack[i..<(i + needle.count)].elementsEqual(needle) {
+    for offset in 0...(haystack.count - needle.count) {
+        if haystack[offset..<(offset + needle.count)].elementsEqual(needle) {
             return true
         }
     }
     return false
 }
 
-/// Scan all key-value pairs in storage and find entries containing the given string.
 private func findEntries(
     engine: any StorageEngine,
-    containing text: String
+    containing term: DatabaseRDFTerm
 ) async throws -> [Bytes] {
-    let textBytes = Array(text.utf8)
+    let needle = try DatabaseRDFTermCodec.encode(term).copyBytes()
     var matched: [Bytes] = []
-    try await engine.withTransaction { tx in
-        for (key, _) in try await tx.collectRange(
+    try await engine.withTransaction { transaction in
+        for (key, _) in try await transaction.collectRange(
             from: .firstGreaterOrEqual([0x00]),
             to: .firstGreaterOrEqual([0xFF]),
-            limit: 10000,
+            limit: 10_000,
             snapshot: true
-        ) {
-            if containsSubsequence(key, textBytes) {
-                matched.append(key)
-            }
+        ) where containsSubsequence(key, needle) {
+            matched.append(key)
         }
     }
     return matched
 }
 
-// MARK: - Macro Generation Tests
-
-@Suite("OWLClass Macro Descriptor Tests", .heartbeat)
-struct OWLClassMacroDescriptorTests {
-
-    @Test("@OWLClass auto-generates _owlTripleDescriptors")
-    func owlClassGeneratesTripleDescriptors() {
-        let descriptors = OntoPerson._owlTripleDescriptors
+@Suite("OWLClass RDF Descriptor Tests", .heartbeat)
+struct OWLClassRDFDescriptorTests {
+    @Test("@OWLClass registers one canonical RDF projection")
+    func generatedDescriptor() {
+        let descriptors = OntoPerson._owlRDFDescriptors
         #expect(descriptors.count == 1)
 
-        let indexDesc = descriptors[0] as? IndexDescriptor
-        #expect(indexDesc != nil)
-        #expect(indexDesc?.name == "OntoPerson_owlTriple")
-        #expect(indexDesc?.kindIdentifier == "owlTriple")
+        let index = descriptors[0] as? IndexDescriptor
+        #expect(index?.name == "OntoPerson_owl_rdf")
+        #expect(index?.kindIdentifier == "owl_class_rdf")
     }
 
-    @Test("descriptors merges _persistableDescriptors + _owlTripleDescriptors")
+    @Test("Record and RDF descriptors are merged")
     func descriptorsMerge() {
-        let all = OntoPerson.descriptors
-        let indexDescs = all.compactMap { $0 as? IndexDescriptor }
-
-        // Should contain at least: owlTriple descriptor
-        let owlTriple = indexDescs.first { $0.kindIdentifier == "owlTriple" }
-        #expect(owlTriple != nil, "descriptors should contain OWLTripleIndexKind descriptor")
-        #expect(owlTriple?.name == "OntoPerson_owlTriple")
+        let rdfIndex = OntoPerson.indexDescriptors.first {
+            $0.kindIdentifier == "owl_class_rdf"
+        }
+        #expect(rdfIndex?.name == "OntoPerson_owl_rdf")
     }
 
-    @Test("indexDescriptors includes OWLTripleIndexKind")
-    func indexDescriptorsIncludeOwlTriple() {
-        let indexDescs = OntoPerson.indexDescriptors
-        let owlTriple = indexDescs.first { $0.kindIdentifier == "owlTriple" }
-        #expect(owlTriple != nil, "indexDescriptors should include owlTriple")
-    }
-
-    @Test("Non-OWL entity has no owlTriple descriptor")
-    func plainEntityNoOwlTriple() {
-        let indexDescs = PlainItem.indexDescriptors
-        let owlTriple = indexDescs.first { $0.kindIdentifier == "owlTriple" }
-        #expect(owlTriple == nil, "Plain entity should not have owlTriple descriptor")
+    @Test("A plain record does not register an RDF projection")
+    func plainEntityHasNoProjection() {
+        #expect(
+            PlainItem.indexDescriptors.allSatisfy {
+                $0.kindIdentifier != "owl_class_rdf"
+            }
+        )
     }
 }
 
-// MARK: - Unit Tests: Maintainer Key Generation
-
-@Suite("OWLTripleIndexMaintainer Unit Tests", .heartbeat)
-struct OWLTripleIndexMaintainerUnitTests {
-
-    @Test("Generates correct SPO key count for insert")
+@Suite("OWLClass RDF Index Maintainer Tests", .heartbeat)
+struct OWLClassRDFIndexMaintainerTests {
+    @Test("Each projected quad produces six canonical orderings")
     func keyCount() async throws {
-        let maintainer = OWLTripleIndexMaintainer<OntoPerson>(
-            subspace: Subspace("test_owl"), graph: "test:default", prefix: "test"
+        let maintainer = OWLClassRDFIndexMaintainer<OntoPerson>(
+            subspace: Subspace("test_owl")
         )
         let person = OntoPerson(name: "Alice", email: "alice@example.com")
-        let keys = try await maintainer.computeIndexKeys(for: person, id: Tuple([person.id]))
+        let keys = try await maintainer.computeIndexKeys(
+            for: person,
+            id: Tuple([person.id])
+        )
 
-        // 3 triples (rdf:type + rdfs:label + ex:email) × 3 orderings = 9
-        #expect(keys.count == 9)
+        #expect(keys.count == 18)
     }
 
-    @Test("Skips empty string fields")
-    func skipsEmpty() async throws {
-        let maintainer = OWLTripleIndexMaintainer<OntoPerson>(
-            subspace: Subspace("test_owl"), graph: "test:default", prefix: "test"
+    @Test("An empty string remains a valid xsd:string assertion")
+    func emptyStringIsRetained() async throws {
+        let maintainer = OWLClassRDFIndexMaintainer<OntoPerson>(
+            subspace: Subspace("test_owl")
         )
         let person = OntoPerson(name: "", email: "noname@example.com")
-        let keys = try await maintainer.computeIndexKeys(for: person, id: Tuple([person.id]))
+        let keys = try await maintainer.computeIndexKeys(
+            for: person,
+            id: Tuple([person.id])
+        )
 
-        // 2 triples (rdf:type + ex:email) × 3 orderings = 6
-        #expect(keys.count == 6)
+        #expect(keys.count == 18)
     }
 
-    @Test("Different values produce different keys")
-    func diffValues() async throws {
-        let maintainer = OWLTripleIndexMaintainer<OntoPerson>(
-            subspace: Subspace("test_owl"), graph: "test:default", prefix: "test"
+    @Test("The projection preserves typed RDF terms")
+    func typedTerms() throws {
+        let person = OntoPerson(name: "Alice", email: "alice@example.com")
+        let quads = try person.ontologyQuads()
+
+        #expect(quads.count == 3)
+        #expect(quads.allSatisfy { $0.graph == .iri(OntologyPersistenceVocabulary.graph) })
+        #expect(
+            quads.contains {
+                $0.predicate == OWLRDFVocabulary.rdfType
+                    && $0.object == .iri(OntologyPersistenceVocabulary.classBase + "Person")
+            }
         )
-        var person = OntoPerson(name: "Alice", email: "alice@example.com")
-        let keysV1 = try await maintainer.computeIndexKeys(for: person, id: Tuple([person.id]))
-
-        person.name = "Bob"
-        let keysV2 = try await maintainer.computeIndexKeys(for: person, id: Tuple([person.id]))
-
-        #expect(keysV1 != keysV2)
-        #expect(keysV1.count == keysV2.count)
+        #expect(
+            quads.contains {
+                $0.predicate == .iri(OntologyPersistenceVocabulary.label)
+                    && $0.object == OWLRDFVocabulary.literal("Alice", datatype: "string")
+            }
+        )
     }
 
-    @Test("Entity IRI format: {prefix}:{lowercase_type}/{id}")
-    func entityIRI() async throws {
-        let maintainer = OWLTripleIndexMaintainer<OntoPerson>(
-            subspace: Subspace("test_owl"), graph: "test:default", prefix: "test"
+    @Test("Object properties project the target individual IRI")
+    func objectProperty() throws {
+        let organization = OntoOrganization(name: "Database Group")
+        let person = OntoPerson(
+            name: "Alice",
+            email: "alice@example.com",
+            organizationID: organization.id
         )
-        let person = OntoPerson(name: "Test")
-        let keys = try await maintainer.computeIndexKeys(for: person, id: Tuple([person.id]))
-        let iriBytes = Array("test:ontoperson/\(person.id)".utf8)
+        let target = try organization.ontologySubject()
+        let quads = try person.ontologyQuads()
 
-        #expect(keys.contains { containsSubsequence($0, iriBytes) })
-    }
-
-    @Test("Generates rdf:type triple with ontologyClassIRI")
-    func rdfType() async throws {
-        let maintainer = OWLTripleIndexMaintainer<OntoPerson>(
-            subspace: Subspace("test_owl"), graph: "test:default", prefix: "test"
+        #expect(quads.count == 4)
+        #expect(
+            quads.contains {
+                $0.predicate == .iri(OntologyPersistenceVocabulary.classBase + "memberOf")
+                    && $0.object == target
+            }
         )
-        let person = OntoPerson(name: "Alice")
-        let keys = try await maintainer.computeIndexKeys(for: person, id: Tuple([person.id]))
-
-        let rdfTypeBytes = Array("rdf:type".utf8)
-        let classBytes = Array("ex:Person".utf8)
-        #expect(keys.contains { containsSubsequence($0, rdfTypeBytes) && containsSubsequence($0, classBytes) })
-    }
-
-    @Test("Different @OWLClass types produce independent keys")
-    func multipleTypes() async throws {
-        let personMaintainer = OWLTripleIndexMaintainer<OntoPerson>(
-            subspace: Subspace("test"), graph: "default", prefix: "e"
-        )
-        let orgMaintainer = OWLTripleIndexMaintainer<OntoOrganization>(
-            subspace: Subspace("test"), graph: "default", prefix: "e"
-        )
-
-        let pKeys = try await personMaintainer.computeIndexKeys(
-            for: OntoPerson(name: "A", email: "a@b"), id: Tuple(["1"])
-        )
-        let oKeys = try await orgMaintainer.computeIndexKeys(
-            for: OntoOrganization(name: "X"), id: Tuple(["2"])
-        )
-
-        #expect(pKeys.count == 9)  // 3 triples × 3
-        #expect(oKeys.count == 6)  // 2 triples × 3
-    }
-
-    @Test("makeIndexMaintainer throws for non-OWLClassEntity type")
-    func makeIndexMaintainerErrorCase() {
-        let kind = OWLTripleIndexKind<OntoPerson>(graph: "default", prefix: "entity")
-
-        // PlainItem does not conform to OWLClassEntity
-        #expect(throws: OntologyIndexError.self) {
-            let _: any IndexMaintainer<PlainItem> = try kind.makeIndexMaintainer(
-                index: Index(
-                    name: "test",
-                    kind: kind,
-                    rootExpression: EmptyKeyExpression(),
-                    keyPaths: [],
-                    subspaceKey: "test",
-                    itemTypes: nil,
-                    isUnique: false,
-                    storedFieldNames: []
-                ),
-                subspace: Subspace("test"),
-                idExpression: FieldKeyExpression(fieldName: "id"),
-                configurations: []
-            )
-        }
     }
 }
 
-// MARK: - Integration Tests: Full Pipeline
-
-@Suite("OntologyIndex Integration Tests", .heartbeat)
-struct OntologyIndexIntegrationTests {
-
+@Suite("OWLClass RDF SQLite Integration Tests", .heartbeat)
+struct OWLClassRDFSQLiteIntegrationTests {
     private func makeContainer() async throws -> DBContainer {
         let schema = Schema(
             [OntoPerson.self, OntoOrganization.self, PlainItem.self],
@@ -248,123 +199,76 @@ struct OntologyIndexIntegrationTests {
         return try await DBContainer.inMemory(for: schema, security: .disabled)
     }
 
-    @Test("Insert: context.save() creates SPO entries automatically")
-    func insertCreatesSPOEntries() async throws {
+    @Test("Saving a record atomically creates its RDF projection")
+    func insertCreatesProjection() async throws {
         let container = try await makeContainer()
         let context = container.newContext()
-
         let person = OntoPerson(name: "Alice", email: "alice@example.com")
+
         context.insert(person)
         try await context.save()
 
-        let entityIRI = "entity:ontoperson/\(person.id)"
-        let entries = try await findEntries(engine: container.engine, containing: entityIRI)
-
-        // 3 triples × 3 orderings = 9
-        #expect(entries.count == 9, "Expected 9 SPO entries, got \(entries.count)")
+        let subject = try person.ontologySubject()
+        let entries = try await findEntries(
+            engine: container.engine,
+            containing: subject
+        )
+        #expect(entries.count == 18)
     }
 
-    @Test("Insert: empty fields are skipped")
-    func insertSkipsEmpty() async throws {
+    @Test("Updating a record replaces stale RDF assertions")
+    func updateReplacesProjection() async throws {
         let container = try await makeContainer()
         let context = container.newContext()
-
-        let person = OntoPerson(name: "", email: "x@y")
-        context.insert(person)
-        try await context.save()
-
-        let entityIRI = "entity:ontoperson/\(person.id)"
-        let entries = try await findEntries(engine: container.engine, containing: entityIRI)
-
-        // 2 triples × 3 orderings = 6
-        #expect(entries.count == 6, "Expected 6 SPO entries, got \(entries.count)")
-    }
-
-    @Test("Update: old SPO entries replaced with new values")
-    func updateReplacesSPO() async throws {
-        let container = try await makeContainer()
-        let context = container.newContext()
-
         var person = OntoPerson(name: "Alice", email: "alice@example.com")
+
+        context.insert(person)
+        try await context.save()
+        person.name = "Alice Smith"
         context.insert(person)
         try await context.save()
 
-        // Update
-        person.name = "Alice Smith"
-        context.insert(person)  // upsert
-        try await context.save()
+        let entries = try await findEntries(
+            engine: container.engine,
+            containing: person.ontologySubject()
+        )
+        let oldLiteral = try DatabaseRDFTermCodec.encode(
+            OWLRDFVocabulary.literal("Alice", datatype: "string")
+        ).copyBytes()
+        let newLiteral = try DatabaseRDFTermCodec.encode(
+            OWLRDFVocabulary.literal("Alice Smith", datatype: "string")
+        ).copyBytes()
 
-        let entityIRI = "entity:ontoperson/\(person.id)"
-        let entries = try await findEntries(engine: container.engine, containing: entityIRI)
-
-        // Still 3 triples × 3 = 9 (old cleared, new set)
-        #expect(entries.count == 9)
-
-        // Old value should not be in keys
-        let oldBytes = Array("Alice".utf8)
-        let newBytes = Array("Alice Smith".utf8)
-        let hasStale = entries.contains {
-            containsSubsequence($0, oldBytes) && !containsSubsequence($0, newBytes)
-        }
-        #expect(!hasStale, "Old value 'Alice' should not remain after update")
+        #expect(entries.count == 18)
+        #expect(entries.allSatisfy { !containsSubsequence($0, oldLiteral) })
+        #expect(entries.contains { containsSubsequence($0, newLiteral) })
     }
 
-    @Test("Delete: all SPO entries removed")
-    func deleteRemovesSPO() async throws {
+    @Test("Deleting a record removes its RDF projection")
+    func deleteRemovesProjection() async throws {
         let container = try await makeContainer()
         let context = container.newContext()
-
         let person = OntoPerson(name: "Bob", email: "bob@example.com")
+        let subject = try person.ontologySubject()
+
         context.insert(person)
         try await context.save()
-
-        let entityIRI = "entity:ontoperson/\(person.id)"
-        let before = try await findEntries(engine: container.engine, containing: entityIRI)
-        #expect(!before.isEmpty)
+        #expect(
+            try await !findEntries(
+                engine: container.engine,
+                containing: subject
+            ).isEmpty
+        )
 
         context.delete(person)
         try await context.save()
 
-        let after = try await findEntries(engine: container.engine, containing: entityIRI)
-        #expect(after.isEmpty, "All SPO entries should be removed after delete")
-    }
-
-    @Test("Multiple types: independent SPO entries per entity type")
-    func multipleTypesIntegration() async throws {
-        let container = try await makeContainer()
-        let context = container.newContext()
-
-        let person = OntoPerson(name: "Charlie", email: "c@d")
-        let org = OntoOrganization(name: "Acme")
-        context.insert(person)
-        context.insert(org)
-        try await context.save()
-
-        let personEntries = try await findEntries(
-            engine: container.engine, containing: "entity:ontoperson/\(person.id)"
+        #expect(
+            try await findEntries(
+                engine: container.engine,
+                containing: subject
+            ).isEmpty
         )
-        let orgEntries = try await findEntries(
-            engine: container.engine, containing: "entity:ontoorganization/\(org.id)"
-        )
-
-        #expect(personEntries.count == 9)  // 3 × 3
-        #expect(orgEntries.count == 6)     // 2 × 3
-    }
-
-    @Test("Non-OWL entity: no SPO entries created")
-    func plainEntityNoSPO() async throws {
-        let container = try await makeContainer()
-        let context = container.newContext()
-
-        let item = PlainItem(name: "test")
-        context.insert(item)
-        try await context.save()
-
-        // PlainItem has no @OWLClass, so no owlTriple entries
-        let entries = try await findEntries(
-            engine: container.engine, containing: "entity:plainitem/"
-        )
-        #expect(entries.isEmpty, "Non-OWL entity should not produce SPO entries")
     }
 }
 #endif

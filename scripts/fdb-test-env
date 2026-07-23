@@ -4,10 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="${FDB_TEST_STATE_DIR:-"$ROOT_DIR/.fdb-test"}"
 PORT="${FDB_TEST_PORT:-4699}"
+STATUS_TIMEOUT_SECONDS="${FDB_TEST_STATUS_TIMEOUT_SECONDS:-20}"
+STARTUP_TIMEOUT_SECONDS="${FDB_TEST_STARTUP_TIMEOUT_SECONDS:-90}"
+MIN_AVAILABLE_SPACE_RATIO="${FDB_TEST_MIN_AVAILABLE_SPACE_RATIO:-0.0}"
+XCODE_TIMEOUT_SECONDS="${FDB_TEST_XCODE_TIMEOUT_SECONDS:-120}"
+EXPECTED_TEST_COUNT="${FDB_TEST_EXPECTED_COUNT:-}"
 CLUSTER_FILE="$STATE_DIR/fdb.cluster"
 DATA_DIR="$STATE_DIR/data"
 LOG_DIR="$STATE_DIR/logs"
 PID_FILE="$STATE_DIR/fdb.pid"
+PID_IDENTITY_FILE="$STATE_DIR/fdb.pid.identity"
 ENV_FILE="$STATE_DIR/env"
 
 FDBSERVER="${FDBSERVER:-}"
@@ -21,11 +27,22 @@ Usage:
   scripts/fdb-test-env status
   scripts/fdb-test-env env
   scripts/fdb-test-env run [--clean] -- <command> [args...]
+  scripts/fdb-test-env xcode-test [--clean] -- <file.xctestrun> [xcodebuild options...]
   scripts/fdb-test-env shell [--clean]
 
 Environment:
   FDB_TEST_PORT       Port for the isolated local cluster. Default: 4699
   FDB_TEST_STATE_DIR  State directory. Default: .fdb-test
+  FDB_TEST_STATUS_TIMEOUT_SECONDS
+                      Individual cluster status timeout. Default: 20
+  FDB_TEST_STARTUP_TIMEOUT_SECONDS
+                      Database availability deadline. Default: 90
+  FDB_TEST_MIN_AVAILABLE_SPACE_RATIO
+                      Ephemeral cluster disk reserve ratio. Default: 0.0
+  FDB_TEST_XCODE_TIMEOUT_SECONDS
+                      test-without-building timeout. Default: 120
+  FDB_TEST_EXPECTED_COUNT
+                      Exact test count required from the xcresult. Optional.
   FDBSERVER           Override fdbserver path
   FDBCLI              Override fdbcli path
 EOF
@@ -85,21 +102,52 @@ timeout_cmd() {
 
 is_alive() {
   [[ -f "$PID_FILE" ]] || return 1
+  [[ -f "$PID_IDENTITY_FILE" ]] || return 1
   local pid
   pid="$(tr -d '[:space:]' < "$PID_FILE")"
-  [[ -n "$pid" ]] || return 1
-  kill -0 "$pid" >/dev/null 2>&1
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" >/dev/null 2>&1 || return 1
+
+  local stored_start
+  local stored_server
+  local stored_cluster
+  local stored_port
+  stored_start="$(sed -n '1p' "$PID_IDENTITY_FILE")"
+  stored_server="$(sed -n '2p' "$PID_IDENTITY_FILE")"
+  stored_cluster="$(sed -n '3p' "$PID_IDENTITY_FILE")"
+  stored_port="$(sed -n '4p' "$PID_IDENTITY_FILE")"
+
+  [[ -n "$stored_start" && -n "$stored_server" ]] || return 1
+  [[ "$stored_cluster" == "$CLUSTER_FILE" ]] || return 1
+  [[ "$stored_port" == "$PORT" ]] || return 1
+
+  local current_start
+  local command_line
+  current_start="$(ps -p "$pid" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
+  command_line="$(ps -ww -p "$pid" -o command= 2>/dev/null)"
+  [[ "$current_start" == "$stored_start" ]] || return 1
+  [[ "$command_line" == "$stored_server "* ]] || return 1
+  [[ "$command_line" == *" -C $stored_cluster "* ]] || return 1
+  [[ "$command_line" == *" -p auto:$stored_port "* ]] || return 1
 }
 
-is_configured() {
+is_available() {
   [[ -f "$CLUSTER_FILE" ]] || return 1
-  timeout_cmd 5 "$(fdbcli_path)" -C "$CLUSTER_FILE" --exec 'status minimal' >/dev/null 2>&1
+  local status
+  if ! status="$(
+    timeout_cmd "$STATUS_TIMEOUT_SECONDS" \
+      "$(fdbcli_path)" -C "$CLUSTER_FILE" --exec 'status minimal' 2>/dev/null
+  )"; then
+    return 1
+  fi
+
+  grep -Eq '^The database is available\.$' <<<"$status"
 }
 
-wait_for_configured() {
-  local deadline=$((SECONDS + 20))
+wait_for_available() {
+  local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
   while (( SECONDS < deadline )); do
-    if is_configured; then
+    if is_available; then
       return 0
     fi
     sleep 0.5
@@ -126,7 +174,7 @@ configure_cluster() {
       return 0
     fi
 
-    if grep -qi 'already.*configured\\|database.*exists' "$output" "$error_output" 2>/dev/null; then
+    if grep -Eqi 'already.*configured|database.*exists' "$output" "$error_output" 2>/dev/null; then
       return 0
     fi
 
@@ -145,6 +193,146 @@ export FDB_CLUSTER_FILE="$CLUSTER_FILE"
 EOF
 }
 
+inject_cluster_file_into_xctestrun() {
+  local xctestrun="$1"
+  local configuration_index=0
+  local target_count=0
+
+  while plutil -extract "TestConfigurations.$configuration_index.Name" raw \
+      "$xctestrun" >/dev/null 2>&1; do
+    local target_index=0
+    while plutil -extract \
+        "TestConfigurations.$configuration_index.TestTargets.$target_index.BlueprintName" \
+        raw "$xctestrun" >/dev/null 2>&1; do
+      local environment_path="TestConfigurations.$configuration_index.TestTargets.$target_index.EnvironmentVariables"
+      local cluster_path="$environment_path.FDB_CLUSTER_FILE"
+
+      if ! plutil -extract "$environment_path" xml1 -o /dev/null \
+          "$xctestrun" >/dev/null 2>&1; then
+        plutil -insert "$environment_path" -xml '<dict/>' "$xctestrun"
+      fi
+
+      if plutil -extract "$cluster_path" raw "$xctestrun" >/dev/null 2>&1; then
+        plutil -replace "$cluster_path" -string "$CLUSTER_FILE" "$xctestrun"
+      else
+        plutil -insert "$cluster_path" -string "$CLUSTER_FILE" "$xctestrun"
+      fi
+
+      target_count=$((target_count + 1))
+      target_index=$((target_index + 1))
+    done
+    configuration_index=$((configuration_index + 1))
+  done
+
+  # Xcode emits the legacy format with each test target as a top-level
+  # dictionary. Detect target dictionaries by their BlueprintName contract.
+  local top_level_key
+  while IFS= read -r top_level_key; do
+    if ! plutil -extract "$top_level_key.BlueprintName" raw \
+        "$xctestrun" >/dev/null 2>&1; then
+      continue
+    fi
+
+    local environment_path="$top_level_key.EnvironmentVariables"
+    local cluster_path="$environment_path.FDB_CLUSTER_FILE"
+    if ! plutil -extract "$environment_path" xml1 -o /dev/null \
+        "$xctestrun" >/dev/null 2>&1; then
+      plutil -insert "$environment_path" -xml '<dict/>' "$xctestrun"
+    fi
+
+    if plutil -extract "$cluster_path" raw "$xctestrun" >/dev/null 2>&1; then
+      plutil -replace "$cluster_path" -string "$CLUSTER_FILE" "$xctestrun"
+    else
+      plutil -insert "$cluster_path" -string "$CLUSTER_FILE" "$xctestrun"
+    fi
+    target_count=$((target_count + 1))
+  done < <(
+    plutil -p "$xctestrun" \
+      | sed -n 's/^  "\([^"]*\)" => {$/\1/p'
+  )
+
+  if (( target_count == 0 )); then
+    echo "error: no test targets found in $xctestrun" >&2
+    return 1
+  fi
+}
+
+run_xcode_tests() {
+  local clean="$1"
+  shift
+
+  if [[ $# -eq 0 ]]; then
+    echo "error: xcode-test requires an xctestrun file" >&2
+    return 2
+  fi
+  if ! command -v xcodebuild >/dev/null 2>&1 || ! command -v plutil >/dev/null 2>&1; then
+    echo "error: xcode-test requires xcodebuild and plutil" >&2
+    return 1
+  fi
+
+  local source_xctestrun="$1"
+  shift
+  if [[ ! -f "$source_xctestrun" ]]; then
+    echo "error: xctestrun file not found: $source_xctestrun" >&2
+    return 1
+  fi
+
+  local source_directory
+  local source_name
+  source_directory="$(cd "$(dirname "$source_xctestrun")" && pwd)"
+  source_name="$(basename "$source_xctestrun")"
+  source_xctestrun="$source_directory/$source_name"
+
+  start_cluster "$clean"
+
+  # Keep the derived test specification beside the generated file so that
+  # __TESTROOT__ continues to resolve to the build-for-testing products.
+  local isolated_xctestrun="$source_directory/.fdb-isolated-$$.xctestrun"
+  local result_bundle="$STATE_DIR/results/xcode-$(date +%Y%m%d-%H%M%S)-$$.xcresult"
+  cp "$source_xctestrun" "$isolated_xctestrun"
+  inject_cluster_file_into_xctestrun "$isolated_xctestrun"
+  mkdir -p "$(dirname "$result_bundle")"
+
+  local cleanup_command
+  printf -v cleanup_command 'rm -f %q; stop_cluster false' "$isolated_xctestrun"
+  trap "$cleanup_command" EXIT
+  set +e
+  timeout_cmd "$XCODE_TIMEOUT_SECONDS" \
+    xcodebuild test-without-building \
+      -xctestrun "$isolated_xctestrun" \
+      -resultBundlePath "$result_bundle" \
+      "$@"
+  local test_status=$?
+  set -e
+  if (( test_status != 0 )); then
+    return "$test_status"
+  fi
+
+  local total_test_count
+  if ! total_test_count="$(
+    xcrun xcresulttool get test-results summary \
+      --path "$result_bundle" \
+      --format json \
+      | plutil -extract totalTestCount raw -
+  )"; then
+    echo "error: unable to read test count from $result_bundle" >&2
+    return 1
+  fi
+  if ! [[ "$total_test_count" =~ ^[0-9]+$ ]] || (( total_test_count == 0 )); then
+    echo "error: xcodebuild executed zero tests" >&2
+    echo "result bundle: $result_bundle" >&2
+    return 1
+  fi
+  if [[ -n "$EXPECTED_TEST_COUNT" ]] \
+      && [[ "$total_test_count" != "$EXPECTED_TEST_COUNT" ]]; then
+    echo "error: expected $EXPECTED_TEST_COUNT tests, executed $total_test_count" >&2
+    echo "result bundle: $result_bundle" >&2
+    return 1
+  fi
+  echo "Executed tests: $total_test_count"
+  echo "Result bundle: $result_bundle"
+}
+
 start_cluster() {
   local clean="$1"
   local server
@@ -153,13 +341,16 @@ start_cluster() {
   cli="$(fdbcli_path)"
 
   if is_alive; then
-    if is_configured; then
+    if [[ "$clean" == true ]]; then
+      stop_cluster false
+    elif is_available || wait_for_available; then
       write_env_file
       echo "FoundationDB test cluster already running"
       echo "FDB_CLUSTER_FILE=$CLUSTER_FILE"
       return 0
+    else
+      stop_cluster false
     fi
-    stop_cluster false
   fi
 
   if [[ "$clean" == true ]]; then
@@ -177,15 +368,21 @@ start_cluster() {
     --machine-id test \
     --datacenter-id test \
     --class storage \
+    --knob_min_available_space_ratio="$MIN_AVAILABLE_SPACE_RATIO" \
     >"$STATE_DIR/fdbserver.out" 2>&1 &
 
   local pid=$!
   printf '%s\n' "$pid" > "$PID_FILE"
+  local process_start
+  process_start="$(ps -p "$pid" -o lstart= | sed 's/^[[:space:]]*//')"
+  printf '%s\n%s\n%s\n%s\n' \
+    "$process_start" "$server" "$CLUSTER_FILE" "$PORT" \
+    > "$PID_IDENTITY_FILE"
   disown "$pid" 2>/dev/null || true
 
   sleep 1
   configure_cluster "$cli"
-  wait_for_configured
+  wait_for_available
   write_env_file
 
   echo "FoundationDB test cluster running"
@@ -201,16 +398,16 @@ stop_cluster() {
     kill "$pid" >/dev/null 2>&1 || true
 
     local deadline=$((SECONDS + 10))
-    while kill -0 "$pid" >/dev/null 2>&1 && (( SECONDS < deadline )); do
+    while is_alive && (( SECONDS < deadline )); do
       sleep 0.2
     done
-    if kill -0 "$pid" >/dev/null 2>&1; then
+    if is_alive; then
       kill -9 "$pid" >/dev/null 2>&1 || true
     fi
     wait "$pid" 2>/dev/null || true
   fi
 
-  rm -f "$PID_FILE"
+  rm -f "$PID_FILE" "$PID_IDENTITY_FILE"
   if [[ "$clean" == true ]]; then
     rm -rf "$STATE_DIR"
   fi
@@ -222,7 +419,7 @@ status_cluster() {
     return 1
   fi
 
-  if is_alive && is_configured; then
+  if is_alive && is_available; then
     "$(fdbcli_path)" -C "$CLUSTER_FILE" --exec 'status minimal'
     echo "FDB_CLUSTER_FILE=$CLUSTER_FILE"
     return 0
@@ -278,6 +475,16 @@ case "$command" in
     start_cluster "$clean"
     trap 'stop_cluster false' EXIT
     FDB_CLUSTER_FILE="$CLUSTER_FILE" "$@"
+    ;;
+  xcode-test)
+    if [[ "${1:-}" == "--clean" ]]; then
+      clean=true
+      shift
+    fi
+    if [[ "${1:-}" == "--" ]]; then
+      shift
+    fi
+    run_xcode_tests "$clean" "$@"
     ;;
   shell)
     start_cluster "$clean"

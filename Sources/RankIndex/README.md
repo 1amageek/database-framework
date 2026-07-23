@@ -206,11 +206,24 @@ Algorithm: Maintain min-heap of size k
 Total count is maintained using FDB atomic operations:
 
 ```swift
+var increment = Int64(1).littleEndian
+let incrementBytes = withUnsafeBytes(of: &increment) { Array($0) }
+var decrement = Int64(-1).littleEndian
+let decrementBytes = withUnsafeBytes(of: &decrement) { Array($0) }
+
 // On insert
-transaction.atomicOp(key: countKey, param: +1, mutationType: .add)
+try transaction.atomicOp(
+    key: countKey,
+    param: incrementBytes,
+    mutationType: .add
+)
 
 // On delete
-transaction.atomicOp(key: countKey, param: -1, mutationType: .add)
+try transaction.atomicOp(
+    key: countKey,
+    param: decrementBytes,
+    mutationType: .add
+)
 
 // Query count: O(1)
 let count = try await transaction.getValue(for: countKey)

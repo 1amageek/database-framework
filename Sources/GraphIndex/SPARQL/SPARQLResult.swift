@@ -3,8 +3,13 @@
 //
 // Represents the result set of a SPARQL query execution.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseEngine
 
 /// Result of a SPARQL-like query execution
 ///
@@ -238,6 +243,6 @@ public struct ExecutionStatistics: Sendable {
 
 extension ExecutionStatistics: CustomStringConvertible {
     public var description: String {
-        "ExecutionStatistics(scans: \(indexScans), joins: \(joinOperations), duration: \(String(format: "%.2f", durationMs))ms)"
+        "ExecutionStatistics(scans: \(indexScans), joins: \(joinOperations), duration: \(DatabaseTextFormatting.fixedDecimal(durationMs, fractionDigits: 2))ms)"
     }
 }

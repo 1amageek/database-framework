@@ -6,6 +6,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Vector
 import FullText
 import Geospatial
@@ -15,6 +16,7 @@ import Graph
 import Relationship
 import TestSupport
 @testable import DatabaseEngine
+import DatabaseRuntime
 @testable import ScalarIndex
 @testable import VectorIndex
 @testable import FullTextIndex
@@ -169,7 +171,7 @@ private struct MatrixLeaderboardScore {
     var region: String = "global"
     var score: Int64 = 0
 
-    #Index(TimeWindowLeaderboardIndexKind<MatrixLeaderboardScore, Int64>(
+    #Index(TimeWindowLeaderboardIndexKind<MatrixLeaderboardScore>(
         scoreField: \.score,
         groupBy: [\.region],
         window: .daily,
@@ -188,7 +190,7 @@ private struct MatrixPermutedLocation {
 
     #Index(PermutedIndexKind<MatrixPermutedLocation>(
         fields: [\.country, \.city, \.name],
-        permutation: try! Permutation(indices: [1, 0, 2])
+        permutation: .swapping(0, 1, size: 3)
     ), name: "matrix_permuted_city_country_name")
 }
 
@@ -206,13 +208,9 @@ private struct MatrixRelationshipOrder {
     #Directory<MatrixRelationshipOrder>("test", "index_matrix", "relationship_orders")
 
     var id: String = ULID().ulidString
-    var customerID: String = ""
+    @Relationship(deleteRule: .nullify)
+    var customer: DatabaseReference<MatrixRelationshipCustomer>? = nil
     var total: Double = 0
-
-    #Index(RelationshipIndexKind<MatrixRelationshipOrder, MatrixRelationshipCustomer>(
-        foreignKey: \.customerID,
-        relatedFields: [\MatrixRelationshipCustomer.name]
-    ), name: "matrix_relationship_customer_name")
 }
 
 // MARK: - Matrix Suite
@@ -236,12 +234,13 @@ struct IndexMaintenanceMatrixE2ETests {
     ]
 
     private func setupContainer(_ types: [any Persistable.Type]) async throws -> DBContainer {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema(types, version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(
             testing: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         try await cleanup(container: container)
@@ -250,8 +249,8 @@ struct IndexMaintenanceMatrixE2ETests {
 
     private func cleanup(container: DBContainer) async throws {
         for path in paths {
-            if try await container.engine.directoryService.exists(path: path) {
-                try await container.engine.directoryService.remove(path: path)
+            if try await container.engine.directoryExists(path: path) {
+                try await container.engine.removeDirectory(path: path)
             }
         }
         try await container.ensureIndexesReady()
@@ -424,7 +423,7 @@ struct IndexMaintenanceMatrixE2ETests {
         try assertDescriptorShape(
             for: MatrixLeaderboardScore.self,
             named: "matrix_leaderboard_region_score",
-            kindIdentifier: TimeWindowLeaderboardIndexKind<MatrixLeaderboardScore, Int64>.identifier,
+            kindIdentifier: TimeWindowLeaderboardIndexKind<MatrixLeaderboardScore>.identifier,
             descriptorFields: ["region", "score"]
         )
         try assertDescriptorShape(
@@ -435,16 +434,20 @@ struct IndexMaintenanceMatrixE2ETests {
         )
         try assertDescriptorShape(
             for: MatrixRelationshipOrder.self,
-            named: "matrix_relationship_customer_name",
-            kindIdentifier: RelationshipIndexKind<MatrixRelationshipOrder, MatrixRelationshipCustomer>.identifier,
-            descriptorFields: ["customerID"],
-            kindFields: ["customer.name"]
+            named: "MatrixRelationshipOrder_customer",
+            kindIdentifier: ScalarIndexKind<MatrixRelationshipOrder>.identifier,
+            descriptorFields: ["customerID"]
         )
+        let relationship = try #require(MatrixRelationshipOrder.relationshipDescriptors.first)
+        #expect(relationship.name == "MatrixRelationshipOrder_customer")
+        #expect(relationship.propertyName == "customerID")
+        #expect(relationship.relatedTypeName == MatrixRelationshipCustomer.persistableType)
+        #expect(relationship.deleteRule == .nullify)
     }
 
     @Test("Scalar index matrix path stores and queries by indexed field")
     func scalarIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixScalarUser.self])
             let context = container.newContext()
 
@@ -465,7 +468,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
     @Test("Vector index matrix path stores and queries nearest vectors")
     func vectorIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixVectorDocument.self])
             let context = container.newContext()
 
@@ -489,7 +492,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
     @Test("FullText index matrix path tokenizes and searches saved documents")
     func fullTextIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixFullTextArticle.self])
             let context = container.newContext()
 
@@ -511,7 +514,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
     @Test("Graph index matrix path maintains adjacency entries")
     func graphIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixGraphEdge.self])
             let context = container.newContext()
 
@@ -527,7 +530,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
     @Test("Spatial index matrix path stores coordinate entries")
     func spatialIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixSpatialPlace.self])
             let context = container.newContext()
 
@@ -555,7 +558,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
     @Test("Rank index matrix path stores ranked scores")
     func rankIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixRankPlayer.self])
             let context = container.newContext()
 
@@ -571,7 +574,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
     @Test("Aggregation index matrix path maintains every aggregation descriptor")
     func aggregationIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixAggregationOrder.self])
             let context = container.newContext()
 
@@ -600,7 +603,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
     @Test("Version index matrix path stores version history")
     func versionIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixVersionDocument.self])
             let context = container.newContext()
 
@@ -626,7 +629,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
     @Test("Bitmap index matrix path stores low-cardinality membership")
     func bitmapIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixBitmapItem.self])
             let context = container.newContext()
 
@@ -642,7 +645,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
     @Test("Leaderboard index matrix path stores and queries top scores")
     func leaderboardIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixLeaderboardScore.self])
             let context = container.newContext()
 
@@ -667,7 +670,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
     @Test("Permuted index matrix path stores reordered compound keys")
     func permutedIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([MatrixPermutedLocation.self])
             let context = container.newContext()
 
@@ -681,9 +684,9 @@ struct IndexMaintenanceMatrixE2ETests {
         }
     }
 
-    @Test("Relationship index matrix path stores cross-type keys")
+    @Test("Relationship matrix path maintains the canonical catalog and delete rules")
     func relationshipIndexMatrixPath() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([
                 MatrixRelationshipCustomer.self,
                 MatrixRelationshipOrder.self,
@@ -694,14 +697,30 @@ struct IndexMaintenanceMatrixE2ETests {
             context.insert(customer)
             try await context.save()
 
-            let order = MatrixRelationshipOrder(customerID: customer.id, total: 42)
+            let order = MatrixRelationshipOrder(
+                customer: try context.reference(to: customer),
+                total: 42
+            )
             context.insert(order)
             try await context.save()
 
-            try await assertMaintained(container: container, type: MatrixRelationshipOrder.self, indexName: "matrix_relationship_customer_name")
-
-            let related = try await context.related(order, \.customerID, as: MatrixRelationshipCustomer.self)
+            let related = try await context.related(order, \.customer)
             #expect(related?.id == customer.id)
+
+            let inverse = try await context.inverseRelationshipResolver().referencedBy(
+                try context.reference(to: customer),
+                from: MatrixRelationshipOrder.self,
+                via: \.customer,
+                limit: 1
+            )
+            #expect(inverse.records.map(\.id) == [order.id])
+
+            context.delete(customer)
+            try await context.save()
+            let reloadedOrder = try await context.fetch(MatrixRelationshipOrder.self)
+                .where(\.id == order.id)
+                .first()
+            #expect(reloadedOrder?.customer == nil)
 
             try await cleanup(container: container)
         }

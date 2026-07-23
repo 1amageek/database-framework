@@ -6,7 +6,11 @@
 // `[scoresSubspace][score][primaryKey]` — FDB preserves tuple ordering, so
 // `reverse: true, limit: k` yields the top-k highest scores in O(k).
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -23,6 +27,9 @@ struct RankScanEntry: Sendable {
 enum RankScannerError: Error, Sendable, Equatable {
     case invalidRange(from: Int, to: Int)
     case negativeIndex(Int)
+    case keyOutsideScoresSubspace
+    case malformedEntry(elementCount: Int)
+    case missingElement(index: Int)
 }
 
 /// Scanner for the rank scores subspace.
@@ -108,21 +115,44 @@ struct RankScanner {
         var entries: [RankScanEntry] = []
         entries.reserveCapacity(sequence.count)
         for (key, _) in sequence {
-            guard scoresSubspace.contains(key) else { continue }
-            let tuple = try scoresSubspace.unpack(key)
-            guard tuple.count >= 2, let scoreElement = tuple[0] else { continue }
-            var primaryKeyElements: [any TupleElement] = []
-            primaryKeyElements.reserveCapacity(tuple.count - 1)
-            for i in 1..<tuple.count {
-                if let element = tuple[i] {
-                    primaryKeyElements.append(element)
-                }
-            }
-            entries.append(RankScanEntry(
-                scoreElement: scoreElement,
-                primaryKey: Tuple(primaryKeyElements)
-            ))
+            entries.append(
+                try Self.decodeEntry(key: key, scoresSubspace: scoresSubspace)
+            )
         }
         return entries
+    }
+
+    static func decodeEntry(
+        key: Bytes,
+        scoresSubspace: Subspace
+    ) throws -> RankScanEntry {
+        guard scoresSubspace.contains(key) else {
+            throw RankScannerError.keyOutsideScoresSubspace
+        }
+        let tuple = try scoresSubspace.unpack(key)
+        guard tuple.count >= 2 else {
+            throw RankScannerError.malformedEntry(elementCount: tuple.count)
+        }
+
+        let scoreElement: any TupleElement
+        do {
+            scoreElement = try tuple.element(at: 0)
+        } catch {
+            throw RankScannerError.missingElement(index: 0)
+        }
+
+        var primaryKeyElements: [any TupleElement] = []
+        primaryKeyElements.reserveCapacity(tuple.count - 1)
+        for index in 1..<tuple.count {
+            do {
+                primaryKeyElements.append(try tuple.element(at: index))
+            } catch {
+                throw RankScannerError.missingElement(index: index)
+            }
+        }
+        return RankScanEntry(
+            scoreElement: scoreElement,
+            primaryKey: Tuple(primaryKeyElements)
+        )
     }
 }

@@ -1,13 +1,15 @@
 import Testing
 import Core
+import DatabaseValue
 import QueryIR
-import DatabaseClientProtocol
 import DatabaseEngine
 import DatabaseRuntime
+import RelationshipIndex
+import ScalarIndex
 
 @Suite("Canonical Read Registry")
 struct CanonicalReadRegistryTests {
-    private struct TestPolymorphicExecutor: PolymorphicIndexReadExecutor {
+    private struct EmptyPolymorphicReadExecutor: PolymorphicIndexReadExecutor {
         let kindIdentifier = "test.polymorphic.runtime"
 
         func executeRows(
@@ -15,44 +17,81 @@ struct CanonicalReadRegistryTests {
             selectQuery: SelectQuery,
             indexScan: IndexScanSource,
             group: PolymorphicGroup,
-            options: ReadExecutionOptions,
-            partitionValues: [String : String]?
-        ) async throws -> BridgedRowSet {
+            options: DatabaseEngine.ReadExecutionContext,
+            partitions: [DatabaseObjectField]
+        ) async throws -> IndexReadResult {
             .empty
         }
     }
 
     @Test("Unknown kindIdentifier is not resolved")
-    func unknownKindIdentifierReturnsNil() {
-        #expect(ReadExecutorRegistry.shared.indexExecutor(for: "com.example.unknown") == nil)
+    func unknownKindIdentifierReturnsNil() throws {
+        let configuration = try DatabaseRuntimeConfiguration()
+        #expect(
+            configuration.readExecutors.indexExecutor(
+                for: "com.example.unknown"
+            ) == nil
+        )
     }
 
     @Test("Polymorphic executors register independently from typed executors")
-    func polymorphicExecutorsRegisterSeparately() {
-        let executor = TestPolymorphicExecutor()
-        ReadExecutorRegistry.shared.registerPolymorphic(executor)
+    func polymorphicExecutorsRegisterSeparately() throws {
+        let executor = EmptyPolymorphicReadExecutor()
+        let configuration = try DatabaseRuntimeConfiguration(
+            polymorphicIndexReadExecutors: [executor]
+        )
 
-        #expect(ReadExecutorRegistry.shared.indexExecutor(for: executor.kindIdentifier) == nil)
-        #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: executor.kindIdentifier) != nil)
+        #expect(
+            configuration.readExecutors.indexExecutor(
+                for: executor.kindIdentifier
+            ) == nil
+        )
+        #expect(
+            configuration.readExecutors.polymorphicIndexExecutor(
+                for: executor.kindIdentifier
+            ) != nil
+        )
     }
 
-    @Test("Builtin runtime registers canonical read executors")
-    func builtinRuntimeRegistersExecutors() {
-        BuiltinReadRuntime.registerBuiltins()
+    @Test("Builtin runtime composes canonical providers and read executors")
+    func builtinRuntimeComposesProvidersAndExecutors() throws {
+        let configuration = try DatabaseFrameworkRuntime.configuration()
+        let registry = configuration.readExecutors
+        let maintainers = configuration.indexMaintainerProviders
 
-        #expect(ReadExecutorRegistry.shared.indexExecutor(for: "vector") != nil)
-        #expect(ReadExecutorRegistry.shared.indexExecutor(for: "fulltext") != nil)
-        #expect(ReadExecutorRegistry.shared.indexExecutor(for: "rank") != nil)
-        #expect(ReadExecutorRegistry.shared.indexExecutor(for: "bitmap") != nil)
-        #expect(ReadExecutorRegistry.shared.indexExecutor(for: "version") != nil)
-        #expect(ReadExecutorRegistry.shared.indexExecutor(for: "permuted") != nil)
-        #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "vector") != nil)
-        #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "fulltext") != nil)
-        #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "rank") != nil)
-        #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "bitmap") != nil)
-        #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "permuted") != nil)
-        #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "version") != nil)
-        #expect(LogicalSourceExecutorRegistry.shared.graphTableExecutor != nil)
-        #expect(LogicalSourceExecutorRegistry.shared.sparqlExecutor != nil)
+        #expect(maintainers.contains(kindIdentifier: "scalar"))
+        #expect(maintainers.contains(kindIdentifier: "vector"))
+        #expect(maintainers.contains(kindIdentifier: "graph"))
+        #expect(maintainers.contains(kindIdentifier: "rdf_quad"))
+        #expect(configuration.recordMutationMaintainers.contains(where: {
+            $0.identifier == RelationshipReferenceMaintainer().identifier
+        }))
+
+        #expect(registry.indexExecutor(for: "vector") != nil)
+        #expect(registry.indexExecutor(for: "fulltext") != nil)
+        #expect(registry.indexExecutor(for: "rank") != nil)
+        #expect(registry.indexExecutor(for: "bitmap") != nil)
+        #expect(registry.indexExecutor(for: "version") != nil)
+        #expect(registry.indexExecutor(for: "permuted") != nil)
+        #expect(registry.polymorphicIndexExecutor(for: "vector") != nil)
+        #expect(registry.polymorphicIndexExecutor(for: "fulltext") != nil)
+        #expect(registry.polymorphicIndexExecutor(for: "rank") != nil)
+        #expect(registry.polymorphicIndexExecutor(for: "bitmap") != nil)
+        #expect(registry.polymorphicIndexExecutor(for: "permuted") != nil)
+        #expect(registry.polymorphicIndexExecutor(for: "version") != nil)
+        #expect(configuration.logicalSourceExecutors.graphTableExecutor != nil)
+        #expect(configuration.logicalSourceExecutors.sparqlExecutor != nil)
+    }
+
+    @Test("Duplicate maintainer providers fail configuration")
+    func duplicateMaintainerProvidersFailConfiguration() {
+        #expect(throws: DatabaseRuntimeConfigurationError.self) {
+            try DatabaseRuntimeConfiguration(
+                indexMaintainerProviders: [
+                    ScalarIndexMaintainerProvider(),
+                    ScalarIndexMaintainerProvider(),
+                ]
+            )
+        }
     }
 }

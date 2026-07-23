@@ -3,7 +3,11 @@
 //
 // Provides community detection for graph indexes.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -61,9 +65,8 @@ private struct SeededRandomNumberGenerator: RandomNumberGenerator {
 /// **Time Complexity**: O(E * iterations), typically converges in 5-15 iterations
 /// **Space Complexity**: O(V) for label storage
 ///
-/// **Transaction Strategy**:
-/// - Each iteration processes nodes in batches
-/// - Uses `.batch` transaction configuration
+/// **Snapshot Strategy**:
+/// - One caller-owned snapshot covers collection and every iteration
 /// - Randomizes node order for better convergence
 ///
 /// **Reference**: Raghavan et al., "Near linear time algorithm to detect
@@ -84,15 +87,12 @@ private struct SeededRandomNumberGenerator: RandomNumberGenerator {
 ///     print("Community \(community.label): \(community.memberCount) members")
 /// }
 /// ```
-public final class CommunityDetector<Edge: Persistable>: Sendable {
+public final class CommunityDetector: Sendable {
 
     // MARK: - Properties
 
-    /// Database connection (internally thread-safe)
-    private let database: any StorageEngine
-
-    /// Index subspace
-    private let subspace: Subspace
+    /// Storage snapshot shared by the complete computation.
+    private let snapshot: GraphReadSnapshot
 
     /// Edge scanner for neighbor lookups
     private let scanner: GraphEdgeScanner
@@ -100,25 +100,34 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
     /// Configuration
     private let configuration: CommunityDetectionConfiguration
 
+    /// Shared request work budget.
+    private let workBudget: GraphAlgorithmWorkBudget?
+
     // MARK: - Initialization
 
     /// Initialize community detector
     ///
     /// - Parameters:
-    ///   - database: FDB database connection
+    ///   - snapshot: Stable storage snapshot for the complete computation
     ///   - subspace: Index subspace
     ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
-    public init(
-        database: any StorageEngine,
+    package init(
+        snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
+        scope: GraphScanScope = .all,
         configuration: CommunityDetectionConfiguration = .default
     ) {
-        self.database = database
-        self.subspace = subspace
+        self.snapshot = snapshot
         self.configuration = configuration
-        self.scanner = GraphEdgeScanner(indexSubspace: subspace, strategy: strategy)
+        self.scanner = GraphEdgeScanner(
+            indexSubspace: subspace,
+            strategy: strategy,
+            scope: scope,
+            snapshot: snapshot
+        )
+        self.workBudget = snapshot.workBudget
     }
 
     // MARK: - Public API
@@ -127,11 +136,23 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
     ///
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: CommunityResult with node assignments
-    public func detect(edgeLabel: String? = nil) async throws -> CommunityResult {
+    public func detect(edgeLabel: GraphIdentity? = nil) async throws -> CommunityResult {
         let startTime = MonotonicClock.now()
 
         // Step 1: Collect all nodes
-        let nodes = try await collectAllNodes(edgeLabel: edgeLabel)
+        let collection = try await collectAllNodes(edgeLabel: edgeLabel)
+        let nodes = collection.nodes
+        let graph = collection.graph
+
+        if let limitReason = collection.limitReason {
+            return CommunityResult(
+                assignments: [:],
+                iterations: 0,
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                isComplete: false,
+                limitReason: limitReason
+            )
+        }
 
         guard !nodes.isEmpty else {
             return CommunityResult(
@@ -142,7 +163,7 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
         }
 
         // Step 2: Initialize each node with its own unique label
-        var labels: [String: String] = [:]
+        var labels: [GraphIdentity: GraphIdentity] = [:]
         for node in nodes {
             labels[node] = node  // Initial label = node ID
         }
@@ -150,11 +171,12 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
         // Step 3: Iterate until convergence
         var iteration = 0
         var changed = true
+        var limitReason: LimitReason?
 
         // Create seeded RNG if seed is provided
         var seededRNG: SeededRandomNumberGenerator? = configuration.seed.map { SeededRandomNumberGenerator(seed: $0) }
 
-        while iteration < configuration.maxIterations && changed {
+        iterationLoop: while iteration < configuration.maxIterations && changed {
             iteration += 1
             changed = false
 
@@ -163,7 +185,7 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
             //
             // Note: When using seeded RNG, we sort nodes first to ensure deterministic
             // ordering regardless of Set iteration order (which is unspecified in Swift).
-            let shuffled: [String]
+            let shuffled: [GraphIdentity]
             if var rng = seededRNG {
                 var nodeArray = Array(nodes).sorted()  // Sort for deterministic base order
                 nodeArray.shuffle(using: &rng)
@@ -177,12 +199,18 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
             // This is the standard LPA approach that avoids oscillation on small cliques.
             // Processing order is randomized to prevent bias.
             for node in shuffled {
-                let newLabel = try await computeSingleNodeUpdate(
-                    node: node,
-                    currentLabels: labels,
-                    edgeLabel: edgeLabel,
-                    rng: &seededRNG
-                )
+                let newLabel: GraphIdentity?
+                do {
+                    newLabel = try computeSingleNodeUpdate(
+                        node: node,
+                        currentLabels: labels,
+                        graph: graph,
+                        rng: &seededRNG
+                    )
+                } catch CommunityDetectionError.incomplete(let reason) {
+                    limitReason = reason
+                    break iterationLoop
+                }
 
                 if let label = newLabel, labels[node] != label {
                     labels[node] = label
@@ -192,34 +220,52 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
         }
 
         // Step 4: Apply minimum community size filter if needed
-        if configuration.minCommunitySize > 1 {
-            labels = try await applyMinCommunitySize(
-                labels: labels,
-                edgeLabel: edgeLabel
-            )
+        if limitReason == nil && configuration.minCommunitySize > 1 {
+            do {
+                labels = try applyMinCommunitySize(
+                    labels: labels,
+                    graph: graph
+                )
+            } catch CommunityDetectionError.incomplete(let reason) {
+                limitReason = reason
+            }
         }
 
         // Step 5: Build community mapping
-        var communities: [String: [String]] = [:]
+        var communities: [GraphIdentity: [GraphIdentity]] = [:]
         for (node, label) in labels {
             communities[label, default: []].append(node)
         }
 
         // Step 6: Optionally compute modularity
         var modularity: Double? = nil
-        if configuration.computeModularity {
-            modularity = try await computeModularity(
-                labels: labels,
-                edgeLabel: edgeLabel
-            )
+        if limitReason == nil && configuration.computeModularity {
+            do {
+                modularity = try computeModularity(
+                    labels: labels,
+                    graph: graph
+                )
+            } catch CommunityDetectionError.incomplete(let reason) {
+                modularity = nil
+                limitReason = reason
+            }
         }
 
+        let converged = limitReason == nil && !changed
+        let finalLimitReason = limitReason ?? (converged
+            ? nil
+            : .maxIterationsReached(
+                iterations: iteration,
+                limit: configuration.maxIterations
+            ))
         return CommunityResult(
             assignments: labels,
             communities: communities,
             iterations: iteration,
             durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
-            modularity: modularity
+            modularity: modularity,
+            isComplete: converged,
+            limitReason: finalLimitReason
         )
     }
 
@@ -234,21 +280,31 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
     ///   - edgeLabel: Optional edge label filter
     /// - Returns: Set of node IDs in the same community
     public func detectLocalCommunity(
-        for node: String,
+        for node: GraphIdentity,
         maxHops: Int = 3,
-        edgeLabel: String? = nil
-    ) async throws -> Set<String> {
+        edgeLabel: GraphIdentity? = nil
+    ) async throws -> Set<GraphIdentity> {
+        let load = try await MaterializedGraphSnapshotBuilder.load(
+            scanner: scanner,
+            edgeLabel: edgeLabel,
+            snapshot: snapshot
+        )
+        if let limitReason = load.limitReason {
+            throw CommunityDetectionError.incomplete(limitReason)
+        }
+        let graph = load.graph
+
         // Collect local neighborhood
-        var neighborhood: Set<String> = [node]
-        var frontier: Set<String> = [node]
+        var neighborhood: Set<GraphIdentity> = [node]
+        var frontier: Set<GraphIdentity> = [node]
 
         for _ in 0..<maxHops {
-            var nextFrontier: Set<String> = []
+            var nextFrontier: Set<GraphIdentity> = []
 
             for currentNode in frontier {
-                let neighbors = try await getNeighbors(
+                let neighbors = try getNeighbors(
                     of: currentNode,
-                    edgeLabel: edgeLabel
+                    graph: graph
                 )
                 for neighbor in neighbors where !neighborhood.contains(neighbor) {
                     nextFrontier.insert(neighbor)
@@ -261,7 +317,7 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
         }
 
         // Run LPA on local neighborhood
-        var labels: [String: String] = [:]
+        var labels: [GraphIdentity: GraphIdentity] = [:]
         for n in neighborhood {
             labels[n] = n
         }
@@ -278,7 +334,7 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
 
             // Shuffle with determinism support
             // Note: Sort before shuffle for deterministic results (Set order is unspecified)
-            let shuffledNeighborhood: [String]
+            let shuffledNeighborhood: [GraphIdentity]
             if var rng = seededRNG {
                 var nodeArray = Array(neighborhood).sorted()
                 nodeArray.shuffle(using: &rng)
@@ -289,19 +345,19 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
             }
 
             for n in shuffledNeighborhood {
-                let neighbors = try await getNeighbors(of: n, edgeLabel: edgeLabel)
-                    .filter { neighborhood.contains($0) }
+                let neighbors = try getNeighbors(of: n, graph: graph)
 
-                guard !neighbors.isEmpty else { continue }
-
-                var labelCounts: [String: Int] = [:]
-                for neighbor in neighbors {
-                    if let label = labels[neighbor] {
-                        labelCounts[label, default: 0] += 1
+                var labelCounts: [GraphIdentity: Int] = [:]
+                for neighbor in neighbors where neighborhood.contains(neighbor) {
+                    guard let label = labels[neighbor] else {
+                        throw CommunityDetectionError.inconsistentState(
+                            "local neighbor is missing its label"
+                        )
                     }
+                    labelCounts[label, default: 0] += 1
                 }
 
-                let maxCount = labelCounts.values.max() ?? 0
+                guard let maxCount = labelCounts.values.max() else { continue }
                 var candidates = labelCounts.filter { $0.value == maxCount }.map { $0.key }
 
                 // Sort for deterministic selection when using seeded RNG
@@ -309,16 +365,26 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
                     candidates.sort()
                 }
 
-                let newLabel: String?
+                let newLabel: GraphIdentity
                 if var generator = seededRNG {
-                    newLabel = candidates.randomElement(using: &generator)
+                    guard let selected = candidates.randomElement(using: &generator) else {
+                        throw CommunityDetectionError.inconsistentState(
+                            "local label candidate selection is empty"
+                        )
+                    }
+                    newLabel = selected
                     seededRNG = generator
                 } else {
-                    newLabel = candidates.randomElement()
+                    guard let selected = candidates.randomElement() else {
+                        throw CommunityDetectionError.inconsistentState(
+                            "local label candidate selection is empty"
+                        )
+                    }
+                    newLabel = selected
                 }
 
-                if let label = newLabel, label != labels[n] {
-                    labels[n] = label
+                if newLabel != labels[n] {
+                    labels[n] = newLabel
                     changed = true
                 }
             }
@@ -326,7 +392,17 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
 
         // Return nodes with the same label as the input node
         guard let nodeLabel = labels[node] else {
-            return [node]
+            throw CommunityDetectionError.inconsistentState(
+                "local community lost the source node label"
+            )
+        }
+        guard !changed else {
+            throw CommunityDetectionError.incomplete(
+                .maxIterationsReached(
+                    iterations: iteration,
+                    limit: configuration.maxIterations
+                )
+            )
         }
 
         return Set(labels.filter { $0.value == nodeLabel }.map { $0.key })
@@ -334,74 +410,24 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
 
     // MARK: - Private Methods
 
-    /// Collect all unique nodes from the graph using GraphEdgeScanner
-    private func collectAllNodes(edgeLabel: String?) async throws -> Set<String> {
-        try await database.withTransaction(configuration: .batch) { transaction in
-            var nodes: Set<String> = []
-            var edgeCount = 0
-
-            for try await edgeInfo in self.scanner.scanAllEdges(
-                edgeLabel: edgeLabel,
-                transaction: transaction
-            ) {
-                nodes.insert(edgeInfo.source)
-                nodes.insert(edgeInfo.target)
-                edgeCount += 1
-            }
-
-            #if DEBUG
-            print("[CommunityDetector] collectAllNodes: found \(nodes.count) nodes from \(edgeCount) edges")
-            #endif
-
-            return nodes
-        }
+    private struct NodeCollection: Sendable {
+        let nodes: Set<GraphIdentity>
+        let graph: MaterializedGraphSnapshot
+        let limitReason: LimitReason?
     }
 
-    /// Compute label updates for a batch of nodes
-    private func computeLabelUpdates(
-        nodes: [String],
-        currentLabels: [String: String],
-        edgeLabel: String?,
-        rng: inout SeededRandomNumberGenerator?
-    ) async throws -> [(node: String, label: String)] {
-        var updates: [(node: String, label: String)] = []
-
-        for node in nodes {
-            let neighbors = try await getNeighbors(of: node, edgeLabel: edgeLabel)
-
-            guard !neighbors.isEmpty else { continue }
-
-            // Count label frequencies among neighbors
-            var labelCounts: [String: Int] = [:]
-            for neighbor in neighbors {
-                if let label = currentLabels[neighbor] {
-                    labelCounts[label, default: 0] += 1
-                }
-            }
-
-            // Find most common label (deterministic tie-breaking when seeded)
-            let maxCount = labelCounts.values.max() ?? 0
-            var candidates = labelCounts.filter { $0.value == maxCount }.map { $0.key }
-
-            // Sort candidates for deterministic selection when using seeded RNG
-            if rng != nil {
-                candidates.sort()
-            }
-
-            let newLabel: String?
-            if var generator = rng {
-                newLabel = candidates.randomElement(using: &generator)
-                rng = generator  // Update the RNG state
-            } else {
-                newLabel = candidates.randomElement()
-            }
-
-            if let label = newLabel {
-                updates.append((node, label))
-            }
-        }
-
-        return updates
+    /// Collect all unique nodes from the graph using GraphEdgeScanner
+    private func collectAllNodes(edgeLabel: GraphIdentity?) async throws -> NodeCollection {
+        let load = try await MaterializedGraphSnapshotBuilder.load(
+            scanner: scanner,
+            edgeLabel: edgeLabel,
+            snapshot: snapshot
+        )
+        return NodeCollection(
+            nodes: load.graph.nodes,
+            graph: load.graph,
+            limitReason: load.limitReason
+        )
     }
 
     /// Compute label update for a single node (for synchronous LPA)
@@ -409,25 +435,32 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
     /// Returns the new label for the node, or nil if no update is needed
     /// (e.g., when the node has no neighbors).
     private func computeSingleNodeUpdate(
-        node: String,
-        currentLabels: [String: String],
-        edgeLabel: String?,
+        node: GraphIdentity,
+        currentLabels: [GraphIdentity: GraphIdentity],
+        graph: MaterializedGraphSnapshot,
         rng: inout SeededRandomNumberGenerator?
-    ) async throws -> String? {
-        let neighbors = try await getNeighbors(of: node, edgeLabel: edgeLabel)
+    ) throws -> GraphIdentity? {
+        let neighbors = try getNeighbors(of: node, graph: graph)
 
         guard !neighbors.isEmpty else { return nil }
 
         // Count label frequencies among neighbors
-        var labelCounts: [String: Int] = [:]
+        var labelCounts: [GraphIdentity: Int] = [:]
         for neighbor in neighbors {
-            if let label = currentLabels[neighbor] {
-                labelCounts[label, default: 0] += 1
+            guard let label = currentLabels[neighbor] else {
+                throw CommunityDetectionError.inconsistentState(
+                    "neighbor is missing its current label"
+                )
             }
+            labelCounts[label, default: 0] += 1
         }
 
         // Find most common label (deterministic tie-breaking when seeded)
-        let maxCount = labelCounts.values.max() ?? 0
+        guard let maxCount = labelCounts.values.max() else {
+            throw CommunityDetectionError.inconsistentState(
+                "non-empty neighborhood produced no label counts"
+            )
+        }
         var candidates = labelCounts.filter { $0.value == maxCount }.map { $0.key }
 
         // Sort candidates for deterministic selection when using seeded RNG
@@ -435,12 +468,22 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
             candidates.sort()
         }
 
-        let newLabel: String?
+        let newLabel: GraphIdentity
         if var generator = rng {
-            newLabel = candidates.randomElement(using: &generator)
+            guard let selected = candidates.randomElement(using: &generator) else {
+                throw CommunityDetectionError.inconsistentState(
+                    "label candidate selection is empty"
+                )
+            }
+            newLabel = selected
             rng = generator  // Update the RNG state
         } else {
-            newLabel = candidates.randomElement()
+            guard let selected = candidates.randomElement() else {
+                throw CommunityDetectionError.inconsistentState(
+                    "label candidate selection is empty"
+                )
+            }
+            newLabel = selected
         }
 
         return newLabel
@@ -448,49 +491,35 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
 
     /// Get all neighbors of a node (both directions) using GraphEdgeScanner
     private func getNeighbors(
-        of nodeID: String,
-        edgeLabel: String?
-    ) async throws -> [String] {
-        try await database.withTransaction(configuration: .default) { transaction in
-            var neighbors: Set<String> = []
+        of nodeID: GraphIdentity,
+        graph: MaterializedGraphSnapshot
+    ) throws -> Set<GraphIdentity> {
+        var neighbors: Set<GraphIdentity> = []
 
-            // Outgoing neighbors
-            for try await edgeInfo in self.scanner.scanOutgoing(
-                from: nodeID,
-                edgeLabel: edgeLabel,
-                transaction: transaction
-            ) {
-                neighbors.insert(edgeInfo.target)
-            }
-
-            // Incoming neighbors
-            for try await edgeInfo in self.scanner.scanIncoming(
-                to: nodeID,
-                edgeLabel: edgeLabel,
-                transaction: transaction
-            ) {
-                neighbors.insert(edgeInfo.source)
-            }
-
-            #if DEBUG
-            if neighbors.isEmpty {
-                print("[CommunityDetector] getNeighbors(\(nodeID)): NO NEIGHBORS FOUND")
-            }
-            #endif
-
-            return Array(neighbors)
+        try requireWork()
+        for edgeInfo in graph.outgoingNeighbors(of: nodeID) {
+            try requireWork()
+            neighbors.insert(edgeInfo.target)
         }
+
+        try requireWork()
+        for edgeInfo in graph.incomingNeighbors(of: nodeID) {
+            try requireWork()
+            neighbors.insert(edgeInfo.source)
+        }
+
+        return neighbors
     }
 
     /// Apply minimum community size filter by merging small communities
     private func applyMinCommunitySize(
-        labels: [String: String],
-        edgeLabel: String?
-    ) async throws -> [String: String] {
+        labels: [GraphIdentity: GraphIdentity],
+        graph: MaterializedGraphSnapshot
+    ) throws -> [GraphIdentity: GraphIdentity] {
         var result = labels
 
         // Build community sizes
-        var communitySizes: [String: Int] = [:]
+        var communitySizes: [GraphIdentity: Int] = [:]
         for (_, label) in labels {
             communitySizes[label, default: 0] += 1
         }
@@ -499,22 +528,41 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
         let smallCommunities = communitySizes.filter { $0.value < configuration.minCommunitySize }
 
         // For each node in a small community, assign to largest neighbor community
-        for (node, label) in result {
+        let orderedNodes = configuration.seed == nil
+            ? Array(result.keys)
+            : result.keys.sorted()
+        for node in orderedNodes {
+            guard let label = result[node] else {
+                throw CommunityDetectionError.inconsistentState(
+                    "community assignment key is missing its label"
+                )
+            }
             guard smallCommunities[label] != nil else { continue }
 
-            let neighbors = try await getNeighbors(of: node, edgeLabel: edgeLabel)
-            var neighborLabels: [String: Int] = [:]
+            let neighbors = try getNeighbors(of: node, graph: graph)
+            var neighborLabels: [GraphIdentity: Int] = [:]
 
             for neighbor in neighbors {
                 if let neighborLabel = result[neighbor],
                    smallCommunities[neighborLabel] == nil {
-                    let size = communitySizes[neighborLabel] ?? 0
+                    guard let size = communitySizes[neighborLabel] else {
+                        throw CommunityDetectionError.inconsistentState(
+                            "community size is missing for a neighbor label"
+                        )
+                    }
                     neighborLabels[neighborLabel, default: 0] = max(neighborLabels[neighborLabel, default: 0], size)
                 }
             }
 
             // Assign to the largest neighbor community
-            if let (largestLabel, _) = neighborLabels.max(by: { $0.value < $1.value }) {
+            let largestLabel = neighborLabels
+                .sorted { lhs, rhs in
+                    if lhs.value != rhs.value { return lhs.value > rhs.value }
+                    return lhs.key < rhs.key
+                }
+                .first?
+                .key
+            if let largestLabel {
                 result[node] = largestLabel
             }
         }
@@ -527,29 +575,17 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
     /// Modularity Q = (1/2m) * Σ [A_ij - (k_i * k_j)/(2m)] * δ(c_i, c_j)
     /// where m = total edges, A = adjacency, k = degree, c = community
     private func computeModularity(
-        labels: [String: String],
-        edgeLabel: String?
-    ) async throws -> Double {
-        // Collect edges using GraphEdgeScanner
-        let edges: [(source: String, target: String)] = try await database.withTransaction(configuration: .batch) { transaction in
-            var collectedEdges: [(source: String, target: String)] = []
-
-            for try await edgeInfo in self.scanner.scanAllEdges(
-                edgeLabel: edgeLabel,
-                transaction: transaction
-            ) {
-                collectedEdges.append((edgeInfo.source, edgeInfo.target))
-            }
-
-            return collectedEdges
-        }
-
-        // Process outside transaction to avoid Sendable issues
+        labels: [GraphIdentity: GraphIdentity],
+        graph: MaterializedGraphSnapshot
+    ) throws -> Double {
         var totalEdges = 0
-        var degrees: [String: Int] = [:]
+        var degrees: [GraphIdentity: Int] = [:]
         var inCommunityEdges = 0
 
-        for (source, target) in edges {
+        for edge in graph.edges {
+            try requireWork()
+            let source = edge.source
+            let target = edge.target
             totalEdges += 1
             degrees[source, default: 0] += 1
             degrees[target, default: 0] += 1
@@ -570,15 +606,25 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
         var expectedInCommunity = 0.0
 
         // Group nodes by community
-        var communities: [String: [String]] = [:]
+        var communities: [GraphIdentity: [GraphIdentity]] = [:]
         for (node, label) in labels {
             communities[label, default: []].append(node)
         }
 
-        for (_, members) in communities {
+        for label in communities.keys.sorted() {
+            guard let members = communities[label] else {
+                throw CommunityDetectionError.inconsistentState(
+                    "community key is missing its members"
+                )
+            }
             var communityDegreeSum = 0
-            for member in members {
-                communityDegreeSum += degrees[member] ?? 0
+            for member in members.sorted() {
+                guard let degree = degrees[member] else {
+                    throw CommunityDetectionError.inconsistentState(
+                        "community member is missing its graph degree"
+                    )
+                }
+                communityDegreeSum += degree
             }
             expectedInCommunity += Double(communityDegreeSum * communityDegreeSum) / (4.0 * m)
         }
@@ -587,4 +633,24 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
 
         return modularity
     }
+
+    private func consumeWork(_ units: UInt64 = 1) throws -> Bool {
+        try workBudget?.consume(units) ?? true
+    }
+
+    private func requireWork(_ units: UInt64 = 1) throws {
+        guard try consumeWork(units) else {
+            guard let reason = workBudget?.limitReason else {
+                throw CommunityDetectionError.inconsistentState(
+                    "work budget rejected work without a limit reason"
+                )
+            }
+            throw CommunityDetectionError.incomplete(reason)
+        }
+    }
+}
+
+public enum CommunityDetectionError: Error, Sendable {
+    case incomplete(LimitReason)
+    case inconsistentState(String)
 }

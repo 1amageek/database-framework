@@ -1,7 +1,11 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseValue
 import QueryIR
-import DatabaseClientProtocol
 
 /// A decoded polymorphic row returned from a logical polymorphic query.
 public struct PolymorphicQueryResult: Sendable {
@@ -22,8 +26,8 @@ public struct PolymorphicQueryResult: Sendable {
         self.row = row
     }
 
-    public var fields: [String: FieldValue] { row.fields }
-    public var annotations: [String: FieldValue] { row.annotations }
+    public var fields: [String: DatabaseValue] { row.fields }
+    public var annotations: [String: DatabaseValue] { row.annotations }
 
     public func item<Concrete: Persistable>(as type: Concrete.Type) -> Concrete? {
         item as? Concrete
@@ -34,12 +38,12 @@ public struct PolymorphicQueryResult: Sendable {
 public struct PolymorphicQueryPage: Sendable {
     public let results: [PolymorphicQueryResult]
     public let continuation: QueryContinuation?
-    public let metadata: [String: FieldValue]
+    public let metadata: [String: DatabaseValue]
 
     public init(
         results: [PolymorphicQueryResult],
         continuation: QueryContinuation?,
-        metadata: [String: FieldValue]
+        metadata: [String: DatabaseValue]
     ) {
         self.results = results
         self.continuation = continuation
@@ -134,7 +138,9 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
         copy.options = ReadExecutionOptions(
             consistency: consistency,
             pageSize: copy.options.pageSize,
-            continuation: copy.options.continuation
+            continuation: copy.options.continuation,
+            budget: copy.options.budget,
+            continuationScope: copy.options.continuationScope
         )
         return copy
     }
@@ -145,7 +151,9 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
         copy.options = ReadExecutionOptions(
             consistency: copy.options.consistency,
             pageSize: pageSize,
-            continuation: copy.options.continuation
+            continuation: copy.options.continuation,
+            budget: copy.options.budget,
+            continuationScope: copy.options.continuationScope
         )
         return copy
     }
@@ -156,7 +164,9 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
         copy.options = ReadExecutionOptions(
             consistency: copy.options.consistency,
             pageSize: copy.options.pageSize,
-            continuation: continuation
+            continuation: continuation,
+            budget: copy.options.budget,
+            continuationScope: copy.options.continuationScope
         )
         return copy
     }
@@ -173,7 +183,7 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
             projection: .all,
             source: .logical(
                 LogicalSourceRef(
-                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    kindIdentifier: LogicalSourceKind.polymorphic,
                     identifier: groupIdentifier
                 )
             ),
@@ -260,11 +270,13 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
         _ row: QueryRow,
         as type: any Persistable.Type
     ) throws -> any Persistable {
-        func helper<Concrete: Persistable>(_ concreteType: Concrete.Type) throws -> any Persistable {
+        func decodeConcreteItem<Concrete: Persistable>(
+            _ concreteType: Concrete.Type
+        ) throws -> any Persistable {
             try QueryRowCodec.decode(row, as: concreteType)
         }
 
-        return try _openExistential(type, do: helper)
+        return try _openExistential(type, do: decodeConcreteItem)
     }
 
     /// Resolve a shared index name from polymorphic group metadata.

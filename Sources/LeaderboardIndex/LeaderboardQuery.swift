@@ -3,7 +3,11 @@
 //
 // Provides FDBContext extension and query builder for leaderboard operations.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -45,9 +49,9 @@ public struct LeaderboardEntryPoint<T: Persistable>: Sendable {
     ///
     /// - Parameter keyPath: KeyPath to the score field
     /// - Returns: Leaderboard query builder
-    public func index<Score: Comparable & Numeric & Codable & Sendable>(
-        _ keyPath: KeyPath<T, Score>
-    ) -> LeaderboardQueryBuilder<T, Score> {
+    public func index(
+        _ keyPath: KeyPath<T, Int64>
+    ) -> LeaderboardQueryBuilder<T> {
         LeaderboardQueryBuilder(
             queryContext: queryContext,
             scoreFieldName: T.fieldName(for: keyPath)
@@ -60,7 +64,7 @@ public struct LeaderboardEntryPoint<T: Persistable>: Sendable {
 /// Builder for leaderboard index queries
 ///
 /// Supports time-windowed ranking queries with grouping.
-public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeric & Codable & Sendable>: Sendable {
+public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     // MARK: - Properties
 
     private let queryContext: IndexQueryContext
@@ -162,12 +166,10 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
         for result in results {
             let pkBytes = result.pk.pack()
             for item in items {
-                if let itemId = item.id as? any TupleElement {
-                    let itemPkBytes = Tuple(itemId).pack()
-                    if pkBytes == itemPkBytes {
-                        finalResults.append((item: item, score: result.score))
-                        break
-                    }
+                let itemPKBytes = try item.recordIdentifierTuple().pack()
+                if pkBytes == itemPKBytes {
+                    finalResults.append((item: item, score: result.score))
+                    break
                 }
             }
         }
@@ -217,12 +219,10 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
         for result in results {
             let pkBytes = result.pk.pack()
             for item in items {
-                if let itemId = item.id as? any TupleElement {
-                    let itemPkBytes = Tuple(itemId).pack()
-                    if pkBytes == itemPkBytes {
-                        finalResults.append((item: item, score: result.score))
-                        break
-                    }
+                let itemPKBytes = try item.recordIdentifierTuple().pack()
+                if pkBytes == itemPKBytes {
+                    finalResults.append((item: item, score: result.score))
+                    break
                 }
             }
         }
@@ -351,25 +351,23 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
 
     private func resolveIndexDescriptorAndKind() throws -> (
         descriptor: IndexDescriptor,
-        kind: TimeWindowLeaderboardIndexKind<T, Int64>
+        kind: TimeWindowLeaderboardIndexKind<T>
     ) {
-        guard let result = findIndexDescriptorAndKind() else {
+        guard let result = try findIndexDescriptorAndKind() else {
             throw LeaderboardQueryError.indexNotFound("\(T.persistableType).\(scoreFieldName)")
         }
         return result
     }
 
-    private func findIndexDescriptorAndKind() -> (
+    private func findIndexDescriptorAndKind() throws -> (
         descriptor: IndexDescriptor,
-        kind: TimeWindowLeaderboardIndexKind<T, Int64>
+        kind: TimeWindowLeaderboardIndexKind<T>
     )? {
         for descriptor in T.indexDescriptors {
-            guard descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<T, Int64>.identifier else {
+            guard descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<T>.identifier else {
                 continue
             }
-            guard let kind = descriptor.kind as? TimeWindowLeaderboardIndexKind<T, Int64> else {
-                continue
-            }
+            let kind = try TimeWindowLeaderboardIndexKind<T>(canonical: descriptor.kind)
             if kind.scoreFieldName == scoreFieldName {
                 return (descriptor, kind)
             }
@@ -380,14 +378,13 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
     private func createMaintainer(
         indexSubspace: Subspace,
         descriptor: IndexDescriptor,
-        indexKind: TimeWindowLeaderboardIndexKind<T, Int64>
-    ) -> TimeWindowLeaderboardIndexMaintainer<T, Int64> {
-        return TimeWindowLeaderboardIndexMaintainer<T, Int64>(
+        indexKind: TimeWindowLeaderboardIndexKind<T>
+    ) -> TimeWindowLeaderboardIndexMaintainer<T> {
+        return TimeWindowLeaderboardIndexMaintainer<T>(
             index: Index(
                 name: descriptor.name,
                 kind: indexKind,
                 rootExpression: FieldKeyExpression(fieldName: scoreFieldName),
-                keyPaths: descriptor.keyPaths,
                 subspaceKey: descriptor.name
             ),
             subspace: indexSubspace,

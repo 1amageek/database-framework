@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import DatabaseEngine
 import Geospatial
 import StorageKit
@@ -155,8 +156,9 @@ struct SpatialScanPlannerTests {
         let index = Index(
             name: "location",
             kind: kind,
-            rootExpression: FieldKeyExpression(fieldName: "latitude"),
-            keyPaths: [\SpatialPlannerItem.latitude, \SpatialPlannerItem.longitude]
+            rootExpression: KeyExpressionFactory.from(
+                keyPaths: ["latitude", "longitude"]
+            )
         )
         let maintainer = SpatialIndexMaintainer<SpatialPlannerItem>(
             index: index,

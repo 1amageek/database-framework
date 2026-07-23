@@ -3,22 +3,15 @@
 //
 // Provides FDBContext extension and query builder for set operations.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import QueryIR
-import DatabaseClientProtocol
 import StorageKit
-
-private enum BitmapQueryRuntime {
-    static let registration: Void = {
-        BitmapReadBridge.registerReadExecutors()
-    }()
-
-    static func ensureRegistered() {
-        _ = registration
-    }
-}
 
 // MARK: - Bitmap Entry Point
 
@@ -90,7 +83,6 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     // MARK: - Initialization
 
     internal init(queryContext: IndexQueryContext, fieldName: String) {
-        BitmapQueryRuntime.ensureRegistered()
         self.queryContext = queryContext
         self.fieldName = fieldName
     }
@@ -241,6 +233,13 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         }
 
         let indexName = buildIndexName()
+        guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
+            throw BitmapQueryError.indexNotFound(indexName)
+        }
+        guard descriptor.kindIdentifier == BitmapIndexKind<T>.identifier,
+              descriptor.fieldNames == [fieldName] else {
+            throw BitmapQueryError.invalidIndex(indexName)
+        }
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
@@ -248,9 +247,10 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             let maintainer = BitmapIndexMaintainer<T>(
                 index: Index(
                     name: indexName,
-                    kind: BitmapIndexKind<T>(fieldNames: [self.fieldName]),
+                    kind: descriptor.kind,
                     rootExpression: FieldKeyExpression(fieldName: self.fieldName),
-                    keyPaths: []
+                    isUnique: descriptor.isUnique,
+                    storedFieldNames: descriptor.storedFieldNames
                 ),
                 subspace: indexSubspace,
                 idExpression: FieldKeyExpression(fieldName: "id")
@@ -287,7 +287,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             BitmapReadParameter.fieldName: .string(fieldName)
         ]
         if let limitCount {
-            parameters[BitmapReadParameter.limit] = .int(Int64(limitCount))
+            parameters[BitmapReadParameter.limit] = .int64(Int64(limitCount))
         }
 
         switch operation {
@@ -366,12 +366,17 @@ public enum BitmapQueryError: Error, CustomStringConvertible {
     /// Index not found
     case indexNotFound(String)
 
+    /// Index metadata does not match the requested bitmap field.
+    case invalidIndex(String)
+
     public var description: String {
         switch self {
         case .noOperation:
             return "No bitmap query operation specified. Use .equals() or .in() to specify a query."
         case .indexNotFound(let name):
             return "Bitmap index not found: \(name)"
+        case .invalidIndex(let name):
+            return "Bitmap index metadata is invalid: \(name)"
         }
     }
 }

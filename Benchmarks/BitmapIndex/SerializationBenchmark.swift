@@ -10,7 +10,7 @@ import BenchmarkFramework
 @Suite("BitmapIndex: Serialization Benchmark", .serialized, .heartbeat)
 struct SerializationBenchmark {
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     @Test("JSON Serialization Performance")

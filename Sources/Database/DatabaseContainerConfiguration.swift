@@ -1,5 +1,6 @@
 import Core
 import DatabaseEngine
+import DatabaseRuntime
 
 /// Backend-specific container configuration used by the `Database` facade.
 ///
@@ -27,9 +28,11 @@ extension DBContainer {
         let dbConfiguration = try await configuration.makeDBConfiguration(
             indexConfigurations: indexConfigurations
         )
+        let runtimeConfiguration = try DatabaseFrameworkRuntime.configuration()
         try await self.init(
             for: schema,
             configuration: dbConfiguration,
+            runtimeConfiguration: runtimeConfiguration,
             security: security
         )
     }
@@ -45,10 +48,12 @@ extension DBContainer {
         let dbConfiguration = try await configuration.makeDBConfiguration(
             indexConfigurations: indexConfigurations
         )
+        let runtimeConfiguration = try DatabaseFrameworkRuntime.configuration()
         try await self.init(
             for: schema,
             migrationPlan: migrationPlan,
             configuration: dbConfiguration,
+            runtimeConfiguration: runtimeConfiguration,
             security: security
         )
     }

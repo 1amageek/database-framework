@@ -450,7 +450,7 @@ PlanExecutor（インデックススキャン + フィルタ + ソート）
 | `IndexMaintenanceService` | Centralized index maintenance: uniqueness checking, index updates, violation tracking |
 | `IndexKindMaintainable` | Bridge protocol connecting IndexKind to IndexMaintainer |
 | `Schema.Entity` | Codable schema metadata for a Persistable type (pg_catalog equivalent) |
-| `AnyIndexDescriptor` | Type-erased IndexDescriptor for schema persistence (replaces IndexCatalog) |
+| `IndexDescriptorMetadata` | Type-erased IndexDescriptor for schema persistence (replaces IndexCatalog) |
 | `SchemaRegistry` | Persists/loads Schema.Entity entries in FDB under `/_schema/` |
 | `DirectoryComponentCatalog` | Codable enum: `.staticPath(String)` or `.dynamicField(fieldName: String)` |
 
@@ -464,14 +464,14 @@ PostgreSQL pg_catalog          → database-framework
 pg_class (テーブル名)          → Schema.Entity.name
 pg_attribute (カラム名・型)    → Schema.Entity.fields: [FieldSchema]
 pg_type (データ型定義)         → FieldSchema.type: FieldSchemaType
-pg_index (インデックス定義)    → Schema.Entity.indexes: [AnyIndexDescriptor]
+pg_index (インデックス定義)    → Schema.Entity.indexes: [IndexDescriptorMetadata]
 pg_namespace (名前空間)        → Schema.Entity.directoryComponents
 ```
 
 | コンポーネント | 責務 | ファイル |
 |--------------|------|---------|
 | `Schema.Entity` | 型のメタデータ（フィールド、インデックス、ディレクトリ構造） | `database-kit/Sources/Core/Schema.swift` |
-| `AnyIndexDescriptor` | インデックスのメタデータ（名前、種別、フィールド、オプション） | `database-kit/Sources/Core/AnyIndexDescriptor.swift` |
+| `IndexDescriptorMetadata` | インデックスのメタデータ（名前、種別、フィールド、オプション） | `database-kit/Sources/Core/IndexDescriptorMetadata.swift` |
 | `DirectoryComponentCatalog` | ディレクトリパスの各要素（静的パス or 動的フィールド参照） | `database-kit/Sources/Core/DirectoryComponentCatalog.swift` |
 | `SchemaRegistry` | FDB への Schema.Entity 永続化・読み取り | `Sources/DatabaseEngine/Registry/SchemaRegistry.swift` |
 | `DynamicProtobufDecoder` | Schema.Entity を使った Protobuf 動的デコード | `Sources/DatabaseEngine/Registry/DynamicProtobufDecoder.swift` |
@@ -479,15 +479,15 @@ pg_namespace (名前空間)        → Schema.Entity.directoryComponents
 
 **ライフサイクル**: `DBContainer.init(for:)` → `ensureIndexesReady()` → `SchemaRegistry.persist(schema)` で自動的にスキーマが FDB に書き込まれる。
 
-### AnyIndexDescriptor
+### IndexDescriptorMetadata
 
-`AnyIndexDescriptor` は `IndexDescriptor` の型消去版で、カタログの永続化に使用される。
+`IndexDescriptorMetadata` は `IndexDescriptor` の型消去版で、カタログの永続化に使用される。
 
 ```swift
 // 構造
-AnyIndexDescriptor
+IndexDescriptorMetadata
 ├── name: String                           // インデックス名
-├── kind: AnyIndexKind                     // 型消去された IndexKind
+├── kind: IndexKindMetadata                     // 型消去された IndexKind
 │   ├── identifier: String                 // "scalar", "vector", "graph" etc.
 │   ├── subspaceStructure: SubspaceStructure
 │   ├── fieldNames: [String]
@@ -500,7 +500,7 @@ AnyIndexDescriptor
 
 **便利アクセサ**:
 ```swift
-let index: AnyIndexDescriptor = ...
+let index: IndexDescriptorMetadata = ...
 
 // Kind ショートカット
 index.kindIdentifier  // → kind.identifier
@@ -1008,7 +1008,7 @@ import Testing
 
 @Suite struct MyTests {
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     @Test func myTest() async throws { ... }

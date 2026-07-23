@@ -3,23 +3,16 @@
 //
 // Follows GraphIndex pattern: execute() uses the actual index, not in-memory processing.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import DatabaseEngine
 import Core
 import QueryIR
-import DatabaseClientProtocol
 import StorageKit
 import Rank
-
-private enum RankQueryRuntime {
-    static let registration: Void = {
-        RankReadBridge.registerReadExecutors()
-    }()
-
-    static func ensureRegistered() {
-        _ = registration
-    }
-}
 
 // MARK: - Rank Query Builder
 
@@ -58,7 +51,6 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal init(queryContext: IndexQueryContext, fieldName: String) {
-        RankQueryRuntime.ensureRegistered()
         self.queryContext = queryContext
         self.fieldName = fieldName
     }
@@ -153,10 +145,11 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
 
         return try response.rows.map { row in
             let item = try QueryRowCodec.decode(row, as: T.self)
-            guard let rank = row.annotations["rank"]?.int64Value else {
+            guard let rank = row.annotations["rank"]?.int64Value,
+                  let exactRank = Int(exactly: rank) else {
                 throw RankQueryError.invalidResponse("Missing rank annotation")
             }
-            return (item: item, rank: Int(rank))
+            return (item: item, rank: exactRank)
         }
     }
 
@@ -279,14 +272,21 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     ) async throws -> [(item: T, rank: Int)] {
         let countKey = indexSubspace.pack(Tuple("_count"))
         let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
-        let totalCount = countBytes.map { Int(ByteConversion.bytesToInt64($0)) } ?? 0
+        let totalCount: Int
+        if let countBytes {
+            totalCount = try RankCounterCodec.decodeInt(countBytes)
+        } else {
+            totalCount = 0
+        }
         guard totalCount > 0 else { return [] }
 
         // percentile 0.5 (median) = middle rank; 1.0 = highest; 0.0 = lowest.
         let targetRank = Int(Double(totalCount) * (1.0 - p))
         let safeTargetRank = max(0, min(targetRank, totalCount - 1))
 
-        guard let entry = try await scanner.nthFromTop(safeTargetRank) else { return [] }
+        guard let entry = try await scanner.nthFromTop(safeTargetRank) else {
+            throw RankQueryError.missingIndexedRecord(rank: safeTargetRank)
+        }
         return try await fetchItemsWithRank(
             entries: [entry],
             startRank: safeTargetRank,
@@ -296,10 +296,9 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
 
     /// Fetch items by primary key and pair each with its scan-position rank.
     ///
-    /// Uses `fetchItemsPreservingOrder` so that items deleted between scan and
-    /// fetch do not shift rank numbers for the remaining items. For top(10) where
-    /// entries[3] is missing, results still report ranks 0, 1, 2, 4, 5, ... — not
-    /// 0, 1, 2, 3, 4, ... (which would mis-label the 4th-highest as rank 3).
+    /// Uses `fetchItemsPreservingOrder` so every fetched item retains its native
+    /// index rank. A missing record is an index consistency failure and throws;
+    /// it is never removed from a successful result page.
     private func fetchItemsWithRank(
         entries: [RankScanEntry],
         startRank: Int,
@@ -314,8 +313,11 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         var results: [(item: T, rank: Int)] = []
         results.reserveCapacity(items.count)
         for (offset, maybeItem) in items.enumerated() {
-            guard let item = maybeItem else { continue }
-            results.append((item: item, rank: startRank + offset))
+            let rank = startRank + offset
+            guard let item = maybeItem else {
+                throw RankQueryError.missingIndexedRecord(rank: rank)
+            }
+            results.append((item: item, rank: rank))
         }
         return results
     }
@@ -326,39 +328,57 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             .cachePolicy(cachePolicy)
             .execute()
 
-        // Extract values and sort
-        let itemsWithValues: [(item: T, value: Double)] = items.compactMap { item in
-            guard let rawValue = item[dynamicMember: fieldName],
-                  let numValue = TypeConversion.asDouble(rawValue) else { return nil }
-            return (item: item, value: numValue)
+        var entries: [RankValueEntry<T>] = []
+        entries.reserveCapacity(items.count)
+        for item in items {
+            let value = try RankValueOrdering.numericValue(
+                from: item[dynamicMember: fieldName],
+                fieldName: fieldName
+            )
+            let identifierKey = try RankValueOrdering.identifierKey(for: item.id)
+            entries.append(
+                RankValueEntry(
+                    item: item,
+                    value: value,
+                    identifierKey: identifierKey
+                )
+            )
         }
 
         switch queryMode {
         case .top(let n):
-            let sorted = itemsWithValues.sorted { $0.value > $1.value }
-            let limited = Array(sorted.prefix(n))
-            return limited.enumerated().map { (item: $0.element.item, rank: $0.offset) }
+            let sorted = try RankValueOrdering.sorted(entries, direction: .descending)
+            return rankedResults(sorted, range: 0..<min(n, sorted.count))
 
         case .bottom(let n):
-            let sorted = itemsWithValues.sorted { $0.value < $1.value }
-            let limited = Array(sorted.prefix(n))
-            return limited.enumerated().map { (item: $0.element.item, rank: $0.offset) }
+            let sorted = try RankValueOrdering.sorted(entries, direction: .ascending)
+            return rankedResults(sorted, range: 0..<min(n, sorted.count))
 
         case .range(let from, let to):
-            let sorted = itemsWithValues.sorted { $0.value > $1.value }
-            let rangeItems = Array(sorted.dropFirst(from).prefix(to - from))
-            return rangeItems.enumerated().map { (item: $0.element.item, rank: from + $0.offset) }
+            let sorted = try RankValueOrdering.sorted(entries, direction: .descending)
+            let lowerBound = min(from, sorted.count)
+            let upperBound = min(to, sorted.count)
+            return rankedResults(sorted, range: lowerBound..<upperBound)
 
         case .percentile(let p):
-            guard !itemsWithValues.isEmpty else { return [] }
-            let sorted = itemsWithValues.sorted { $0.value > $1.value }
+            guard !entries.isEmpty else { return [] }
+            let sorted = try RankValueOrdering.sorted(entries, direction: .descending)
             let targetRank = Int(Double(sorted.count) * (1.0 - p))
-            if targetRank < sorted.count {
-                let item = sorted[targetRank]
-                return [(item: item.item, rank: targetRank)]
-            }
-            return []
+            let safeTargetRank = max(0, min(targetRank, sorted.count - 1))
+            return [(item: sorted[safeTargetRank].item, rank: safeTargetRank)]
         }
+    }
+
+    private func rankedResults(
+        _ sorted: [RankValueEntry<T>],
+        range: Range<Int>
+    ) -> [(item: T, rank: Int)] {
+        var results: [(item: T, rank: Int)] = []
+        results.reserveCapacity(range.count)
+        for rank in range {
+            results.append((item: sorted[rank].item, rank: rank))
+        }
+        return results
     }
 
     internal func toSelectQuery() -> SelectQuery {
@@ -370,16 +390,16 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         switch queryMode {
         case .top(let count):
             parameters[RankReadParameter.mode] = .string(RankReadParameter.topMode)
-            parameters[RankReadParameter.count] = .int(Int64(count))
+            parameters[RankReadParameter.count] = .int64(Int64(count))
             limit = count
         case .bottom(let count):
             parameters[RankReadParameter.mode] = .string(RankReadParameter.bottomMode)
-            parameters[RankReadParameter.count] = .int(Int64(count))
+            parameters[RankReadParameter.count] = .int64(Int64(count))
             limit = count
         case .range(let from, let to):
             parameters[RankReadParameter.mode] = .string(RankReadParameter.rangeMode)
-            parameters[RankReadParameter.from] = .int(Int64(from))
-            parameters[RankReadParameter.to] = .int(Int64(to))
+            parameters[RankReadParameter.from] = .int64(Int64(from))
+            parameters[RankReadParameter.to] = .int64(Int64(to))
             limit = max(to - from, 0)
         case .percentile(let percentile):
             parameters[RankReadParameter.mode] = .string(RankReadParameter.percentileMode)
@@ -424,9 +444,11 @@ public struct RankEntryPoint<T: Persistable>: Sendable {
 
     /// Specify the field to rank by
     ///
-    /// - Parameter keyPath: KeyPath to the comparable field
+    /// - Parameter keyPath: KeyPath to an exact numeric field
     /// - Returns: Rank query builder
-    public func by<V: Comparable>(_ keyPath: KeyPath<T, V>) -> RankQueryBuilder<T> {
+    public func by<Value: RankNumericValue>(
+        _ keyPath: KeyPath<T, Value>
+    ) -> RankQueryBuilder<T> {
         RankQueryBuilder(
             queryContext: queryContext,
             fieldName: T.fieldName(for: keyPath)
@@ -469,7 +491,7 @@ extension FDBContext {
 // MARK: - Rank Query Error
 
 /// Errors for ranking query operations
-public enum RankQueryError: Error, CustomStringConvertible {
+public enum RankQueryError: Error, Sendable, Equatable, CustomStringConvertible {
     /// No ranking field specified
     case noRankingField
 
@@ -488,6 +510,9 @@ public enum RankQueryError: Error, CustomStringConvertible {
     /// Canonical query response is missing required metadata
     case invalidResponse(String)
 
+    /// An index entry points to a record that could not be fetched
+    case missingIndexedRecord(rank: Int)
+
     public var description: String {
         switch self {
         case .noRankingField:
@@ -502,6 +527,8 @@ public enum RankQueryError: Error, CustomStringConvertible {
             return "Rank index not found: \(name)"
         case .invalidResponse(let reason):
             return "Invalid rank query response: \(reason)"
+        case .missingIndexedRecord(let rank):
+            return "Rank index entry at rank \(rank) has no corresponding record"
         }
     }
 }

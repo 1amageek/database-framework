@@ -5,7 +5,11 @@
 //
 // Reference: W3C OWL 2 Syntax https://www.w3.org/TR/owl2-syntax/#Properties
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Graph
 
 /// Property type enumeration

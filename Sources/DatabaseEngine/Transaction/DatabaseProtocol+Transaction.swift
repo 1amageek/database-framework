@@ -3,7 +3,11 @@
 //
 // Provides a higher-level API for running transactions with configuration.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 
 // MARK: - StorageEngine Extension
@@ -13,7 +17,7 @@ extension StorageEngine {
     ///
     /// This method uses `TransactionRunner` to provide:
     /// - Exponential backoff with jitter (prevents thundering herd)
-    /// - Configurable retry limits (respects `configuration.retryLimit`)
+    /// - Configurable retry limits (respects `configuration.maximumAttempts`)
     /// - Configurable max delay (respects `configuration.maxRetryDelay`)
     /// - Weak read semantics support (when cache is provided)
     ///
@@ -37,11 +41,13 @@ extension StorageEngine {
     /// - Throws: Error if transaction fails after all retry attempts
     public func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration,
-        _ operation: @Sendable (any Transaction) async throws -> T
+        executionDeadline: TransactionExecutionDeadline? = nil,
+        _ operation: @escaping @Sendable (any Transaction) async throws -> T
     ) async throws -> T {
         let runner = TransactionRunner(database: self)
         return try await runner.run(
             configuration: configuration,
+            executionDeadline: executionDeadline,
             operationDescription: "StorageEngine.withTransaction(configuration:)",
             operation: operation
         )

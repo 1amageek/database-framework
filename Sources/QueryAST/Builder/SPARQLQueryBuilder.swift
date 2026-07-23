@@ -5,7 +5,8 @@
 /// - W3C SPARQL 1.1 Query Language
 /// - W3C SPARQL 1.2 (Draft)
 
-import Foundation
+import DatabaseValue
+import QueryIR
 
 /// SPARQL Query Builder for type-safe query construction
 public struct SPARQLQueryBuilder: Sendable {
@@ -149,15 +150,27 @@ extension SPARQLQueryBuilder {
     public func `where`(
         subject: String,
         predicate: String,
-        literal value: Any
+        literal: Literal
     ) -> SPARQLQueryBuilder {
-        guard let lit = Literal(value) else { return self }
         let triple = TriplePattern(
             subject: .variable(subject),
             predicate: resolveTerm(predicate),
-            object: .literal(lit)
+            object: .literal(literal)
         )
         return self.where(triple)
+    }
+
+    /// Add triple pattern: ?s predicate literal-convertible value
+    public func `where`<Value: DatabaseLiteralConvertible>(
+        subject: String,
+        predicate: String,
+        literal value: Value
+    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
+        self.where(
+            subject: subject,
+            predicate: predicate,
+            literal: try value.databaseLiteral
+        )
     }
 
     /// Add triple pattern: IRI predicate ?o
@@ -176,9 +189,10 @@ extension SPARQLQueryBuilder {
 
     private func addToPattern(_ pattern: GraphPattern, triple: TriplePattern) -> GraphPattern {
         switch pattern {
-        case .basic(var triples):
-            triples.append(triple)
-            return .basic(triples)
+        case .basic(let basicGraphPattern):
+            return .basic(
+                basicGraphPattern.appending(.triple(triple))
+            )
         default:
             return .join(pattern, .basic([triple]))
         }
@@ -189,8 +203,8 @@ extension SPARQLQueryBuilder {
         if let colonIndex = term.firstIndex(of: ":") {
             let prefix = String(term[..<colonIndex])
             let local = String(term[term.index(after: colonIndex)...])
-            if prefixes[prefix] != nil {
-                return .prefixedName(prefix: prefix, local: local)
+            if let base = prefixes[prefix] {
+                return .iri(base + local)
             }
         }
         // Check if it's a full IRI
@@ -252,17 +266,32 @@ extension SPARQLQueryBuilder {
         return builder
     }
 
-    /// Add FILTER: ?var = value
-    public func filter(_ variable: String, equals value: Any) -> SPARQLQueryBuilder {
-        guard let lit = Literal(value) else { return self }
-        return filter(.equal(.variable(Variable(variable)), .literal(lit)))
+    /// Add FILTER: ?var = literal
+    public func filter(_ variable: String, equals literal: Literal) -> SPARQLQueryBuilder {
+        filter(
+            .equal(
+                .variable(Variable(variable)),
+                .literal(literal)
+            )
+        )
     }
 
-    /// Add FILTER: ?var > value
-    public func filter(_ variable: String, _ op: ComparisonOperator, _ value: Any) -> SPARQLQueryBuilder {
-        guard let lit = Literal(value) else { return self }
+    /// Add FILTER: ?var = value
+    public func filter<Value: DatabaseLiteralConvertible>(
+        _ variable: String,
+        equals value: Value
+    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
+        filter(variable, equals: try value.databaseLiteral)
+    }
+
+    /// Add FILTER: ?var operator literal
+    public func filter(
+        _ variable: String,
+        _ op: ComparisonOperator,
+        _ literal: Literal
+    ) -> SPARQLQueryBuilder {
         let varExpr = Expression.variable(Variable(variable))
-        let valExpr = Expression.literal(lit)
+        let valExpr = Expression.literal(literal)
 
         let condition: Expression
         switch op {
@@ -278,19 +307,74 @@ extension SPARQLQueryBuilder {
             condition = .greaterThan(varExpr, valExpr)
         case .greaterThanOrEqual:
             condition = .greaterThanOrEqual(varExpr, valExpr)
-        case .like:
-            if case .string(let pattern) = lit {
-                condition = .regex(varExpr, pattern: pattern, flags: nil)
-            } else {
-                return self
-            }
-        case .inList:
-            return self
-        case .notInList:
-            return self
         }
 
         return filter(condition)
+    }
+
+    /// Add FILTER: ?var operator value
+    public func filter<Value: DatabaseLiteralConvertible>(
+        _ variable: String,
+        _ op: ComparisonOperator,
+        _ value: Value
+    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
+        filter(variable, op, try value.databaseLiteral)
+    }
+
+    /// Add FILTER: ?var IN (literals...)
+    public func filterIn(_ variable: String, _ literals: [Literal]) -> SPARQLQueryBuilder {
+        filter(
+            .inList(
+                .variable(Variable(variable)),
+                values: literals.map { .literal($0) }
+            )
+        )
+    }
+
+    /// Add FILTER: ?var IN (values...)
+    public func filterIn<Value: DatabaseLiteralConvertible>(
+        _ variable: String,
+        _ values: [Value]
+    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
+        var expressions: [Expression] = []
+        expressions.reserveCapacity(values.count)
+        for value in values {
+            expressions.append(.literal(try value.databaseLiteral))
+        }
+        return filter(
+            .inList(
+                .variable(Variable(variable)),
+                values: expressions
+            )
+        )
+    }
+
+    /// Add FILTER: ?var NOT IN (literals...)
+    public func filterNotIn(_ variable: String, _ literals: [Literal]) -> SPARQLQueryBuilder {
+        filter(
+            .notInList(
+                .variable(Variable(variable)),
+                values: literals.map { .literal($0) }
+            )
+        )
+    }
+
+    /// Add FILTER: ?var NOT IN (values...)
+    public func filterNotIn<Value: DatabaseLiteralConvertible>(
+        _ variable: String,
+        _ values: [Value]
+    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
+        var expressions: [Expression] = []
+        expressions.reserveCapacity(values.count)
+        for value in values {
+            expressions.append(.literal(try value.databaseLiteral))
+        }
+        return filter(
+            .notInList(
+                .variable(Variable(variable)),
+                values: expressions
+            )
+        )
     }
 
     /// Add FILTER BOUND(?var)
@@ -345,6 +429,29 @@ extension SPARQLQueryBuilder {
         builder.pattern = .join(builder.pattern, .values(variables: variables, bindings: data))
         return builder
     }
+
+    /// Add a homogeneous VALUES clause while preserving nil as SPARQL UNDEF.
+    public func values<Value: DatabaseLiteralConvertible>(
+        _ variables: [String],
+        _ data: [[Value?]]
+    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
+        var bindings: [[Literal?]] = []
+        bindings.reserveCapacity(data.count)
+        for row in data {
+            var convertedRow: [Literal?] = []
+            convertedRow.reserveCapacity(row.count)
+            for value in row {
+                switch value {
+                case .some(let value):
+                    convertedRow.append(try value.databaseLiteral)
+                case .none:
+                    convertedRow.append(nil)
+                }
+            }
+            bindings.append(convertedRow)
+        }
+        return values(variables, bindings)
+    }
 }
 
 // MARK: - Property Paths
@@ -357,14 +464,35 @@ extension SPARQLQueryBuilder {
         object: SPARQLTerm
     ) -> SPARQLQueryBuilder {
         var builder = self
-        builder.pattern = .join(builder.pattern, .propertyPath(subject: subject, path: path, object: object))
+        let element = BasicGraphPatternElement.propertyPath(
+            SPARQLPropertyPathPattern(
+                subject: subject,
+                path: path,
+                object: object
+            )
+        )
+        switch builder.pattern {
+        case .basic(let basicGraphPattern):
+            builder.pattern = .basic(
+                basicGraphPattern.appending(element)
+            )
+        default:
+            builder.pattern = .join(
+                builder.pattern,
+                .propertyPath(
+                    subject: subject,
+                    path: path,
+                    object: object
+                )
+            )
+        }
         return builder
     }
 
     /// Add property path: ?s path+ ?o
     public func transitivePath(
         subject: String,
-        predicate: String,
+        predicate: DatabaseRDFPredicateIRI,
         object: String
     ) -> SPARQLQueryBuilder {
         propertyPath(
@@ -377,7 +505,7 @@ extension SPARQLQueryBuilder {
     /// Add property path: ?s path* ?o
     public func transitiveOrSelf(
         subject: String,
-        predicate: String,
+        predicate: DatabaseRDFPredicateIRI,
         object: String
     ) -> SPARQLQueryBuilder {
         propertyPath(

@@ -57,13 +57,15 @@ public struct OutputFormatter: Sendable {
     }
 
     /// Print raw bytes as hex
-    public func hex(_ bytes: [UInt8]) {
+    public func hex<ByteCollection: Collection>(_ bytes: ByteCollection)
+    where ByteCollection.Element == UInt8 {
         let hexString = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
         print(hexString)
     }
 
     /// Print raw bytes as string (if valid UTF-8) or hex
-    public func rawValue(_ bytes: [UInt8]) {
+    public func rawValue<ByteCollection: Collection>(_ bytes: ByteCollection)
+    where ByteCollection.Element == UInt8 {
         if let str = String(bytes: bytes, encoding: .utf8) {
             print(str)
         } else {

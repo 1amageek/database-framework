@@ -1,14 +1,19 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
-import Synchronization
+#endif
+import DatabaseValue
+import DatabaseWire
 import QueryIR
-import DatabaseClientProtocol
+import StorageKit
 
 public protocol GraphTableSourceExecutor: Sendable {
     func execute(
         context: FDBContext,
         graphTableSource: GraphTableSource,
-        options: ReadExecutionOptions,
-        partitionValues: [String: String]?
+        options: ReadExecutionContext,
+        partitions: [DatabaseObjectField]
     ) async throws -> [QueryRow]
 }
 
@@ -16,36 +21,53 @@ public protocol SPARQLSourceExecutor: Sendable {
     func execute(
         context: FDBContext,
         selectQuery: SelectQuery,
-        options: ReadExecutionOptions,
-        partitionValues: [String: String]?
+        options: ReadExecutionContext,
+        partitions: [DatabaseObjectField]
     ) async throws -> QueryResponse
+
+    func executeInTransaction(
+        context: FDBContext,
+        selectQuery: SelectQuery,
+        options: ReadExecutionContext,
+        partitions: [DatabaseObjectField],
+        transaction: any Transaction
+    ) async throws -> QueryResponse
+
+    func executeAskInTransaction(
+        context: FDBContext,
+        askQuery: AskQuery,
+        options: ReadExecutionContext,
+        partitions: [DatabaseObjectField],
+        transaction: any Transaction
+    ) async throws -> Bool
+
+    func executeConstructInTransaction(
+        context: FDBContext,
+        constructQuery: ConstructQuery,
+        resultScope: DatabaseGraphResultScope,
+        options: ReadExecutionContext,
+        partitions: [DatabaseObjectField],
+        transaction: any Transaction
+    ) async throws -> DatabaseRetainedRDFGraph
+
+    func executeDescribeInTransaction(
+        context: FDBContext,
+        describeQuery: DescribeQuery,
+        options: ReadExecutionContext,
+        partitions: [DatabaseObjectField],
+        transaction: any Transaction
+    ) async throws -> DatabaseRetainedRDFGraph
 }
 
-public final class LogicalSourceExecutorRegistry: Sendable {
-    public static let shared = LogicalSourceExecutorRegistry()
+public struct LogicalSourceExecutorRegistry: Sendable {
+    public let graphTableExecutor: (any GraphTableSourceExecutor)?
+    public let sparqlExecutor: (any SPARQLSourceExecutor)?
 
-    private struct State: Sendable {
-        var graphTableExecutor: (any GraphTableSourceExecutor)?
-        var sparqlExecutor: (any SPARQLSourceExecutor)?
-    }
-
-    private let state = Mutex(State())
-
-    public init() {}
-
-    public func register(_ executor: any GraphTableSourceExecutor) {
-        state.withLock { $0.graphTableExecutor = executor }
-    }
-
-    public func register(_ executor: any SPARQLSourceExecutor) {
-        state.withLock { $0.sparqlExecutor = executor }
-    }
-
-    public var graphTableExecutor: (any GraphTableSourceExecutor)? {
-        state.withLock { $0.graphTableExecutor }
-    }
-
-    public var sparqlExecutor: (any SPARQLSourceExecutor)? {
-        state.withLock { $0.sparqlExecutor }
+    public init(
+        graphTableExecutor: (any GraphTableSourceExecutor)? = nil,
+        sparqlExecutor: (any SPARQLSourceExecutor)? = nil
+    ) {
+        self.graphTableExecutor = graphTableExecutor
+        self.sparqlExecutor = sparqlExecutor
     }
 }

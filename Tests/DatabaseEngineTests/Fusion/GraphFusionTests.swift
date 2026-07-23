@@ -8,6 +8,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Graph
 import TestSupport
 @testable import DatabaseEngine
@@ -16,7 +17,7 @@ import TestSupport
 // MARK: - Test Models
 
 /// Person model with graph and scalar indexes
-struct GraphTestPerson: Persistable {
+struct GraphFusionPerson: Persistable {
     typealias ID = String
 
     var id: String
@@ -31,15 +32,15 @@ struct GraphTestPerson: Persistable {
         self.bio = bio
     }
 
-    static var persistableType: String { "GraphTestPerson" }
+    static var persistableType: String { "GraphFusionPerson" }
     static var allFields: [String] { ["id", "userId", "name", "bio"] }
 
     static var indexDescriptors: [IndexDescriptor] {
         [
             IndexDescriptor(
                 name: "GraphTestPerson_userId",
-                keyPaths: [\GraphTestPerson.userId],
-                kind: ScalarIndexKind<GraphTestPerson>(fields: [\GraphTestPerson.userId])
+                keyPaths: [\GraphFusionPerson.userId],
+                kind: ScalarIndexKind<GraphFusionPerson>(fields: [\GraphFusionPerson.userId])
             )
         ]
     }
@@ -57,28 +58,28 @@ struct GraphTestPerson: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<GraphTestPerson, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<GraphFusionPerson, Value>) -> String {
         switch keyPath {
-        case \GraphTestPerson.id: return "id"
-        case \GraphTestPerson.userId: return "userId"
-        case \GraphTestPerson.name: return "name"
-        case \GraphTestPerson.bio: return "bio"
+        case \GraphFusionPerson.id: return "id"
+        case \GraphFusionPerson.userId: return "userId"
+        case \GraphFusionPerson.name: return "name"
+        case \GraphFusionPerson.bio: return "bio"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<GraphTestPerson>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<GraphFusionPerson>) -> String {
         switch keyPath {
-        case \GraphTestPerson.id: return "id"
-        case \GraphTestPerson.userId: return "userId"
-        case \GraphTestPerson.name: return "name"
-        case \GraphTestPerson.bio: return "bio"
+        case \GraphFusionPerson.id: return "id"
+        case \GraphFusionPerson.userId: return "userId"
+        case \GraphFusionPerson.name: return "name"
+        case \GraphFusionPerson.bio: return "bio"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<GraphTestPerson> {
+        if let partial = keyPath as? PartialKeyPath<GraphFusionPerson> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
@@ -86,7 +87,7 @@ struct GraphTestPerson: Persistable {
 }
 
 /// Follow relationship for graph index testing
-struct GraphTestFollow: Persistable {
+struct GraphFusionFollow: Persistable {
     typealias ID = String
 
     var id: String
@@ -101,11 +102,11 @@ struct GraphTestFollow: Persistable {
         self.edgeType = edgeType
     }
 
-    static var persistableType: String { "GraphTestFollow" }
+    static var persistableType: String { "GraphFusionFollow" }
     static var allFields: [String] { ["id", "follower", "followee", "edgeType"] }
 
     static var indexDescriptors: [IndexDescriptor] {
-        let kind = GraphIndexKind<GraphTestFollow>(
+        let kind = GraphIndexKind<GraphFusionFollow>(
             from: \.follower,
             edge: \.edgeType,
             to: \.followee,
@@ -114,7 +115,7 @@ struct GraphTestFollow: Persistable {
         return [
             IndexDescriptor(
                 name: "GraphTestFollow_graph",
-                keyPaths: [\GraphTestFollow.follower, \GraphTestFollow.edgeType, \GraphTestFollow.followee],
+                keyPaths: [\GraphFusionFollow.follower, \GraphFusionFollow.edgeType, \GraphFusionFollow.followee],
                 kind: kind
             )
         ]
@@ -133,28 +134,28 @@ struct GraphTestFollow: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<GraphTestFollow, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<GraphFusionFollow, Value>) -> String {
         switch keyPath {
-        case \GraphTestFollow.id: return "id"
-        case \GraphTestFollow.follower: return "follower"
-        case \GraphTestFollow.followee: return "followee"
-        case \GraphTestFollow.edgeType: return "edgeType"
+        case \GraphFusionFollow.id: return "id"
+        case \GraphFusionFollow.follower: return "follower"
+        case \GraphFusionFollow.followee: return "followee"
+        case \GraphFusionFollow.edgeType: return "edgeType"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<GraphTestFollow>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<GraphFusionFollow>) -> String {
         switch keyPath {
-        case \GraphTestFollow.id: return "id"
-        case \GraphTestFollow.follower: return "follower"
-        case \GraphTestFollow.followee: return "followee"
-        case \GraphTestFollow.edgeType: return "edgeType"
+        case \GraphFusionFollow.id: return "id"
+        case \GraphFusionFollow.follower: return "follower"
+        case \GraphFusionFollow.followee: return "followee"
+        case \GraphFusionFollow.edgeType: return "edgeType"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<GraphTestFollow> {
+        if let partial = keyPath as? PartialKeyPath<GraphFusionFollow> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
@@ -163,17 +164,20 @@ struct GraphTestFollow: Persistable {
 
 // MARK: - Test Context
 
-private struct GraphTestContext {
+private struct GraphFusionContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let itemsSubspace: Subspace
     let blobsSubspace: Subspace
-    let maintainer: GraphIndexMaintainer<GraphTestFollow>
-    let strategy: GraphIndexStrategy
+    let maintainer: GraphIndexMaintainer<GraphFusionFollow>
+    let strategy: PropertyGraphIndexStrategy
 
-    init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "GraphTestFollow_graph") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(
+        strategy: PropertyGraphIndexStrategy = .adjacency,
+        indexName: String = "GraphTestFollow_graph"
+    ) async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         self.strategy = strategy
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "graph_fusion", String(testId)).pack())
@@ -181,7 +185,7 @@ private struct GraphTestContext {
         self.itemsSubspace = subspace.subspace("R")
         self.blobsSubspace = subspace.subspace("B")
 
-        let kind = GraphIndexKind<GraphTestFollow>(
+        let kind = GraphIndexKind<GraphFusionFollow>(
             from: \.follower,
             edge: \.edgeType,
             to: \.followee,
@@ -197,10 +201,10 @@ private struct GraphTestContext {
                 FieldKeyExpression(fieldName: "followee")
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["GraphTestFollow"])
+            itemTypes: Set(["GraphFusionFollow"])
         )
 
-        self.maintainer = GraphIndexMaintainer<GraphTestFollow>(
+        self.maintainer = GraphIndexMaintainer<GraphFusionFollow>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
@@ -214,11 +218,11 @@ private struct GraphTestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
-    func insertFollow(_ follow: GraphTestFollow) async throws {
+    func insertFollow(_ follow: GraphFusionFollow) async throws {
         try await database.withTransaction { transaction in
             let itemKey = itemsSubspace.pack(Tuple(follow.id))
             let encoder = JSONEncoder()
@@ -229,8 +233,8 @@ private struct GraphTestContext {
                 "edgeType": follow.edgeType
             ])
 
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
-            try await storage.write(Array(data), for: itemKey)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            try await storage.write(Bytes(data), for: itemKey)
 
             try await maintainer.updateIndex(
                 oldItem: nil,
@@ -248,54 +252,44 @@ struct GraphFusionUnitTests {
 
     @Test("GraphIndexKind identifier is 'graph'")
     func testGraphIndexKindIdentifier() {
-        #expect(GraphIndexKind<GraphTestFollow>.identifier == "graph")
+        #expect(GraphIndexKind<GraphFusionFollow>.identifier == "graph")
     }
 
     @Test("Connected.Direction enum values")
     func testConnectedDirectionValues() {
-        #expect(Connected<GraphTestPerson>.Direction.outgoing == .outgoing)
-        #expect(Connected<GraphTestPerson>.Direction.incoming == .incoming)
-        #expect(Connected<GraphTestPerson>.Direction.both == .both)
+        #expect(Connected<GraphFusionPerson>.Direction.outgoing == .outgoing)
+        #expect(Connected<GraphFusionPerson>.Direction.incoming == .incoming)
+        #expect(Connected<GraphFusionPerson>.Direction.both == .both)
     }
 
-    @Test("GraphIndexStrategy enum values")
-    func testGraphIndexStrategyValues() {
-        #expect(GraphIndexStrategy.adjacency == .adjacency)
-        #expect(GraphIndexStrategy.tripleStore == .tripleStore)
-        #expect(GraphIndexStrategy.hexastore == .hexastore)
+    @Test("PropertyGraphIndexStrategy exposes its storage strategy")
+    func testPropertyGraphIndexStrategyValues() {
+        #expect(PropertyGraphIndexStrategy.adjacency.storageStrategy == .adjacency)
+        #expect(PropertyGraphIndexStrategy.tripleStore.storageStrategy == .tripleStore)
+        #expect(PropertyGraphIndexStrategy.hexastore.storageStrategy == .hexastore)
     }
 
     @Test("Index descriptor configuration")
     func testIndexDescriptorConfiguration() {
-        let descriptors = GraphTestFollow.indexDescriptors
+        let descriptors = GraphFusionFollow.indexDescriptors
         #expect(descriptors.count == 1)
 
         let graphIndex = descriptors[0]
         #expect(graphIndex.name == "GraphTestFollow_graph")
         #expect(graphIndex.kindIdentifier == "graph")
 
-        // Access fieldNames through the kind
-        if let graphKind = graphIndex.kind as? GraphIndexKind<GraphTestFollow> {
-            #expect(graphKind.fieldNames.contains("follower"))
-            #expect(graphKind.fieldNames.contains("followee"))
-            #expect(graphKind.fieldNames.contains("edgeType"))
-        } else {
-            Issue.record("Expected GraphIndexKind")
-        }
+        #expect(graphIndex.kind.fieldNames.contains("follower"))
+        #expect(graphIndex.kind.fieldNames.contains("followee"))
+        #expect(graphIndex.kind.fieldNames.contains("edgeType"))
     }
 
     @Test("Scalar index for userId lookup")
     func testScalarIndexForUserIdLookup() {
-        let descriptors = GraphTestPerson.indexDescriptors
+        let descriptors = GraphFusionPerson.indexDescriptors
         let scalarIndex = descriptors.first { $0.kindIdentifier == "scalar" }
 
         #expect(scalarIndex != nil)
-        // Access fieldNames through the kind
-        if let scalarKind = scalarIndex?.kind as? ScalarIndexKind<GraphTestPerson> {
-            #expect(scalarKind.fieldNames.contains("userId"))
-        } else {
-            Issue.record("Expected ScalarIndexKind")
-        }
+        #expect(scalarIndex?.kind.fieldNames.contains("userId") == true)
     }
 }
 
@@ -316,7 +310,7 @@ struct GraphFusionScoringTests {
 
     @Test("ScoredResult with hop-based score")
     func testScoredResultWithHopScore() {
-        let person = GraphTestPerson(userId: "user123", name: "Alice")
+        let person = GraphFusionPerson(userId: "user123", name: "Alice")
 
         let result1 = ScoredResult(item: person, score: 1.0 / 1.0)
         #expect(result1.score == 1.0)
@@ -555,8 +549,8 @@ struct GraphFusionIntegrationTests {
 
     @Test("Graph index maintainer initialization")
     func testGraphIndexMaintainerInitialization() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try await GraphTestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let context = try await GraphFusionContext()
             defer { Task { try? await context.cleanup() } }
 
             // Verify maintainer is properly configured with the expected strategy
@@ -566,12 +560,12 @@ struct GraphFusionIntegrationTests {
 
     @Test("Insert and index follow relationship")
     func testInsertAndIndexFollow() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try await GraphTestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let context = try await GraphFusionContext()
             defer { Task { try? await context.cleanup() } }
 
             let followId = uniqueID("follow")
-            let follow = GraphTestFollow(
+            let follow = GraphFusionFollow(
                 id: followId,
                 follower: "alice",
                 followee: "bob",
@@ -592,14 +586,14 @@ struct GraphFusionIntegrationTests {
 
     @Test("Multiple follow relationships")
     func testMultipleFollowRelationships() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try await GraphTestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let context = try await GraphFusionContext()
             defer { Task { try? await context.cleanup() } }
 
             let follows = [
-                GraphTestFollow(id: uniqueID("f"), follower: "alice", followee: "bob"),
-                GraphTestFollow(id: uniqueID("f"), follower: "alice", followee: "charlie"),
-                GraphTestFollow(id: uniqueID("f"), follower: "bob", followee: "charlie")
+                GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob"),
+                GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "charlie"),
+                GraphFusionFollow(id: uniqueID("f"), follower: "bob", followee: "charlie")
             ]
 
             for follow in follows {
@@ -619,14 +613,14 @@ struct GraphFusionIntegrationTests {
 
     @Test("Different edge types")
     func testDifferentEdgeTypes() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try await GraphTestContext()
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let context = try await GraphFusionContext()
             defer { Task { try? await context.cleanup() } }
 
             let follows = [
-                GraphTestFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "follows"),
-                GraphTestFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "likes"),
-                GraphTestFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "blocks")
+                GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "follows"),
+                GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "likes"),
+                GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "blocks")
             ]
 
             for follow in follows {
@@ -663,11 +657,11 @@ struct GraphFusionConfigurationTests {
     @Test("Direction affects traversal")
     func testDirectionAffectsTraversal() {
         // Outgoing: follower -> followee
-        let outgoing = Connected<GraphTestPerson>.Direction.outgoing
+        let outgoing = Connected<GraphFusionPerson>.Direction.outgoing
         // Incoming: followee <- follower
-        let incoming = Connected<GraphTestPerson>.Direction.incoming
+        let incoming = Connected<GraphFusionPerson>.Direction.incoming
         // Both directions
-        let both = Connected<GraphTestPerson>.Direction.both
+        let both = Connected<GraphFusionPerson>.Direction.both
 
         #expect(outgoing != incoming)
         #expect(outgoing != both)
@@ -682,13 +676,13 @@ struct GraphFusionEdgeCaseTests {
 
     @Test("Self-referential edge")
     func testSelfReferentialEdge() {
-        let follow = GraphTestFollow(follower: "alice", followee: "alice")
+        let follow = GraphFusionFollow(follower: "alice", followee: "alice")
         #expect(follow.follower == follow.followee)
     }
 
     @Test("Unicode node identifiers")
     func testUnicodeNodeIdentifiers() {
-        let follow = GraphTestFollow(
+        let follow = GraphFusionFollow(
             follower: "用户1",
             followee: "用户2",
             edgeType: "关注"
@@ -701,21 +695,21 @@ struct GraphFusionEdgeCaseTests {
 
     @Test("Empty edge type")
     func testEmptyEdgeType() {
-        let follow = GraphTestFollow(follower: "alice", followee: "bob", edgeType: "")
+        let follow = GraphFusionFollow(follower: "alice", followee: "bob", edgeType: "")
         #expect(follow.edgeType.isEmpty)
     }
 
     @Test("Very long node identifier")
     func testVeryLongNodeIdentifier() {
         let longId = String(repeating: "x", count: 10000)
-        let follow = GraphTestFollow(follower: longId, followee: "bob")
+        let follow = GraphFusionFollow(follower: longId, followee: "bob")
         #expect(follow.follower.count == 10000)
     }
 
     @Test("Node identifier with special characters")
     func testNodeIdWithSpecialCharacters() {
         let specialId = "user/with\\special:chars@domain.com"
-        let follow = GraphTestFollow(follower: specialId, followee: "bob")
+        let follow = GraphFusionFollow(follower: specialId, followee: "bob")
         #expect(follow.follower == specialId)
     }
 
@@ -740,10 +734,10 @@ struct GraphFusionIndexDiscoveryTests {
 
     @Test("findIndexDescriptor matches by kindIdentifier")
     func testFindIndexDescriptorByKindIdentifier() {
-        let descriptors = GraphTestFollow.indexDescriptors
+        let descriptors = GraphFusionFollow.indexDescriptors
 
         let graphDescriptor = descriptors.first { descriptor in
-            descriptor.kindIdentifier == GraphIndexKind<GraphTestFollow>.identifier
+            descriptor.kindIdentifier == GraphIndexKind<GraphFusionFollow>.identifier
         }
 
         #expect(graphDescriptor != nil)
@@ -752,12 +746,12 @@ struct GraphFusionIndexDiscoveryTests {
 
     @Test("findIndexDescriptor matches by fieldName")
     func testFindIndexDescriptorByFieldName() {
-        let descriptors = GraphTestFollow.indexDescriptors
+        let descriptors = GraphFusionFollow.indexDescriptors
         let fieldName = "follower"
 
         let matchingDescriptor = descriptors.first { descriptor in
-            guard let graphKind = descriptor.kind as? GraphIndexKind<GraphTestFollow> else { return false }
-            return graphKind.fieldNames.contains(fieldName)
+            descriptor.kindIdentifier == GraphIndexKind<GraphFusionFollow>.identifier
+                && descriptor.kind.fieldNames.contains(fieldName)
         }
 
         #expect(matchingDescriptor != nil)
@@ -765,12 +759,11 @@ struct GraphFusionIndexDiscoveryTests {
 
     @Test("Scalar index for efficient node lookup")
     func testScalarIndexForNodeLookup() {
-        let descriptors = GraphTestPerson.indexDescriptors
+        let descriptors = GraphFusionPerson.indexDescriptors
 
         let scalarDescriptor = descriptors.first { descriptor in
-            guard descriptor.kindIdentifier == "scalar" else { return false }
-            guard let scalarKind = descriptor.kind as? ScalarIndexKind<GraphTestPerson> else { return false }
-            return scalarKind.fieldNames.contains("userId")
+            descriptor.kindIdentifier == "scalar"
+                && descriptor.kind.fieldNames.contains("userId")
         }
 
         #expect(scalarDescriptor != nil)

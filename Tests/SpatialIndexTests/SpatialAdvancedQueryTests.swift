@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import Geospatial
 import TestSupport
 @testable import DatabaseEngine
@@ -14,7 +15,7 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct TestStore: Persistable {
+struct NearbyStore: Persistable {
     typealias ID = String
 
     var id: String
@@ -33,11 +34,11 @@ struct TestStore: Persistable {
         self.geoPoint = GeoPoint(latitude, longitude)
     }
 
-    static var persistableType: String { "TestStore" }
+    static var persistableType: String { "NearbyStore" }
     static var allFields: [String] { ["id", "name", "geoPoint"] }
 
     static var indexDescriptors: [IndexDescriptor] {
-        let kind = SpatialIndexKind<TestStore>(
+        let kind = SpatialIndexKind<NearbyStore>(
             latitude: \.geoPoint.latitude,
             longitude: \.geoPoint.longitude,
             encoding: .s2,
@@ -45,8 +46,8 @@ struct TestStore: Persistable {
         )
         return [
             IndexDescriptor(
-                name: "TestStore_spatial_geoPoint",
-                keyPaths: [\TestStore.geoPoint] as [PartialKeyPath<TestStore>],
+                name: "NearbyStore_spatial_geoPoint",
+                keyPaths: [\NearbyStore.geoPoint] as [PartialKeyPath<NearbyStore>],
                 kind: kind
             )
         ]
@@ -64,50 +65,50 @@ struct TestStore: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestStore, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<NearbyStore, Value>) -> String {
         switch keyPath {
-        case \TestStore.id: return "id"
-        case \TestStore.name: return "name"
-        case \TestStore.geoPoint: return "geoPoint"
+        case \NearbyStore.id: return "id"
+        case \NearbyStore.name: return "name"
+        case \NearbyStore.geoPoint: return "geoPoint"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestStore>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<NearbyStore>) -> String {
         switch keyPath {
-        case \TestStore.id: return "id"
-        case \TestStore.name: return "name"
-        case \TestStore.geoPoint: return "geoPoint"
+        case \NearbyStore.id: return "id"
+        case \NearbyStore.name: return "name"
+        case \NearbyStore.geoPoint: return "geoPoint"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestStore> {
+        if let partial = keyPath as? PartialKeyPath<NearbyStore> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Spatial Query Context
 
-private struct AdvancedTestContext {
+private struct SpatialQueryContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: SpatialIndexMaintainer<TestStore>
-    let kind: SpatialIndexKind<TestStore>
+    let maintainer: SpatialIndexMaintainer<NearbyStore>
+    let kind: SpatialIndexKind<NearbyStore>
     let testId: String
 
     init() async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         self.testId = String(UUID().uuidString.prefix(8))
         self.subspace = Subspace(prefix: Tuple("test", "spatial_advanced", testId).pack())
-        let indexName = "TestStore_spatial_geoPoint"
+        let indexName = "NearbyStore_spatial_geoPoint"
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = SpatialIndexKind<TestStore>(
+        self.kind = SpatialIndexKind<NearbyStore>(
             latitude: \.geoPoint.latitude,
             longitude: \.geoPoint.longitude,
             encoding: .s2,
@@ -119,10 +120,10 @@ private struct AdvancedTestContext {
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "geoPoint"),
             subspaceKey: indexName,
-            itemTypes: Set(["TestStore"])
+            itemTypes: Set(["NearbyStore"])
         )
 
-        self.maintainer = SpatialIndexMaintainer<TestStore>(
+        self.maintainer = SpatialIndexMaintainer<NearbyStore>(
             index: index,
             encoding: kind.encoding,
             level: kind.level,
@@ -134,11 +135,11 @@ private struct AdvancedTestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
-    func insertStores(_ stores: [TestStore]) async throws {
+    func insertStores(_ stores: [NearbyStore]) async throws {
         try await database.withTransaction { transaction in
             for store in stores {
                 try await maintainer.updateIndex(
@@ -248,10 +249,10 @@ struct KNNResultTests {
 
     @Test("SpatialKNNResult stores correct values")
     func testSpatialKNNResultStoresValues() async throws {
-        let items: [(item: TestStore, distance: Double)] = [
-            (TestStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
-            (TestStore(name: "Store B", latitude: 35.1, longitude: 139.1), 200.0),
-            (TestStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0)
+        let items: [(item: NearbyStore, distance: Double)] = [
+            (NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
+            (NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), 200.0),
+            (NearbyStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0)
         ]
 
         let result = SpatialKNNResult(
@@ -270,10 +271,10 @@ struct KNNResultTests {
 
     @Test("SpatialKNNResult isComplete when count >= k")
     func testSpatialKNNResultIsComplete() async throws {
-        let items: [(item: TestStore, distance: Double)] = [
-            (TestStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
-            (TestStore(name: "Store B", latitude: 35.1, longitude: 139.1), 200.0),
-            (TestStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0)
+        let items: [(item: NearbyStore, distance: Double)] = [
+            (NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
+            (NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), 200.0),
+            (NearbyStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0)
         ]
 
         let result = SpatialKNNResult(
@@ -288,8 +289,8 @@ struct KNNResultTests {
 
     @Test("SpatialKNNResult with limit reason")
     func testSpatialKNNResultWithLimitReason() async throws {
-        let items: [(item: TestStore, distance: Double)] = [
-            (TestStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0)
+        let items: [(item: NearbyStore, distance: Double)] = [
+            (NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0)
         ]
 
         let limitReason = LimitReason.maxResultsReached(returned: 1, limit: 10)
@@ -361,7 +362,7 @@ struct PointInPolygonAlgorithmTests {
         #expect(outsideResult == false, "Point should be outside triangle")
     }
 
-    // MARK: - Helper functions (copies of algorithm for testing)
+    // MARK: - Reference Geometry Algorithms
 
     private func rayCastingPointInPolygon(
         point: GeoPoint,
@@ -427,9 +428,9 @@ struct SpatialQueryResultTests {
 
     @Test("SpatialQueryResult with items and distance")
     func testSpatialQueryResultWithDistance() async throws {
-        let items: [(item: TestStore, distance: Double?)] = [
-            (TestStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
-            (TestStore(name: "Store B", latitude: 35.1, longitude: 139.1), nil)
+        let items: [(item: NearbyStore, distance: Double?)] = [
+            (NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
+            (NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), nil)
         ]
 
         let result = SpatialQueryResult(items: items, limitReason: nil)
@@ -442,8 +443,8 @@ struct SpatialQueryResultTests {
 
     @Test("SpatialQueryResult with limit reason")
     func testSpatialQueryResultWithLimitReason() async throws {
-        let items: [(item: TestStore, distance: Double?)] = [
-            (TestStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0)
+        let items: [(item: NearbyStore, distance: Double?)] = [
+            (NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0)
         ]
 
         let limitReason = LimitReason.maxResultsReached(returned: 1, limit: 10)
@@ -546,10 +547,10 @@ struct KNNValidationTests {
     @Test("SpatialKNNResult correctly reports completeness")
     func testKNNResultCompleteness() async throws {
         // Test isComplete logic
-        let completeItems: [(item: TestStore, distance: Double)] = [
-            (TestStore(name: "A", latitude: 35.0, longitude: 139.0), 100.0),
-            (TestStore(name: "B", latitude: 35.1, longitude: 139.1), 200.0),
-            (TestStore(name: "C", latitude: 35.2, longitude: 139.2), 300.0)
+        let completeItems: [(item: NearbyStore, distance: Double)] = [
+            (NearbyStore(name: "A", latitude: 35.0, longitude: 139.0), 100.0),
+            (NearbyStore(name: "B", latitude: 35.1, longitude: 139.1), 200.0),
+            (NearbyStore(name: "C", latitude: 35.2, longitude: 139.2), 300.0)
         ]
 
         // Complete result (count >= k)

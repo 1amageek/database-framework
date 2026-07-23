@@ -5,7 +5,11 @@
 // and canonical row dispatcher flows through this single enum so callers
 // have one catch arm for canonical-read concerns.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Errors raised while translating or executing a canonical `SelectQuery`.
 ///
@@ -45,8 +49,8 @@ public enum CanonicalReadError: Error, Sendable {
 
     // MARK: Partition
 
-    /// A partition-value key does not correspond to a declared directory field.
-    case invalidPartitionField(String)
+    /// A typed partition does not exactly match the compiled directory schema.
+    case invalidPartition(entity: String, reason: String)
 
     // MARK: Executor registry
 

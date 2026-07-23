@@ -3,23 +3,16 @@
 //
 // Provides FDBContext extension and query builder for permuted field queries.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import Permuted
 import DatabaseEngine
 import QueryIR
-import DatabaseClientProtocol
 import StorageKit
-
-private enum PermutedQueryRuntime {
-    static let registration: Void = {
-        PermutedReadBridge.registerReadExecutors()
-    }()
-
-    static func ensureRegistered() {
-        _ = registration
-    }
-}
 
 // MARK: - Permuted Entry Point
 
@@ -109,7 +102,6 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         indexName: String,
         permutation: Permutation? = nil
     ) {
-        PermutedQueryRuntime.ensureRegistered()
         self.queryContext = queryContext
         self.indexName = indexName
         self.permutation = permutation
@@ -171,27 +163,18 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
-        // Get permutation from index descriptor if not provided
-        let perm: Permutation
-        if let p = permutation {
-            perm = p
-        } else if let descriptor = queryContext.schema.indexDescriptor(named: indexName),
-                  let kind = descriptor.kind as? PermutedIndexKind<T> {
-            perm = kind.permutation
-        } else {
-            throw PermutedQueryError.indexNotFound(indexName)
-        }
+        let resolved = try resolveIndex()
+        let descriptor = resolved.descriptor
+        let perm = resolved.permutation
 
         let primaryKeys: [[any TupleElement]] = try await queryContext.withTransaction(configuration: configuration) { transaction in
-            // Generate dummy field names based on permutation size
-            let fieldNames = (0..<perm.size).map { "field\($0)" }
-
             let maintainer = PermutedIndexMaintainer<T>(
                 index: Index(
                     name: self.indexName,
-                    kind: PermutedIndexKind<T>(fieldNames: fieldNames, permutation: perm),
-                    rootExpression: EmptyKeyExpression(),
-                    keyPaths: []
+                    kind: descriptor.kind,
+                    rootExpression: KeyExpressionFactory.from(keyPaths: descriptor.fieldNames),
+                    isUnique: descriptor.isUnique,
+                    storedFieldNames: descriptor.storedFieldNames
                 ),
                 permutation: perm,
                 subspace: indexSubspace,
@@ -238,28 +221,19 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
-        // Get permutation from index descriptor if not provided
-        let perm: Permutation
-        if let p = permutation {
-            perm = p
-        } else if let descriptor = queryContext.schema.indexDescriptor(named: indexName),
-                  let kind = descriptor.kind as? PermutedIndexKind<T> {
-            perm = kind.permutation
-        } else {
-            throw PermutedQueryError.indexNotFound(indexName)
-        }
+        let resolved = try resolveIndex()
+        let descriptor = resolved.descriptor
+        let perm = resolved.permutation
 
         let rawResults: [(permutedFields: [any TupleElement], primaryKey: [any TupleElement])]
         rawResults = try await queryContext.withTransaction { transaction in
-            // Generate dummy field names based on permutation size
-            let fieldNames = (0..<perm.size).map { "field\($0)" }
-
             let maintainer = PermutedIndexMaintainer<T>(
                 index: Index(
                     name: self.indexName,
-                    kind: PermutedIndexKind<T>(fieldNames: fieldNames, permutation: perm),
-                    rootExpression: EmptyKeyExpression(),
-                    keyPaths: []
+                    kind: descriptor.kind,
+                    rootExpression: KeyExpressionFactory.from(keyPaths: descriptor.fieldNames),
+                    isUnique: descriptor.isUnique,
+                    storedFieldNames: descriptor.storedFieldNames
                 ),
                 permutation: perm,
                 subspace: indexSubspace,
@@ -296,13 +270,43 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         return finalResults
     }
 
+    private func resolveIndex() throws -> (descriptor: IndexDescriptor, permutation: Permutation) {
+        guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
+            throw PermutedQueryError.indexNotFound(indexName)
+        }
+        guard descriptor.kindIdentifier == PermutedIndexKind<T>.identifier else {
+            throw PermutedQueryError.unexpectedIndexKind(
+                name: indexName,
+                actual: descriptor.kindIdentifier
+            )
+        }
+        guard let indices = descriptor.kind.metadata["permutation"]?.intArrayValue else {
+            throw PermutedQueryError.invalidMetadata(
+                name: indexName,
+                key: "permutation"
+            )
+        }
+
+        let canonicalPermutation = try Permutation(indices: indices)
+        guard descriptor.fieldNames.count == canonicalPermutation.size else {
+            throw PermutedQueryError.fieldCountMismatch(
+                expected: descriptor.fieldNames.count,
+                got: canonicalPermutation.size
+            )
+        }
+        if let permutation, permutation != canonicalPermutation {
+            throw PermutedQueryError.permutationMismatch(name: indexName)
+        }
+        return (descriptor, canonicalPermutation)
+    }
+
     internal func toSelectQuery() throws -> SelectQuery {
         var parameters: [String: QueryParameterValue] = [:]
         if let permutation {
-            parameters[PermutedReadParameter.permutation] = .array(permutation.indices.map { .int(Int64($0)) })
+            parameters[PermutedReadParameter.permutation] = .array(permutation.indices.map { .int64(Int64($0)) })
         }
         if let limitCount {
-            parameters[PermutedReadParameter.limit] = .int(Int64(limitCount))
+            parameters[PermutedReadParameter.limit] = .int64(Int64(limitCount))
         }
 
         switch queryType {
@@ -370,12 +374,27 @@ public enum PermutedQueryError: Error, CustomStringConvertible {
     /// Field count mismatch
     case fieldCountMismatch(expected: Int, got: Int)
 
+    /// The named index has a different kind.
+    case unexpectedIndexKind(name: String, actual: String)
+
+    /// Required canonical metadata is absent or has the wrong value type.
+    case invalidMetadata(name: String, key: String)
+
+    /// Query-local metadata conflicts with the schema descriptor.
+    case permutationMismatch(name: String)
+
     public var description: String {
         switch self {
         case .indexNotFound(let name):
             return "Permuted index not found: \(name)"
         case .fieldCountMismatch(let expected, let got):
             return "Field count mismatch: expected \(expected), got \(got)"
+        case .unexpectedIndexKind(let name, let actual):
+            return "Index '\(name)' has unexpected kind '\(actual)'"
+        case .invalidMetadata(let name, let key):
+            return "Index '\(name)' has invalid metadata for '\(key)'"
+        case .permutationMismatch(let name):
+            return "Query permutation does not match index '\(name)'"
         }
     }
 }

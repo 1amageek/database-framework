@@ -1,15 +1,15 @@
 // GraphPatternConverter.swift
 // GraphIndex - Converts QueryIR graph types to GraphIndex execution types
 //
-// Bridges the parsed SPARQL AST (QueryIR) to the GraphIndex execution engine.
+// Converts the parsed SPARQL AST into GraphIndex execution structures.
 
 import QueryIR
 import Core
+import Graph
 
 /// Converts QueryIR graph types to GraphIndex execution types.
 ///
-/// This is the bridge between the SPARQL parser output (QueryIR types)
-/// and the GraphIndex query executor (Execution types).
+/// Converts SPARQL parser output (`QueryIR` types) into the graph query model.
 ///
 /// **Supported conversions**:
 /// - `GraphPattern` → `ExecutionPattern`
@@ -22,6 +22,23 @@ public struct GraphPatternConverter: Sendable {
 
     private init() {}
 
+    private struct BlankNodeVariableScope {
+        let identifier: UInt64
+        private var variables: [String: String] = [:]
+
+        mutating func variable(for label: String) -> String {
+            if let variable = variables[label] {
+                return variable
+            }
+            let variable = SPARQLInternalVariable.blankNode(
+                label: label,
+                scope: identifier
+            )
+            variables[label] = variable
+            return variable
+        }
+    }
+
     // MARK: - GraphPattern → ExecutionPattern
 
     /// Convert a QueryIR.GraphPattern to a GraphIndex.ExecutionPattern
@@ -32,129 +49,494 @@ public struct GraphPatternConverter: Sendable {
     /// - Returns: An ExecutionPattern ready for the GraphIndex executor
     public static func convert(
         _ pattern: QueryIR.GraphPattern,
-        prefixes: [String: String] = [:]
-    ) -> ExecutionPattern {
-        switch pattern {
-        case .basic(let triples):
-            return .basic(triples.map { convertTriple($0, prefixes: prefixes) })
-
-        case .join(let left, let right):
-            return .join(convert(left, prefixes: prefixes), convert(right, prefixes: prefixes))
-
-        case .optional(let left, let right):
-            return .optional(convert(left, prefixes: prefixes), convert(right, prefixes: prefixes))
-
-        case .union(let left, let right):
-            return .union(convert(left, prefixes: prefixes), convert(right, prefixes: prefixes))
-
-        case .filter(let inner, let expression):
-            return .filter(convert(inner, prefixes: prefixes), convertFilter(expression))
-
-        case .minus(let left, let right):
-            return .minus(convert(left, prefixes: prefixes), convert(right, prefixes: prefixes))
-
-        case .graph(let name, let inner):
-            let graphTerm = convertTerm(name, prefixes: prefixes)
-            return convert(inner, prefixes: prefixes).withGraph(graphTerm)
-
-        case .service:
-            // Federation not supported — return empty pattern
-            return .basic([])
-
-        case .bind(let inner, _, _):
-            // BIND not directly supported — return the inner pattern
-            return convert(inner, prefixes: prefixes)
-
-        case .values:
-            // VALUES (inline data) not directly supported
-            return .basic([])
-
-        case .subquery:
-            // Subquery not directly supported
-            return .basic([])
-
-        case .groupBy(let inner, let expressions, let aggregates):
-            let innerConverted = convert(inner, prefixes: prefixes)
-            let groupVars = expressions.compactMap { expr -> String? in
-                if case .variable(let v) = expr {
-                    return v.name.hasPrefix("?") ? v.name : "?\(v.name)"
-                }
-                return nil
-            }
-            let aggExprs = aggregates.map { convertAggregate($0) }
-            return .groupBy(innerConverted, groupVariables: groupVars, aggregates: aggExprs, having: nil)
-
-        case .propertyPath(let subject, let path, let object):
-            return .propertyPath(
-                subject: convertTerm(subject, prefixes: prefixes),
-                path: convertPropertyPath(path),
-                object: convertTerm(object, prefixes: prefixes)
-            )
-
-        case .lateral(let left, let right):
-            return .lateral(convert(left, prefixes: prefixes), convert(right, prefixes: prefixes))
-        }
-    }
-
-    // MARK: - TriplePattern → ExecutionTriple
-
-    /// Convert a QueryIR.TriplePattern to a GraphIndex.ExecutionTriple
-    public static func convertTriple(
-        _ triple: QueryIR.TriplePattern,
-        prefixes: [String: String] = [:]
-    ) -> ExecutionTriple {
-        ExecutionTriple(
-            subject: convertTerm(triple.subject, prefixes: prefixes),
-            predicate: convertTerm(triple.predicate, prefixes: prefixes),
-            object: convertTerm(triple.object, prefixes: prefixes)
+        prefixes: [String: String] = [:],
+        structuralLimits: QueryStructuralLimits = .default
+    ) throws -> ExecutionPattern {
+        try SPARQLSemanticValidator.validate(
+            pattern,
+            limits: structuralLimits
+        )
+        var context = SPARQLAlgebraCompilationContext()
+        return try convert(
+            pattern,
+            prefixes: prefixes,
+            context: &context,
+            subqueryInputPolicy: .isolated,
+            inputVariables: []
         )
     }
 
-    // MARK: - SPARQLTerm → ExecutionTerm
+    package static func convert(
+        _ pattern: QueryIR.GraphPattern,
+        prefixes: [String: String],
+        context: inout SPARQLAlgebraCompilationContext,
+        subqueryInputPolicy: SPARQLSubqueryInputPolicy,
+        inputVariables: Set<String>
+    ) throws -> ExecutionPattern {
+        switch pattern {
+        case .basic(let basicGraphPattern):
+            return try convertBasicGraphPattern(
+                basicGraphPattern,
+                prefixes: prefixes,
+                blankNodeScopeIdentifier: context.takeBlankNodeScope()
+            )
 
-    /// Convert a QueryIR.SPARQLTerm to a GraphIndex.ExecutionTerm
-    ///
-    /// - Parameters:
-    ///   - term: The QueryIR SPARQL term
-    ///   - prefixes: Prefix map for expanding prefixed names
-    /// - Returns: An ExecutionTerm for the GraphIndex executor
-    public static func convertTerm(
-        _ term: QueryIR.SPARQLTerm,
-        prefixes: [String: String] = [:]
-    ) -> ExecutionTerm {
-        switch term {
-        case .variable(let name):
-            return .variable(name.hasPrefix("?") ? name : "?\(name)")
-        case .iri(let value):
-            return .value(.string(value))
-        case .prefixedName(let prefix, let local):
-            if let base = prefixes[prefix] {
-                return .value(.string(base + local))
+        case .join(let left, let right):
+            let convertedLeft = try convert(
+                left,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables
+            )
+            let convertedRight = try convert(
+                right,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables.union(
+                    convertedLeft.outputVariables
+                )
+            )
+            return .join(convertedLeft, convertedRight)
+
+        case .optional(let left, let right):
+            let convertedLeft = try convert(
+                left,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables
+            )
+            let convertedRight = try convert(
+                right,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables.union(
+                    convertedLeft.outputVariables
+                )
+            )
+            return .optional(convertedLeft, convertedRight)
+
+        case .union(let left, let right):
+            let convertedLeft = try convert(
+                left,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables
+            )
+            let convertedRight = try convert(
+                right,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables
+            )
+            return .union(convertedLeft, convertedRight)
+
+        case .filter(let inner, let expression):
+            let convertedInner = try convert(
+                inner,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables
+            )
+            let convertedFilter = try convertFilter(expression)
+            return .filter(
+                convertedInner,
+                convertedFilter
+            )
+
+        case .minus(let left, let right):
+            let convertedLeft = try convert(
+                left,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables
+            )
+            let convertedRight = try convert(
+                right,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables
+            )
+            return .minus(convertedLeft, convertedRight)
+
+        case .graph(let name, let inner):
+            let selector = try convertGraphSelector(name, prefixes: prefixes)
+            let convertedInner = try convert(
+                inner,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables.union(selector.variables)
+            )
+            return .graph(selector, convertedInner)
+
+        case .service:
+            throw GraphPatternConversionError.unsupportedGraphPattern("SERVICE")
+
+        case .bind(let inner, let variable, let expression):
+            let target = "?\(variable)"
+            let converted = try convert(
+                inner,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables
+            )
+            let availableVariables = converted.outputVariables.union(
+                inputVariables
+            )
+            guard !availableVariables.contains(target) else {
+                throw GraphPatternConversionError.variableAlreadyInScope(target)
             }
-            return .value(.string("\(prefix):\(local)"))
-        case .literal(let lit):
-            return .value(lit.toSPARQLFieldValue())
-        case .blankNode(let id):
-            return .value(.string("_:\(id)"))
-        case .quotedTriple(let s, let p, let o):
-            return .quotedTriple(
-                subject: convertTerm(s, prefixes: prefixes),
-                predicate: convertTerm(p, prefixes: prefixes),
-                object: convertTerm(o, prefixes: prefixes)
+            let plan = try SPARQLExpressionPlan(expression)
+            return .extend(
+                converted,
+                variable: target,
+                expression: plan
             )
-        case .reifiedTriple(let s, let p, let o, _):
-            return .quotedTriple(
-                subject: convertTerm(s, prefixes: prefixes),
-                predicate: convertTerm(p, prefixes: prefixes),
-                object: convertTerm(o, prefixes: prefixes)
+
+        case .values(let variables, let bindings):
+            return try convertValues(
+                variables: variables,
+                bindings: bindings
             )
+
+        case .subquery(let query):
+            return .subquery(
+                try SPARQLSelectPlanCompiler.compileSubquery(
+                    query,
+                    inputPolicy: subqueryInputPolicy,
+                    inputVariables: inputVariables,
+                    context: &context
+                )
+            )
+
+        case .groupBy(let inner, let expressions, let aggregates):
+            let innerConverted = try convert(
+                inner,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables
+            )
+            var groupKeys: [SPARQLGroupKeyPlan] = []
+            groupKeys.reserveCapacity(expressions.count)
+            for (index, expression) in expressions.enumerated() {
+                let plan = try SPARQLExpressionPlan(expression)
+                let outputVariable: String
+                if case .variable(let variable) = expression {
+                    outputVariable = "?\(variable.name)"
+                } else {
+                    outputVariable = SPARQLInternalVariable.executionName(
+                        forRawName: SPARQLInternalVariable.groupKeyRaw(
+                            UInt64(index)
+                        )
+                    )
+                }
+                groupKeys.append(
+                    SPARQLGroupKeyPlan(
+                        outputVariable: outputVariable,
+                        expression: plan
+                    )
+                )
+            }
+            var aggExprs: [AggregateExpression] = []
+            aggExprs.reserveCapacity(aggregates.count)
+            for binding in aggregates {
+                let aggregate = try convertAggregate(binding)
+                aggExprs.append(aggregate)
+            }
+            return .groupBy(
+                innerConverted,
+                grouping: .explicit(consume groupKeys),
+                aggregates: aggExprs,
+                having: nil
+            )
+
+        case .lateral(let left, let right):
+            let convertedLeft = try convert(
+                left,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: subqueryInputPolicy,
+                inputVariables: inputVariables
+            )
+            let convertedRight = try convert(
+                right,
+                prefixes: prefixes,
+                context: &context,
+                subqueryInputPolicy: .lateral,
+                inputVariables: inputVariables.union(
+                    convertedLeft.outputVariables
+                )
+            )
+            return .lateral(convertedLeft, convertedRight)
         }
     }
 
-    // MARK: - PropertyPath → ExecutionPropertyPath
+    private static func convertBasicGraphPattern(
+        _ pattern: borrowing QueryIR.BasicGraphPattern,
+        prefixes: [String: String],
+        blankNodeScopeIdentifier: UInt64
+    ) throws -> ExecutionPattern {
+        let expansionPlan = try SPARQLReifiedTripleExpansionPlan
+            .basicGraphPattern(pattern)
+        var loweredTriples: [ExecutionTriple] = []
+        loweredTriples.reserveCapacity(expansionPlan.totalTripleCount)
+        var loweredPaths: [ExecutionPattern] = []
+        var blankNodeScope = BlankNodeVariableScope(
+            identifier: blankNodeScopeIdentifier
+        )
 
-    /// Convert a QueryIR.PropertyPath to a GraphIndex.ExecutionPropertyPath
-    public static func convertPropertyPath(
+        for element in pattern.elements {
+            switch element {
+            case .triple(let triple):
+                try appendConvertedTriple(
+                    triple,
+                    prefixes: prefixes,
+                    blankNodeScope: &blankNodeScope,
+                    to: &loweredTriples
+                )
+            case .propertyPath(let pathPattern):
+                let subject = try lowerTerm(
+                    pathPattern.subject,
+                    prefixes: prefixes,
+                    blankNodeScope: &blankNodeScope,
+                    supplementalTriples: &loweredTriples
+                )
+                let object = try lowerTerm(
+                    pathPattern.object,
+                    prefixes: prefixes,
+                    blankNodeScope: &blankNodeScope,
+                    supplementalTriples: &loweredTriples
+                )
+                loweredPaths.append(
+                    .propertyPath(
+                        subject: subject,
+                        path: convertPropertyPath(pathPattern.path),
+                        object: object
+                    )
+                )
+            }
+        }
+
+        var result: ExecutionPattern?
+        if !loweredTriples.isEmpty {
+            result = .basic(loweredTriples)
+        }
+        for path in loweredPaths {
+            if let existing = result {
+                result = .join(existing, path)
+            } else {
+                result = path
+            }
+        }
+        return result ?? .basic([])
+    }
+
+    private static func convertValues(
+        variables: [String],
+        bindings: [[QueryIR.Literal?]]
+    ) throws -> ExecutionPattern {
+        var normalizedVariables: [String] = []
+        normalizedVariables.reserveCapacity(variables.count)
+        var seen = Set<String>()
+        for variable in variables {
+            let normalized = normalizedVariable(variable)
+            guard seen.insert(normalized).inserted else {
+                throw GraphPatternConversionError.duplicateValuesVariable(
+                    normalized
+                )
+            }
+            normalizedVariables.append(normalized)
+        }
+
+        let (cellCount, overflow) = bindings.count.multipliedReportingOverflow(
+            by: normalizedVariables.count
+        )
+        guard !overflow else {
+            throw GraphPatternConversionError.valuesCellCountOverflow(
+                rows: bindings.count,
+                columns: normalizedVariables.count
+            )
+        }
+
+        var cells: [FieldValue?] = []
+        cells.reserveCapacity(cellCount)
+        for (rowIndex, row) in bindings.enumerated() {
+            guard row.count == normalizedVariables.count else {
+                throw GraphPatternConversionError.valuesRowWidth(
+                    row: rowIndex,
+                    expected: normalizedVariables.count,
+                    actual: row.count
+                )
+            }
+            for literal in row {
+                if let literal {
+                    cells.append(try literal.toSPARQLFieldValue())
+                } else {
+                    cells.append(nil)
+                }
+            }
+        }
+
+        return .values(
+            SPARQLValuesTable(
+                variables: consume normalizedVariables,
+                rowCount: bindings.count,
+                cells: consume cells
+            )
+        )
+    }
+
+    private static func convertGraphSelector(
+        _ term: QueryIR.SPARQLTerm,
+        prefixes: [String: String]
+    ) throws -> ExecutionGraphSelector {
+        if case .variable(let name) = term {
+            return .variable("?\(name)")
+        }
+
+        let iri: String
+        switch term {
+        case .iri(let value):
+            iri = value
+        case .variable, .literal, .blankNode, .tripleTerm, .reifiedTriple:
+            throw GraphPatternConversionError.graphSelectorMustBeIRIOrVariable
+        }
+
+        do {
+            return .named(try RDFGraphName(iri: iri))
+        } catch {
+            throw GraphPatternConversionError.invalidGraphIRI(iri)
+        }
+    }
+
+    private static func appendConvertedTriple(
+        _ triple: QueryIR.TriplePattern,
+        prefixes: [String: String],
+        blankNodeScope: inout BlankNodeVariableScope,
+        to triples: inout [ExecutionTriple]
+    ) throws {
+        let subject = try lowerTerm(
+            triple.subject,
+            prefixes: prefixes,
+            blankNodeScope: &blankNodeScope,
+            supplementalTriples: &triples
+        )
+        let predicate = try lowerTerm(
+            triple.predicate,
+            prefixes: prefixes,
+            blankNodeScope: &blankNodeScope,
+            supplementalTriples: &triples
+        )
+        let object = try lowerTerm(
+            triple.object,
+            prefixes: prefixes,
+            blankNodeScope: &blankNodeScope,
+            supplementalTriples: &triples
+        )
+        triples.append(
+            ExecutionTriple(
+                subject: subject,
+                predicate: predicate,
+                object: object
+            )
+        )
+    }
+
+    private static func lowerTerm(
+        _ term: QueryIR.SPARQLTerm,
+        prefixes: [String: String],
+        blankNodeScope: inout BlankNodeVariableScope,
+        supplementalTriples: inout [ExecutionTriple]
+    ) throws -> ExecutionTerm {
+        switch term {
+        case .variable(let name):
+            return .variable("?\(name)")
+        case .iri(let value):
+            return .value(.rdfTerm(.iri(value)))
+        case .literal(let literal):
+            return .value(try literal.toSPARQLFieldValue())
+        case .blankNode(let identifier):
+            return .variable(blankNodeScope.variable(for: identifier))
+        case .tripleTerm(let subject, let predicate, let object):
+            let loweredSubject = try lowerTerm(
+                subject,
+                prefixes: prefixes,
+                blankNodeScope: &blankNodeScope,
+                supplementalTriples: &supplementalTriples
+            )
+            let loweredPredicate = try lowerTerm(
+                predicate,
+                prefixes: prefixes,
+                blankNodeScope: &blankNodeScope,
+                supplementalTriples: &supplementalTriples
+            )
+            let loweredObject = try lowerTerm(
+                object,
+                prefixes: prefixes,
+                blankNodeScope: &blankNodeScope,
+                supplementalTriples: &supplementalTriples
+            )
+            return .tripleTerm(
+                subject: loweredSubject,
+                predicate: loweredPredicate,
+                object: loweredObject
+            )
+        case .reifiedTriple(let subject, let predicate, let object, let reifier):
+            let loweredSubject = try lowerTerm(
+                subject,
+                prefixes: prefixes,
+                blankNodeScope: &blankNodeScope,
+                supplementalTriples: &supplementalTriples
+            )
+            let loweredPredicate = try lowerTerm(
+                predicate,
+                prefixes: prefixes,
+                blankNodeScope: &blankNodeScope,
+                supplementalTriples: &supplementalTriples
+            )
+            let loweredObject = try lowerTerm(
+                object,
+                prefixes: prefixes,
+                blankNodeScope: &blankNodeScope,
+                supplementalTriples: &supplementalTriples
+            )
+            let loweredReifier = try lowerTerm(
+                reifier,
+                prefixes: prefixes,
+                blankNodeScope: &blankNodeScope,
+                supplementalTriples: &supplementalTriples
+            )
+            let tripleTerm = ExecutionTerm.tripleTerm(
+                subject: loweredSubject,
+                predicate: loweredPredicate,
+                object: loweredObject
+            )
+            let reifyingTriple = ExecutionTriple(
+                subject: loweredReifier,
+                predicate: .value(
+                    .rdfTerm(
+                        .iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies")
+                    )
+                ),
+                object: tripleTerm
+            )
+            supplementalTriples.append(reifyingTriple)
+            return loweredReifier
+        }
+    }
+
+    private static func convertPropertyPath(
         _ path: QueryIR.PropertyPath
     ) -> ExecutionPropertyPath {
         switch path {
@@ -172,20 +554,10 @@ public struct GraphPatternConverter: Sendable {
             return .oneOrMore(convertPropertyPath(inner))
         case .zeroOrOne(let inner):
             return .zeroOrOne(convertPropertyPath(inner))
-        case .negation(let iris):
-            return .negatedPropertySet(iris)
-        case .range(let inner, let min, let max):
-            // Range quantifiers: approximate with the inner path
-            // {1,} = oneOrMore, {0,} = zeroOrMore, {0,1} = zeroOrOne
-            if min == 0 && max == nil {
-                return .zeroOrMore(convertPropertyPath(inner))
-            } else if min == 1 && max == nil {
-                return .oneOrMore(convertPropertyPath(inner))
-            } else if min == 0 && max == 1 {
-                return .zeroOrOne(convertPropertyPath(inner))
-            }
-            // Default: treat as oneOrMore for bounded ranges
-            return .oneOrMore(convertPropertyPath(inner))
+        case .negatedPropertySet(let exclusions):
+            return .negatedPropertySet(exclusions)
+        case .range(let inner, let bounds):
+            return .range(convertPropertyPath(inner), bounds)
         }
     }
 
@@ -193,194 +565,136 @@ public struct GraphPatternConverter: Sendable {
 
     /// Convert a QueryIR.Expression to a GraphIndex.FilterExpression
     ///
-    /// Extracts referenced variables for filter pushdown optimization,
-    /// then wraps the expression evaluation in a closure that uses
-    /// ExpressionEvaluator for runtime evaluation against each VariableBinding.
-    public static func convertFilter(
+    /// Preserves QueryIR and expression traits for the execution layer.
+    package static func convertFilter(
         _ expression: QueryIR.Expression
-    ) -> FilterExpression {
-        let variables = extractExpressionVariables(expression)
-        return .customWithVariables({ binding in
-            ExpressionEvaluator.evaluateAsBoolean(expression, binding: binding)
-        }, variables: variables)
+    ) throws -> FilterExpression {
+        .query(try SPARQLExpressionPlan(expression))
     }
 
-    /// Extract all variables referenced in an expression
-    ///
-    /// Recursively traverses the expression tree to find all variable references.
-    /// This enables proper filter pushdown optimization.
-    private static func extractExpressionVariables(
-        _ expr: QueryIR.Expression
-    ) -> Set<String> {
-        var vars = Set<String>()
-        collectExpressionVariables(from: expr, into: &vars)
-        return vars
-    }
-
-    /// Recursively collect variables from an expression
-    private static func collectExpressionVariables(
-        from expr: QueryIR.Expression,
-        into vars: inout Set<String>
-    ) {
-        switch expr {
-        case .variable(let v):
-            let name = v.name.hasPrefix("?") ? v.name : "?\(v.name)"
-            vars.insert(name)
-
-        case .bound(let v):
-            let name = v.name.hasPrefix("?") ? v.name : "?\(v.name)"
-            vars.insert(name)
-
-        // Binary operators
-        case .add(let l, let r), .subtract(let l, let r), .multiply(let l, let r),
-             .divide(let l, let r), .modulo(let l, let r), .equal(let l, let r),
-             .notEqual(let l, let r), .lessThan(let l, let r), .lessThanOrEqual(let l, let r),
-             .greaterThan(let l, let r), .greaterThanOrEqual(let l, let r),
-             .and(let l, let r), .or(let l, let r):
-            collectExpressionVariables(from: l, into: &vars)
-            collectExpressionVariables(from: r, into: &vars)
-
-        // Unary operators
-        case .negate(let e), .not(let e), .isNull(let e), .isNotNull(let e):
-            collectExpressionVariables(from: e, into: &vars)
-
-        // RDF-star
-        case .isTriple(let e), .subject(let e), .predicate(let e), .object(let e):
-            collectExpressionVariables(from: e, into: &vars)
-
-        case .triple(let s, let p, let o):
-            collectExpressionVariables(from: s, into: &vars)
-            collectExpressionVariables(from: p, into: &vars)
-            collectExpressionVariables(from: o, into: &vars)
-
-        // Functions
-        case .function(let call):
-            for arg in call.arguments {
-                collectExpressionVariables(from: arg, into: &vars)
-            }
-
-        case .aggregate(let agg):
-            switch agg {
-            case .count(let e, _):
-                if let e = e { collectExpressionVariables(from: e, into: &vars) }
-            case .sum(let e, _), .avg(let e, _), .min(let e), .max(let e), .sample(let e):
-                collectExpressionVariables(from: e, into: &vars)
-            case .groupConcat(let e, _, _), .arrayAgg(let e, _, _):
-                collectExpressionVariables(from: e, into: &vars)
-            }
-
-        // Conditional
-        case .coalesce(let exprs):
-            for e in exprs { collectExpressionVariables(from: e, into: &vars) }
-
-        case .nullIf(let l, let r):
-            collectExpressionVariables(from: l, into: &vars)
-            collectExpressionVariables(from: r, into: &vars)
-
-        // Between, In, Like, Regex
-        case .between(let e, let low, let high):
-            collectExpressionVariables(from: e, into: &vars)
-            collectExpressionVariables(from: low, into: &vars)
-            collectExpressionVariables(from: high, into: &vars)
-
-        case .inList(let e, let list):
-            collectExpressionVariables(from: e, into: &vars)
-            for item in list { collectExpressionVariables(from: item, into: &vars) }
-        case .notInList(let e, let list):
-            collectExpressionVariables(from: e, into: &vars)
-            for item in list { collectExpressionVariables(from: item, into: &vars) }
-
-        case .like(let e, _):
-            collectExpressionVariables(from: e, into: &vars)
-
-        case .regex(let e, _, _):
-            collectExpressionVariables(from: e, into: &vars)
-
-        // Cast
-        case .cast(let e, _):
-            collectExpressionVariables(from: e, into: &vars)
-
-        // Case/When
-        case .caseWhen(let cases, let elseResult):
-            for pair in cases {
-                collectExpressionVariables(from: pair.condition, into: &vars)
-                collectExpressionVariables(from: pair.result, into: &vars)
-            }
-            if let el = elseResult { collectExpressionVariables(from: el, into: &vars) }
-
-        // Subqueries (variables from subquery are internal, not exposed)
-        case .subquery, .exists, .inSubquery:
-            break
-
-        // Literals and constants (no variables)
-        case .literal, .column:
-            break
+    /// Adds SPARQL projection expressions as Extend algebra nodes. Aggregate
+    /// expressions are evaluated by Group and are therefore not extended here.
+    package static func applyingProjectionExpressions(
+        _ projection: QueryIR.Projection,
+        to pattern: ExecutionPattern,
+        inputVariables: Set<String> = [],
+        reservedTargetVariables: Set<String> = [],
+        restrictExpressionReferencesToScope: Bool = false
+    ) throws -> ExecutionPattern {
+        let items: [QueryIR.ProjectionItem]
+        switch projection {
+        case .items(let values), .distinctItems(let values):
+            items = values
+        case .all, .allFrom:
+            return pattern
         }
+
+        var aliases = Set<String>()
+        for item in items {
+            guard let alias = item.alias else { continue }
+            let target = normalizedVariable(alias)
+            guard aliases.insert(target).inserted else {
+                throw GraphPatternConversionError.duplicateProjectionAlias(target)
+            }
+        }
+
+        var result = pattern
+        for item in items {
+            guard let alias = item.alias else {
+                switch item.expression {
+                case .variable, .column:
+                    continue
+                default:
+                    throw GraphPatternConversionError.projectionExpressionRequiresAlias
+                }
+            }
+
+            let target = normalizedVariable(alias)
+            if case .aggregate = item.expression { continue }
+
+            let plan = try SPARQLExpressionPlan(item.expression)
+            let expressionScope = result.outputVariables.union(inputVariables)
+            if restrictExpressionReferencesToScope,
+               let missingVariable = plan.referencedVariables
+                    .subtracting(expressionScope)
+                    .sorted()
+                    .first {
+                throw GraphPatternConversionError
+                    .projectionVariableNotInScope(missingVariable)
+            }
+            guard !expressionScope.union(reservedTargetVariables)
+                .contains(target) else {
+                throw GraphPatternConversionError.variableAlreadyInScope(target)
+            }
+            result = .extend(result, variable: target, expression: plan)
+        }
+        return result
     }
 
     // MARK: - AggregateBinding → AggregateExpression
 
     /// Convert a QueryIR.AggregateBinding to a GraphIndex.AggregateExpression
-    public static func convertAggregate(
+    package static func convertAggregate(
         _ binding: QueryIR.AggregateBinding
-    ) -> AggregateExpression {
-        let alias = binding.variable
+    ) throws -> AggregateExpression {
+        let alias = "?\(binding.variable)"
         switch binding.aggregate {
         case .count(let expr, let distinct):
-            if let expr = expr, case .variable(let v) = expr {
-                let varName = v.name.hasPrefix("?") ? v.name : "?\(v.name)"
-                return distinct
-                    ? .countDistinct(varName, as: alias)
-                    : .count(varName, as: alias)
-            }
-            return distinct
-                ? .countAllDistinct(as: alias)
-                : .countAll(as: alias)
+            return .count(
+                expression: try expr.map { try SPARQLExpressionPlan($0) },
+                distinct: distinct,
+                alias: alias
+            )
 
-        case .sum(let expr, _):
-            let varName = extractVariableName(expr)
-            return .sum(varName, as: alias)
+        case .sum(let expr, let distinct):
+            return .sum(
+                expression: try SPARQLExpressionPlan(expr),
+                distinct: distinct,
+                alias: alias
+            )
 
-        case .avg(let expr, _):
-            let varName = extractVariableName(expr)
-            return .avg(varName, as: alias)
+        case .avg(let expr, let distinct):
+            return .avg(
+                expression: try SPARQLExpressionPlan(expr),
+                distinct: distinct,
+                alias: alias
+            )
 
         case .min(let expr):
-            let varName = extractVariableName(expr)
-            return .min(varName, as: alias)
+            return .min(
+                expression: try SPARQLExpressionPlan(expr),
+                alias: alias
+            )
 
         case .max(let expr):
-            let varName = extractVariableName(expr)
-            return .max(varName, as: alias)
+            return .max(
+                expression: try SPARQLExpressionPlan(expr),
+                alias: alias
+            )
 
         case .sample(let expr):
-            let varName = extractVariableName(expr)
-            return .sample(varName, as: alias)
+            return .sample(
+                expression: try SPARQLExpressionPlan(expr),
+                alias: alias
+            )
 
         case .groupConcat(let expr, let separator, let distinct):
-            let varName = extractVariableName(expr)
-            return distinct
-                ? .groupConcatDistinct(varName, separator: separator ?? " ", as: alias)
-                : .groupConcat(varName, separator: separator ?? " ", as: alias)
+            return .groupConcat(
+                expression: try SPARQLExpressionPlan(expr),
+                separator: separator ?? " ",
+                distinct: distinct,
+                alias: alias
+            )
 
-        case .arrayAgg(let expr, _, _):
-            // arrayAgg is SQL-specific; approximate with groupConcat
-            let varName = extractVariableName(expr)
-            return .groupConcat(varName, separator: ", ", as: alias)
+        case .arrayAgg:
+            throw GraphPatternConversionError.unsupportedAggregateExpression("ARRAY_AGG")
         }
     }
 
     // MARK: - Helpers
 
-    /// Extract a variable name from an expression
-    private static func extractVariableName(_ expr: QueryIR.Expression) -> String {
-        switch expr {
-        case .variable(let v):
-            return v.name.hasPrefix("?") ? v.name : "?\(v.name)"
-        case .column(let col):
-            return "?\(col.column)"
-        default:
-            return "?_expr"
-        }
+    private static func normalizedVariable(_ variable: String) -> String {
+        return "?\(variable)"
     }
+
 }

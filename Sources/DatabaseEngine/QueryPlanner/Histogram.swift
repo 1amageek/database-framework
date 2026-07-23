@@ -1,7 +1,11 @@
 // Histogram.swift
 // QueryPlanner - Histogram for selectivity estimation
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import StorageKit
 
@@ -531,7 +535,7 @@ public struct HistogramBuilder: Sendable {
         bucketCount: Int = 100,
         hll: HyperLogLog? = nil,
         excludeValues: Set<FieldValue> = []
-    ) -> Histogram {
+    ) throws -> Histogram {
         // Filter out nulls and exclude MCV values
         let values = samples.compactMap { fieldValue -> FieldValue? in
             if case .null = fieldValue { return nil }
@@ -550,7 +554,10 @@ public struct HistogramBuilder: Sendable {
         let histogramDistinctCount: Int64
         if let hll = hll {
             // Adjust HLL cardinality by subtracting MCV count
-            histogramDistinctCount = max(1, hll.cardinality() - Int64(excludeValues.count))
+            histogramDistinctCount = max(
+                1,
+                try hll.cardinality() - Int64(excludeValues.count)
+            )
         } else {
             histogramDistinctCount = Int64(Set(values).count)
         }

@@ -1,8 +1,13 @@
 // StatisticsProvider.swift
 // QueryPlanner - Statistics for cost estimation
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 import StorageKit
 import Synchronization
 
@@ -11,7 +16,7 @@ import Synchronization
 /// Represents a range bound for statistics queries
 ///
 /// Used by `rangeSelectivity` to estimate selectivity of range conditions.
-public struct RangeBound: @unchecked Sendable {
+public struct RangeBound: Sendable {
     /// Lower bound (value, inclusive)
     public let lower: RangeBoundComponent?
 
@@ -34,7 +39,7 @@ public struct RangeBound: @unchecked Sendable {
 }
 
 /// A single component of a range bound (value + inclusivity)
-public struct RangeBoundComponent: @unchecked Sendable {
+public struct RangeBoundComponent: Sendable {
     /// The bound value
     public let value: any TupleElement
 
@@ -107,8 +112,8 @@ public protocol LiveStatisticsProvider: StatisticsProvider {
     ///   - endKey: End of the range (exclusive)
     /// - Returns: Estimated size in bytes
     func estimatedRangeSizeBytes(
-        beginKey: [UInt8],
-        endKey: [UInt8]
+        beginKey: Bytes,
+        endKey: Bytes
     ) async throws -> Int
 
     /// Get split points to divide a range for parallel processing
@@ -122,10 +127,10 @@ public protocol LiveStatisticsProvider: StatisticsProvider {
     ///   - chunkSize: Target size per chunk in bytes
     /// - Returns: Array of split point keys
     func rangeSplitPoints(
-        beginKey: [UInt8],
-        endKey: [UInt8],
+        beginKey: Bytes,
+        endKey: Bytes,
         chunkSize: Int
-    ) async throws -> [[UInt8]]
+    ) async throws -> [Bytes]
 
     /// Estimate row count for an index range based on server-side byte estimation
     ///
@@ -137,15 +142,15 @@ public protocol LiveStatisticsProvider: StatisticsProvider {
     /// - Returns: Estimated row count
     func estimatedRowsInRange(
         index: IndexDescriptor,
-        beginKey: [UInt8],
-        endKey: [UInt8],
+        beginKey: Bytes,
+        endKey: Bytes,
         avgRowSizeBytes: Int
     ) async throws -> Int
 }
 
-// MARK: - Default Statistics Provider
+// MARK: - Heuristic Statistics Provider
 
-/// Default statistics provider with heuristic estimates
+/// Statistics provider that derives estimates from configured heuristic ratios.
 ///
 /// **⚠️ PLACEHOLDER IMPLEMENTATION**
 ///
@@ -164,7 +169,7 @@ public protocol LiveStatisticsProvider: StatisticsProvider {
 /// - Histogram data for range selectivity (value distribution buckets)
 /// - Null ratio per field (percentage of NULL values)
 /// - Index-specific entry counts
-public struct DefaultStatisticsProvider: StatisticsProvider {
+public struct HeuristicStatisticsProvider: StatisticsProvider {
 
     /// Default row count assumption
     private let defaultRowCount: Int
@@ -252,7 +257,7 @@ public struct TableStatistics: Sendable {
 }
 
 /// Statistics for a single field
-public struct FieldStatistics: @unchecked Sendable {
+public struct FieldStatistics: Sendable {
     /// Field name
     public let fieldName: String
 
@@ -352,35 +357,30 @@ public struct IndexStatistics: Sendable {
 ///
 /// This provider maintains actual statistics collected from the database,
 /// providing accurate cost estimation for query planning.
-public final class CollectedStatisticsProvider: StatisticsProvider, @unchecked Sendable {
+public final class CollectedStatisticsProvider: StatisticsProvider, Sendable {
+    private struct State: Sendable {
+        var tableStatistics: [String: TableStatistics] = [:]
+        var fieldStatistics: [String: FieldStatistics] = [:]
+        var indexStatistics: [String: IndexStatistics] = [:]
+    }
 
-    /// Table statistics by type name
-    private var tableStats: [String: TableStatistics] = [:]
-
-    /// Field statistics by "TypeName.fieldName"
-    private var fieldStats: [String: FieldStatistics] = [:]
-
-    /// Index statistics by index name
-    private var indexStats: [String: IndexStatistics] = [:]
-
-    /// Lock for thread-safe access
-    private let lock = NSLock()
+    private let state = Mutex(State())
 
     /// Default fallback provider
-    private let fallback: DefaultStatisticsProvider
+    private let fallback: HeuristicStatisticsProvider
 
     public init(fallbackRowCount: Int = 10000) {
-        self.fallback = DefaultStatisticsProvider(defaultRowCount: fallbackRowCount)
+        self.fallback = HeuristicStatisticsProvider(defaultRowCount: fallbackRowCount)
     }
 
     // MARK: - StatisticsProvider
 
     public func estimatedRowCount<T: Persistable>(for type: T.Type) -> Int {
         let typeName = String(describing: type)
-        lock.lock()
-        defer { lock.unlock() }
-
-        return tableStats[typeName]?.rowCount ?? fallback.estimatedRowCount(for: type)
+        return state.withLock { state in
+            state.tableStatistics[typeName]?.rowCount
+                ?? fallback.estimatedRowCount(for: type)
+        }
     }
 
     public func estimatedDistinctValues<T: Persistable>(
@@ -388,10 +388,10 @@ public final class CollectedStatisticsProvider: StatisticsProvider, @unchecked S
         type: T.Type
     ) -> Int? {
         let key = "\(type).\(field)"
-        lock.lock()
-        defer { lock.unlock() }
-
-        return fieldStats[key]?.distinctValues ?? fallback.estimatedDistinctValues(field: field, type: type)
+        return state.withLock { state in
+            state.fieldStatistics[key]?.distinctValues
+                ?? fallback.estimatedDistinctValues(field: field, type: type)
+        }
     }
 
     public func equalitySelectivity<T: Persistable>(
@@ -410,9 +410,7 @@ public final class CollectedStatisticsProvider: StatisticsProvider, @unchecked S
         type: T.Type
     ) -> Double? {
         let key = "\(type).\(field)"
-        lock.lock()
-        let stats = fieldStats[key]
-        lock.unlock()
+        let stats = state.withLock { $0.fieldStatistics[key] }
 
         guard let stats = stats, let histogram = stats.histogram else {
             return fallback.rangeSelectivity(field: field, range: range, type: type)
@@ -427,17 +425,13 @@ public final class CollectedStatisticsProvider: StatisticsProvider, @unchecked S
         type: T.Type
     ) -> Double? {
         let key = "\(type).\(field)"
-        lock.lock()
-        let stats = fieldStats[key]
-        lock.unlock()
+        let stats = state.withLock { $0.fieldStatistics[key] }
 
         return stats?.nullRatio ?? fallback.nullSelectivity(field: field, type: type)
     }
 
     public func estimatedIndexEntries(index: IndexDescriptor) -> Int? {
-        lock.lock()
-        let stats = indexStats[index.name]
-        lock.unlock()
+        let stats = state.withLock { $0.indexStatistics[index.name] }
 
         return stats?.entryCount ?? fallback.estimatedIndexEntries(index: index)
     }
@@ -453,9 +447,7 @@ public final class CollectedStatisticsProvider: StatisticsProvider, @unchecked S
         let typeName = String(describing: type)
         let stats = TableStatistics(rowCount: rowCount, sampleSize: sampleSize)
 
-        lock.lock()
-        tableStats[typeName] = stats
-        lock.unlock()
+        state.withLock { $0.tableStatistics[typeName] = stats }
     }
 
     /// Update field statistics
@@ -466,16 +458,12 @@ public final class CollectedStatisticsProvider: StatisticsProvider, @unchecked S
     ) {
         let key = "\(type).\(field)"
 
-        lock.lock()
-        fieldStats[key] = stats
-        lock.unlock()
+        state.withLock { $0.fieldStatistics[key] = stats }
     }
 
     /// Update index statistics
     public func updateIndexStats(_ stats: IndexStatistics) {
-        lock.lock()
-        indexStats[stats.indexName] = stats
-        lock.unlock()
+        state.withLock { $0.indexStatistics[stats.indexName] = stats }
     }
 
     // MARK: - Histogram Range Estimation
@@ -638,9 +626,6 @@ public final class SearchStatisticsStorage: Sendable {
 
     private let state: Mutex<State>
 
-    /// Shared instance for global access
-    public static let shared = SearchStatisticsStorage()
-
     public init() {
         self.state = Mutex(State())
     }
@@ -717,7 +702,7 @@ public final class SearchStatisticsStorage: Sendable {
         let n = Double(stats.totalDocs)
         let df = Double(max(docFreq, 1))
 
-        return log((n - df + 0.5) / (df + 0.5) + 1)
+        return DatabaseMath.naturalLogarithm((n - df + 0.5) / (df + 0.5) + 1)
     }
 
     // MARK: - Spatial Statistics
@@ -802,13 +787,15 @@ public struct SearchStatisticsCollector: Sendable {
 
             // Parse vector and compute norm (sample only)
             if normValues.count < sampleSize {
-                if let vector = try? parseVectorForStats(from: value, dimensions: dimensions) {
-                    let norm = computeL2Norm(vector)
-                    normValues.append(norm)
-                    sumNorm += norm
-                    let normSquared = norm * norm
-                    sumNormSquared += normSquared
-                }
+                let vector = try parseVectorForStats(
+                    from: value,
+                    dimensions: dimensions
+                )
+                let norm = computeL2Norm(vector)
+                normValues.append(norm)
+                sumNorm += norm
+                let normSquared = norm * norm
+                sumNormSquared += normSquared
             }
         }
 
@@ -818,7 +805,7 @@ public struct SearchStatisticsCollector: Sendable {
         let variance = sampleCount > 1
             ? (sumNormSquared - sumNorm * sumNorm / sampleCount) / (sampleCount - 1)
             : 0.0
-        let stdDev = sqrt(max(0, variance))
+        let stdDev = DatabaseMath.squareRoot(max(0, variance))
 
         // Build norm buckets
         let buckets = buildNormBuckets(norms: normValues, bucketCount: 10)
@@ -841,7 +828,7 @@ public struct SearchStatisticsCollector: Sendable {
         let subspace = indexSubspace.subspace(indexName)
         let termsSubspace = subspace.subspace("terms")
 
-        var totalDocs: Set<[UInt8]> = []
+        var totalDocs: Set<Bytes> = []
         var termFrequencies: [String: Int] = [:]
         var totalTermOccurrences = 0
 
@@ -849,21 +836,27 @@ public struct SearchStatisticsCollector: Sendable {
         for try await (key, _) in reader.scanSubspace(termsSubspace) {
             // Key structure: [termsSubspace][term][docID]
             // Quick check before attempting unpack
-            guard termsSubspace.contains(key),
-                  let keyTuple = try? termsSubspace.unpack(key) else { continue }
-            guard keyTuple.count >= 2 else { continue }
-
-            if let term = keyTuple[0] as? String {
-                termFrequencies[term, default: 0] += 1
-                totalTermOccurrences += 1
+            guard termsSubspace.contains(key) else {
+                throw StatisticsCollectionError.keyOutsideSubspace
             }
+            let keyTuple = try termsSubspace.unpack(key)
+            guard keyTuple.count >= 2 else {
+                throw StatisticsCollectionError.invalidElementCount(
+                    expectedAtLeast: 2,
+                    actual: keyTuple.count
+                )
+            }
+
+            guard let term = try keyTuple.element(at: 0) as? String else {
+                throw StatisticsCollectionError.invalidTerm
+            }
+            termFrequencies[term, default: 0] += 1
+            totalTermOccurrences += 1
 
             // Extract docID (remaining elements)
             var idElements: [any TupleElement] = []
-            for i in 1..<keyTuple.count {
-                if let element = keyTuple[i] {
-                    idElements.append(element)
-                }
+            for index in 1..<keyTuple.count {
+                idElements.append(try keyTuple.element(at: index))
             }
             let docID = Tuple(idElements).pack()
             totalDocs.insert(docID)
@@ -901,24 +894,32 @@ public struct SearchStatisticsCollector: Sendable {
 
         for try await (key, _) in reader.scanSubspace(subspace) {
             // Quick check before attempting unpack
-            guard subspace.contains(key),
-                  let keyTuple = try? subspace.unpack(key) else { continue }
-            guard keyTuple.count >= 1 else { continue }
+            guard subspace.contains(key) else {
+                throw StatisticsCollectionError.keyOutsideSubspace
+            }
+            let keyTuple = try subspace.unpack(key)
+            guard keyTuple.count >= 1 else {
+                throw StatisticsCollectionError.invalidElementCount(
+                    expectedAtLeast: 1,
+                    actual: keyTuple.count
+                )
+            }
 
             entryCount += 1
 
             // Extract cell code
-            if let cellCode = keyTuple[0] as? Int64 {
-                let code = UInt64(bitPattern: cellCode)
-                cellDensity[code, default: 0] += 1
-
-                // Decode cell to update bounding box
-                let (lat, lon) = decodeMortonForStats(code, level: 15)
-                minLat = min(minLat, lat)
-                maxLat = max(maxLat, lat)
-                minLon = min(minLon, lon)
-                maxLon = max(maxLon, lon)
+            guard let cellCode = try keyTuple.element(at: 0) as? Int64 else {
+                throw StatisticsCollectionError.invalidSpatialCell
             }
+            let code = UInt64(bitPattern: cellCode)
+            cellDensity[code, default: 0] += 1
+
+            // Decode cell to update bounding box
+            let (lat, lon) = decodeMortonForStats(code, level: 15)
+            minLat = min(minLat, lat)
+            maxLat = max(maxLat, lat)
+            minLon = min(minLon, lon)
+            maxLon = max(maxLon, lon)
         }
 
         // Find hot cells (top 10% by density)
@@ -941,7 +942,10 @@ public struct SearchStatisticsCollector: Sendable {
 
     // MARK: - Helper Methods
 
-    private func parseVectorForStats(from bytes: [UInt8], dimensions: Int) throws -> [Float] {
+    private func parseVectorForStats(
+        from bytes: Bytes,
+        dimensions: Int
+    ) throws -> [Float] {
         let elements = try Tuple.unpack(from: bytes)
         var vector: [Float] = []
         vector.reserveCapacity(dimensions)
@@ -952,6 +956,12 @@ public struct SearchStatisticsCollector: Sendable {
                 vector.append(f)
             }
         }
+        guard vector.count == dimensions else {
+            throw StatisticsCollectionError.invalidVectorDimensions(
+                expected: dimensions,
+                actual: vector.count
+            )
+        }
         return vector
     }
 
@@ -960,7 +970,7 @@ public struct SearchStatisticsCollector: Sendable {
         for v in vector {
             sum += v * v
         }
-        return Double(sqrtf(sum))
+        return Double(DatabaseMath.squareRoot(sum))
     }
 
     private func buildNormBuckets(norms: [Double], bucketCount: Int) -> [NormBucket] {
@@ -1037,7 +1047,7 @@ public struct SearchStatisticsCollector: Sendable {
 ///     chunkSize: 10_000_000  // 10MB chunks
 /// )
 /// ```
-public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked Sendable {
+public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, Sendable {
 
     /// FDB Container for transaction execution
     private let container: DBContainer
@@ -1054,7 +1064,7 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
     public init(
         container: DBContainer,
         subspace: Subspace,
-        baseProvider: StatisticsProvider = DefaultStatisticsProvider(),
+        baseProvider: StatisticsProvider = HeuristicStatisticsProvider(),
         defaultAvgRowSize: Int = 200
     ) {
         self.container = container
@@ -1105,8 +1115,8 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
     // MARK: - LiveStatisticsProvider (server-side)
 
     public func estimatedRangeSizeBytes(
-        beginKey: [UInt8],
-        endKey: [UInt8]
+        beginKey: Bytes,
+        endKey: Bytes
     ) async throws -> Int {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
@@ -1117,10 +1127,10 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
     }
 
     public func rangeSplitPoints(
-        beginKey: [UInt8],
-        endKey: [UInt8],
+        beginKey: Bytes,
+        endKey: Bytes,
         chunkSize: Int
-    ) async throws -> [[UInt8]] {
+    ) async throws -> [Bytes] {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: beginKey,
@@ -1132,8 +1142,8 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
 
     public func estimatedRowsInRange(
         index: IndexDescriptor,
-        beginKey: [UInt8],
-        endKey: [UInt8],
+        beginKey: Bytes,
+        endKey: Bytes,
         avgRowSizeBytes: Int
     ) async throws -> Int {
         let sizeBytes = try await estimatedRangeSizeBytes(
@@ -1151,7 +1161,7 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
     public func subspaceSplitPoints(
         subspace: Subspace,
         chunkSize: Int = 10_000_000  // 10MB default
-    ) async throws -> [[UInt8]] {
+    ) async throws -> [Bytes] {
         let (begin, end) = subspace.range()
         return try await rangeSplitPoints(
             beginKey: begin,
@@ -1249,10 +1259,10 @@ public struct ParallelScanConfiguration: Sendable {
 /// A range chunk for parallel processing
 public struct RangeChunk: Sendable {
     /// Start key (inclusive)
-    public let beginKey: [UInt8]
+    public let beginKey: Bytes
 
     /// End key (exclusive)
-    public let endKey: [UInt8]
+    public let endKey: Bytes
 
     /// Chunk index (0-based)
     public let index: Int
@@ -1261,8 +1271,8 @@ public struct RangeChunk: Sendable {
     public let estimatedSizeBytes: Int?
 
     public init(
-        beginKey: [UInt8],
-        endKey: [UInt8],
+        beginKey: Bytes,
+        endKey: Bytes,
         index: Int,
         estimatedSizeBytes: Int? = nil
     ) {
@@ -1285,8 +1295,8 @@ extension FDBLiveStatisticsProvider {
     ///   - configuration: Parallel scan configuration
     /// - Returns: Array of range chunks for parallel processing
     public func divideRangeForParallelScan(
-        beginKey: [UInt8],
-        endKey: [UInt8],
+        beginKey: Bytes,
+        endKey: Bytes,
         configuration: ParallelScanConfiguration = .default
     ) async throws -> [RangeChunk] {
         // Get split points from FDB

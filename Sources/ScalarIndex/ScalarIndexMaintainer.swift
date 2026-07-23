@@ -3,7 +3,11 @@
 //
 // Maintains standard B-tree-like indexes for ordering and range queries.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -106,16 +110,16 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         if let oldItem = oldItem {
             let oldKeys = try buildIndexKeys(for: oldItem)
             for key in oldKeys {
-                transaction.clear(key: key)
+                try transaction.clear(key: key)
             }
         }
 
         // Add new index entries
         if let newItem = newItem {
             let newKeys = try buildIndexKeys(for: newItem)
-            let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
+            let value = try CoveringValueBuilder.build(for: newItem, index: index)
             for key in newKeys {
-                transaction.setValue(value, for: key)
+                try transaction.setValue(value, for: key)
             }
         }
     }
@@ -132,9 +136,9 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any Transaction
     ) async throws {
         let keys = try buildIndexKeys(for: item, id: id)
-        let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
+        let value = try CoveringValueBuilder.build(for: item, index: index)
         for key in keys {
-            transaction.setValue(value, for: key)
+            try transaction.setValue(value, for: key)
         }
     }
 
@@ -173,7 +177,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
-    private func buildIndexKeys(for item: Item, id: Tuple? = nil) throws -> [[UInt8]] {
+    private func buildIndexKeys(for item: Item, id: Tuple? = nil) throws -> [Bytes] {
         // Extract field values using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
         //
@@ -181,9 +185,8 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // This is standard behavior for Optional FK fields in @Relationship
         let fieldValues: [any TupleElement]
         do {
-            fieldValues = try DataAccess.evaluateIndexFields(
-                from: item,
-                keyPaths: index.keyPaths,
+            fieldValues = try DataAccess.evaluate(
+                item: item,
                 expression: index.rootExpression
             )
         } catch DataAccessError.nilValueCannotBeIndexed {
@@ -215,12 +218,12 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // otherwise use the expression's columnCount to determine field count.
         // Using columnCount ensures composite indexes (e.g., [city, age]) are
         // correctly identified even when keyPaths is nil.
-        let indexFieldCount = index.keyPaths?.count ?? index.rootExpression.columnCount
+        let indexFieldCount = index.kind.fieldNames.count
         let isSingleFieldArrayIndex = indexFieldCount == 1 && fieldValues.count > 1
 
         if isSingleFieldArrayIndex {
             // Array field: create one key per element
-            var keys: [[UInt8]] = []
+            var keys: [Bytes] = []
             for value in fieldValues {
                 var allElements: [any TupleElement] = [value]
 

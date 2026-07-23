@@ -3,7 +3,11 @@
 //
 // Provides efficient cycle detection for directed graphs.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -30,9 +34,9 @@ public struct CycleDetectorConfiguration: Sendable {
         maxNodes: Int = 100000,
         batchSize: Int = 100
     ) {
-        self.maxCycles = maxCycles
-        self.maxNodes = maxNodes
-        self.batchSize = batchSize
+        self.maxCycles = Swift.max(1, maxCycles)
+        self.maxNodes = Swift.max(1, maxNodes)
+        self.batchSize = Swift.max(1, batchSize)
     }
 }
 
@@ -50,6 +54,8 @@ public enum CycleDetectionError: Error, Sendable {
     /// this case appropriately (e.g., reject the edge insertion to be safe,
     /// or increase the limit and retry).
     case limitReached(message: String, explored: Int, limit: Int)
+    case incomplete(LimitReason)
+    case inconsistentState(String)
 }
 
 // MARK: - CycleInfo
@@ -64,10 +70,10 @@ public struct CycleInfo: Sendable {
     public let hasCycle: Bool
 
     /// Detected cycles (list of node IDs forming each cycle)
-    public let cycles: [[String]]
+    public let cycles: [[GraphIdentity]]
 
     /// Back edges that indicate cycles (from -> to)
-    public let backEdges: [(from: String, to: String)]
+    public let backEdges: [(from: GraphIdentity, to: GraphIdentity)]
 
     /// Number of nodes explored during detection
     public let nodesExplored: Int
@@ -98,8 +104,8 @@ public struct CycleInfo: Sendable {
 
     public init(
         hasCycle: Bool,
-        cycles: [[String]],
-        backEdges: [(from: String, to: String)],
+        cycles: [[GraphIdentity]],
+        backEdges: [(from: GraphIdentity, to: GraphIdentity)],
         nodesExplored: Int,
         durationNs: UInt64,
         isComplete: Bool = true,
@@ -212,7 +218,7 @@ public struct CycleCheckResult: Sendable {
 ///     edgeLabel: "depends_on"
 /// )
 /// ```
-public final class CycleDetector<Edge: Persistable>: Sendable {
+public final class CycleDetector: Sendable {
 
     // MARK: - Types
 
@@ -225,11 +231,8 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
 
     // MARK: - Properties
 
-    /// Database connection (internally thread-safe)
-    private let database: any StorageEngine
-
-    /// Index subspace
-    private let subspace: Subspace
+    /// Storage snapshot shared by the complete traversal.
+    private let snapshot: GraphReadSnapshot
 
     /// Edge scanner for neighbor lookups
     private let scanner: GraphEdgeScanner
@@ -237,24 +240,33 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
     /// Configuration
     private let configuration: CycleDetectorConfiguration
 
+    /// Shared request work budget.
+    private let workBudget: GraphAlgorithmWorkBudget?
+
     // MARK: - Initialization
 
     /// Initialize cycle detector
     ///
     /// - Parameters:
-    ///   - database: FDB database connection
+    ///   - snapshot: Stable storage snapshot for the complete traversal
     ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
     ///   - configuration: Algorithm configuration
-    public init(
-        database: any StorageEngine,
+    package init(
+        snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
+        scope: GraphScanScope = .all,
         configuration: CycleDetectorConfiguration = .default
     ) {
-        self.database = database
-        self.subspace = subspace
+        self.snapshot = snapshot
         self.configuration = configuration
-        self.scanner = GraphEdgeScanner(indexSubspace: subspace, strategy: strategy)
+        self.scanner = GraphEdgeScanner(
+            indexSubspace: subspace,
+            strategy: strategy,
+            scope: scope,
+            snapshot: snapshot
+        )
+        self.workBudget = snapshot.workBudget
     }
 
     // MARK: - Public API
@@ -269,8 +281,11 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
     ///
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: True if at least one cycle exists
-    public func hasCycle(edgeLabel: String? = nil) async throws -> Bool {
+    public func hasCycle(edgeLabel: GraphIdentity? = nil) async throws -> Bool {
         let result = try await findCycles(edgeLabel: edgeLabel, maxCycles: 1)
+        if !result.hasCycle, let limitReason = result.limitReason {
+            throw CycleDetectionError.incomplete(limitReason)
+        }
         return result.hasCycle
     }
 
@@ -284,7 +299,7 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
     ///
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: CycleCheckResult with cycle existence and completeness
-    public func checkCycle(edgeLabel: String? = nil) async throws -> CycleCheckResult {
+    public func checkCycle(edgeLabel: GraphIdentity? = nil) async throws -> CycleCheckResult {
         let result = try await findCycles(edgeLabel: edgeLabel, maxCycles: 1)
         return CycleCheckResult(
             hasCycle: result.hasCycle,
@@ -300,14 +315,16 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
     ///   - maxCycles: Maximum number of cycles to find (overrides config)
     /// - Returns: CycleInfo with detected cycles
     public func findCycles(
-        edgeLabel: String? = nil,
+        edgeLabel: GraphIdentity? = nil,
         maxCycles: Int? = nil
     ) async throws -> CycleInfo {
         let startTime = MonotonicClock.now()
         let effectiveMaxCycles = maxCycles ?? configuration.maxCycles
 
         // Collect all nodes in the graph
-        let allNodes = try await collectAllNodes(edgeLabel: edgeLabel)
+        let collection = try await collectAllNodes(edgeLabel: edgeLabel)
+        let allNodes = collection.nodes
+        let graph = collection.graph
 
         guard !allNodes.isEmpty else {
             return CycleInfo(
@@ -316,17 +333,18 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
                 backEdges: [],
                 nodesExplored: 0,
                 durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
-                isComplete: true,
-                limitReason: nil
+                isComplete: collection.limitReason == nil,
+                limitReason: collection.limitReason
             )
         }
 
         // Initialize DFS state
-        var color: [String: Color] = [:]
-        var parent: [String: String] = [:]
-        var cycles: [[String]] = []
-        var backEdges: [(from: String, to: String)] = []
+        var color: [GraphIdentity: Color] = [:]
+        var parent: [GraphIdentity: GraphIdentity] = [:]
+        var cycles: [[GraphIdentity]] = []
+        var backEdges: [(from: GraphIdentity, to: GraphIdentity)] = []
         var nodesExplored = 0
+        var searchLimitReason: LimitReason?
 
         // Initialize all nodes as white
         for node in allNodes {
@@ -334,12 +352,12 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
         }
 
         // DFS from each unvisited node
-        for startNode in allNodes {
+        search: for startNode in allNodes.sorted() {
             guard color[startNode] == .white else { continue }
             guard cycles.count < effectiveMaxCycles else { break }
 
             // Iterative DFS using explicit stack
-            var stack: [(node: String, exploring: Bool)] = [(startNode, false)]
+            var stack: [(node: GraphIdentity, exploring: Bool)] = [(startNode, false)]
 
             while !stack.isEmpty && cycles.count < effectiveMaxCycles {
                 let (node, exploring) = stack.removeLast()
@@ -359,25 +377,18 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
                 // Push marker to finish this node later
                 stack.append((node, true))
 
-                // Check node limit
-                if nodesExplored >= configuration.maxNodes {
-                    break
+                let neighborBatch = try await outgoingNeighbors(
+                    from: node,
+                    graph: graph
+                )
+
+                if let limitReason = neighborBatch.limitReason {
+                    searchLimitReason = limitReason
+                    break search
                 }
 
-                // Get neighbors using GraphEdgeScanner
-                let neighbors = try await database.withTransaction(configuration: .default) { transaction in
-                    var results: [String] = []
-                    for try await edgeInfo in self.scanner.scanOutgoing(
-                        from: node,
-                        edgeLabel: edgeLabel,
-                        transaction: transaction
-                    ) {
-                        results.append(edgeInfo.target)
-                    }
-                    return results
-                }
-
-                for neighbor in neighbors {
+                for neighbor in neighborBatch.neighbors {
+                    guard allNodes.contains(neighbor) else { continue }
                     switch color[neighbor] {
                     case .white:
                         // Tree edge: continue DFS
@@ -390,8 +401,15 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
 
                         // Reconstruct the cycle
                         if cycles.count < effectiveMaxCycles {
-                            let cycle = reconstructCycle(from: node, to: neighbor, parent: parent)
+                            let cycle = try reconstructCycle(
+                                from: node,
+                                to: neighbor,
+                                parent: parent
+                            )
                             cycles.append(cycle)
+                            if cycles.count >= effectiveMaxCycles {
+                                break search
+                            }
                         }
 
                     case .black, .none:
@@ -403,13 +421,15 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
         }
 
         // Determine completion status
-        let hitMaxNodes = nodesExplored >= configuration.maxNodes
+        let collectionLimitReason = collection.limitReason
         let hitMaxCycles = cycles.count >= effectiveMaxCycles
-        let isComplete = !hitMaxNodes && !hitMaxCycles
+        let isComplete = collectionLimitReason == nil && searchLimitReason == nil && !hitMaxCycles
 
         let limitReason: LimitReason?
-        if hitMaxNodes {
-            limitReason = .maxNodesReached(explored: nodesExplored, limit: configuration.maxNodes)
+        if let collectionLimitReason {
+            limitReason = collectionLimitReason
+        } else if let searchLimitReason {
+            limitReason = searchLimitReason
         } else if hitMaxCycles {
             limitReason = .maxCyclesReached(found: cycles.count, limit: effectiveMaxCycles)
         } else {
@@ -440,14 +460,27 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
     ///           before a definitive answer can be determined. In this case, the caller
     ///           should either reject the edge (safe approach) or increase the limit.
     public func wouldCreateCycle(
-        from: String,
-        to: String,
-        edgeLabel: String? = nil
+        from: GraphIdentity,
+        to: GraphIdentity,
+        edgeLabel: GraphIdentity? = nil
     ) async throws -> Bool {
         // Adding edge from -> to creates a cycle if and only if
         // there's already a path from "to" to "from"
         // (because adding from -> to would complete the cycle)
-        let (exists, isDefinitive, explored) = try await pathExists(from: to, to: from, edgeLabel: edgeLabel)
+        let load = try await MaterializedGraphSnapshotBuilder.load(
+            scanner: scanner,
+            edgeLabel: edgeLabel,
+            snapshot: snapshot,
+            maximumNodes: configuration.maxNodes
+        )
+        if let limitReason = load.limitReason {
+            throw CycleDetectionError.incomplete(limitReason)
+        }
+        let (exists, isDefinitive, explored) = try await pathExists(
+            from: to,
+            to: from,
+            graph: load.graph
+        )
 
         if exists {
             // Path found - adding this edge would definitely create a cycle
@@ -479,16 +512,16 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
     ///
     /// Uses index-based iteration to avoid O(n) removeFirst()
     private func pathExists(
-        from source: String,
-        to target: String,
-        edgeLabel: String?
+        from source: GraphIdentity,
+        to target: GraphIdentity,
+        graph: MaterializedGraphSnapshot
     ) async throws -> (exists: Bool, isDefinitive: Bool, explored: Int) {
         if source == target {
             return (exists: true, isDefinitive: true, explored: 0)
         }
 
-        var visited: Set<String> = [source]
-        var frontier: [String] = [source]
+        var visited: Set<GraphIdentity> = [source]
+        var frontier: [GraphIdentity] = [source]
         var frontierIndex = 0
         var nodesExplored = 0
 
@@ -503,19 +536,16 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
             frontierIndex += 1
             nodesExplored += 1
 
-            let neighbors = try await database.withTransaction(configuration: .default) { transaction in
-                var results: [String] = []
-                for try await edgeInfo in self.scanner.scanOutgoing(
-                    from: current,
-                    edgeLabel: edgeLabel,
-                    transaction: transaction
-                ) {
-                    results.append(edgeInfo.target)
-                }
-                return results
+            let neighborBatch = try await outgoingNeighbors(
+                from: current,
+                graph: graph
+            )
+
+            guard neighborBatch.limitReason == nil else {
+                return (exists: false, isDefinitive: false, explored: nodesExplored)
             }
 
-            for neighbor in neighbors {
+            for neighbor in neighborBatch.neighbors {
                 if neighbor == target {
                     return (exists: true, isDefinitive: true, explored: nodesExplored)
                 }
@@ -532,23 +562,59 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
         return (exists: false, isDefinitive: true, explored: nodesExplored)
     }
 
-    /// Collect all unique nodes in the graph using GraphEdgeScanner
-    private func collectAllNodes(edgeLabel: String?) async throws -> Set<String> {
-        let nodes: Set<String> = try await database.withTransaction(configuration: .batch) { transaction in
-            var collectedNodes: Set<String> = []
+    private struct NodeCollection: Sendable {
+        let nodes: Set<GraphIdentity>
+        let graph: MaterializedGraphSnapshot
+        let limitReason: LimitReason?
+    }
 
-            for try await edgeInfo in self.scanner.scanAllEdges(
-                edgeLabel: edgeLabel,
-                transaction: transaction
-            ) {
-                collectedNodes.insert(edgeInfo.source)
-                collectedNodes.insert(edgeInfo.target)
-            }
+    private struct NeighborBatch: Sendable {
+        let neighbors: [GraphIdentity]
+        let limitReason: LimitReason?
+    }
 
-            return collectedNodes
+    private func outgoingNeighbors(
+        from source: GraphIdentity,
+        graph: MaterializedGraphSnapshot
+    ) async throws -> NeighborBatch {
+        var neighbors: [GraphIdentity] = []
+        guard try consumeWork() else {
+            return NeighborBatch(
+                neighbors: neighbors,
+                limitReason: workBudget?.limitReason
+            )
         }
+        for edgeInfo in graph.outgoingNeighbors(of: source) {
+            guard try consumeWork() else {
+                return NeighborBatch(
+                    neighbors: neighbors,
+                    limitReason: workBudget?.limitReason
+                )
+            }
+            neighbors.append(edgeInfo.target)
+        }
+        return NeighborBatch(neighbors: neighbors, limitReason: nil)
+    }
 
-        return nodes
+    /// Collect all unique nodes in the graph using GraphEdgeScanner.
+    private func collectAllNodes(
+        edgeLabel: GraphIdentity?
+    ) async throws -> NodeCollection {
+        let load = try await MaterializedGraphSnapshotBuilder.load(
+            scanner: scanner,
+            edgeLabel: edgeLabel,
+            snapshot: snapshot,
+            maximumNodes: configuration.maxNodes
+        )
+        return NodeCollection(
+            nodes: load.graph.nodes,
+            graph: load.graph,
+            limitReason: load.limitReason
+        )
+    }
+
+    private func consumeWork(_ units: UInt64 = 1) throws -> Bool {
+        try workBudget?.consume(units) ?? true
     }
 
     /// Reconstruct cycle from back edge
@@ -556,25 +622,34 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
     /// Given a back edge from `from` to `to`, reconstruct the cycle
     /// by following parent pointers from `from` back to `to`.
     private func reconstructCycle(
-        from: String,
-        to: String,
-        parent: [String: String]
-    ) -> [String] {
-        var cycle: [String] = [from]
+        from: GraphIdentity,
+        to: GraphIdentity,
+        parent: [GraphIdentity: GraphIdentity]
+    ) throws -> [GraphIdentity] {
+        var reversedCycle: [GraphIdentity] = [from]
         var current = from
+        var visited: Set<GraphIdentity> = [from]
 
         // Follow parent pointers back to 'to'
         while current != to {
             guard let p = parent[current] else {
-                break
+                throw CycleDetectionError.inconsistentState(
+                    "cycle parent chain does not reach the back-edge target"
+                )
             }
-            cycle.insert(p, at: 0)
+            guard visited.insert(p).inserted else {
+                throw CycleDetectionError.inconsistentState(
+                    "cycle parent chain contains a loop"
+                )
+            }
+            reversedCycle.append(p)
             current = p
         }
 
         // Add the back edge target to complete the cycle
         // cycle is now: [to, ..., from]
         // Add 'to' at the end to show it's a cycle
+        var cycle = Array(reversedCycle.reversed())
         cycle.append(to)
 
         return cycle

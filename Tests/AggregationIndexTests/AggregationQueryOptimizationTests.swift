@@ -7,14 +7,16 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
+import DatabaseRuntime
 
 // MARK: - Test Models
 
 /// Test model with COUNT index for testing index-backed execution
-struct AggQueryTestOrder: Persistable {
+struct AggregationOrder: Persistable {
     typealias ID = String
 
     var id: String
@@ -29,7 +31,7 @@ struct AggQueryTestOrder: Persistable {
         self.quantity = quantity
     }
 
-    static var persistableType: String { "AggQueryTestOrder" }
+    static var persistableType: String { "AggregationOrder" }
     static var allFields: [String] { ["id", "region", "amount", "quantity"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -46,114 +48,113 @@ struct AggQueryTestOrder: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<AggQueryTestOrder, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<AggregationOrder, Value>) -> String {
         switch keyPath {
-        case \AggQueryTestOrder.id: return "id"
-        case \AggQueryTestOrder.region: return "region"
-        case \AggQueryTestOrder.amount: return "amount"
-        case \AggQueryTestOrder.quantity: return "quantity"
+        case \AggregationOrder.id: return "id"
+        case \AggregationOrder.region: return "region"
+        case \AggregationOrder.amount: return "amount"
+        case \AggregationOrder.quantity: return "quantity"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<AggQueryTestOrder>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<AggregationOrder>) -> String {
         switch keyPath {
-        case \AggQueryTestOrder.id: return "id"
-        case \AggQueryTestOrder.region: return "region"
-        case \AggQueryTestOrder.amount: return "amount"
-        case \AggQueryTestOrder.quantity: return "quantity"
+        case \AggregationOrder.id: return "id"
+        case \AggregationOrder.region: return "region"
+        case \AggregationOrder.amount: return "amount"
+        case \AggregationOrder.quantity: return "quantity"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<AggQueryTestOrder> {
+        if let partial = keyPath as? PartialKeyPath<AggregationOrder> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Entity Helper
+// MARK: - Schema Entity Construction
 
 /// Create a Schema.Entity with runtime indexDescriptors for testing
-private func makeTestEntity(
+private func makeAggregationOrderEntity(
     name: String,
     allFields: [String],
     indexDescriptors: [IndexDescriptor]
 ) -> Schema.Entity {
-    let fields = allFields.enumerated().map { (i, f) in
-        FieldSchema(name: f, fieldNumber: i + 1, type: .string)
-    }
-    var entity = Schema.Entity(name: name, fields: fields)
+    precondition(name == AggregationOrder.persistableType)
+    precondition(allFields == AggregationOrder.allFields)
+    var entity = Schema.Entity(from: AggregationOrder.self)
     entity.indexDescriptors = indexDescriptors
     return entity
 }
 
-// MARK: - Test Helper
+// MARK: - Aggregation Query Context
 
-private struct OptTestContext {
+private struct AggregationQueryContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let testId: String
 
     // Maintainers
-    let countMaintainer: CountIndexMaintainer<AggQueryTestOrder>
-    let sumMaintainer: SumIndexMaintainer<AggQueryTestOrder, Int64>
-    let avgMaintainer: AverageIndexMaintainer<AggQueryTestOrder, Int64>
+    let countMaintainer: CountIndexMaintainer<AggregationOrder>
+    let sumMaintainer: SumIndexMaintainer<AggregationOrder, Int64>
+    let avgMaintainer: AverageIndexMaintainer<AggregationOrder, Int64>
 
     init() async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         self.testId = String(UUID().uuidString.prefix(8))
         self.subspace = Subspace(prefix: Tuple("test", "aggquery", testId).pack())
         self.indexSubspace = subspace.subspace("I")
 
         // COUNT index: group by region
         let countIndex = Index(
-            name: "AggQueryTestOrder_count_region",
-            kind: CountIndexKind<AggQueryTestOrder>(groupBy: [\.region]),
+            name: "AggregationOrder_count_region",
+            kind: CountIndexKind<AggregationOrder>(groupBy: [\.region]),
             rootExpression: FieldKeyExpression(fieldName: "region"),
-            subspaceKey: "AggQueryTestOrder_count_region",
-            itemTypes: Set(["AggQueryTestOrder"])
+            subspaceKey: "AggregationOrder_count_region",
+            itemTypes: Set(["AggregationOrder"])
         )
-        self.countMaintainer = CountIndexMaintainer<AggQueryTestOrder>(
+        self.countMaintainer = CountIndexMaintainer<AggregationOrder>(
             index: countIndex,
-            subspace: indexSubspace.subspace("AggQueryTestOrder_count_region"),
+            subspace: indexSubspace.subspace("AggregationOrder_count_region"),
             idExpression: FieldKeyExpression(fieldName: "id")
         )
 
         // SUM index: group by region, sum amount
         let sumIndex = Index(
-            name: "AggQueryTestOrder_sum_region_amount",
-            kind: SumIndexKind<AggQueryTestOrder, Int64>(groupBy: [\.region], value: \.amount),
+            name: "AggregationOrder_sum_region_amount",
+            kind: SumIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
             ]),
-            subspaceKey: "AggQueryTestOrder_sum_region_amount",
-            itemTypes: Set(["AggQueryTestOrder"])
+            subspaceKey: "AggregationOrder_sum_region_amount",
+            itemTypes: Set(["AggregationOrder"])
         )
-        self.sumMaintainer = SumIndexMaintainer<AggQueryTestOrder, Int64>(
+        self.sumMaintainer = SumIndexMaintainer<AggregationOrder, Int64>(
             index: sumIndex,
-            subspace: indexSubspace.subspace("AggQueryTestOrder_sum_region_amount"),
+            subspace: indexSubspace.subspace("AggregationOrder_sum_region_amount"),
             idExpression: FieldKeyExpression(fieldName: "id")
         )
 
         // AVG index: group by region, avg amount
         let avgIndex = Index(
-            name: "AggQueryTestOrder_avg_region_amount",
-            kind: AverageIndexKind<AggQueryTestOrder, Int64>(groupBy: [\.region], value: \.amount),
+            name: "AggregationOrder_avg_region_amount",
+            kind: AverageIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
             ]),
-            subspaceKey: "AggQueryTestOrder_avg_region_amount",
-            itemTypes: Set(["AggQueryTestOrder"])
+            subspaceKey: "AggregationOrder_avg_region_amount",
+            itemTypes: Set(["AggregationOrder"])
         )
-        self.avgMaintainer = AverageIndexMaintainer<AggQueryTestOrder, Int64>(
+        self.avgMaintainer = AverageIndexMaintainer<AggregationOrder, Int64>(
             index: avgIndex,
-            subspace: indexSubspace.subspace("AggQueryTestOrder_avg_region_amount"),
+            subspace: indexSubspace.subspace("AggregationOrder_avg_region_amount"),
             idExpression: FieldKeyExpression(fieldName: "id")
         )
     }
@@ -161,12 +162,12 @@ private struct OptTestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
     /// Insert orders and update all indexes
-    func insertOrders(_ orders: [AggQueryTestOrder]) async throws {
+    func insertOrders(_ orders: [AggregationOrder]) async throws {
         try await database.withTransaction { transaction in
             for order in orders {
                 try await countMaintainer.updateIndex(oldItem: nil, newItem: order, transaction: transaction)
@@ -186,14 +187,14 @@ private struct OptTestContext {
     /// Get all sums from SUM index (returns Double)
     func getAllSums() async throws -> [(grouping: [any TupleElement], sum: Double)] {
         try await database.withTransaction { transaction in
-            try await sumMaintainer.getAllSums(transaction: transaction)
+            try await sumMaintainer.getAllSumsAsDouble(transaction: transaction)
         }
     }
 
     /// Get all averages from AVG index
     func getAllAverages() async throws -> [(grouping: [any TupleElement], average: Double)] {
         try await database.withTransaction { transaction in
-            let results = try await avgMaintainer.getAllAverages(transaction: transaction)
+            let results = try await avgMaintainer.getAllAveragesAsDouble(transaction: transaction)
             return results.map { ($0.grouping, $0.average) }
         }
     }
@@ -208,14 +209,14 @@ struct AggregationQueryOptimizationTests {
 
     @Test("COUNT index maintains correct counts")
     func testCountIndexMaintainsCorrectCounts() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await OptTestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await AggregationQueryContext()
 
         let orders = [
-            AggQueryTestOrder(region: "Tokyo", amount: 100),
-            AggQueryTestOrder(region: "Tokyo", amount: 200),
-            AggQueryTestOrder(region: "Osaka", amount: 150),
-            AggQueryTestOrder(region: "Kyoto", amount: 300)
+            AggregationOrder(region: "Tokyo", amount: 100),
+            AggregationOrder(region: "Tokyo", amount: 200),
+            AggregationOrder(region: "Osaka", amount: 150),
+            AggregationOrder(region: "Kyoto", amount: 300)
         ]
 
         try await ctx.insertOrders(orders)
@@ -235,13 +236,13 @@ struct AggregationQueryOptimizationTests {
 
     @Test("SUM index maintains correct sums")
     func testSumIndexMaintainsCorrectSums() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await OptTestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await AggregationQueryContext()
 
         let orders = [
-            AggQueryTestOrder(region: "Tokyo", amount: 100),
-            AggQueryTestOrder(region: "Tokyo", amount: 200),
-            AggQueryTestOrder(region: "Osaka", amount: 150)
+            AggregationOrder(region: "Tokyo", amount: 100),
+            AggregationOrder(region: "Tokyo", amount: 200),
+            AggregationOrder(region: "Osaka", amount: 150)
         ]
 
         try await ctx.insertOrders(orders)
@@ -260,13 +261,13 @@ struct AggregationQueryOptimizationTests {
 
     @Test("AVG index maintains correct averages")
     func testAvgIndexMaintainsCorrectAverages() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await OptTestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await AggregationQueryContext()
 
         let orders = [
-            AggQueryTestOrder(region: "Tokyo", amount: 100),
-            AggQueryTestOrder(region: "Tokyo", amount: 200),
-            AggQueryTestOrder(region: "Osaka", amount: 150)
+            AggregationOrder(region: "Tokyo", amount: 100),
+            AggregationOrder(region: "Tokyo", amount: 200),
+            AggregationOrder(region: "Osaka", amount: 150)
         ]
 
         try await ctx.insertOrders(orders)
@@ -287,40 +288,37 @@ struct AggregationQueryOptimizationTests {
 
     @Test("MIN aggregation uses index when available")
     func testMinAggregationUsesIndex() async throws {
-        try await FDBTestSetup.shared.initialize()
-
-        // Create a mock IndexQueryContext
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = InMemoryEngine()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "min", testId).pack())
 
         // Create schema with MinIndexKind
         let minIndexDescriptor = IndexDescriptor(
-            name: "AggQueryTestOrder_min_region_amount",
-            keyPaths: [\AggQueryTestOrder.region, \AggQueryTestOrder.amount],
-            kind: MinIndexKind<AggQueryTestOrder, Int64>(groupBy: [\.region], value: \.amount)
+            name: "AggregationOrder_min_region_amount",
+            keyPaths: [\AggregationOrder.region, \AggregationOrder.amount],
+            kind: MinIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount)
         )
 
         let schema = Schema(
             entities: [
-                makeTestEntity(
-                    name: "AggQueryTestOrder",
+                makeAggregationOrderEntity(
+                    name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [minIndexDescriptor]
                 )
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query with MIN aggregation
-        let builder = context.aggregate(AggQueryTestOrder.self)
-            .groupBy(\AggQueryTestOrder.region)
-            .min(\AggQueryTestOrder.amount, as: "minAmount")
+        let builder = context.aggregate(AggregationOrder.self)
+            .groupBy(\AggregationOrder.region)
+            .min(\AggregationOrder.amount, as: "minAmount")
 
         // Check that determineExecutionStrategies returns useIndex for MIN (Phase 1 implementation)
-        let strategies = builder.determineExecutionStrategies()
+        let strategies = try builder.determineExecutionStrategies()
         guard let minStrategy = strategies["minAmount"] else {
             Issue.record("minAmount strategy should exist")
             return
@@ -337,46 +335,43 @@ struct AggregationQueryOptimizationTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
     @Test("MAX aggregation uses index when available")
     func testMaxAggregationUsesIndex() async throws {
-        try await FDBTestSetup.shared.initialize()
-
-        // Create a mock IndexQueryContext
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = InMemoryEngine()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "max", testId).pack())
 
         // Create schema with MaxIndexKind
         let maxIndexDescriptor = IndexDescriptor(
-            name: "AggQueryTestOrder_max_region_amount",
-            keyPaths: [\AggQueryTestOrder.region, \AggQueryTestOrder.amount],
-            kind: MaxIndexKind<AggQueryTestOrder, Int64>(groupBy: [\.region], value: \.amount)
+            name: "AggregationOrder_max_region_amount",
+            keyPaths: [\AggregationOrder.region, \AggregationOrder.amount],
+            kind: MaxIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount)
         )
 
         let schema = Schema(
             entities: [
-                makeTestEntity(
-                    name: "AggQueryTestOrder",
+                makeAggregationOrderEntity(
+                    name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [maxIndexDescriptor]
                 )
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query with MAX aggregation
-        let builder = context.aggregate(AggQueryTestOrder.self)
-            .groupBy(\AggQueryTestOrder.region)
-            .max(\AggQueryTestOrder.amount, as: "maxAmount")
+        let builder = context.aggregate(AggregationOrder.self)
+            .groupBy(\AggregationOrder.region)
+            .max(\AggregationOrder.amount, as: "maxAmount")
 
         // Check that determineExecutionStrategies returns useIndex for MAX (Phase 1 implementation)
-        let strategies = builder.determineExecutionStrategies()
+        let strategies = try builder.determineExecutionStrategies()
         guard let maxStrategy = strategies["maxAmount"] else {
             Issue.record("maxAmount strategy should exist")
             return
@@ -393,45 +388,43 @@ struct AggregationQueryOptimizationTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
     @Test("COUNT aggregation matches CountIndexKind")
     func testCountAggregationMatchesIndex() async throws {
-        try await FDBTestSetup.shared.initialize()
-
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = InMemoryEngine()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "count_match", testId).pack())
 
         // Create schema with CountIndexKind
         let countIndexDescriptor = IndexDescriptor(
-            name: "AggQueryTestOrder_count_region",
-            keyPaths: [\AggQueryTestOrder.region],
-            kind: CountIndexKind<AggQueryTestOrder>(groupBy: [\.region])
+            name: "AggregationOrder_count_region",
+            keyPaths: [\AggregationOrder.region],
+            kind: CountIndexKind<AggregationOrder>(groupBy: [\.region])
         )
 
         let schema = Schema(
             entities: [
-                makeTestEntity(
-                    name: "AggQueryTestOrder",
+                makeAggregationOrderEntity(
+                    name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [countIndexDescriptor]
                 )
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query with COUNT aggregation matching the index
-        let builder = context.aggregate(AggQueryTestOrder.self)
-            .groupBy(\AggQueryTestOrder.region)
+        let builder = context.aggregate(AggregationOrder.self)
+            .groupBy(\AggregationOrder.region)
             .count(as: "orderCount")
 
         // Check that determineExecutionStrategies returns useIndex for COUNT
-        let strategies = builder.determineExecutionStrategies()
+        let strategies = try builder.determineExecutionStrategies()
         guard let countStrategy = strategies["orderCount"] else {
             Issue.record("orderCount strategy should exist")
             return
@@ -439,7 +432,7 @@ struct AggregationQueryOptimizationTests {
 
         switch countStrategy {
         case .useIndex(let descriptor):
-            #expect(descriptor.name == "AggQueryTestOrder_count_region", "Should match the count index")
+            #expect(descriptor.name == "AggregationOrder_count_region", "Should match the count index")
         case .inMemory:
             Issue.record("COUNT aggregation with matching index should use index-backed execution")
         }
@@ -447,45 +440,43 @@ struct AggregationQueryOptimizationTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
     @Test("SUM aggregation matches SumIndexKind")
     func testSumAggregationMatchesIndex() async throws {
-        try await FDBTestSetup.shared.initialize()
-
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = InMemoryEngine()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "sum_match", testId).pack())
 
         // Create schema with SumIndexKind
         let sumIndexDescriptor = IndexDescriptor(
-            name: "AggQueryTestOrder_sum_region_amount",
-            keyPaths: [\AggQueryTestOrder.region, \AggQueryTestOrder.amount],
-            kind: SumIndexKind<AggQueryTestOrder, Int64>(groupBy: [\.region], value: \.amount)
+            name: "AggregationOrder_sum_region_amount",
+            keyPaths: [\AggregationOrder.region, \AggregationOrder.amount],
+            kind: SumIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount)
         )
 
         let schema = Schema(
             entities: [
-                makeTestEntity(
-                    name: "AggQueryTestOrder",
+                makeAggregationOrderEntity(
+                    name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [sumIndexDescriptor]
                 )
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query with SUM aggregation matching the index
-        let builder = context.aggregate(AggQueryTestOrder.self)
-            .groupBy(\AggQueryTestOrder.region)
-            .sum(\AggQueryTestOrder.amount, as: "totalAmount")
+        let builder = context.aggregate(AggregationOrder.self)
+            .groupBy(\AggregationOrder.region)
+            .sum(\AggregationOrder.amount, as: "totalAmount")
 
         // Check that determineExecutionStrategies returns useIndex for SUM
-        let strategies = builder.determineExecutionStrategies()
+        let strategies = try builder.determineExecutionStrategies()
         guard let sumStrategy = strategies["totalAmount"] else {
             Issue.record("totalAmount strategy should exist")
             return
@@ -493,7 +484,7 @@ struct AggregationQueryOptimizationTests {
 
         switch sumStrategy {
         case .useIndex(let descriptor):
-            #expect(descriptor.name == "AggQueryTestOrder_sum_region_amount", "Should match the sum index")
+            #expect(descriptor.name == "AggregationOrder_sum_region_amount", "Should match the sum index")
         case .inMemory:
             Issue.record("SUM aggregation with matching index should use index-backed execution")
         }
@@ -501,7 +492,7 @@ struct AggregationQueryOptimizationTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -509,45 +500,43 @@ struct AggregationQueryOptimizationTests {
 
     @Test("Mixed aggregations with COUNT and MIN both use indexes")
     func testMixedAggregationsWithCountAndMinUseIndexes() async throws {
-        try await FDBTestSetup.shared.initialize()
-
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = InMemoryEngine()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "mixed", testId).pack())
 
         // Create schema with COUNT and MIN indexes
         let countIndexDescriptor = IndexDescriptor(
-            name: "AggQueryTestOrder_count_region",
-            keyPaths: [\AggQueryTestOrder.region],
-            kind: CountIndexKind<AggQueryTestOrder>(groupBy: [\.region])
+            name: "AggregationOrder_count_region",
+            keyPaths: [\AggregationOrder.region],
+            kind: CountIndexKind<AggregationOrder>(groupBy: [\.region])
         )
         let minIndexDescriptor = IndexDescriptor(
-            name: "AggQueryTestOrder_min_region_amount",
-            keyPaths: [\AggQueryTestOrder.region, \AggQueryTestOrder.amount],
-            kind: MinIndexKind<AggQueryTestOrder, Int64>(groupBy: [\.region], value: \.amount)
+            name: "AggregationOrder_min_region_amount",
+            keyPaths: [\AggregationOrder.region, \AggregationOrder.amount],
+            kind: MinIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount)
         )
 
         let schema = Schema(
             entities: [
-                makeTestEntity(
-                    name: "AggQueryTestOrder",
+                makeAggregationOrderEntity(
+                    name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [countIndexDescriptor, minIndexDescriptor]
                 )
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query with both COUNT and MIN (both have indexes)
-        let builder = context.aggregate(AggQueryTestOrder.self)
-            .groupBy(\AggQueryTestOrder.region)
+        let builder = context.aggregate(AggregationOrder.self)
+            .groupBy(\AggregationOrder.region)
             .count(as: "orderCount")
-            .min(\AggQueryTestOrder.amount, as: "minAmount")
+            .min(\AggregationOrder.amount, as: "minAmount")
 
         // Check strategies
-        let strategies = builder.determineExecutionStrategies()
+        let strategies = try builder.determineExecutionStrategies()
 
         // COUNT should find index
         if case .useIndex = strategies["orderCount"] {
@@ -568,46 +557,44 @@ struct AggregationQueryOptimizationTests {
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
-    @Test("Aggregation without matching groupBy uses in-memory")
-    func testAggregationWithoutMatchingGroupByUsesInMemory() async throws {
-        try await FDBTestSetup.shared.initialize()
-
-        let database = try await FDBTestSetup.shared.makeEngine()
+    @Test("Aggregation without matching groupBy rejects an incompatible index")
+    func aggregationWithoutMatchingGroupByRejectsIncompatibleIndex() async throws {
+        let database = InMemoryEngine()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "no_match", testId).pack())
 
         // Create schema with COUNT index grouped by 'region'
         let countIndexDescriptor = IndexDescriptor(
-            name: "AggQueryTestOrder_count_region",
-            keyPaths: [\AggQueryTestOrder.region],
-            kind: CountIndexKind<AggQueryTestOrder>(groupBy: [\.region])
+            name: "AggregationOrder_count_region",
+            keyPaths: [\AggregationOrder.region],
+            kind: CountIndexKind<AggregationOrder>(groupBy: [\.region])
         )
 
         let schema = Schema(
             entities: [
-                makeTestEntity(
-                    name: "AggQueryTestOrder",
+                makeAggregationOrderEntity(
+                    name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [countIndexDescriptor]
                 )
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query grouping by DIFFERENT field (amount instead of region)
         // This should NOT match the index
-        let builder = context.aggregate(AggQueryTestOrder.self)
-            .groupBy(\AggQueryTestOrder.amount)  // Different field than index
+        let builder = context.aggregate(AggregationOrder.self)
+            .groupBy(\AggregationOrder.amount)  // Different field than index
             .count(as: "orderCount")
 
-        // Check that it falls back to in-memory
-        let strategies = builder.determineExecutionStrategies()
+        // Verify that an index with incompatible grouping is not selected.
+        let strategies = try builder.determineExecutionStrategies()
         guard let countStrategy = strategies["orderCount"] else {
             Issue.record("orderCount strategy should exist")
             return
@@ -615,16 +602,16 @@ struct AggregationQueryOptimizationTests {
 
         switch countStrategy {
         case .inMemory:
-            // Expected: groupBy doesn't match index
+            // Expected: the incompatible grouping excludes the index.
             break
         case .useIndex:
-            Issue.record("COUNT with non-matching groupBy should use in-memory")
+            Issue.record("COUNT with non-matching groupBy should not select the index")
         }
 
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }

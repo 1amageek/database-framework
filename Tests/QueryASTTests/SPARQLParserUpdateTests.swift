@@ -61,8 +61,7 @@ struct ConstructModifierTests {
             Issue.record("Expected CONSTRUCT")
             return
         }
-        #expect(query.orderBy != nil)
-        #expect(query.orderBy?.count == 1)
+        #expect(query.modifiers.orderBy.count == 1)
     }
 
     @Test("CONSTRUCT with LIMIT and OFFSET")
@@ -74,8 +73,8 @@ struct ConstructModifierTests {
             Issue.record("Expected CONSTRUCT")
             return
         }
-        #expect(query.limit == 10)
-        #expect(query.offset == 5)
+        #expect(query.modifiers.limit == 10)
+        #expect(query.modifiers.offset == 5)
     }
 
     @Test("CONSTRUCT with ORDER BY, LIMIT, OFFSET")
@@ -87,9 +86,9 @@ struct ConstructModifierTests {
             Issue.record("Expected CONSTRUCT")
             return
         }
-        #expect(query.orderBy?.count == 1)
-        #expect(query.limit == 100)
-        #expect(query.offset == 20)
+        #expect(query.modifiers.orderBy.count == 1)
+        #expect(query.modifiers.limit == 100)
+        #expect(query.modifiers.offset == 20)
     }
 
     @Test("CONSTRUCT without modifiers still works")
@@ -101,9 +100,9 @@ struct ConstructModifierTests {
             Issue.record("Expected CONSTRUCT")
             return
         }
-        #expect(query.orderBy == nil)
-        #expect(query.limit == nil)
-        #expect(query.offset == nil)
+        #expect(query.modifiers.orderBy.isEmpty)
+        #expect(query.modifiers.limit == nil)
+        #expect(query.modifiers.offset == nil)
     }
 }
 
@@ -117,7 +116,7 @@ struct InsertDataTests {
         let stmt = try parseStatement(#"""
             INSERT DATA { <http://example.org/s> <http://example.org/p> "value" }
             """#)
-        guard case .insertData(let query) = stmt else {
+        guard case .insertData(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected insertData, got \(stmt)")
             return
         }
@@ -135,7 +134,7 @@ struct InsertDataTests {
                 }
             }
             """#)
-        guard case .insertData(let query) = stmt else {
+        guard case .insertData(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected insertData")
             return
         }
@@ -152,7 +151,7 @@ struct DeleteDataTests {
         let stmt = try parseStatement(#"""
             DELETE DATA { <http://example.org/s> <http://example.org/p> "old" }
             """#)
-        guard case .deleteData(let query) = stmt else {
+        guard case .deleteData(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected deleteData, got \(stmt)")
             return
         }
@@ -161,7 +160,7 @@ struct DeleteDataTests {
 }
 
 @Suite("B12: DELETE/INSERT WHERE", .heartbeat)
-struct DeleteInsertTests {
+struct SPARQLModifyTests {
 
     @Test("DELETE INSERT WHERE pattern")
     func testDeleteInsertWhere() throws {
@@ -170,12 +169,13 @@ struct DeleteInsertTests {
             INSERT { ?s <http://example.org/p> "new" }
             WHERE { ?s <http://example.org/p> ?old }
             """#)
-        guard case .deleteInsert(let query) = stmt else {
-            Issue.record("Expected deleteInsert, got \(stmt)")
+        guard case .modify(let query) = try requireSingleSPARQLUpdateOperation(stmt),
+              case .deleteAndInsert(let deletePattern, let insertPattern) = query.action else {
+            Issue.record("Expected SPARQL Modify, got \(stmt)")
             return
         }
-        #expect(query.deletePattern?.count == 1)
-        #expect(query.insertPattern?.count == 1)
+        #expect(deletePattern.count == 1)
+        #expect(insertPattern.count == 1)
     }
 
     @Test("DELETE-only WHERE pattern")
@@ -184,12 +184,12 @@ struct DeleteInsertTests {
             DELETE { ?s <http://example.org/p> ?o }
             WHERE { ?s <http://example.org/p> ?o . FILTER (?o = "obsolete") }
             """)
-        guard case .deleteInsert(let query) = stmt else {
-            Issue.record("Expected deleteInsert, got \(stmt)")
+        guard case .modify(let query) = try requireSingleSPARQLUpdateOperation(stmt),
+              case .delete(let deletePattern) = query.action else {
+            Issue.record("Expected SPARQL Modify, got \(stmt)")
             return
         }
-        #expect(query.deletePattern?.count == 1)
-        #expect(query.insertPattern == nil)
+        #expect(deletePattern.count == 1)
     }
 
     @Test("INSERT-only WHERE pattern")
@@ -198,12 +198,45 @@ struct DeleteInsertTests {
             INSERT { ?s <http://example.org/label> "default" }
             WHERE { ?s <http://example.org/type> <http://example.org/Thing> }
             """#)
-        guard case .deleteInsert(let query) = stmt else {
-            Issue.record("Expected deleteInsert, got \(stmt)")
+        guard case .modify(let query) = try requireSingleSPARQLUpdateOperation(stmt),
+              case .insert(let insertPattern) = query.action else {
+            Issue.record("Expected SPARQL Modify, got \(stmt)")
             return
         }
-        #expect(query.deletePattern == nil)
-        #expect(query.insertPattern?.count == 1)
+        #expect(insertPattern.count == 1)
+    }
+}
+
+@Suite("B12: WITH and DELETE WHERE", .heartbeat)
+struct ModifyShortcutTests {
+    @Test("WITH remains distinct from USING")
+    func testWithModify() throws {
+        let stmt = try parseStatement("""
+            WITH <urn:target>
+            DELETE { ?s <urn:old> ?o }
+            INSERT { ?s <urn:new> ?o }
+            USING <urn:dataset>
+            WHERE { ?s <urn:old> ?o }
+            """)
+        guard case .modify(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
+            Issue.record("Expected SPARQL Modify")
+            return
+        }
+        #expect(query.withGraph == "urn:target")
+        #expect(query.using == [GraphRef(iri: "urn:dataset")])
+    }
+
+    @Test("DELETE WHERE stores one quad pattern")
+    func testDeleteWhere() throws {
+        let stmt = try parseStatement("""
+            DELETE WHERE { GRAPH ?g { ?s <urn:p> ?o } }
+            """)
+        guard case .deleteWhere(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
+            Issue.record("Expected deleteWhere")
+            return
+        }
+        #expect(query.pattern.count == 1)
+        #expect(query.pattern.first?.graph == .variable("g"))
     }
 }
 
@@ -215,7 +248,7 @@ struct LoadTests {
         let stmt = try parseStatement("""
             LOAD <http://example.org/data.ttl>
             """)
-        guard case .load(let query) = stmt else {
+        guard case .load(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected load, got \(stmt)")
             return
         }
@@ -229,7 +262,7 @@ struct LoadTests {
         let stmt = try parseStatement("""
             LOAD SILENT <http://example.org/data.ttl> INTO GRAPH <http://example.org/g1>
             """)
-        guard case .load(let query) = stmt else {
+        guard case .load(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected load")
             return
         }
@@ -245,7 +278,7 @@ struct ClearTests {
     @Test("CLEAR DEFAULT")
     func testClearDefault() throws {
         let stmt = try parseStatement("CLEAR DEFAULT")
-        guard case .clear(let query) = stmt else {
+        guard case .clear(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected clear, got \(stmt)")
             return
         }
@@ -256,7 +289,7 @@ struct ClearTests {
     @Test("CLEAR ALL")
     func testClearAll() throws {
         let stmt = try parseStatement("CLEAR ALL")
-        guard case .clear(let query) = stmt else {
+        guard case .clear(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected clear")
             return
         }
@@ -266,7 +299,7 @@ struct ClearTests {
     @Test("CLEAR SILENT GRAPH <iri>")
     func testClearSilentGraph() throws {
         let stmt = try parseStatement("CLEAR SILENT GRAPH <http://example.org/g1>")
-        guard case .clear(let query) = stmt else {
+        guard case .clear(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected clear")
             return
         }
@@ -277,7 +310,7 @@ struct ClearTests {
     @Test("CLEAR NAMED")
     func testClearNamed() throws {
         let stmt = try parseStatement("CLEAR NAMED")
-        guard case .clear(let query) = stmt else {
+        guard case .clear(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected clear")
             return
         }
@@ -291,44 +324,178 @@ struct CreateDropGraphTests {
     @Test("CREATE GRAPH")
     func testCreateGraph() throws {
         let stmt = try parseStatement("CREATE GRAPH <http://example.org/g1>")
-        guard case .createSPARQLGraph(let iri, let silent) = stmt else {
+        guard case .createGraph(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected createSPARQLGraph, got \(stmt)")
             return
         }
-        #expect(iri == "http://example.org/g1")
-        #expect(silent == false)
+        #expect(query.graph == "http://example.org/g1")
+        #expect(query.silent == false)
     }
 
     @Test("CREATE SILENT GRAPH")
     func testCreateSilentGraph() throws {
         let stmt = try parseStatement("CREATE SILENT GRAPH <http://example.org/g1>")
-        guard case .createSPARQLGraph(let iri, let silent) = stmt else {
+        guard case .createGraph(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected createSPARQLGraph")
             return
         }
-        #expect(iri == "http://example.org/g1")
-        #expect(silent == true)
+        #expect(query.graph == "http://example.org/g1")
+        #expect(query.silent == true)
     }
 
     @Test("DROP GRAPH")
     func testDropGraph() throws {
         let stmt = try parseStatement("DROP GRAPH <http://example.org/g1>")
-        guard case .dropSPARQLGraph(let iri, let silent) = stmt else {
-            Issue.record("Expected dropSPARQLGraph, got \(stmt)")
+        guard case .drop(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
+            Issue.record("Expected DROP, got \(stmt)")
             return
         }
-        #expect(iri == "http://example.org/g1")
-        #expect(silent == false)
+        #expect(query.target == .graph("http://example.org/g1"))
+        #expect(query.silent == false)
     }
 
     @Test("DROP SILENT GRAPH")
     func testDropSilentGraph() throws {
         let stmt = try parseStatement("DROP SILENT GRAPH <http://example.org/g1>")
-        guard case .dropSPARQLGraph(_, let silent) = stmt else {
-            Issue.record("Expected dropSPARQLGraph")
+        guard case .drop(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
+            Issue.record("Expected DROP")
             return
         }
-        #expect(silent == true)
+        #expect(query.silent == true)
+    }
+}
+
+@Suite("B12: ADD/COPY/MOVE", .heartbeat)
+struct GraphTransferTests {
+    @Test("Every graph transfer operation retains typed endpoints")
+    func testGraphTransfers() throws {
+        let statements = try [
+            parseStatement("ADD DEFAULT TO GRAPH <urn:destination>"),
+            parseStatement("COPY GRAPH <urn:source> TO DEFAULT"),
+            parseStatement(
+                "MOVE SILENT GRAPH <urn:source> TO GRAPH <urn:destination>"
+            ),
+        ]
+        let operations = try statements.map(requireSingleSPARQLUpdateOperation)
+        #expect(operations == [
+            .graphTransfer(
+                GraphTransferQuery(
+                    operation: .add,
+                    source: .default,
+                    destination: .graph("urn:destination")
+                )
+            ),
+            .graphTransfer(
+                GraphTransferQuery(
+                    operation: .copy,
+                    source: .graph("urn:source"),
+                    destination: .default
+                )
+            ),
+            .graphTransfer(
+                GraphTransferQuery(
+                    operation: .move,
+                    source: .graph("urn:source"),
+                    destination: .graph("urn:destination"),
+                    silent: true
+                )
+            ),
+        ])
+    }
+
+    @Test("GRAPH is optional before transfer endpoint IRIs")
+    func testOptionalGraphKeyword() throws {
+        let request = try SPARQLParser().parseUpdate(
+            """
+            PREFIX ex: <https://example.invalid/>
+            ADD ex:source TO GRAPH ex:destination
+            """
+        )
+
+        guard case .graphTransfer(let transfer) = request.firstOperation else {
+            Issue.record("Expected graph transfer")
+            return
+        }
+        #expect(transfer.source == .graph("https://example.invalid/source"))
+        #expect(
+            transfer.destination
+                == .graph("https://example.invalid/destination")
+        )
+    }
+}
+
+@Suite("B12: ordered Update request", .heartbeat)
+struct SPARQLUpdateRequestTests {
+    @Test("Semicolon sequence preserves order and accepts a trailing separator")
+    func sequenceAndTrailingSemicolon() throws {
+        let statement = try parseStatement(
+            """
+            LOAD <urn:source> INTO GRAPH <urn:stage>;
+            CLEAR DEFAULT;
+            DROP SILENT GRAPH <urn:old>;
+            """
+        )
+        guard case .sparqlUpdate(let request) = statement else {
+            Issue.record("Expected SPARQL Update request")
+            return
+        }
+
+        #expect(request.count == 3)
+        guard case .load(let load) = request[0],
+              case .clear(let clear) = request[1],
+              case .drop(let drop) = request[2] else {
+            Issue.record("Expected LOAD, CLEAR, DROP order")
+            return
+        }
+        #expect(load.destination == "urn:stage")
+        #expect(clear.target == .default)
+        #expect(drop.target == .graph("urn:old"))
+        #expect(drop.silent)
+    }
+
+    @Test("A prologue after a separator applies to the following operation")
+    func perOperationPrologue() throws {
+        let request = try SPARQLParser().parseUpdate(
+            """
+            PREFIX first: <urn:first:>
+            INSERT DATA { first:s first:p first:o };
+            PREFIX second: <urn:second:>
+            DELETE DATA { second:s second:p second:o };
+            """
+        )
+
+        #expect(request.count == 2)
+        guard case .insertData(let insert) = request[0],
+              case .deleteData(let delete) = request[1] else {
+            Issue.record("Expected INSERT DATA then DELETE DATA")
+            return
+        }
+        #expect(insert.quads.first?.triple.subject == .iri("urn:first:s"))
+        #expect(delete.quads.first?.triple.subject == .iri("urn:second:s"))
+    }
+
+    @Test("Empty, recursive, and mixed request states are rejected")
+    func invalidRequestShapes() {
+        let invalidRequests = [
+            "",
+            "PREFIX ex: <urn:example:>",
+            ";",
+            "INSERT DATA { <urn:s> <urn:p> <urn:o> };; CLEAR DEFAULT",
+            "INSERT DATA { <urn:s> <urn:p> <urn:o> }; SELECT * WHERE { ?s ?p ?o }",
+            "SELECT * WHERE { ?s ?p ?o }; CLEAR DEFAULT",
+        ]
+
+        for request in invalidRequests {
+            #expect(throws: SPARQLParser.ParseError.self) {
+                _ = try SPARQLParser().parse(request)
+            }
+        }
+
+        #expect(throws: SPARQLParser.ParseError.self) {
+            _ = try SPARQLParser().parseUpdate(
+                "SELECT * WHERE { ?subject ?predicate ?object }"
+            )
+        }
     }
 }
 
@@ -345,7 +512,7 @@ struct InsertDataEdgeCaseTests {
                 <http://example.org/s2> <http://example.org/p> "value2"
             }
             """#)
-        guard case .insertData(let query) = stmt else {
+        guard case .insertData(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected insertData")
             return
         }
@@ -364,7 +531,7 @@ struct InsertDataEdgeCaseTests {
                 }
             }
             """#)
-        guard case .insertData(let query) = stmt else {
+        guard case .insertData(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected insertData")
             return
         }
@@ -385,7 +552,7 @@ struct InsertDataEdgeCaseTests {
                 }
             }
             """#)
-        guard case .insertData(let query) = stmt else {
+        guard case .insertData(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
             Issue.record("Expected insertData")
             return
         }
@@ -396,7 +563,7 @@ struct InsertDataEdgeCaseTests {
 }
 
 @Suite("B12: DELETE/INSERT Edge Cases", .heartbeat)
-struct DeleteInsertEdgeCaseTests {
+struct SPARQLModifyEdgeCaseTests {
 
     @Test("DELETE with multiple patterns")
     func testDeleteMultiplePatterns() throws {
@@ -404,12 +571,12 @@ struct DeleteInsertEdgeCaseTests {
             DELETE { ?s <http://example.org/p1> ?o1 . ?s <http://example.org/p2> ?o2 }
             WHERE { ?s <http://example.org/p1> ?o1 . ?s <http://example.org/p2> ?o2 }
             """)
-        guard case .deleteInsert(let query) = stmt else {
-            Issue.record("Expected deleteInsert")
+        guard case .modify(let query) = try requireSingleSPARQLUpdateOperation(stmt),
+              case .delete(let deletePattern) = query.action else {
+            Issue.record("Expected SPARQL Modify")
             return
         }
-        #expect(query.deletePattern?.count == 2)
-        #expect(query.insertPattern == nil)
+        #expect(deletePattern.count == 2)
     }
 
     @Test("DELETE/INSERT with USING clause")
@@ -420,13 +587,13 @@ struct DeleteInsertEdgeCaseTests {
             USING <http://example.org/source>
             WHERE { ?s <http://example.org/p> ?old }
             """#)
-        guard case .deleteInsert(let query) = stmt else {
-            Issue.record("Expected deleteInsert")
+        guard case .modify(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
+            Issue.record("Expected SPARQL Modify")
             return
         }
-        #expect(query.using?.count == 1)
-        #expect(query.using?[0].iri == "http://example.org/source")
-        #expect(query.using?[0].isNamed == false)
+        #expect(query.using.count == 1)
+        #expect(query.using[0].iri == "http://example.org/source")
+        #expect(query.using[0].isNamed == false)
     }
 
     @Test("DELETE/INSERT with USING NAMED clause")
@@ -437,29 +604,25 @@ struct DeleteInsertEdgeCaseTests {
             USING NAMED <http://example.org/source>
             WHERE { ?s <http://example.org/p> ?old }
             """#)
-        guard case .deleteInsert(let query) = stmt else {
-            Issue.record("Expected deleteInsert")
+        guard case .modify(let query) = try requireSingleSPARQLUpdateOperation(stmt) else {
+            Issue.record("Expected SPARQL Modify")
             return
         }
-        #expect(query.using?.count == 1)
-        #expect(query.using?[0].isNamed == true)
+        #expect(query.using.count == 1)
+        #expect(query.using[0].isNamed == true)
     }
 }
 
 @Suite("B10: CONSTRUCT WHERE Edge Cases", .heartbeat)
 struct ConstructWhereEdgeCaseTests {
 
-    @Test("CONSTRUCT WHERE with FILTER")
-    func testConstructWhereFilter() throws {
-        let stmt = try parseStatement("""
-            CONSTRUCT WHERE { ?s <http://example.org/age> ?o . FILTER (?o > 18) }
-            """)
-        guard case .construct(let query) = stmt else {
-            Issue.record("Expected CONSTRUCT")
-            return
+    @Test("CONSTRUCT WHERE rejects non-basic graph patterns")
+    func testConstructWhereFilter() {
+        #expect(throws: SPARQLParser.ParseError.self) {
+            try parseStatement("""
+                CONSTRUCT WHERE { ?s <http://example.org/age> ?o . FILTER (?o > 18) }
+                """)
         }
-        // Template should contain the BGP triples (FILTER is not a triple)
-        #expect(query.template.count == 1)
     }
 
     @Test("CONSTRUCT WHERE with modifiers")
@@ -472,8 +635,8 @@ struct ConstructWhereEdgeCaseTests {
             return
         }
         #expect(query.template.count == 1)
-        #expect(query.orderBy?.count == 1)
-        #expect(query.limit == 5)
+        #expect(query.modifiers.orderBy.count == 1)
+        #expect(query.modifiers.limit == 5)
     }
 
     @Test("CONSTRUCT with ORDER BY DESC")
@@ -485,8 +648,8 @@ struct ConstructWhereEdgeCaseTests {
             Issue.record("Expected CONSTRUCT")
             return
         }
-        #expect(query.orderBy?.count == 1)
-        #expect(query.orderBy?[0].direction == .descending)
+        #expect(query.modifiers.orderBy.count == 1)
+        #expect(query.modifiers.orderBy[0].direction == .descending)
     }
 
     @Test("CONSTRUCT with ORDER BY expression")
@@ -498,7 +661,7 @@ struct ConstructWhereEdgeCaseTests {
             Issue.record("Expected CONSTRUCT")
             return
         }
-        #expect(query.orderBy?.count == 1)
+        #expect(query.modifiers.orderBy.count == 1)
     }
 }
 #endif

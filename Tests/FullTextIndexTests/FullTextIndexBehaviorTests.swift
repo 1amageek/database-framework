@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import FullText
 import TestSupport
 @testable import DatabaseEngine
@@ -14,7 +15,7 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct TestArticle: Persistable {
+struct SearchableArticle: Persistable {
     typealias ID = String
 
     var id: String
@@ -27,7 +28,7 @@ struct TestArticle: Persistable {
         self.content = content
     }
 
-    static var persistableType: String { "TestArticle" }
+    static var persistableType: String { "SearchableArticle" }
     static var allFields: [String] { ["id", "title", "content"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -43,48 +44,48 @@ struct TestArticle: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TestArticle, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<SearchableArticle, Value>) -> String {
         switch keyPath {
-        case \TestArticle.id: return "id"
-        case \TestArticle.title: return "title"
-        case \TestArticle.content: return "content"
+        case \SearchableArticle.id: return "id"
+        case \SearchableArticle.title: return "title"
+        case \SearchableArticle.content: return "content"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TestArticle>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<SearchableArticle>) -> String {
         switch keyPath {
-        case \TestArticle.id: return "id"
-        case \TestArticle.title: return "title"
-        case \TestArticle.content: return "content"
+        case \SearchableArticle.id: return "id"
+        case \SearchableArticle.title: return "title"
+        case \SearchableArticle.content: return "content"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TestArticle> {
+        if let partial = keyPath as? PartialKeyPath<SearchableArticle> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Full-Text Index Context
 
-private struct TestContext {
+private struct FullTextIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: FullTextIndexMaintainer<TestArticle>
-    let kind: FullTextIndexKind<TestArticle>
+    let maintainer: FullTextIndexMaintainer<SearchableArticle>
+    let kind: FullTextIndexKind<SearchableArticle>
 
-    init(tokenizer: TokenizationStrategy = .simple, storePositions: Bool = false, indexName: String = "TestArticle_content") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(tokenizer: TokenizationStrategy = .simple, storePositions: Bool = false, indexName: String = "SearchableArticle_content") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "fulltext", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = FullTextIndexKind<TestArticle>(
+        self.kind = FullTextIndexKind<SearchableArticle>(
             fields: [\.content],
             tokenizer: tokenizer,
             storePositions: storePositions
@@ -96,10 +97,10 @@ private struct TestContext {
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "content"),
             subspaceKey: indexName,
-            itemTypes: Set(["TestArticle"])
+            itemTypes: Set(["SearchableArticle"])
         )
 
-        self.maintainer = FullTextIndexMaintainer<TestArticle>(
+        self.maintainer = FullTextIndexMaintainer<SearchableArticle>(
             index: index,
             tokenizer: tokenizer,
             storePositions: storePositions,
@@ -113,7 +114,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -157,10 +158,10 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Insert tokenizes and indexes")
     func testInsertTokenizesAndIndexes() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await FullTextIndexContext()
 
-        let article = TestArticle(id: "a1", title: "Test", content: "Hello world")
+        let article = SearchableArticle(id: "a1", title: "Test", content: "Hello world")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -178,12 +179,12 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Multiple documents are indexed")
     func testMultipleDocuments() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await FullTextIndexContext()
 
         let articles = [
-            TestArticle(id: "a1", title: "Swift", content: "Swift programming language"),
-            TestArticle(id: "a2", title: "Python", content: "Python programming language")
+            SearchableArticle(id: "a1", title: "Swift", content: "Swift programming language"),
+            SearchableArticle(id: "a2", title: "Python", content: "Python programming language")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -207,10 +208,10 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Delete removes all tokens")
     func testDeleteRemovesAllTokens() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await FullTextIndexContext()
 
-        let article = TestArticle(id: "a1", title: "Test", content: "Hello world")
+        let article = SearchableArticle(id: "a1", title: "Test", content: "Hello world")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -243,10 +244,10 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Update re-tokenizes")
     func testUpdateReTokenizes() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await FullTextIndexContext()
 
-        let article = TestArticle(id: "a1", title: "Test", content: "Hello world")
+        let article = SearchableArticle(id: "a1", title: "Test", content: "Hello world")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -258,7 +259,7 @@ struct FullTextIndexBehaviorTests {
         }
 
         // Update with different content
-        let updatedArticle = TestArticle(id: "a1", title: "Test", content: "Goodbye universe")
+        let updatedArticle = SearchableArticle(id: "a1", title: "Test", content: "Goodbye universe")
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: article,
@@ -282,13 +283,13 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Simple term search")
     func testSimpleTermSearch() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await FullTextIndexContext()
 
         let articles = [
-            TestArticle(id: "a1", title: "Swift", content: "Swift is a modern programming language"),
-            TestArticle(id: "a2", title: "Python", content: "Python is also a programming language"),
-            TestArticle(id: "a3", title: "Rust", content: "Rust is a systems language")
+            SearchableArticle(id: "a1", title: "Swift", content: "Swift is a modern programming language"),
+            SearchableArticle(id: "a2", title: "Python", content: "Python is also a programming language"),
+            SearchableArticle(id: "a3", title: "Rust", content: "Rust is a systems language")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -318,13 +319,13 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Boolean AND query")
     func testBooleanANDQuery() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await FullTextIndexContext()
 
         let articles = [
-            TestArticle(id: "a1", title: "Swift", content: "Swift is modern and fast"),
-            TestArticle(id: "a2", title: "Python", content: "Python is modern but slow"),
-            TestArticle(id: "a3", title: "Rust", content: "Rust is fast and safe")
+            SearchableArticle(id: "a1", title: "Swift", content: "Swift is modern and fast"),
+            SearchableArticle(id: "a2", title: "Python", content: "Python is modern but slow"),
+            SearchableArticle(id: "a3", title: "Rust", content: "Rust is fast and safe")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -346,13 +347,13 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Boolean OR query")
     func testBooleanORQuery() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await FullTextIndexContext()
 
         let articles = [
-            TestArticle(id: "a1", title: "Swift", content: "Swift is fast"),
-            TestArticle(id: "a2", title: "Python", content: "Python is slow"),
-            TestArticle(id: "a3", title: "Rust", content: "Rust is safe")
+            SearchableArticle(id: "a1", title: "Swift", content: "Swift is fast"),
+            SearchableArticle(id: "a2", title: "Python", content: "Python is slow"),
+            SearchableArticle(id: "a3", title: "Rust", content: "Rust is safe")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -376,10 +377,10 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Stemming tokenizer")
     func testStemmingTokenizer() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext(tokenizer: .stem)
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await FullTextIndexContext(tokenizer: .stem)
 
-        let article = TestArticle(id: "a1", title: "Test", content: "Running runners run")
+        let article = SearchableArticle(id: "a1", title: "Test", content: "Running runners run")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -400,12 +401,12 @@ struct FullTextIndexBehaviorTests {
 
     @Test("ScanItem tokenizes and indexes")
     func testScanItemTokenizesAndIndexes() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await FullTextIndexContext()
 
         let articles = [
-            TestArticle(id: "a1", title: "First", content: "First article content"),
-            TestArticle(id: "a2", title: "Second", content: "Second article content")
+            SearchableArticle(id: "a1", title: "First", content: "First article content"),
+            SearchableArticle(id: "a2", title: "Second", content: "Second article content")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -428,10 +429,10 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Case insensitive search")
     func testCaseInsensitiveSearch() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await FullTextIndexContext()
 
-        let article = TestArticle(id: "a1", title: "Test", content: "Hello WORLD")
+        let article = SearchableArticle(id: "a1", title: "Test", content: "Hello WORLD")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(

@@ -5,13 +5,14 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import Relationship
 @testable import DatabaseEngine
-@testable import ScalarIndex
 @testable import RelationshipIndex
 import StorageKit
 import FDBStorage
 import TestSupport
+import DatabaseRuntime
 
 // MARK: - Test Models
 
@@ -21,8 +22,8 @@ struct PerfCustomer {
     var name: String = ""
     var tier: String = "standard"
 
-    @Relationship(PerfOrder.self)
-    var orderIDs: [String] = []
+    @Relationship
+    var orders: [DatabaseReference<PerfOrder>] = []
 }
 
 @Persistable
@@ -31,8 +32,8 @@ struct PerfOrder {
     var total: Double = 0
     var status: String = "pending"
 
-    @Relationship(PerfCustomer.self)
-    var customerID: String? = nil
+    @Relationship
+    var customer: DatabaseReference<PerfCustomer>? = nil
 }
 
 // MARK: - Benchmark Helpers
@@ -76,14 +77,15 @@ private func benchmark<T>(
 struct RelationshipIndexPerformanceTests {
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestSetup.shared.initialize()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema([PerfCustomer.self, PerfOrder.self], version: Schema.Version(1, 0, 0))
 
         let container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
             )
 
@@ -108,15 +110,16 @@ struct RelationshipIndexPerformanceTests {
         customer.id = customerId
         context.insert(customer)
         try await context.save()
+        let customerReference = try context.reference(to: customer)
 
         let count = 100
 
-        // Benchmark: Insert orders with FK
+        // Benchmark: Insert orders with typed references
         let (_, result) = try await benchmark("To-One Insert", count: count) {
             for i in 1...count {
                 var order = PerfOrder(total: Double(i * 10))
                 order.id = uniqueID("O-perf-\(i)")
-                order.customerID = customerId
+                order.customer = customerReference
                 context.insert(order)
             }
             try await context.save()
@@ -137,26 +140,26 @@ struct RelationshipIndexPerformanceTests {
         let ordersPerCustomer = 5
 
         // Create orders first
-        var orderIds: [[String]] = []
+        var orderReferences: [[DatabaseReference<PerfOrder>]] = []
         for i in 1...count {
-            var ids: [String] = []
+            var references: [DatabaseReference<PerfOrder>] = []
             for j in 1...ordersPerCustomer {
                 let orderId = uniqueID("O-many-\(i)-\(j)")
-                ids.append(orderId)
                 var order = PerfOrder(total: Double(j * 10))
                 order.id = orderId
+                references.append(try context.reference(to: order))
                 context.insert(order)
             }
-            orderIds.append(ids)
+            orderReferences.append(references)
         }
         try await context.save()
 
-        // Benchmark: Insert customers with To-Many FK arrays
+        // Benchmark: Insert customers with to-many reference arrays
         let (_, result) = try await benchmark("To-Many Insert", count: count) {
             for i in 1...count {
                 var customer = PerfCustomer(name: "Customer \(i)")
                 customer.id = uniqueID("C-many-\(i)")
-                customer.orderIDs = orderIds[i - 1]
+                customer.orders = orderReferences[i - 1]
                 context.insert(customer)
             }
             try await context.save()
@@ -180,6 +183,7 @@ struct RelationshipIndexPerformanceTests {
         var customer = PerfCustomer(name: "Lookup Customer")
         customer.id = customerId
         context.insert(customer)
+        let customerReference = try context.reference(to: customer)
 
         var orderIds: [String] = []
         for i in 1...100 {
@@ -187,7 +191,7 @@ struct RelationshipIndexPerformanceTests {
             orderIds.append(orderId)
             var order = PerfOrder(total: Double(i * 10))
             order.id = orderId
-            order.customerID = customerId
+            order.customer = customerReference
             context.insert(order)
         }
         try await context.save()
@@ -198,7 +202,7 @@ struct RelationshipIndexPerformanceTests {
         let (_, result) = try await benchmark("related() To-One", count: lookupCount) {
             for i in 0..<lookupCount {
                 let order = try await context.model(for: orderIds[i], as: PerfOrder.self)!
-                let _ = try await context.related(order, \.customerID, as: PerfCustomer.self)
+                let _ = try await context.related(order, \.customer)
             }
         }
 
@@ -218,12 +222,12 @@ struct RelationshipIndexPerformanceTests {
         // Setup: Create customers with orders
         var customerIds: [String] = []
         for i in 1...customerCount {
-            var orderIds: [String] = []
+            var orderReferences: [DatabaseReference<PerfOrder>] = []
             for j in 1...ordersPerCustomer {
                 let orderId = uniqueID("O-tmany-\(i)-\(j)")
-                orderIds.append(orderId)
                 var order = PerfOrder(total: Double(j * 10))
                 order.id = orderId
+                orderReferences.append(try context.reference(to: order))
                 context.insert(order)
             }
 
@@ -231,7 +235,7 @@ struct RelationshipIndexPerformanceTests {
             customerIds.append(customerId)
             var customer = PerfCustomer(name: "Customer \(i)")
             customer.id = customerId
-            customer.orderIDs = orderIds
+            customer.orders = orderReferences
             context.insert(customer)
         }
         try await context.save()
@@ -240,7 +244,7 @@ struct RelationshipIndexPerformanceTests {
         let (_, result) = try await benchmark("related() To-Many", count: customerCount) {
             for customerId in customerIds {
                 let customer = try await context.model(for: customerId, as: PerfCustomer.self)!
-                let _ = try await context.related(customer, \.orderIDs, as: PerfOrder.self)
+                let _ = try await context.related(customer, \.orders)
             }
         }
 
@@ -261,11 +265,12 @@ struct RelationshipIndexPerformanceTests {
         var customer = PerfCustomer(name: "Join Customer")
         customer.id = customerId
         context.insert(customer)
+        let customerReference = try context.reference(to: customer)
 
         for i in 1...orderCount {
             var order = PerfOrder(total: Double(i * 10))
             order.id = uniqueID("O-join-\(i)")
-            order.customerID = customerId
+            order.customer = customerReference
             context.insert(order)
         }
         try await context.save()
@@ -273,7 +278,7 @@ struct RelationshipIndexPerformanceTests {
         // Benchmark: fetch() with joining()
         let (snapshots, result) = try await benchmark("joining() eager load", count: orderCount) {
             try await context.fetch(PerfOrder.self)
-                .joining(\.customerID, as: PerfCustomer.self)
+                .joining(\.customer)
                 .limit(orderCount)
                 .execute()
         }
@@ -283,7 +288,7 @@ struct RelationshipIndexPerformanceTests {
         // Verify snapshots have loaded relations
         var loadedCount = 0
         for snapshot in snapshots {
-            if snapshot.ref(PerfCustomer.self, \.customerID) != nil {
+            if snapshot.ref(\.customer) != nil {
                 loadedCount += 1
             }
         }
@@ -299,35 +304,30 @@ struct RelationshipIndexPerformanceTests {
         let ordersPerCustomer = 5
 
         // Setup: Create customers with orders
-        var customerIds: [String] = []
+        var customerReferences: [DatabaseReference<PerfCustomer>] = []
         for i in 1...customerCount {
-            var orderIds: [String] = []
+            var orderReferences: [DatabaseReference<PerfOrder>] = []
             for j in 1...ordersPerCustomer {
                 let orderId = uniqueID("O-getj-\(i)-\(j)")
-                orderIds.append(orderId)
                 var order = PerfOrder(total: Double(j * 10))
                 order.id = orderId
+                orderReferences.append(try context.reference(to: order))
                 context.insert(order)
             }
 
             let customerId = uniqueID("C-getj-\(i)")
-            customerIds.append(customerId)
             var customer = PerfCustomer(name: "Customer \(i)")
             customer.id = customerId
-            customer.orderIDs = orderIds
+            customer.orders = orderReferences
+            customerReferences.append(try context.reference(to: customer))
             context.insert(customer)
         }
         try await context.save()
 
         // Benchmark: get() with To-Many joining
         let (_, result) = try await benchmark("get() with joining", count: customerCount) {
-            for customerId in customerIds {
-                let _ = try await context.get(
-                    PerfCustomer.self,
-                    id: customerId,
-                    joining: \.orderIDs,
-                    as: PerfOrder.self
-                )
+            for customerReference in customerReferences {
+                let _ = try await context.get(customerReference, joining: \.orders)
             }
         }
 
@@ -338,8 +338,8 @@ struct RelationshipIndexPerformanceTests {
 
     // MARK: - Update Performance Tests
 
-    @Test("FK update performance")
-    func testFKUpdatePerformance() async throws {
+    @Test("Typed reference update performance")
+    func testReferenceUpdatePerformance() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
@@ -354,22 +354,24 @@ struct RelationshipIndexPerformanceTests {
         customer2.id = customer2Id
         context.insert(customer1)
         context.insert(customer2)
+        let customer1Reference = try context.reference(to: customer1)
+        let customer2Reference = try context.reference(to: customer2)
 
         // Create orders pointing to customer1
         var orders: [PerfOrder] = []
         for i in 1...orderCount {
             var order = PerfOrder(total: Double(i * 10))
             order.id = uniqueID("O-upd-\(i)")
-            order.customerID = customer1Id
+            order.customer = customer1Reference
             orders.append(order)
             context.insert(order)
         }
         try await context.save()
 
-        // Benchmark: Update FK from customer1 to customer2
-        let (_, result) = try await benchmark("FK Update", count: orderCount) {
+        // Benchmark: Update references from customer1 to customer2
+        let (_, result) = try await benchmark("Reference Update", count: orderCount) {
             for i in 0..<orderCount {
-                orders[i].customerID = customer2Id
+                orders[i].customer = customer2Reference
                 context.insert(orders[i])
             }
             try await context.save()
@@ -377,11 +379,11 @@ struct RelationshipIndexPerformanceTests {
 
         print(result.description)
 
-        #expect(result.throughputPerSecond > 50, "FK update throughput should be reasonable")
+        #expect(result.throughputPerSecond > 50, "Reference update throughput should be reasonable")
     }
 
-    @Test("To-Many FK array update performance")
-    func testToManyFKArrayUpdatePerformance() async throws {
+    @Test("To-Many reference array update performance")
+    func testToManyReferenceArrayUpdatePerformance() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
@@ -392,30 +394,30 @@ struct RelationshipIndexPerformanceTests {
         var customer = PerfCustomer(name: "To-Many Update Customer")
         customer.id = customerId
 
-        var orderIds: [String] = []
+        var orderReferences: [DatabaseReference<PerfOrder>] = []
         for i in 1...orderCount {
             let orderId = uniqueID("O-tmupd-\(i)")
-            orderIds.append(orderId)
             var order = PerfOrder(total: Double(i * 10))
             order.id = orderId
+            orderReferences.append(try context.reference(to: order))
             context.insert(order)
         }
-        customer.orderIDs = orderIds
+        customer.orders = orderReferences
         context.insert(customer)
         try await context.save()
 
         let updateCount = 20
 
-        // Benchmark: Update FK array (remove/add items)
-        let (_, result) = try await benchmark("To-Many FK Update", count: updateCount) {
+        // Benchmark: Update reference array (remove/add items)
+        let (_, result) = try await benchmark("To-Many Reference Update", count: updateCount) {
             for i in 0..<updateCount {
                 // Remove first item, add a new one
-                customer.orderIDs.removeFirst()
+                customer.orders.removeFirst()
                 let newOrderId = uniqueID("O-new-\(i)")
                 var newOrder = PerfOrder(total: Double((i + 1) * 100))
                 newOrder.id = newOrderId
                 context.insert(newOrder)
-                customer.orderIDs.append(newOrderId)
+                customer.orders.append(try context.reference(to: newOrder))
                 context.insert(customer)
                 try await context.save()
             }
@@ -423,13 +425,13 @@ struct RelationshipIndexPerformanceTests {
 
         print(result.description)
 
-        #expect(result.durationMs < 10000, "To-Many FK update should complete in reasonable time")
+        #expect(result.durationMs < 10000, "To-Many reference update should complete in reasonable time")
     }
 
     // MARK: - Delete Performance Tests
 
-    @Test("Delete with index cleanup performance")
-    func testDeleteWithIndexCleanupPerformance() async throws {
+    @Test("Delete with relationship catalog cleanup performance")
+    func testDeleteWithRelationshipCatalogCleanupPerformance() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
@@ -440,6 +442,7 @@ struct RelationshipIndexPerformanceTests {
         var customer = PerfCustomer(name: "Delete Customer")
         customer.id = customerId
         context.insert(customer)
+        let customerReference = try context.reference(to: customer)
 
         var orderIds: [String] = []
         for i in 1...orderCount {
@@ -447,13 +450,13 @@ struct RelationshipIndexPerformanceTests {
             orderIds.append(orderId)
             var order = PerfOrder(total: Double(i * 10))
             order.id = orderId
-            order.customerID = customerId
+            order.customer = customerReference
             context.insert(order)
         }
         try await context.save()
 
-        // Benchmark: Delete orders (triggers index cleanup)
-        let (_, result) = try await benchmark("Delete with index cleanup", count: orderCount) {
+        // Benchmark: Delete owners while clearing canonical catalog entries
+        let (_, result) = try await benchmark("Delete with catalog cleanup", count: orderCount) {
             for orderId in orderIds {
                 if let order = try await context.model(for: orderId, as: PerfOrder.self) {
                     context.delete(order)
@@ -478,31 +481,31 @@ struct RelationshipIndexPerformanceTests {
         let orderCount = 200
 
         // Create many orders
-        var orderIds: [String] = []
+        var orderReferences: [DatabaseReference<PerfOrder>] = []
         for i in 1...orderCount {
             let orderId = uniqueID("O-large-\(i)")
-            orderIds.append(orderId)
             var order = PerfOrder(total: Double(i))
             order.id = orderId
+            orderReferences.append(try context.reference(to: order))
             context.insert(order)
         }
         try await context.save()
 
-        // Benchmark: Create customer with large FK array
+        // Benchmark: Create customer with a large reference array
         let (_, insertResult) = try await benchmark("Large array insert", count: 1) {
             var customer = PerfCustomer(name: "Large Array Customer")
             customer.id = customerId
-            customer.orderIDs = orderIds
+            customer.orders = orderReferences
             context.insert(customer)
             try await context.save()
         }
 
         print("Insert: \(insertResult.description)")
 
-        // Benchmark: Load customer with large FK array
+        // Benchmark: Load customer with a large reference array
         let (orders, loadResult) = try await benchmark("Large array load", count: orderCount) {
             let customer = try await context.model(for: customerId, as: PerfCustomer.self)!
-            return try await context.related(customer, \.orderIDs, as: PerfOrder.self)
+            return try await context.related(customer, \.orders)
         }
 
         print("Load: \(loadResult.description)")
@@ -519,40 +522,46 @@ struct RelationshipIndexPerformanceTests {
         let ordersPerCustomer = 10
 
         // Setup: Create customers with orders
-        var customerIds: [String] = []
+        var customerReferences: [DatabaseReference<PerfCustomer>] = []
         for i in 1...customerCount {
             let customerId = uniqueID("C-trav-\(i)")
-            customerIds.append(customerId)
             var customer = PerfCustomer(name: "Customer \(i)")
             customer.id = customerId
+            let customerReference = try context.reference(to: customer)
+            customerReferences.append(customerReference)
 
-            var orderIds: [String] = []
+            var orderReferences: [DatabaseReference<PerfOrder>] = []
             for j in 1...ordersPerCustomer {
                 let orderId = uniqueID("O-trav-\(i)-\(j)")
-                orderIds.append(orderId)
                 var order = PerfOrder(total: Double(j * 10))
                 order.id = orderId
-                order.customerID = customerId  // Bidirectional reference
+                order.customer = customerReference
+                orderReferences.append(try context.reference(to: order))
                 context.insert(order)
             }
-            customer.orderIDs = orderIds
+            customer.orders = orderReferences
             context.insert(customer)
         }
         try await context.save()
 
         let totalTraversals = customerCount * 2  // Forward + reverse for each
 
-        // Benchmark: Traverse relationships in both directions
+        // Benchmark: Traverse direct references and the canonical inverse catalog
         let (_, result) = try await benchmark("Bidirectional traversal", count: totalTraversals) {
-            for customerId in customerIds {
+            for customerReference in customerReferences {
                 // Forward: Customer -> Orders
-                let customer = try await context.model(for: customerId, as: PerfCustomer.self)!
-                let orders = try await context.related(customer, \.orderIDs, as: PerfOrder.self)
+                let customer = try await context.model(for: customerReference)!
+                let orders = try await context.related(customer, \.orders)
+                #expect(orders.count == ordersPerCustomer)
 
-                // Reverse: Order -> Customer
-                if let firstOrder = orders.first {
-                    let _ = try await context.related(firstOrder, \.customerID, as: PerfCustomer.self)
-                }
+                // Reverse: Customer <- Orders through the catalog
+                let inverse = try await context.inverseRelationshipResolver().referencedBy(
+                    customerReference,
+                    from: PerfOrder.self,
+                    via: \.customer,
+                    limit: ordersPerCustomer
+                )
+                #expect(inverse.records.count == ordersPerCustomer)
             }
         }
 

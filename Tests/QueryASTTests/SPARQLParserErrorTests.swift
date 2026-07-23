@@ -122,9 +122,13 @@ struct UnicodeEscapeEdgeCaseTests {
             SELECT * WHERE { ?s ?p "caf\u00E9" }
             """#)
         guard case .graphPattern(let pat) = query.source,
-              case .basic(let triples) = pat,
-              case .literal(.string(let value)) = triples[0].object else {
+              case .basic(let basicGraphPattern) = pat else {
             Issue.record("Unexpected structure")
+            return
+        }
+        let triples = try basicGraphPattern.triplePatterns()
+        guard case .literal(.string(let value)) = triples[0].object else {
+            Issue.record("Unexpected literal")
             return
         }
         #expect(value == "café")
@@ -136,9 +140,13 @@ struct UnicodeEscapeEdgeCaseTests {
             SELECT * WHERE { ?s ?p "\U0001F600" }
             """#)
         guard case .graphPattern(let pat) = query.source,
-              case .basic(let triples) = pat,
-              case .literal(.string(let value)) = triples[0].object else {
+              case .basic(let basicGraphPattern) = pat else {
             Issue.record("Unexpected structure")
+            return
+        }
+        let triples = try basicGraphPattern.triplePatterns()
+        guard case .literal(.string(let value)) = triples[0].object else {
+            Issue.record("Unexpected literal")
             return
         }
         #expect(value == "😀")
@@ -150,9 +158,13 @@ struct UnicodeEscapeEdgeCaseTests {
             SELECT * WHERE { ?s ?p "caf\u00E9 \u0041" }
             """#)
         guard case .graphPattern(let pat) = query.source,
-              case .basic(let triples) = pat,
-              case .literal(.string(let value)) = triples[0].object else {
+              case .basic(let basicGraphPattern) = pat else {
             Issue.record("Unexpected structure")
+            return
+        }
+        let triples = try basicGraphPattern.triplePatterns()
+        guard case .literal(.string(let value)) = triples[0].object else {
+            Issue.record("Unexpected literal")
             return
         }
         #expect(value == "café A")
@@ -325,10 +337,11 @@ struct ParserRobustnessTests {
             SELECT * WHERE { ?s <http://example.org/active> TRUE . ?s <http://example.org/deleted> FALSE }
             """)
         guard case .graphPattern(let pattern) = query.source,
-              case .basic(let triples) = pattern else {
+              case .basic(let basicGraphPattern) = pattern else {
             Issue.record("Expected basic")
             return
         }
+        let triples = try basicGraphPattern.triplePatterns()
         #expect(triples.count == 2)
         guard case .literal(.bool(true)) = triples[0].object else {
             Issue.record("Expected TRUE literal")

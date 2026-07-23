@@ -1,7 +1,11 @@
 // FieldSecurityEvaluator.swift
 // DatabaseEngine - Evaluator for field-level security
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Evaluator for field-level security

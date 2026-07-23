@@ -7,7 +7,11 @@
 // - QPS (queries per second) calculation
 // - Transaction statistics
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import Synchronization
 
@@ -59,7 +63,7 @@ extension SlowQueryEntry: CustomStringConvertible {
     public var description: String {
         let typeStr = typeName.map { " [\($0)]" } ?? ""
         let idStr = transactionID.map { " (tx: \($0))" } ?? ""
-        return "[\(timestamp)]\(typeStr) \(queryDescription) - \(String(format: "%.3f", executionTime * 1000))ms\(idStr)"
+        return "[\(timestamp)]\(typeStr) \(queryDescription) - \(DatabaseTextFormatting.fixedDecimal(executionTime * 1000, fractionDigits: 3))ms\(idStr)"
     }
 }
 
@@ -137,9 +141,9 @@ extension DatabaseMetrics: CustomStringConvertible {
         """
         DatabaseMetrics (\(timestamp)):
           Active transactions: \(activeTransactions)
-          Latency: P50=\(String(format: "%.2f", latencyP50Ms))ms, P99=\(String(format: "%.2f", latencyP99Ms))ms
-          QPS: \(String(format: "%.2f", queriesPerSecond))
-          Transactions: \(totalTransactions) (success rate: \(String(format: "%.1f%%", successRate * 100)))
+          Latency: P50=\(DatabaseTextFormatting.fixedDecimal(latencyP50Ms, fractionDigits: 2))ms, P99=\(DatabaseTextFormatting.fixedDecimal(latencyP99Ms, fractionDigits: 2))ms
+          QPS: \(DatabaseTextFormatting.fixedDecimal(queriesPerSecond, fractionDigits: 2))
+          Transactions: \(totalTransactions) (success rate: \(DatabaseTextFormatting.fixedDecimal(successRate * 100, fractionDigits: 1))%)
         """
     }
 }

@@ -7,7 +7,11 @@
 // Reference: Tarjan, R. E. (1975). "Efficiency of a Good But Not Linear Set Union Algorithm"
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/#Individual_Equality
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 
 /// Persistent Union-Find for owl:sameAs equivalence classes
@@ -54,10 +58,18 @@ public struct PersistentUnionFind: Sendable {
     /// Subspace for Union-Find storage
     public let subspace: OntologySubspace
 
+    /// Maximum parent pointers followed by one `find` operation.
+    public let maximumParentTraversalDepth: Int
+
     // MARK: - Initialization
 
-    public init(subspace: OntologySubspace) {
+    public init(
+        subspace: OntologySubspace,
+        maximumParentTraversalDepth: Int = 100_000
+    ) {
+        precondition(maximumParentTraversalDepth > 0)
         self.subspace = subspace
+        self.maximumParentTraversalDepth = maximumParentTraversalDepth
     }
 
     // MARK: - Core Operations
@@ -78,18 +90,38 @@ public struct PersistentUnionFind: Sendable {
     ) async throws -> String {
         var current = individual
         var path: [String] = []
+        var visited: Set<String> = [individual]
 
         // Follow parent pointers to root
         while true {
+            guard path.count < maximumParentTraversalDepth else {
+                throw PersistentUnionFindError.parentTraversalLimitExceeded(
+                    start: individual,
+                    limit: maximumParentTraversalDepth
+                )
+            }
             let parentKey = subspace.sameAsParentKey(ontologyIRI, individual: current)
-            guard let parentData = try await transaction.getValue(for: parentKey, snapshot: true) else {
+            guard let parentData = try await transaction.getValue(
+                for: parentKey,
+                snapshot: false
+            ) else {
                 // No parent = this is a root (or not in Union-Find)
                 break
             }
-            let parent = String(decoding: parentData, as: UTF8.self)
+            guard let parent = String(bytes: parentData, encoding: .utf8) else {
+                throw PersistentUnionFindError.invalidParentUTF8(
+                    individual: current
+                )
+            }
             if parent == current {
                 // Self-loop = root
                 break
+            }
+            guard visited.insert(parent).inserted else {
+                throw PersistentUnionFindError.parentCycle(
+                    start: individual,
+                    repeated: parent
+                )
             }
             path.append(current)
             current = parent
@@ -99,7 +131,7 @@ public struct PersistentUnionFind: Sendable {
         let root = current
         for node in path {
             let parentKey = subspace.sameAsParentKey(ontologyIRI, individual: node)
-            transaction.setValue(Array(root.utf8), for: parentKey)
+            try transaction.setValue(Bytes(root.utf8), for: parentKey)
         }
 
         return root
@@ -160,12 +192,15 @@ public struct PersistentUnionFind: Sendable {
                 attached = root1
             }
             // Increase rank of new root
+            guard rank1 < Int.max else {
+                throw PersistentUnionFindError.rankOverflow(rank1)
+            }
             try await setRank(newRoot, rank: rank1 + 1, ontologyIRI: ontologyIRI, transaction: transaction)
         }
 
         // Set parent pointer
         let parentKey = subspace.sameAsParentKey(ontologyIRI, individual: attached)
-        transaction.setValue(Array(newRoot.utf8), for: parentKey)
+        try transaction.setValue(Bytes(newRoot.utf8), for: parentKey)
 
         // Update members index
         // Move all members of attached to newRoot
@@ -173,20 +208,20 @@ public struct PersistentUnionFind: Sendable {
         for member in attachedMembers {
             // Remove from old representative
             let oldMemberKey = subspace.sameAsMemberKey(ontologyIRI, representative: attached, member: member)
-            transaction.clear(key: oldMemberKey)
+            try transaction.clear(key: oldMemberKey)
 
             // Add to new representative
             let newMemberKey = subspace.sameAsMemberKey(ontologyIRI, representative: newRoot, member: member)
-            transaction.setValue([], for: newMemberKey)
+            try transaction.setValue([], for: newMemberKey)
         }
 
         // Add the attached root itself as member of newRoot
         let attachedMemberKey = subspace.sameAsMemberKey(ontologyIRI, representative: newRoot, member: attached)
-        transaction.setValue([], for: attachedMemberKey)
+        try transaction.setValue([], for: attachedMemberKey)
 
         // Ensure newRoot is also in its own members list
         let newRootMemberKey = subspace.sameAsMemberKey(ontologyIRI, representative: newRoot, member: newRoot)
-        transaction.setValue([], for: newRootMemberKey)
+        try transaction.setValue([], for: newRootMemberKey)
 
         return newRoot
     }
@@ -238,14 +273,14 @@ public struct PersistentUnionFind: Sendable {
         let parentKey = subspace.sameAsParentKey(ontologyIRI, individual: individual)
 
         // Only initialize if not already present
-        if try await transaction.getValue(for: parentKey, snapshot: true) == nil {
+        if try await transaction.getValue(for: parentKey, snapshot: false) == nil {
             // Self-loop indicates root
-            transaction.setValue(Array(individual.utf8), for: parentKey)
+            try transaction.setValue(Bytes(individual.utf8), for: parentKey)
             try await setRank(individual, rank: 0, ontologyIRI: ontologyIRI, transaction: transaction)
 
             // Add to own members list
             let memberKey = subspace.sameAsMemberKey(ontologyIRI, representative: individual, member: individual)
-            transaction.setValue([], for: memberKey)
+            try transaction.setValue([], for: memberKey)
         }
     }
 
@@ -256,21 +291,32 @@ public struct PersistentUnionFind: Sendable {
         ontologyIRI: String,
         transaction: any Transaction
     ) async throws -> [String: Set<String>] {
-        let (beginKey, endKey) = subspace.sameAsMembers(ontologyIRI).range()
+        let membersSubspace = subspace.sameAsMembers(ontologyIRI)
+        let (beginKey, endKey) = membersSubspace.range()
         var classes: [String: Set<String>] = [:]
 
-        let stream = try await transaction.collectRange(
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            snapshot: false,
+            streamingMode: .iterator
         )
 
-        for (key, _) in stream {
-            if let tuple = try? subspace.sameAsMembers(ontologyIRI).unpack(key),
-               let representative = tuple[0] as? String,
-               let member = tuple[1] as? String {
-                classes[representative, default: []].insert(member)
-            }
+        while let (key, _) = try await cursor.next() {
+            var tupleCursor = try memberTupleCursor(
+                for: key,
+                subspace: membersSubspace
+            )
+            let representative = try requiredMemberString(
+                from: &tupleCursor,
+                position: 0
+            )
+            let member = try requiredMemberString(
+                from: &tupleCursor,
+                position: 1
+            )
+            try requireMemberTupleEnd(&tupleCursor)
+            classes[representative, default: []].insert(member)
         }
 
         return classes
@@ -293,17 +339,24 @@ public struct PersistentUnionFind: Sendable {
         transaction: any Transaction
     ) async throws -> Int {
         let rankKey = subspace.sameAsRankKey(ontologyIRI, individual: individual)
-        guard let data = try await transaction.getValue(for: rankKey, snapshot: true) else {
+        guard let data = try await transaction.getValue(
+            for: rankKey,
+            snapshot: false
+        ) else {
             return 0
         }
-        // Decode as Int
-        if data.count >= 8 {
-            let value = data.withUnsafeBufferPointer { buffer in
-                buffer.baseAddress!.withMemoryRebound(to: Int64.self, capacity: 1) { $0.pointee }
-            }
-            return Int(value)
+        guard data.count == MemoryLayout<Int64>.size else {
+            throw PersistentUnionFindError.invalidRankByteCount(
+                actual: data.count
+            )
         }
-        return 0
+        let value = data.withUnsafeBytes { buffer in
+            Int64(littleEndian: buffer.loadUnaligned(as: Int64.self))
+        }
+        guard value >= 0, let rank = Int(exactly: value) else {
+            throw PersistentUnionFindError.invalidRankValue(value)
+        }
+        return rank
     }
 
     private func setRank(
@@ -312,10 +365,17 @@ public struct PersistentUnionFind: Sendable {
         ontologyIRI: String,
         transaction: any Transaction
     ) async throws {
+        guard rank >= 0, let encodedRank = Int64(exactly: rank) else {
+            throw PersistentUnionFindError.invalidRankValue(
+                Int64(clamping: rank)
+            )
+        }
         let rankKey = subspace.sameAsRankKey(ontologyIRI, individual: individual)
-        var value = Int64(rank)
-        let data = withUnsafeBytes(of: &value) { Array($0) }
-        transaction.setValue(data, for: rankKey)
+        let value = encodedRank.littleEndian
+        let data = Bytes.copying(count: MemoryLayout<Int64>.size) { buffer in
+            buffer.storeBytes(of: value, as: Int64.self)
+        }
+        try transaction.setValue(data, for: rankKey)
     }
 
     private func getMembersInternal(
@@ -323,23 +383,91 @@ public struct PersistentUnionFind: Sendable {
         ontologyIRI: String,
         transaction: any Transaction
     ) async throws -> Set<String> {
-        let (beginKey, endKey) = subspace.sameAsMembers(ontologyIRI).subspace(representative).range()
+        let representativeSubspace = subspace.sameAsMembers(ontologyIRI)
+            .subspace(representative)
+        let (beginKey, endKey) = representativeSubspace.range()
         var members: Set<String> = []
 
-        let stream = try await transaction.collectRange(
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            snapshot: false,
+            streamingMode: .iterator
         )
 
-        for (key, _) in stream {
-            if let tuple = try? subspace.sameAsMembers(ontologyIRI).subspace(representative).unpack(key),
-               let member = tuple[0] as? String {
-                members.insert(member)
-            }
+        while let (key, _) = try await cursor.next() {
+            var tupleCursor = try memberTupleCursor(
+                for: key,
+                subspace: representativeSubspace
+            )
+            let member = try requiredMemberString(
+                from: &tupleCursor,
+                position: 0
+            )
+            try requireMemberTupleEnd(&tupleCursor)
+            members.insert(member)
         }
 
         return members
+    }
+
+    private func memberTupleCursor(
+        for key: Bytes,
+        subspace: Subspace
+    ) throws -> TupleCursor {
+        do {
+            return try subspace.tupleCursor(for: key)
+        } catch {
+            throw PersistentUnionFindError.malformedMemberKey(
+                reason: String(describing: error)
+            )
+        }
+    }
+
+    private func requiredMemberString(
+        from cursor: inout TupleCursor,
+        position: Int
+    ) throws -> String {
+        let element: any TupleElement
+        do {
+            guard let next = try cursor.next() else {
+                throw PersistentUnionFindError.malformedMemberKey(
+                    reason: "Missing component at position \(position)"
+                )
+            }
+            element = next
+        } catch let error as PersistentUnionFindError {
+            throw error
+        } catch {
+            throw PersistentUnionFindError.malformedMemberKey(
+                reason: String(describing: error)
+            )
+        }
+        guard let value = element as? String else {
+            throw PersistentUnionFindError.unexpectedMemberComponent(
+                position: position,
+                actual: String(describing: type(of: element))
+            )
+        }
+        return value
+    }
+
+    private func requireMemberTupleEnd(
+        _ cursor: inout TupleCursor
+    ) throws {
+        do {
+            guard try cursor.next() == nil else {
+                throw PersistentUnionFindError.malformedMemberKey(
+                    reason: "Unexpected trailing component"
+                )
+            }
+        } catch let error as PersistentUnionFindError {
+            throw error
+        } catch {
+            throw PersistentUnionFindError.malformedMemberKey(
+                reason: String(describing: error)
+            )
+        }
     }
 }
 

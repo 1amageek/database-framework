@@ -12,15 +12,14 @@ import TestSupport
 struct MinMaxBatchAPITests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Test Models
 
-    struct Order: Persistable {
-        typealias ID = String
-
-        var id: String
+    @Persistable
+    struct Order {
+        var id: String = ""
         var region: String
         var category: String
         var amount: Double
@@ -31,57 +30,13 @@ struct MinMaxBatchAPITests {
             self.category = category
             self.amount = amount
         }
-
-        static var persistableType: String { "Order" }
-        static var allFields: [String] { ["id", "region", "category", "amount"] }
-        static var indexDescriptors: [IndexDescriptor] { [] }
-
-        static func fieldNumber(for fieldName: String) -> Int? { nil }
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "region": return region
-            case "category": return category
-            case "amount": return amount
-            default: return nil
-            }
-        }
-
-        static func fieldName<Value>(for keyPath: KeyPath<Order, Value>) -> String {
-            switch keyPath {
-            case \Order.id: return "id"
-            case \Order.region: return "region"
-            case \Order.category: return "category"
-            case \Order.amount: return "amount"
-            default: return "\(keyPath)"
-            }
-        }
-
-        static func fieldName(for keyPath: PartialKeyPath<Order>) -> String {
-            switch keyPath {
-            case \Order.id: return "id"
-            case \Order.region: return "region"
-            case \Order.category: return "category"
-            case \Order.amount: return "amount"
-            default: return "\(keyPath)"
-            }
-        }
-
-        static func fieldName(for keyPath: AnyKeyPath) -> String {
-            if let partial = keyPath as? PartialKeyPath<Order> {
-                return fieldName(for: partial)
-            }
-            return "\(keyPath)"
-        }
     }
 
     // MARK: - getAllMins Tests
 
     @Test("getAllMins returns all groups")
     func testGetAllMinsReturnsAllGroups() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_batch", testId).pack())
 
@@ -142,7 +97,7 @@ struct MinMaxBatchAPITests {
 
     @Test("getAllMaxs returns all groups")
     func testGetAllMaxsReturnsAllGroups() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_batch", testId).pack())
 
@@ -203,7 +158,7 @@ struct MinMaxBatchAPITests {
 
     @Test("getAllMins performance with large dataset")
     func testGetAllMinsPerformance() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_perf", testId).pack())
 

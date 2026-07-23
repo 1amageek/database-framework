@@ -1,0 +1,189 @@
+import Core
+import DatabaseEngine
+import DatabaseValue
+import DatabaseWire
+import Graph
+import GraphIndex
+import StorageKit
+
+public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
+    private struct OwnedIndex {
+        let entity: Schema.Entity
+        let descriptor: IndexDescriptor
+    }
+
+    private let container: DBContainer
+
+    public init(container: DBContainer) {
+        self.container = container
+    }
+
+    public func resolve(
+        _ source: GraphAlgorithmOperation.Source
+    ) async throws -> ResolvedDatabaseGraphSource {
+        let candidates = container.schema.entities.flatMap { entity in
+            entity.indexDescriptors
+                .filter { $0.name == source.index }
+                .map { OwnedIndex(entity: entity, descriptor: $0) }
+        }
+        guard !candidates.isEmpty else {
+            throw DatabaseGraphAlgorithmError.sourceIndexNotFound(source.index)
+        }
+        guard candidates.count == 1, let owned = candidates.first else {
+            throw DatabaseGraphAlgorithmError.sourceIndexHasNoUniqueOwner(source.index)
+        }
+
+        let queryContext = IndexQueryContext(context: container.newContext())
+        let indexRoot = try await queryContext.indexSubspace(
+            forEntityName: owned.entity.name,
+            partitions: source.partitions
+        )
+        let indexSubspace = indexRoot.subspace(source.index)
+
+        if owned.descriptor.kindIdentifier == "graph" {
+            return try propertyGraphSource(
+                source,
+                owned: owned,
+                indexSubspace: indexSubspace,
+                metadata: PropertyGraphIndexMetadata(
+                    canonical: owned.descriptor.kind
+                )
+            )
+        }
+        if let selection = try RDFDatasetIndexSelection(
+            descriptor: owned.descriptor
+        ) {
+            return try rdfSource(
+                source,
+                owned: owned,
+                indexSubspace: indexSubspace,
+                metadata: selection.metadata
+            )
+        }
+        throw DatabaseGraphAlgorithmError.unsupportedSourceIndex(
+            index: source.index,
+            kind: owned.descriptor.kindIdentifier
+        )
+    }
+
+    private func propertyGraphSource(
+        _ source: GraphAlgorithmOperation.Source,
+        owned: OwnedIndex,
+        indexSubspace: StorageKit.Subspace,
+        metadata: PropertyGraphIndexMetadata
+    ) throws -> ResolvedDatabaseGraphSource {
+        let scope: ResolvedDatabaseGraphSource.PropertyGraphScope
+        switch source.graph {
+        case .all:
+            scope = .all
+        case .defaultGraph:
+            scope = .defaultGraph
+        case .named(.identifier(let name)):
+            scope = .named(name)
+        case .named(let term):
+            throw DatabaseGraphAlgorithmError.expectedPropertyGraphIdentifier(term)
+        }
+        let edgeLabel: String?
+        switch source.edgeLabel {
+        case nil:
+            edgeLabel = nil
+        case .identifier(let value):
+            edgeLabel = value
+        case .some(let term):
+            throw DatabaseGraphAlgorithmError.expectedPropertyGraphIdentifier(term)
+        }
+        return ResolvedDatabaseGraphSource(
+            entityName: owned.entity.name,
+            indexName: source.index,
+            indexSubspace: indexSubspace,
+            storedFieldNames: owned.descriptor.storedFieldNames,
+            layout: .propertyGraph(
+                ResolvedDatabaseGraphSource.PropertyGraphLayout(
+                    strategy: metadata.declarativeStrategy,
+                    scope: scope,
+                    edgeLabel: edgeLabel
+                )
+            )
+        )
+    }
+
+    private func rdfSource(
+        _ source: GraphAlgorithmOperation.Source,
+        owned: OwnedIndex,
+        indexSubspace: StorageKit.Subspace,
+        metadata: RDFDatasetIndexMetadata
+    ) throws -> ResolvedDatabaseGraphSource {
+        let scope: ResolvedDatabaseGraphSource.RDFScope
+        switch source.graph {
+        case .all:
+            scope = .all
+        case .defaultGraph:
+            scope = .defaultGraph
+        case .named(.rdf(let graph)):
+            guard graph.isRDFGraphName else {
+                throw DatabaseGraphAlgorithmError.invalidRDFGraphName(.rdf(graph))
+            }
+            scope = .named(graph)
+        case .named(let term):
+            throw DatabaseGraphAlgorithmError.expectedRDFTerm(term)
+        }
+        try validateRDFCoverage(
+            metadata.graphScope,
+            requestedScope: scope,
+            indexName: source.index
+        )
+        let predicate: DatabaseRDFTerm?
+        switch source.edgeLabel {
+        case nil:
+            predicate = nil
+        case .rdf(.iri(let value)):
+            predicate = .iri(value)
+        case .some(let term):
+            throw DatabaseGraphAlgorithmError.invalidRDFPredicate(term)
+        }
+        return ResolvedDatabaseGraphSource(
+            entityName: owned.entity.name,
+            indexName: source.index,
+            indexSubspace: indexSubspace,
+            storedFieldNames: owned.descriptor.storedFieldNames,
+            layout: .rdf(
+                try ResolvedDatabaseGraphSource.RDFLayout(
+                    scope: scope,
+                    predicate: predicate
+                )
+            )
+        )
+    }
+
+    private func validateRDFCoverage(
+        _ coverage: RDFDatasetGraphScope,
+        requestedScope: ResolvedDatabaseGraphSource.RDFScope,
+        indexName: String
+    ) throws {
+        switch requestedScope {
+        case .all:
+            return
+        case .defaultGraph:
+            switch coverage {
+            case .defaultGraph, .recordField:
+                return
+            case .fixed:
+                throw DatabaseGraphAlgorithmError
+                    .rdfSourceDoesNotCoverDefaultGraph(index: indexName)
+            }
+        case .named(let requestedGraph):
+            switch coverage {
+            case .recordField:
+                return
+            case .fixed(let fixedGraph) where fixedGraph == requestedGraph:
+                return
+            case .defaultGraph, .fixed:
+                throw DatabaseGraphAlgorithmError
+                    .rdfSourceDoesNotCoverNamedGraph(
+                        index: indexName,
+                        graph: requestedGraph
+                    )
+            }
+        }
+    }
+}

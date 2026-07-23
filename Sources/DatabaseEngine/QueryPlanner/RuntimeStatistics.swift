@@ -1,7 +1,11 @@
 // RuntimeStatistics.swift
 // QueryPlanner - Runtime statistics feedback for adaptive optimization
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import Synchronization
 
@@ -386,8 +390,8 @@ public struct EstimationAccuracyReport: Sendable {
         """
         Estimation Accuracy Report:
         - Total executions: \(totalExecutions)
-        - Average error: \(String(format: "%.1f%%", averageError * 100))
-        - Median error: \(String(format: "%.1f%%", medianError * 100))
+        - Average error: \(DatabaseTextFormatting.fixedDecimal(averageError * 100, fractionDigits: 1))%
+        - Median error: \(DatabaseTextFormatting.fixedDecimal(medianError * 100, fractionDigits: 1))%
         - Plans with >100% error: \(worstCases.count)
         """
     }
@@ -474,7 +478,7 @@ public struct StatisticsDriftDetector: Sendable {
             hasDrifted: hasDrifted,
             driftedFields: [], // Would need field-level tracking to populate
             recommendation: hasDrifted
-                ? "Statistics have drifted significantly (avg error: \(String(format: "%.1f%%", avgError * 100))). Consider refreshing statistics."
+                ? "Statistics have drifted significantly (avg error: \(DatabaseTextFormatting.fixedDecimal(avgError * 100, fractionDigits: 1))%). Consider refreshing statistics."
                 : nil
         )
     }

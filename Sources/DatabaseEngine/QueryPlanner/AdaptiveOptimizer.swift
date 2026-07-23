@@ -1,7 +1,11 @@
 // AdaptiveOptimizer.swift
 // QueryPlanner - Adaptive query optimization based on runtime feedback
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import Synchronization
 
@@ -452,7 +456,7 @@ public struct AdaptationReport: Sendable {
         - Total plans tracked: \(totalPlans)
         - Plans needing replan: \(plansNeedingReplan)
         - Total adaptations: \(totalAdaptations)
-        - Average improvement: \(String(format: "%.1f%%", averageImprovement * 100))
+        - Average improvement: \(DatabaseTextFormatting.fixedDecimal(averageImprovement * 100, fractionDigits: 1))%
         """
     }
 }

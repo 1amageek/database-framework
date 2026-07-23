@@ -1,7 +1,11 @@
 // PredicateNormalizer.swift
 // QueryPlanner - Predicate normalization (CNF/DNF conversion)
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import StorageKit
 
@@ -16,21 +20,21 @@ public struct PredicateNormalizer<T: Persistable> {
     // MARK: - Convert to QueryCondition
 
     /// Convert a Predicate to QueryCondition
-    public func convert(_ predicate: Predicate<T>) -> QueryCondition<T> {
+    public func convert(_ predicate: Predicate<T>) throws -> QueryCondition<T> {
         switch predicate {
         case .comparison(let comparison):
-            return .field(convertComparison(comparison, source: predicate))
+            return .field(try convertComparison(comparison, source: predicate))
 
         case .and(let predicates):
-            let conditions = predicates.map { convert($0) }
+            let conditions = try predicates.map { try convert($0) }
             return .conjunction(conditions).simplified()
 
         case .or(let predicates):
-            let conditions = predicates.map { convert($0) }
+            let conditions = try predicates.map { try convert($0) }
             return .disjunction(conditions).simplified()
 
         case .not(let inner):
-            return negateCondition(convert(inner))
+            return negateCondition(try convert(inner))
 
         case .true:
             return .alwaysTrue
@@ -102,17 +106,14 @@ public struct PredicateNormalizer<T: Persistable> {
     private func convertComparison(
         _ comparison: FieldComparison<T>,
         source: Predicate<T>
-    ) -> any FieldConditionProtocol<T> {
-        let fieldRef = FieldReference<T>(
-            anyKeyPath: comparison.keyPath,
-            fieldName: comparison.fieldName
-        )
+    ) throws -> any FieldConditionProtocol<T> {
+        let fieldRef = FieldReference<T>(fieldName: comparison.fieldName)
 
         switch comparison.op {
         case .equal:
             return ScalarFieldCondition<T>.equals(
                 field: fieldRef,
-                value: comparison.value.toTupleElement(),
+                value: try comparison.value.toTupleElement(),
                 predicate: source
             )
 
@@ -120,7 +121,7 @@ public struct PredicateNormalizer<T: Persistable> {
             return ScalarFieldCondition<T>(
                 field: fieldRef,
                 constraintType: .notEquals,
-                values: [comparison.value.toTupleElement()],
+                values: [try comparison.value.toTupleElement()],
                 sourcePredicate: source
             )
 
@@ -128,7 +129,7 @@ public struct PredicateNormalizer<T: Persistable> {
             return ScalarFieldCondition<T>.range(
                 field: fieldRef,
                 type: .lessThan,
-                value: comparison.value.toTupleElement(),
+                value: try comparison.value.toTupleElement(),
                 predicate: source
             )
 
@@ -136,7 +137,7 @@ public struct PredicateNormalizer<T: Persistable> {
             return ScalarFieldCondition<T>.range(
                 field: fieldRef,
                 type: .lessThanOrEqual,
-                value: comparison.value.toTupleElement(),
+                value: try comparison.value.toTupleElement(),
                 predicate: source
             )
 
@@ -144,7 +145,7 @@ public struct PredicateNormalizer<T: Persistable> {
             return ScalarFieldCondition<T>.range(
                 field: fieldRef,
                 type: .greaterThan,
-                value: comparison.value.toTupleElement(),
+                value: try comparison.value.toTupleElement(),
                 predicate: source
             )
 
@@ -152,7 +153,7 @@ public struct PredicateNormalizer<T: Persistable> {
             return ScalarFieldCondition<T>.range(
                 field: fieldRef,
                 type: .greaterThanOrEqual,
-                value: comparison.value.toTupleElement(),
+                value: try comparison.value.toTupleElement(),
                 predicate: source
             )
 
@@ -189,14 +190,28 @@ public struct PredicateNormalizer<T: Persistable> {
         case .in:
             let values: [any TupleElement]
             if let arrayValues = comparison.value.arrayValue {
-                values = arrayValues.map { $0.toTupleElement() }
+                values = try arrayValues.map { try $0.toTupleElement() }
             } else {
-                values = [comparison.value.toTupleElement()]
+                values = [try comparison.value.toTupleElement()]
             }
             return ScalarFieldCondition<T>.in(
                 field: fieldRef,
                 values: values,
                 predicate: source
+            )
+
+        case .notIn:
+            let values: [any TupleElement]
+            if let arrayValues = comparison.value.arrayValue {
+                values = try arrayValues.map { try $0.toTupleElement() }
+            } else {
+                values = [try comparison.value.toTupleElement()]
+            }
+            return ScalarFieldCondition<T>(
+                field: fieldRef,
+                constraintType: .notIn,
+                values: values,
+                sourcePredicate: source
             )
 
         case .isNil:

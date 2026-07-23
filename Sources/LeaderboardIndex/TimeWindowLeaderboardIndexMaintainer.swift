@@ -4,8 +4,13 @@
 // Time-windowed ranking with automatic window rotation.
 // Reference: FDB Record Layer TIME_WINDOW_LEADERBOARD index type
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 import DatabaseEngine
 import StorageKit
 
@@ -58,7 +63,7 @@ public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConver
 /// **Window IDs**:
 /// Windows are identified by `floor(timestamp / windowDuration)`.
 /// For daily windows, this gives sequential day numbers since epoch.
-public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Comparable & Numeric & Codable & Sendable>: SubspaceIndexMaintainer {
+public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     private struct PositionRecord {
         let windowId: Int64
         let score: Int64
@@ -294,15 +299,13 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
 
     /// Extract score from item (type-safe)
     private func extractScore(from item: Item) throws -> Int64 {
-        // The last field in keyPaths is the score field
-        guard let keyPaths = index.keyPaths, let scoreKeyPath = keyPaths.last else {
+        guard let scoreField = index.kind.fieldNames.last else {
             throw IndexError.invalidConfiguration("Leaderboard index requires a score field")
         }
 
-        let values = try DataAccess.evaluateIndexFields(
+        let values = try DataAccess.extractField(
             from: item,
-            keyPaths: [scoreKeyPath],
-            expression: index.rootExpression
+            keyPath: scoreField
         )
 
         guard let first = values.first else {
@@ -314,19 +317,19 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
 
     /// Extract grouping fields from item (all fields except the last which is score)
     private func extractGrouping(from item: Item) throws -> [any TupleElement] {
-        guard let keyPaths = index.keyPaths else {
-            return []
-        }
-        let groupingKeyPaths = keyPaths.dropLast()
-        if groupingKeyPaths.isEmpty {
+        let groupingFields = index.kind.fieldNames.dropLast()
+        if groupingFields.isEmpty {
             return []
         }
 
-        return try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: Array(groupingKeyPaths),
-            expression: index.rootExpression
-        )
+        var values: [any TupleElement] = []
+        for fieldName in groupingFields {
+            values.append(contentsOf: try DataAccess.extractField(
+                from: item,
+                keyPath: fieldName
+            ))
+        }
+        return values
     }
 
     /// Make window entry key
@@ -363,14 +366,14 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             score: score,
             pk: pk
         )
-        let entryValue = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
-        transaction.setValue(entryValue, for: entryKey)
+        let entryValue = try CoveringValueBuilder.build(for: item, index: index)
+        try transaction.setValue(entryValue, for: entryKey)
 
         // Save position for updates
         let posKey = posSubspace.pack(pk)
         var posElements: [any TupleElement] = [windowId, score]
         posElements.append(contentsOf: grouping)
-        transaction.setValue(Tuple(posElements).pack(), for: posKey)
+        try transaction.setValue(Tuple(posElements).pack(), for: posKey)
 
         // Update window metadata
         try await ensureWindowMetadata(windowId: windowId, transaction: transaction)
@@ -433,10 +436,10 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             score: position.score,
             pk: pk
         )
-        transaction.clear(key: entryKey)
+        try transaction.clear(key: entryKey)
 
         // Delete position
-        transaction.clear(key: posKey)
+        try transaction.clear(key: posKey)
     }
 
     /// Update an entry
@@ -458,7 +461,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
                 score: position.score,
                 pk: pk
             )
-            transaction.clear(key: oldKey)
+            try transaction.clear(key: oldKey)
         }
 
         // Insert new entry in current window
@@ -480,7 +483,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         let startKey = metaSubspace.subspace("start").pack(Tuple(windowId))
         if try await transaction.getValue(for: startKey) == nil {
             let startTime = windowId * Int64(window.durationSeconds)
-            transaction.setValue(ByteConversion.int64ToBytes(startTime), for: startKey)
+            try transaction.setValue(ByteConversion.int64ToBytes(startTime), for: startKey)
         }
     }
 
@@ -501,7 +504,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         // Delete all window entries with windowId < oldestAllowedWindow
         let startKey = windowSubspace.pack(Tuple([Int64(0)]))
         let endKey = windowSubspace.pack(Tuple([oldestAllowedWindow]))
-        transaction.clearRange(beginKey: startKey, endKey: endKey)
+        try transaction.clearRange(beginKey: startKey, endKey: endKey)
     }
 
     // MARK: - Query Methods
@@ -850,7 +853,10 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         // Calculate target rank (1-based from highest score)
         // For percentile p, we want the score at rank ceil((1-p) * count)
         // e.g., 90th percentile means top 10%, so rank = ceil(0.1 * count)
-        let targetRank = max(1, Int(ceil((1.0 - percentile) * Double(totalCount))))
+        let targetRank = max(
+            1,
+            Int(DatabaseMath.ceiling((1.0 - percentile) * Double(totalCount)))
+        )
 
         // Get the entry at target rank
         let entries = try await getTopK(

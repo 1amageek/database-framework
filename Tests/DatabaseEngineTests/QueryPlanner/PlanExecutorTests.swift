@@ -7,13 +7,14 @@ import Testing
 import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
+import DatabaseValue
 @testable import ScalarIndex
 @testable import Core
 
 // MARK: - Test Model
 
 /// Simple user model for predicate testing
-struct PredicateTestUser: Persistable {
+struct PredicateUser: Persistable {
     typealias ID = String
 
     var id: String
@@ -36,7 +37,7 @@ struct PredicateTestUser: Persistable {
         self.department = department
     }
 
-    static var persistableType: String { "PredicateTestUser" }
+    static var persistableType: String { "PredicateUser" }
     static var allFields: [String] { ["id", "name", "age", "isActive", "department"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
     static func fieldNumber(for fieldName: String) -> Int? { nil }
@@ -53,30 +54,30 @@ struct PredicateTestUser: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<PredicateTestUser, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<PredicateUser, Value>) -> String {
         switch keyPath {
-        case \PredicateTestUser.id: return "id"
-        case \PredicateTestUser.name: return "name"
-        case \PredicateTestUser.age: return "age"
-        case \PredicateTestUser.isActive: return "isActive"
-        case \PredicateTestUser.department: return "department"
+        case \PredicateUser.id: return "id"
+        case \PredicateUser.name: return "name"
+        case \PredicateUser.age: return "age"
+        case \PredicateUser.isActive: return "isActive"
+        case \PredicateUser.department: return "department"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<PredicateTestUser>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<PredicateUser>) -> String {
         switch keyPath {
-        case \PredicateTestUser.id: return "id"
-        case \PredicateTestUser.name: return "name"
-        case \PredicateTestUser.age: return "age"
-        case \PredicateTestUser.isActive: return "isActive"
-        case \PredicateTestUser.department: return "department"
+        case \PredicateUser.id: return "id"
+        case \PredicateUser.name: return "name"
+        case \PredicateUser.age: return "age"
+        case \PredicateUser.isActive: return "isActive"
+        case \PredicateUser.department: return "department"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PredicateTestUser> {
+        if let partial = keyPath as? PartialKeyPath<PredicateUser> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
@@ -92,13 +93,13 @@ struct PredicateEvaluationTests {
 
     @Test("IN predicate matches values in array")
     func testInPredicateMatches() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = .comparison(
-            FieldComparison(keyPath: \PredicateTestUser.age, values: [25, 30, 35])
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = .comparison(
+            FieldComparison(keyPath: \PredicateUser.age, values: [25, 30, 35])
         )
 
-        let user25 = PredicateTestUser(name: "Alice", age: 25)
-        let user30 = PredicateTestUser(name: "Bob", age: 30)
-        let user35 = PredicateTestUser(name: "Charlie", age: 35)
+        let user25 = PredicateUser(name: "Alice", age: 25)
+        let user30 = PredicateUser(name: "Bob", age: 30)
+        let user35 = PredicateUser(name: "Charlie", age: 35)
 
         #expect(evaluate(predicate, on: user25) == true)
         #expect(evaluate(predicate, on: user30) == true)
@@ -107,12 +108,12 @@ struct PredicateEvaluationTests {
 
     @Test("IN predicate rejects non-matching values")
     func testInPredicateRejects() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = .comparison(
-            FieldComparison(keyPath: \PredicateTestUser.age, values: [25, 30, 35])
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = .comparison(
+            FieldComparison(keyPath: \PredicateUser.age, values: [25, 30, 35])
         )
 
-        let user20 = PredicateTestUser(name: "David", age: 20)
-        let user40 = PredicateTestUser(name: "Eve", age: 40)
+        let user20 = PredicateUser(name: "David", age: 20)
+        let user40 = PredicateUser(name: "Eve", age: 40)
 
         #expect(evaluate(predicate, on: user20) == false)
         #expect(evaluate(predicate, on: user40) == false)
@@ -120,12 +121,12 @@ struct PredicateEvaluationTests {
 
     @Test("IN predicate with string values")
     func testInPredicateStrings() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = .comparison(
-            FieldComparison(keyPath: \PredicateTestUser.name, values: ["Alice", "Bob"])
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = .comparison(
+            FieldComparison(keyPath: \PredicateUser.name, values: ["Alice", "Bob"])
         )
 
-        let alice = PredicateTestUser(name: "Alice", age: 25)
-        let charlie = PredicateTestUser(name: "Charlie", age: 30)
+        let alice = PredicateUser(name: "Alice", age: 25)
+        let charlie = PredicateUser(name: "Charlie", age: 30)
 
         #expect(evaluate(predicate, on: alice) == true)
         #expect(evaluate(predicate, on: charlie) == false)
@@ -133,11 +134,11 @@ struct PredicateEvaluationTests {
 
     @Test("IN predicate with empty array")
     func testInPredicateEmpty() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = .comparison(
-            FieldComparison(keyPath: \PredicateTestUser.age, values: [Int]())
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = .comparison(
+            FieldComparison(keyPath: \PredicateUser.age, values: [Int]())
         )
 
-        let user = PredicateTestUser(name: "Alice", age: 25)
+        let user = PredicateUser(name: "Alice", age: 25)
 
         #expect(evaluate(predicate, on: user) == false)
     }
@@ -146,36 +147,36 @@ struct PredicateEvaluationTests {
 
     @Test("isNil predicate matches nil")
     func testIsNilMatches() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = \PredicateTestUser.department == Optional<String>.self
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = \PredicateUser.department == Optional<String>.self
 
-        let userNil = PredicateTestUser(name: "Alice", age: 25, department: nil)
+        let userNil = PredicateUser(name: "Alice", age: 25, department: nil)
 
         #expect(evaluate(predicate, on: userNil) == true)
     }
 
     @Test("isNil predicate rejects non-nil")
     func testIsNilRejects() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = \PredicateTestUser.department == Optional<String>.self
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = \PredicateUser.department == Optional<String>.self
 
-        let userDept = PredicateTestUser(name: "Bob", age: 30, department: "Engineering")
+        let userDept = PredicateUser(name: "Bob", age: 30, department: "Engineering")
 
         #expect(evaluate(predicate, on: userDept) == false)
     }
 
     @Test("isNotNil predicate matches non-nil")
     func testIsNotNilMatches() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = \PredicateTestUser.department != Optional<String>.self
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = \PredicateUser.department != Optional<String>.self
 
-        let userDept = PredicateTestUser(name: "Bob", age: 30, department: "Engineering")
+        let userDept = PredicateUser(name: "Bob", age: 30, department: "Engineering")
 
         #expect(evaluate(predicate, on: userDept) == true)
     }
 
     @Test("isNotNil predicate rejects nil")
     func testIsNotNilRejects() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = \PredicateTestUser.department != Optional<String>.self
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = \PredicateUser.department != Optional<String>.self
 
-        let userNil = PredicateTestUser(name: "Alice", age: 25, department: nil)
+        let userNil = PredicateUser(name: "Alice", age: 25, department: nil)
 
         #expect(evaluate(predicate, on: userNil) == false)
     }
@@ -184,10 +185,10 @@ struct PredicateEvaluationTests {
 
     @Test("Equality predicate")
     func testEquality() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = \PredicateTestUser.age == 25
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = \PredicateUser.age == 25
 
-        let user25 = PredicateTestUser(name: "Alice", age: 25)
-        let user30 = PredicateTestUser(name: "Bob", age: 30)
+        let user25 = PredicateUser(name: "Alice", age: 25)
+        let user30 = PredicateUser(name: "Bob", age: 30)
 
         #expect(evaluate(predicate, on: user25) == true)
         #expect(evaluate(predicate, on: user30) == false)
@@ -195,10 +196,10 @@ struct PredicateEvaluationTests {
 
     @Test("Greater than predicate")
     func testGreaterThan() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = \PredicateTestUser.age > 25
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = \PredicateUser.age > 25
 
-        let user25 = PredicateTestUser(name: "Alice", age: 25)
-        let user30 = PredicateTestUser(name: "Bob", age: 30)
+        let user25 = PredicateUser(name: "Alice", age: 25)
+        let user30 = PredicateUser(name: "Bob", age: 30)
 
         #expect(evaluate(predicate, on: user25) == false)
         #expect(evaluate(predicate, on: user30) == true)
@@ -206,10 +207,10 @@ struct PredicateEvaluationTests {
 
     @Test("Less than predicate")
     func testLessThan() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = \PredicateTestUser.age < 30
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = \PredicateUser.age < 30
 
-        let user25 = PredicateTestUser(name: "Alice", age: 25)
-        let user30 = PredicateTestUser(name: "Bob", age: 30)
+        let user25 = PredicateUser(name: "Alice", age: 25)
+        let user30 = PredicateUser(name: "Bob", age: 30)
 
         #expect(evaluate(predicate, on: user25) == true)
         #expect(evaluate(predicate, on: user30) == false)
@@ -219,13 +220,13 @@ struct PredicateEvaluationTests {
 
     @Test("AND predicate")
     func testAndPredicate() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = .and([
-            \PredicateTestUser.age > 18,
-            \PredicateTestUser.isActive == true
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = .and([
+            \PredicateUser.age > 18,
+            \PredicateUser.isActive == true
         ])
 
-        let activeAdult = PredicateTestUser(name: "Alice", age: 25, isActive: true)
-        let inactiveAdult = PredicateTestUser(name: "Bob", age: 30, isActive: false)
+        let activeAdult = PredicateUser(name: "Alice", age: 25, isActive: true)
+        let inactiveAdult = PredicateUser(name: "Bob", age: 30, isActive: false)
 
         #expect(evaluate(predicate, on: activeAdult) == true)
         #expect(evaluate(predicate, on: inactiveAdult) == false)
@@ -233,14 +234,14 @@ struct PredicateEvaluationTests {
 
     @Test("OR predicate")
     func testOrPredicate() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = .or([
-            \PredicateTestUser.age < 18,
-            \PredicateTestUser.age > 65
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = .or([
+            \PredicateUser.age < 18,
+            \PredicateUser.age > 65
         ])
 
-        let minor = PredicateTestUser(name: "Kid", age: 15)
-        let adult = PredicateTestUser(name: "Adult", age: 30)
-        let senior = PredicateTestUser(name: "Senior", age: 70)
+        let minor = PredicateUser(name: "Kid", age: 15)
+        let adult = PredicateUser(name: "Adult", age: 30)
+        let senior = PredicateUser(name: "Senior", age: 70)
 
         #expect(evaluate(predicate, on: minor) == true)
         #expect(evaluate(predicate, on: adult) == false)
@@ -249,10 +250,10 @@ struct PredicateEvaluationTests {
 
     @Test("NOT predicate")
     func testNotPredicate() {
-        let predicate: DatabaseEngine.Predicate<PredicateTestUser> = !(\PredicateTestUser.isActive == true)
+        let predicate: DatabaseEngine.Predicate<PredicateUser> = !(\PredicateUser.isActive == true)
 
-        let active = PredicateTestUser(name: "Active", age: 25, isActive: true)
-        let inactive = PredicateTestUser(name: "Inactive", age: 30, isActive: false)
+        let active = PredicateUser(name: "Active", age: 25, isActive: true)
+        let inactive = PredicateUser(name: "Inactive", age: 30, isActive: false)
 
         #expect(evaluate(predicate, on: active) == false)
         #expect(evaluate(predicate, on: inactive) == true)

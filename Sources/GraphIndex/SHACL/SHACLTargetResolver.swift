@@ -7,7 +7,11 @@
 // Reference: W3C SHACL §2.1.3 (Targets)
 // https://www.w3.org/TR/shacl/#targets
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import StorageKit
 import Graph
 import DatabaseEngine
@@ -19,28 +23,43 @@ import DatabaseEngine
 /// - `sh:targetClass` → `{ ?node rdf:type <class> }`
 /// - `sh:targetSubjectsOf` → `{ ?node <predicate> ?o }`
 /// - `sh:targetObjectsOf` → `{ ?s <predicate> ?node }`
-struct SHACLTargetResolver: Sendable {
+public struct SHACLTargetResolver: Sendable {
 
     private let executor: SPARQLQueryExecutor
+    private let transaction: any Transaction
+    private let graphScope: SHACLDataGraphScope
+    private let budget: SHACLValidationWorkBudget
 
-    init(executor: SPARQLQueryExecutor) {
+    public init(
+        executor: SPARQLQueryExecutor,
+        transaction: any Transaction,
+        graphScope: SHACLDataGraphScope,
+        budget: SHACLValidationWorkBudget
+    ) {
         self.executor = executor
+        self.transaction = transaction
+        self.graphScope = graphScope
+        self.budget = budget
     }
 
-    /// Resolve all targets to a set of focus node IRIs
+    /// Resolve all targets to a set of focus RDF nodes.
     ///
     /// - Parameters:
     ///   - targets: The target declarations from a shape
-    ///   - shapeIRI: The shape IRI (for implicit class targets)
-    /// - Returns: Set of focus node IRI strings
+    ///   - shapeIdentifier: The shape identifier used by implicit class targets
+    /// - Returns: Set of focus RDF terms
     func resolve(
         _ targets: [SHACLTarget],
-        shapeIRI: String?
-    ) async throws -> Set<String> {
-        var focusNodes = Set<String>()
+        shapeIdentifier: RDFTerm?
+    ) async throws -> Set<RDFTerm> {
+        var focusNodes = Set<RDFTerm>()
 
         for target in targets {
-            let nodes = try await resolveTarget(target, shapeIRI: shapeIRI)
+            try budget.consume(at: .projection)
+            let nodes = try await resolveTarget(
+                target,
+                shapeIdentifier: shapeIdentifier
+            )
             focusNodes.formUnion(nodes)
         }
 
@@ -51,17 +70,17 @@ struct SHACLTargetResolver: Sendable {
 
     private func resolveTarget(
         _ target: SHACLTarget,
-        shapeIRI: String?
-    ) async throws -> Set<String> {
+        shapeIdentifier: RDFTerm?
+    ) async throws -> Set<RDFTerm> {
         switch target {
-        case .node(let iri):
+        case .node(let node):
             // Direct node — no query needed
-            return [iri]
+            return [node]
 
         case .class_(let classIRI):
             // { ?node rdf:type <classIRI> }
             return try await querySubjects(
-                predicate: "rdf:type",
+                predicate: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
                 object: classIRI
             )
 
@@ -74,10 +93,13 @@ struct SHACLTargetResolver: Sendable {
             return try await queryObjects(predicate: predicateIRI)
 
         case .implicitClass:
-            // Shape IRI is treated as rdfs:Class
-            guard let iri = shapeIRI else { return [] }
+            // An IRI shape identifier is treated as an rdfs:Class.
+            guard case .iri(let iri) = shapeIdentifier else {
+                throw SHACLTargetResolutionError
+                    .implicitClassRequiresIRI(shapeIdentifier)
+            }
             return try await querySubjects(
-                predicate: "rdf:type",
+                predicate: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
                 object: iri
             )
         }
@@ -87,25 +109,28 @@ struct SHACLTargetResolver: Sendable {
     private func querySubjects(
         predicate: String,
         object: String? = nil
-    ) async throws -> Set<String> {
+    ) async throws -> Set<RDFTerm> {
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?node"),
-                predicate: .value(.string(predicate)),
-                object: object.map { .value(.string($0)) } ?? .wildcard
+                predicate: .value(.rdfTerm(.iri(predicate))),
+                object: object.map { .value(.rdfTerm(.iri($0))) } ?? .wildcard
             )
         ])
 
-        let (bindings, _) = try await executor.execute(
-            pattern: pattern,
+        let (bindings, _) = try await executor.executeInTransaction(
+            pattern: graphScope.apply(to: pattern),
+            transaction: transaction,
             limit: nil,
-            offset: 0
+            offset: 0,
+            workMeter: budget.workMeter
         )
+        try budget.consume(UInt64(bindings.count), at: .deduplication)
 
-        var nodes = Set<String>()
+        var nodes = Set<RDFTerm>()
         for binding in bindings {
-            if let value = binding["?node"], let str = value.stringValue {
-                nodes.insert(str)
+            if let value = binding["?node"], case .rdfTerm(let term) = value {
+                nodes.insert(term)
             }
         }
         return nodes
@@ -114,25 +139,28 @@ struct SHACLTargetResolver: Sendable {
     /// Query objects matching { ?s <predicate> ?node }
     private func queryObjects(
         predicate: String
-    ) async throws -> Set<String> {
+    ) async throws -> Set<RDFTerm> {
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .wildcard,
-                predicate: .value(.string(predicate)),
+                predicate: .value(.rdfTerm(.iri(predicate))),
                 object: .variable("?node")
             )
         ])
 
-        let (bindings, _) = try await executor.execute(
-            pattern: pattern,
+        let (bindings, _) = try await executor.executeInTransaction(
+            pattern: graphScope.apply(to: pattern),
+            transaction: transaction,
             limit: nil,
-            offset: 0
+            offset: 0,
+            workMeter: budget.workMeter
         )
+        try budget.consume(UInt64(bindings.count), at: .deduplication)
 
-        var nodes = Set<String>()
+        var nodes = Set<RDFTerm>()
         for binding in bindings {
-            if let value = binding["?node"], let str = value.stringValue {
-                nodes.insert(str)
+            if let value = binding["?node"], case .rdfTerm(let term) = value {
+                nodes.insert(term)
             }
         }
         return nodes

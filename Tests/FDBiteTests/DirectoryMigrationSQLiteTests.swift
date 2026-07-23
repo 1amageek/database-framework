@@ -3,6 +3,7 @@ import Testing
 import Foundation
 import Database
 import TestHeartbeat
+import DatabaseRuntime
 
 @Persistable(type: "SQLiteDirectoryMigrationUser")
 struct SQLiteDirectoryMigrationUserV1 {
@@ -61,7 +62,7 @@ enum SQLiteDirectoryMigrationCopyPlan: SchemaMigrationPlan {
     }
 
     static func purgeLegacyDirectory(context: MigrationContext) async throws {
-        try await context.purgeLegacyStorage(SQLiteDirectoryMigrationUserV1.self)
+        try await context.purgeSourceSchemaStorage(SQLiteDirectoryMigrationUserV1.self)
     }
 }
 
@@ -75,6 +76,7 @@ struct DirectoryMigrationSQLiteTests {
         let initialContainer = try await DBContainer(
             for: SQLiteDirectoryMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -87,13 +89,15 @@ struct DirectoryMigrationSQLiteTests {
         let migratedContainer = try await DBContainer(
             for: SQLiteDirectoryMigrationSchemaV2.self,
             migrationPlan: SQLiteDirectoryMigrationCopyPlan.self,
-            configuration: .init(backend: .custom(engine))
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer(
             for: SQLiteDirectoryMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let rows = try await verificationContainer.newContext()

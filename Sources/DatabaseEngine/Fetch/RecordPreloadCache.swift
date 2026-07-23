@@ -4,7 +4,11 @@
 // Reference: FDB Record Layer ScanProperties.ExecuteState and preload behavior
 // Caches frequently accessed records to reduce database reads.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Synchronization
 import Core
 

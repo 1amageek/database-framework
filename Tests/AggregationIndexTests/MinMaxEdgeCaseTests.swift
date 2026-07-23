@@ -12,15 +12,14 @@ import TestSupport
 struct MinMaxEdgeCaseTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     // MARK: - Test Model
 
-    struct Product: Persistable {
-        typealias ID = String
-
-        var id: String
+    @Persistable
+    struct Product {
+        var id: String = ""
         var region: String
         var category: String
         var price: Int64
@@ -31,57 +30,13 @@ struct MinMaxEdgeCaseTests {
             self.category = category
             self.price = price
         }
-
-        static var persistableType: String { "Product" }
-        static var allFields: [String] { ["id", "region", "category", "price"] }
-        static var indexDescriptors: [IndexDescriptor] { [] }
-
-        static func fieldNumber(for fieldName: String) -> Int? { nil }
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "region": return region
-            case "category": return category
-            case "price": return price
-            default: return nil
-            }
-        }
-
-        static func fieldName<Value>(for keyPath: KeyPath<Product, Value>) -> String {
-            switch keyPath {
-            case \Product.id: return "id"
-            case \Product.region: return "region"
-            case \Product.category: return "category"
-            case \Product.price: return "price"
-            default: return "\(keyPath)"
-            }
-        }
-
-        static func fieldName(for keyPath: PartialKeyPath<Product>) -> String {
-            switch keyPath {
-            case \Product.id: return "id"
-            case \Product.region: return "region"
-            case \Product.category: return "category"
-            case \Product.price: return "price"
-            default: return "\(keyPath)"
-            }
-        }
-
-        static func fieldName(for keyPath: AnyKeyPath) -> String {
-            if let partial = keyPath as? PartialKeyPath<Product> {
-                return fieldName(for: partial)
-            }
-            return "\(keyPath)"
-        }
     }
 
     // MARK: - Composite Grouping Tests
 
     @Test("MIN with composite grouping keys")
     func testMinCompositeGrouping() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_composite_grouping", testId).pack())
 
@@ -146,7 +101,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MAX with composite grouping keys")
     func testMaxCompositeGrouping() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_composite_grouping", testId).pack())
 
@@ -211,7 +166,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("getAllMins with composite grouping")
     func testGetAllMinsCompositeGrouping() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_batch_composite", testId).pack())
 
@@ -282,7 +237,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("getAllMaxs with composite grouping")
     func testGetAllMaxsCompositeGrouping() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_batch_composite", testId).pack())
 
@@ -355,7 +310,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MIN with empty group after deleting all items")
     func testMinEmptyGroupAfterDelete() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_empty_group", testId).pack())
 
@@ -412,7 +367,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MAX with empty group after deleting all items")
     func testMaxEmptyGroupAfterDelete() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_empty_group", testId).pack())
 
@@ -469,7 +424,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("getAllMins excludes empty groups")
     func testGetAllMinsExcludesEmptyGroups() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_batch_empty", testId).pack())
 
@@ -538,7 +493,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MIN: Update that moves item to different group updates both groups")
     func testMinGroupMovement() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_group_move", testId).pack())
 
@@ -629,7 +584,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MAX: Update that moves item to different group updates both groups")
     func testMaxGroupMovement() async throws {
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_group_move", testId).pack())
 

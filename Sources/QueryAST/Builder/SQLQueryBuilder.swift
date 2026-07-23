@@ -5,7 +5,7 @@
 /// - ISO/IEC 9075:2023 (SQL)
 /// - ISO/IEC 9075-16:2023 (SQL/PGQ)
 
-import Foundation
+import QueryIR
 
 /// SQL Query Builder for type-safe query construction
 public struct SQLQueryBuilder: Sendable {
@@ -117,17 +117,32 @@ extension SQLQueryBuilder {
         return builder
     }
 
-    /// Add WHERE condition: column = value
-    public func `where`(_ column: String, equals value: Any) -> SQLQueryBuilder {
-        guard let lit = Literal(value) else { return self }
-        return self.where(.equal(.column(ColumnRef(column: column)), .literal(lit)))
+    /// Add WHERE condition: column = literal
+    public func `where`(_ column: String, equals literal: Literal) -> SQLQueryBuilder {
+        self.where(
+            .equal(
+                .column(ColumnRef(column: column)),
+                .literal(literal)
+            )
+        )
     }
 
-    /// Add WHERE condition: column operator value
-    public func `where`(_ column: String, _ op: ComparisonOperator, _ value: Any) -> SQLQueryBuilder {
-        guard let lit = Literal(value) else { return self }
+    /// Add WHERE condition: column = value
+    public func `where`<Value: DatabaseLiteralConvertible>(
+        _ column: String,
+        equals value: Value
+    ) throws(DatabaseLiteralConversionError) -> SQLQueryBuilder {
+        self.where(column, equals: try value.databaseLiteral)
+    }
+
+    /// Add WHERE condition: column operator literal
+    public func `where`(
+        _ column: String,
+        _ op: ComparisonOperator,
+        _ literal: Literal
+    ) -> SQLQueryBuilder {
         let colExpr = Expression.column(ColumnRef(column: column))
-        let valExpr = Expression.literal(lit)
+        let valExpr = Expression.literal(literal)
 
         let condition: Expression
         switch op {
@@ -143,20 +158,18 @@ extension SQLQueryBuilder {
             condition = .greaterThan(colExpr, valExpr)
         case .greaterThanOrEqual:
             condition = .greaterThanOrEqual(colExpr, valExpr)
-        case .like:
-            if case .string(let pattern) = lit {
-                condition = .like(colExpr, pattern: pattern)
-            } else {
-                return self
-            }
-        case .inList:
-            // For IN, value should be an array
-            return self
-        case .notInList:
-            return self
         }
 
         return self.where(condition)
+    }
+
+    /// Add WHERE condition: column operator value
+    public func `where`<Value: DatabaseLiteralConvertible>(
+        _ column: String,
+        _ op: ComparisonOperator,
+        _ value: Value
+    ) throws(DatabaseLiteralConversionError) -> SQLQueryBuilder {
+        self.where(column, op, try value.databaseLiteral)
     }
 
     /// Add WHERE column IS NULL
@@ -169,24 +182,94 @@ extension SQLQueryBuilder {
         self.where(.isNotNull(.column(ColumnRef(column: column))))
     }
 
-    /// Add WHERE column IN (values...)
-    public func whereIn(_ column: String, _ values: [Any]) -> SQLQueryBuilder {
-        let literals = values.compactMap { Literal($0) }
-        guard literals.count == values.count else { return self }
+    /// Add WHERE column LIKE pattern
+    public func whereLike(_ column: String, pattern: String) -> SQLQueryBuilder {
+        self.where(
+            .like(
+                .column(ColumnRef(column: column)),
+                pattern: pattern
+            )
+        )
+    }
+
+    /// Add WHERE column IN (literals...)
+    public func whereIn(_ column: String, _ literals: [Literal]) -> SQLQueryBuilder {
         return self.where(.inList(
             .column(ColumnRef(column: column)),
             values: literals.map { .literal($0) }
         ))
     }
 
-    /// Add WHERE column BETWEEN low AND high
-    public func whereBetween(_ column: String, _ low: Any, _ high: Any) -> SQLQueryBuilder {
-        guard let lowLit = Literal(low), let highLit = Literal(high) else { return self }
+    /// Add WHERE column IN (values...)
+    public func whereIn<Value: DatabaseLiteralConvertible>(
+        _ column: String,
+        _ values: [Value]
+    ) throws(DatabaseLiteralConversionError) -> SQLQueryBuilder {
+        var expressions: [Expression] = []
+        expressions.reserveCapacity(values.count)
+        for value in values {
+            expressions.append(.literal(try value.databaseLiteral))
+        }
+        return self.where(
+            .inList(
+                .column(ColumnRef(column: column)),
+                values: expressions
+            )
+        )
+    }
+
+    /// Add WHERE column NOT IN (literals...)
+    public func whereNotIn(_ column: String, _ literals: [Literal]) -> SQLQueryBuilder {
+        self.where(
+            .notInList(
+                .column(ColumnRef(column: column)),
+                values: literals.map { .literal($0) }
+            )
+        )
+    }
+
+    /// Add WHERE column NOT IN (values...)
+    public func whereNotIn<Value: DatabaseLiteralConvertible>(
+        _ column: String,
+        _ values: [Value]
+    ) throws(DatabaseLiteralConversionError) -> SQLQueryBuilder {
+        var expressions: [Expression] = []
+        expressions.reserveCapacity(values.count)
+        for value in values {
+            expressions.append(.literal(try value.databaseLiteral))
+        }
+        return self.where(
+            .notInList(
+                .column(ColumnRef(column: column)),
+                values: expressions
+            )
+        )
+    }
+
+    /// Add WHERE column BETWEEN low AND high literals
+    public func whereBetween(
+        _ column: String,
+        _ low: Literal,
+        _ high: Literal
+    ) -> SQLQueryBuilder {
         return self.where(.between(
             .column(ColumnRef(column: column)),
-            low: .literal(lowLit),
-            high: .literal(highLit)
+            low: .literal(low),
+            high: .literal(high)
         ))
+    }
+
+    /// Add WHERE column BETWEEN low AND high values of the same type
+    public func whereBetween<Value: DatabaseLiteralConvertible>(
+        _ column: String,
+        _ low: Value,
+        _ high: Value
+    ) throws(DatabaseLiteralConversionError) -> SQLQueryBuilder {
+        self.whereBetween(
+            column,
+            try low.databaseLiteral,
+            try high.databaseLiteral
+        )
     }
 
     /// Add OR condition
@@ -209,9 +292,6 @@ public enum ComparisonOperator: Sendable {
     case lessThanOrEqual
     case greaterThan
     case greaterThanOrEqual
-    case like
-    case inList
-    case notInList
 }
 
 // MARK: - JOIN Clause

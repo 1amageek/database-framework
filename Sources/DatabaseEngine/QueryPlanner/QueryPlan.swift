@@ -1,7 +1,11 @@
 // QueryPlan.swift
 // QueryPlanner - Query execution plan representation
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 
 /// Represents an executable query plan
@@ -189,7 +193,7 @@ extension PlanOperator: CustomStringConvertible {
         case .intersection(let op):
             return "Intersection(\(op.children.count) children)"
         case .filter(let op):
-            return "Filter(selectivity: \(String(format: "%.2f", op.selectivity)))"
+            return "Filter(selectivity: \(DatabaseTextFormatting.fixedDecimal(op.selectivity, fractionDigits: 2)))"
         case .sort(let op):
             let fields = op.sortDescriptors.map { $0.fieldName }
             return "Sort(\(fields.joined(separator: ", ")))"
@@ -203,8 +207,6 @@ extension PlanOperator: CustomStringConvertible {
             return "VectorSearch(\(op.index.name), k: \(op.k))"
         case .spatialScan(let op):
             return "SpatialScan(\(op.index.name))"
-        case .aggregation(let op):
-            return "Aggregation(\(op.index.name), type: \(op.aggregationType))"
         case .inUnion(let op):
             return "InUnion(\(op.index.name), field: \(op.fieldPath), values: \(op.valueCount))"
         case .inJoin(let op):

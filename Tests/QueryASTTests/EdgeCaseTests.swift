@@ -576,21 +576,18 @@ struct EdgeCaseTests {
         }
     }
 
-    @Test("Prefixed name edge cases")
-    func testPrefixedNameEdgeCases() throws {
-        // Empty local part
-        let emptyLocal = SPARQLTerm.prefixedName(prefix: "ex", local: "")
+    @Test("Canonical IRI edge cases")
+    func testCanonicalIRIEdgeCases() throws {
+        let namespaceIRI = SPARQLTerm.iri("http://example.org/")
+        let longIRIString = "http://example.org/" + String(repeating: "a", count: 1000)
+        let longIRI = SPARQLTerm.iri(longIRIString)
 
-        // Long local part
-        let longLocal = SPARQLTerm.prefixedName(prefix: "ex", local: String(repeating: "a", count: 1000))
-
-        if case .prefixedName(let prefix, let local) = emptyLocal {
-            #expect(prefix == "ex")
-            #expect(local.isEmpty)
+        if case .iri(let iri) = namespaceIRI {
+            #expect(iri == "http://example.org/")
         }
 
-        if case .prefixedName(_, let local) = longLocal {
-            #expect(local.count == 1000)
+        if case .iri(let iri) = longIRI {
+            #expect(iri == longIRIString)
         }
     }
 

@@ -1,7 +1,11 @@
 // IndexSkipScan.swift
 // QueryPlanner - Index skip scan optimization
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import StorageKit
 
@@ -53,7 +57,7 @@ public struct IndexSkipScanAnalyzer<T: Persistable> {
         analysis: QueryAnalysis<T>
     ) -> SkipScanAnalysis {
         // Get index key fields
-        let keyFields = index.keyPaths.map { T.fieldName(for: $0) }
+        let keyFields = index.fieldNames
         guard keyFields.count >= 2 else {
             return SkipScanAnalysis(
                 isApplicable: false,
@@ -130,7 +134,7 @@ public struct IndexSkipScanAnalyzer<T: Persistable> {
             estimatedSkipScanCost: skipScanCost,
             estimatedTableScanCost: tableScanCost,
             reason: isBeneficial
-                ? "Skip scan is \(String(format: "%.1fx", tableScanCost / skipScanCost)) faster than table scan"
+                ? "Skip scan is \(DatabaseTextFormatting.fixedDecimal(tableScanCost / skipScanCost, fractionDigits: 1))x faster than table scan"
                 : "Skip scan cost exceeds table scan"
         )
     }
@@ -281,38 +285,6 @@ public struct SkipScanOperator<T: Persistable>: @unchecked Sendable {
         self.reverse = reverse
         self.satisfiedConditions = satisfiedConditions
         self.estimatedEntries = estimatedEntries
-    }
-}
-
-// MARK: - Skip Value Provider
-
-/// Protocol for providing distinct values for skip scan
-public protocol SkipValueProvider: Sendable {
-    /// Get distinct values for a field
-    func getDistinctValues<T: Persistable>(
-        field: String,
-        type: T.Type,
-        index: IndexDescriptor
-    ) async throws -> [any TupleElement]
-}
-
-/// Default provider that uses sampling or index scan
-public struct DefaultSkipValueProvider: SkipValueProvider {
-
-    private let dataStore: any DataStore
-
-    public init(dataStore: any DataStore) {
-        self.dataStore = dataStore
-    }
-
-    public func getDistinctValues<T: Persistable>(
-        field: String,
-        type: T.Type,
-        index: IndexDescriptor
-    ) async throws -> [any TupleElement] {
-        // Implementation would scan the index to find distinct values
-        // For now, return empty array
-        []
     }
 }
 

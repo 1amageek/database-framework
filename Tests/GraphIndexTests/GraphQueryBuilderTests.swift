@@ -7,6 +7,8 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
+import DatabaseRuntime
 import DatabaseEngine
 import StorageKit
 import FDBStorage
@@ -17,15 +19,15 @@ import TestSupport
 // MARK: - Test Model
 
 @Persistable
-struct GraphQueryTestEdge: Equatable {
-    #Directory<GraphQueryTestEdge>("test", "graphquerybuilder", "edges")
+struct GraphQueryEdge: Equatable {
+    #Directory<GraphQueryEdge>("test", "graphquerybuilder", "edges")
 
     var id: String = UUID().uuidString
     var source: String = ""
     var predicate: String = ""
     var target: String = ""
 
-    #Index(GraphIndexKind<GraphQueryTestEdge>(
+    #Index(GraphIndexKind<GraphQueryEdge>(
         from: \.source,
         edge: \.predicate,
         to: \.target,
@@ -39,7 +41,7 @@ struct GraphQueryTestEdge: Equatable {
 struct GraphQueryBuilderTests {
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
     }
 
     private func uniqueID(_ prefix: String) -> String {
@@ -47,18 +49,18 @@ struct GraphQueryBuilderTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([GraphQueryTestEdge.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema([GraphQueryEdge.self], version: Schema.Version(1, 0, 0))
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "graphquerybuilder", "edges"])
+        try? await container.engine.removeDirectory(path: ["test", "graphquerybuilder", "edges"])
         try await container.ensureIndexesReady()
     }
 
-    private func makeEdge(source: String, predicate: String, target: String) -> GraphQueryTestEdge {
-        var edge = GraphQueryTestEdge()
+    private func makeEdge(source: String, predicate: String, target: String) -> GraphQueryEdge {
+        var edge = GraphQueryEdge()
         edge.source = source
         edge.predicate = predicate
         edge.target = target
@@ -69,7 +71,7 @@ struct GraphQueryBuilderTests {
 
     @Test("executeItems() throws executeItemsNotSupported error")
     func executeItemsThrowsError() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -84,7 +86,7 @@ struct GraphQueryBuilderTests {
 
             // Test: executeItems() should throw
             await #expect(throws: GraphQueryError.self) {
-                _ = try await context.graph(GraphQueryTestEdge.self)
+                _ = try await context.graph(GraphQueryEdge.self)
                     .defaultIndex()
                     .from(alice)
                     .executeItems()
@@ -106,7 +108,7 @@ struct GraphQueryBuilderTests {
 
     @Test("execute() returns edges with from pattern")
     func executeWithFromPattern() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -127,7 +129,7 @@ struct GraphQueryBuilderTests {
             try await context.save()
 
             // Test: Query edges from Alice
-            let edges = try await context.graph(GraphQueryTestEdge.self)
+            let edges = try await context.graph(GraphQueryEdge.self)
                 .defaultIndex()
                 .from(alice)
                 .execute()
@@ -139,7 +141,7 @@ struct GraphQueryBuilderTests {
 
     @Test("execute() returns edges with from and edge pattern")
     func executeWithFromAndEdgePattern() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -158,7 +160,7 @@ struct GraphQueryBuilderTests {
             try await context.save()
 
             // Test: Query edges from Alice with "knows" predicate
-            let edges = try await context.graph(GraphQueryTestEdge.self)
+            let edges = try await context.graph(GraphQueryEdge.self)
                 .defaultIndex()
                 .from(alice)
                 .edge("knows")
@@ -173,7 +175,7 @@ struct GraphQueryBuilderTests {
 
     @Test("execute() returns edges with to pattern")
     func executeWithToPattern() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -192,7 +194,7 @@ struct GraphQueryBuilderTests {
             try await context.save()
 
             // Test: Query edges to Carol
-            let edges = try await context.graph(GraphQueryTestEdge.self)
+            let edges = try await context.graph(GraphQueryEdge.self)
                 .defaultIndex()
                 .to(carol)
                 .execute()
@@ -204,7 +206,7 @@ struct GraphQueryBuilderTests {
 
     @Test("execute() returns empty when no matches")
     func executeReturnsEmptyWhenNoMatches() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -220,7 +222,7 @@ struct GraphQueryBuilderTests {
             try await context.save()
 
             // Test: Query with non-existent source
-            let edges = try await context.graph(GraphQueryTestEdge.self)
+            let edges = try await context.graph(GraphQueryEdge.self)
                 .defaultIndex()
                 .from(nonExistent)
                 .execute()
@@ -231,7 +233,7 @@ struct GraphQueryBuilderTests {
 
     @Test("execute() respects limit")
     func executeRespectsLimit() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -248,7 +250,7 @@ struct GraphQueryBuilderTests {
             try await context.save()
 
             // Test: Query with limit
-            let edges = try await context.graph(GraphQueryTestEdge.self)
+            let edges = try await context.graph(GraphQueryEdge.self)
                 .defaultIndex()
                 .from(alice)
                 .limit(5)
@@ -262,7 +264,7 @@ struct GraphQueryBuilderTests {
 
     @Test("execute() throws when index not found")
     func executeThrowsWhenIndexNotFound() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
@@ -271,7 +273,7 @@ struct GraphQueryBuilderTests {
             // Test: Using field combination that doesn't have an index should throw
             // The actual index is defined on (source, predicate, target), not (id, source, target)
             await #expect(throws: GraphQueryError.self) {
-                _ = try await context.graph(GraphQueryTestEdge.self)
+                _ = try await context.graph(GraphQueryEdge.self)
                     .index(\.id, \.source, \.target)
                     .from("Alice")
                     .execute()

@@ -124,7 +124,7 @@ For operations that do not use change tracking:
 ~~~swift
 try await context.withTransaction { transaction in
     let value = try await transaction.getValue(for: key)
-    transaction.setValue(updatedValue, for: key)
+    try transaction.setValue(updatedValue, for: key)
     _ = value
 }
 ~~~

@@ -4,6 +4,7 @@
 
 import Testing
 import TestHeartbeat
+import DatabaseValue
 @testable import QueryAST
 
 // MARK: - GraphPattern Builder Tests
@@ -176,18 +177,21 @@ struct GraphPatternBuilderTests {
     func testPath() throws {
         let path = GraphPattern.path(
             subject: .variable("s"),
-            path: .oneOrMore(.iri("http://example.org/knows")),
+            path: .oneOrMore(
+                .iri(try DatabaseRDFPredicateIRI("http://example.org/knows"))
+            ),
             object: .variable("o")
         )
 
-        if case .propertyPath(let subject, let p, let object) = path {
-            if case .variable(let s) = subject {
+        if case .basic(let basicGraphPattern) = path,
+           case .propertyPath(let propertyPathPattern) = basicGraphPattern.elements.first {
+            if case .variable(let s) = propertyPathPattern.subject {
                 #expect(s == "s")
             }
-            if case .oneOrMore = p {
+            if case .oneOrMore = propertyPathPattern.path {
                 // OK
             }
-            if case .variable(let o) = object {
+            if case .variable(let o) = propertyPathPattern.object {
                 #expect(o == "o")
             }
         } else {
@@ -207,7 +211,7 @@ struct GraphPatternAnalysisTests {
             TriplePattern(subject: .variable("s"), predicate: .iri("http://example.org/p"), object: .variable("o"))
         ])
 
-        let vars = pattern.variables
+        let vars = pattern.variableScope.visibleVariables
         #expect(vars.contains("s"))
         #expect(vars.contains("o"))
         #expect(vars.count == 2)
@@ -223,7 +227,7 @@ struct GraphPatternAnalysisTests {
         ])
         let joined = GraphPattern.join(left, right)
 
-        let vars = joined.variables
+        let vars = joined.variableScope.visibleVariables
         #expect(vars.contains("a"))
         #expect(vars.contains("b"))
         #expect(vars.contains("c"))
@@ -241,7 +245,7 @@ struct GraphPatternAnalysisTests {
         ])
         let optional = GraphPattern.optional(left, right)
 
-        let vars = optional.variables
+        let vars = optional.variableScope.visibleVariables
         #expect(vars.contains("s"))
         #expect(vars.contains("name"))
         #expect(vars.contains("age"))
@@ -257,7 +261,7 @@ struct GraphPatternAnalysisTests {
         ])
         let union = GraphPattern.union(left, right)
 
-        let vars = union.variables
+        let vars = union.variableScope.visibleVariables
         #expect(vars.contains("x"))
         #expect(vars.contains("a"))
         #expect(vars.contains("b"))
@@ -274,7 +278,7 @@ struct GraphPatternAnalysisTests {
         let minus = GraphPattern.minus(left, right)
 
         // MINUS does not project variables from the right
-        let vars = minus.variables
+        let vars = minus.variableScope.visibleVariables
         #expect(vars.contains("s"))
         #expect(vars.contains("p"))
         #expect(vars.contains("o"))
@@ -288,7 +292,7 @@ struct GraphPatternAnalysisTests {
         ])
         let bind = GraphPattern.bind(base, variable: "doubled", expression: .multiply(.variable(Variable("v")), .literal(.int(2))))
 
-        let vars = bind.variables
+        let vars = bind.variableScope.visibleVariables
         #expect(vars.contains("s"))
         #expect(vars.contains("v"))
         #expect(vars.contains("doubled"))
@@ -298,7 +302,7 @@ struct GraphPatternAnalysisTests {
     func testVariablesValues() throws {
         let values = GraphPattern.values(variables: ["x", "y"], bindings: [[.int(1), .int(2)]])
 
-        let vars = values.variables
+        let vars = values.variableScope.visibleVariables
         #expect(vars == Set(["x", "y"]))
     }
 
@@ -306,11 +310,13 @@ struct GraphPatternAnalysisTests {
     func testVariablesPropertyPath() throws {
         let path = GraphPattern.propertyPath(
             subject: .variable("start"),
-            path: .zeroOrMore(.iri("http://example.org/link")),
+            path: .zeroOrMore(
+                .iri(try DatabaseRDFPredicateIRI("http://example.org/link"))
+            ),
             object: .variable("end")
         )
 
-        let vars = path.variables
+        let vars = path.variableScope.visibleVariables
         #expect(vars.contains("start"))
         #expect(vars.contains("end"))
     }
@@ -321,7 +327,7 @@ struct GraphPatternAnalysisTests {
             TriplePattern(subject: .variable("s"), predicate: .iri("http://example.org/p"), object: .variable("o"))
         ])
 
-        let required = pattern.requiredVariables
+        let required = pattern.variableScope.definitelyBoundVariables
         #expect(required.contains("s"))
         #expect(required.contains("o"))
     }
@@ -336,7 +342,7 @@ struct GraphPatternAnalysisTests {
         ])
         let optional = GraphPattern.optional(left, right)
 
-        let required = optional.requiredVariables
+        let required = optional.variableScope.definitelyBoundVariables
         #expect(required.contains("s"))
         #expect(required.contains("name"))
         #expect(!required.contains("age"))  // age is optional
@@ -353,7 +359,7 @@ struct GraphPatternAnalysisTests {
         let union = GraphPattern.union(left, right)
 
         // Only variables required in BOTH branches are required
-        let required = union.requiredVariables
+        let required = union.variableScope.definitelyBoundVariables
         #expect(required.contains("x"))
         #expect(!required.contains("a"))
         #expect(!required.contains("b"))
@@ -373,7 +379,11 @@ struct GraphPatternAnalysisTests {
         let values = GraphPattern.values(variables: ["x"], bindings: [[.int(1)]])
         #expect(values.tripleCount == 0)
 
-        let path = GraphPattern.propertyPath(subject: .variable("s"), path: .iri("http://example.org/p"), object: .variable("o"))
+        let path = GraphPattern.propertyPath(
+            subject: .variable("s"),
+            path: .iri(try DatabaseRDFPredicateIRI("http://example.org/p")),
+            object: .variable("o")
+        )
         #expect(path.tripleCount == 1)
     }
 
@@ -392,80 +402,6 @@ struct GraphPatternAnalysisTests {
 
         let service = GraphPattern.service(endpoint: "http://example.org", pattern: basic, silent: false)
         #expect(service.complexity == 10)  // Network overhead
-    }
-}
-
-// MARK: - GraphPattern Transformation Tests
-
-@Suite("GraphPattern Transformation Tests", .heartbeat)
-struct GraphPatternTransformationTests {
-
-    @Test("flattened - nested joins")
-    func testFlattenedNestedJoins() throws {
-        let p1 = GraphPattern.basic([
-            TriplePattern(subject: .variable("a"), predicate: .variable("p1"), object: .variable("b"))
-        ])
-        let p2 = GraphPattern.basic([
-            TriplePattern(subject: .variable("b"), predicate: .variable("p2"), object: .variable("c"))
-        ])
-        let p3 = GraphPattern.basic([
-            TriplePattern(subject: .variable("c"), predicate: .variable("p3"), object: .variable("d"))
-        ])
-
-        let nested = GraphPattern.join(GraphPattern.join(p1, p2), p3)
-        let flattened = nested.flattened()
-
-        if case .basic(let triples) = flattened {
-            #expect(triples.count == 3)
-        } else {
-            Issue.record("Expected flattened basic pattern")
-        }
-    }
-
-    @Test("flattened - filter preserved")
-    func testFlattenedFilterPreserved() throws {
-        let base = GraphPattern.basic([
-            TriplePattern(subject: .variable("s"), predicate: .variable("p"), object: .variable("o"))
-        ])
-        let filtered = GraphPattern.filter(base, .greaterThan(.variable(Variable("o")), .literal(.int(10))))
-
-        let flattened = filtered.flattened()
-        if case .filter(_, let condition) = flattened {
-            if case .greaterThan = condition {
-                // OK
-            } else {
-                Issue.record("Expected greaterThan condition")
-            }
-        } else {
-            Issue.record("Expected filter pattern")
-        }
-    }
-
-    @Test("flattened - optional preserved")
-    func testFlattenedOptionalPreserved() throws {
-        let left = GraphPattern.basic([])
-        let right = GraphPattern.basic([])
-        let optional = GraphPattern.optional(left, right)
-
-        let flattened = optional.flattened()
-        if case .optional = flattened {
-            // OK
-        } else {
-            Issue.record("Expected optional pattern")
-        }
-    }
-
-    @Test("optimized")
-    func testOptimized() throws {
-        let base = GraphPattern.basic([
-            TriplePattern(subject: .variable("s"), predicate: .variable("p"), object: .variable("o"))
-        ])
-
-        let optimized = base.optimized()
-        // Currently optimized just calls flattened
-        if case .basic = optimized {
-            // OK
-        }
     }
 }
 
@@ -593,7 +529,9 @@ struct GraphPatternSPARQLSerializationTests {
     func testToSPARQLPropertyPath() throws {
         let path = GraphPattern.propertyPath(
             subject: .variable("s"),
-            path: .oneOrMore(.iri("http://example.org/knows")),
+            path: .oneOrMore(
+                .iri(try DatabaseRDFPredicateIRI("http://example.org/knows"))
+            ),
             object: .variable("o")
         )
 

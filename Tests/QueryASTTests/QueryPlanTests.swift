@@ -4,6 +4,7 @@
 
 import Testing
 import TestHeartbeat
+import DatabaseValue
 @testable import QueryAST
 
 // MARK: - QueryPlan Tests
@@ -316,7 +317,9 @@ struct TriplePatternPlanTests {
 
     @Test("PropertyPathPlan construction")
     func testPropertyPathPlan() throws {
-        let path = PropertyPath.oneOrMore(.iri("http://example.org/knows"))
+        let path = PropertyPath.oneOrMore(
+            .iri(try DatabaseRDFPredicateIRI("http://example.org/knows"))
+        )
 
         let plan = PropertyPathPlan(
             subject: nil,

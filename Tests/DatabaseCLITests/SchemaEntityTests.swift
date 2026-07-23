@@ -133,12 +133,12 @@ struct SchemaEntityTests {
     }
 }
 
-// MARK: - AnyIndexDescriptor Codable
+// MARK: - IndexDescriptorMetadata Codable
 
-@Suite("AnyIndexDescriptor Codable", .heartbeat)
-struct AnyIndexDescriptorCodableTests {
+@Suite("IndexDescriptorMetadata Codable", .heartbeat)
+struct IndexDescriptorMetadataCodableTests {
 
-    /// Create an AnyIndexDescriptor for testing
+    /// Create an IndexDescriptorMetadata for testing
     private func makeIndex(
         name: String,
         kindIdentifier: String,
@@ -146,10 +146,10 @@ struct AnyIndexDescriptorCodableTests {
         unique: Bool = false,
         sparse: Bool = false,
         kindMetadata: [String: IndexMetadataValue] = [:]
-    ) -> AnyIndexDescriptor {
-        AnyIndexDescriptor(
+    ) -> IndexDescriptorMetadata {
+        IndexDescriptorMetadata(
             name: name,
-            kind: AnyIndexKind(
+            kind: IndexKindMetadata(
                 identifier: kindIdentifier,
                 subspaceStructure: kindIdentifier == "scalar" ? .flat : .hierarchical,
                 fieldNames: fieldNames,
@@ -176,7 +176,7 @@ struct AnyIndexDescriptorCodableTests {
         )
 
         let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(AnyIndexDescriptor.self, from: data)
+        let decoded = try JSONDecoder().decode(IndexDescriptorMetadata.self, from: data)
 
         #expect(decoded == original)
         #expect(decoded.kind.metadata["strategy"]?.stringValue == "tripleStore")
@@ -191,7 +191,7 @@ struct AnyIndexDescriptorCodableTests {
         )
 
         let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(AnyIndexDescriptor.self, from: data)
+        let decoded = try JSONDecoder().decode(IndexDescriptorMetadata.self, from: data)
 
         #expect(decoded.kind.metadata.isEmpty)
     }
@@ -239,9 +239,9 @@ struct AnyIndexDescriptorCodableTests {
     }
 
     @Test func storedFieldNamesAccessor() {
-        let index = AnyIndexDescriptor(
+        let index = IndexDescriptorMetadata(
             name: "test_index",
-            kind: AnyIndexKind(
+            kind: IndexKindMetadata(
                 identifier: "vector",
                 subspaceStructure: .hierarchical,
                 fieldNames: ["embedding"],

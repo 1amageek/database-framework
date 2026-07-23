@@ -1,73 +1,224 @@
 import Core
-import Crypto
-import DatabaseClientProtocol
+import DatabaseDigest
+import DatabaseValue
+import DatabaseWire
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 public enum RecordVersionTokenCodec {
-    public static func token(for fields: [String: FieldValue]) -> RecordVersionToken {
-        RecordVersionToken(digest(fields: fields).base64EncodedString())
+    public static func token(
+        for fields: [String: DatabaseValue]
+    ) throws -> RecordVersionToken {
+        let digest = try digest(fields: fields)
+        return RecordVersionToken(Data(digest).base64EncodedString())
     }
 
-    public static func digest(fields: [String: FieldValue]) -> Data {
-        var payload = Data()
+    public static func digest(
+        fields: [String: DatabaseValue]
+    ) throws -> DatabaseBytes {
+        var hasher = SHA256Accumulator()
         for key in fields.keys.sorted() {
-            appendString(key, to: &payload)
-            appendValue(fields[key] ?? .null, to: &payload)
+            appendString(key, to: &hasher)
+            guard let value = fields[key] else {
+                throw RecordVersionTokenCodecError.inconsistentFieldMap(key)
+            }
+            try appendValue(value, to: &hasher)
         }
-        let digest = SHA256.hash(data: payload)
-        return Data(digest)
+        return hasher.finalize()
     }
 
-    public static func digest(from token: RecordVersionToken) throws -> [UInt8] {
+    public static func digest(
+        fields: [DatabaseObjectField]
+    ) throws -> DatabaseBytes {
+        var valuesByName: [String: DatabaseValue] = [:]
+        valuesByName.reserveCapacity(fields.count)
+        for field in fields {
+            guard valuesByName.updateValue(field.value, forKey: field.name) == nil else {
+                throw RecordVersionTokenCodecError.duplicateField(field.name)
+            }
+        }
+        return try digest(fields: valuesByName)
+    }
+
+    public static func digest(from token: RecordVersionToken) throws -> DatabaseBytes {
         guard let data = Data(base64Encoded: token.value) else {
             throw RecordVersionTokenCodecError.invalidToken
         }
-        return Array(data)
+        return DatabaseBytes(Array(data))
     }
 }
 
 public enum RecordVersionTokenCodecError: Error, Sendable {
     case invalidToken
+    case inconsistentFieldMap(String)
+    case duplicateField(String)
 }
 
-private func appendString(_ value: String, to data: inout Data) {
-    let bytes = Array(value.utf8)
-    appendLength(bytes.count, to: &data)
-    data.append(contentsOf: bytes)
-}
-
-private func appendLength(_ value: Int, to data: inout Data) {
-    var bigEndian = UInt64(value).bigEndian
-    withUnsafeBytes(of: &bigEndian) { data.append(contentsOf: $0) }
-}
-
-private func appendValue(_ value: FieldValue, to data: inout Data) {
-    switch value {
-    case .int64(let value):
-        data.append(0x01)
-        var bigEndian = value.bigEndian
-        withUnsafeBytes(of: &bigEndian) { data.append(contentsOf: $0) }
-    case .double(let value):
-        data.append(0x02)
-        var bigEndian = value.bitPattern.bigEndian
-        withUnsafeBytes(of: &bigEndian) { data.append(contentsOf: $0) }
-    case .string(let value):
-        data.append(0x03)
-        appendString(value, to: &data)
-    case .bool(let value):
-        data.append(0x04)
-        data.append(value ? 0x01 : 0x00)
-    case .data(let value):
-        data.append(0x05)
-        appendLength(value.count, to: &data)
-        data.append(value)
-    case .null:
-        data.append(0x06)
-    case .array(let values):
-        data.append(0x07)
-        appendLength(values.count, to: &data)
-        for value in values {
-            appendValue(value, to: &data)
+private func appendString(
+    _ value: String,
+    to hasher: inout SHA256Accumulator
+) {
+    appendLength(value.utf8.count, to: &hasher)
+    let updated = value.utf8.withContiguousStorageIfAvailable { bytes in
+        hasher.update(UnsafeRawBufferPointer(bytes))
+        return true
+    } ?? false
+    if !updated {
+        for byte in value.utf8 {
+            appendByte(byte, to: &hasher)
         }
+    }
+}
+
+private func appendLength(
+    _ value: Int,
+    to hasher: inout SHA256Accumulator
+) {
+    var bigEndian = UInt64(value).bigEndian
+    withUnsafeBytes(of: &bigEndian) { hasher.update($0) }
+}
+
+private func appendByte(
+    _ value: UInt8,
+    to hasher: inout SHA256Accumulator
+) {
+    var value = value
+    withUnsafeBytes(of: &value) { hasher.update($0) }
+}
+
+private func appendInteger<T: FixedWidthInteger>(
+    _ value: T,
+    to hasher: inout SHA256Accumulator
+) {
+    var bigEndian = value.bigEndian
+    withUnsafeBytes(of: &bigEndian) { hasher.update($0) }
+}
+
+private func appendValue(
+    _ value: DatabaseValue,
+    to hasher: inout SHA256Accumulator
+) throws {
+    switch value {
+    case .null:
+        appendByte(0x00, to: &hasher)
+    case .bool(let value):
+        appendByte(0x01, to: &hasher)
+        appendByte(value ? 0x01 : 0x00, to: &hasher)
+    case .int64(let value):
+        appendByte(0x02, to: &hasher)
+        appendInteger(value, to: &hasher)
+    case .uint64(let value):
+        appendByte(0x03, to: &hasher)
+        appendInteger(value, to: &hasher)
+    case .double(let value):
+        appendByte(0x04, to: &hasher)
+        appendInteger(value.bitPattern, to: &hasher)
+    case .decimal(let coefficient, let scale):
+        appendByte(0x05, to: &hasher)
+        appendInteger(coefficient, to: &hasher)
+        appendInteger(scale, to: &hasher)
+    case .string(let value):
+        appendByte(0x06, to: &hasher)
+        appendString(value, to: &hasher)
+    case .bytes(let value):
+        appendByte(0x07, to: &hasher)
+        appendLength(value.count, to: &hasher)
+        value.withUnsafeBytes { hasher.update($0) }
+    case .date(let value):
+        appendByte(0x08, to: &hasher)
+        appendInteger(value.year, to: &hasher)
+        appendByte(value.month, to: &hasher)
+        appendByte(value.day, to: &hasher)
+    case .timestamp(let value):
+        appendByte(0x09, to: &hasher)
+        appendInteger(value.secondsSinceUnixEpoch, to: &hasher)
+        appendInteger(value.nanoseconds, to: &hasher)
+    case .array(let values):
+        appendByte(0x0A, to: &hasher)
+        appendLength(values.count, to: &hasher)
+        for value in values {
+            try appendValue(value, to: &hasher)
+        }
+    case .object(let fields):
+        appendByte(0x0B, to: &hasher)
+        appendLength(fields.count, to: &hasher)
+        for field in fields {
+            appendInteger(field.number, to: &hasher)
+            appendString(field.name, to: &hasher)
+            try appendValue(field.value, to: &hasher)
+        }
+    case .reference(let identity):
+        appendByte(0x0C, to: &hasher)
+        appendString(identity.entity, to: &hasher)
+        appendRecordIdentifier(identity.id, to: &hasher)
+        appendLength(identity.partitions.count, to: &hasher)
+        for field in identity.partitions {
+            appendInteger(field.number, to: &hasher)
+            appendString(field.name, to: &hasher)
+            try appendValue(field.value, to: &hasher)
+        }
+    case .rdfTerm(let term):
+        appendByte(0x0D, to: &hasher)
+        let plan = try DatabaseRDFTermCodec.encodingPlan(term)
+        appendLength(plan.byteCount, to: &hasher)
+        var sink = SHA256RDFTermDigestSink(hasher: hasher)
+        try DatabaseRDFTermCodec.encode(plan, into: &sink)
+        hasher = sink.hasher
+    case .uuid(let value):
+        appendByte(0x0E, to: &hasher)
+        appendInteger(value.high, to: &hasher)
+        appendInteger(value.low, to: &hasher)
+    }
+}
+
+private func appendRecordIdentifier(
+    _ value: RecordIdentifierValue,
+    to hasher: inout SHA256Accumulator
+) {
+    switch value {
+    case .bool(let value):
+        appendByte(0x00, to: &hasher)
+        appendByte(value ? 0x01 : 0x00, to: &hasher)
+    case .int64(let value):
+        appendByte(0x01, to: &hasher)
+        appendInteger(value, to: &hasher)
+    case .uint64(let value):
+        appendByte(0x02, to: &hasher)
+        appendInteger(value, to: &hasher)
+    case .string(let value):
+        appendByte(0x03, to: &hasher)
+        appendString(value, to: &hasher)
+    case .bytes(let value):
+        appendByte(0x04, to: &hasher)
+        appendLength(value.count, to: &hasher)
+        value.withUnsafeBytes { hasher.update($0) }
+    case .uuid(let value):
+        appendByte(0x05, to: &hasher)
+        appendInteger(value.high, to: &hasher)
+        appendInteger(value.low, to: &hasher)
+    case .composite(let components):
+        appendByte(0x06, to: &hasher)
+        appendLength(components.count, to: &hasher)
+        for component in components {
+            appendRecordIdentifier(component, to: &hasher)
+        }
+    }
+}
+
+private struct SHA256RDFTermDigestSink: DatabaseRDFTermEncodingSink {
+    var hasher: SHA256Accumulator
+
+    mutating func write(_ byte: UInt8) {
+        var byte = byte
+        withUnsafeBytes(of: &byte) {
+            hasher.update($0)
+        }
+    }
+
+    mutating func write(_ bytes: UnsafeRawBufferPointer) {
+        hasher.update(bytes)
     }
 }

@@ -1,564 +1,891 @@
-// OWLDatatypeValidator.swift
-// GraphIndex - XSD datatype validation
-//
-// Validates OWL literals against XSD datatypes and facet constraints.
-//
-// Reference: W3C XML Schema Part 2: Datatypes
-// https://www.w3.org/TR/xmlschema-2/
-
-import Foundation
 import Graph
 
-/// XSD Datatype Validator
+/// Compiles OWL data ranges and evaluates literals using XSD value semantics.
 ///
-/// Validates OWL literals for:
-/// - Lexical form validity (e.g., "abc" is not a valid integer)
-/// - Facet constraint satisfaction (e.g., minInclusive, pattern)
-/// - Data range membership
-///
-/// **Example**:
-/// ```swift
-/// let validator = OWLDatatypeValidator()
-///
-/// // Validate literal
-/// let age = OWLLiteral.integer(25)
-/// if let error = validator.validateLexicalForm(age) {
-///     print("Invalid: \(error)")
-/// }
-///
-/// // Validate against range with facets
-/// let ageRange = OWLDataRange.datatypeRestriction(
-///     datatype: "xsd:integer",
-///     facets: [.minInclusive(0), .maxInclusive(150)]
-/// )
-/// if let error = validator.validate(age, against: ageRange) {
-///     print("Out of range: \(error)")
-/// }
-/// ```
+/// Invalid schemas, unsupported datatypes, invalid lexical forms, and resource
+/// exhaustion are failures. They are never converted into non-membership.
 public struct OWLDatatypeValidator: Sendable {
+    public let profile: XSDDatatypeProfile
+    public let limits: XSDValidationLimits
 
-    // MARK: - Error Types
-
-    /// Validation error types
-    public enum ValidationError: Error, Sendable, Equatable, CustomStringConvertible {
-        /// Lexical form is invalid for the datatype
-        case invalidLexicalForm(literal: String, datatype: String, reason: String)
-
-        /// Facet constraint violated
-        case facetViolation(literal: String, facet: String, constraint: String)
-
-        /// Unknown or unsupported datatype
-        case unknownDatatype(String)
-
-        /// Literal type incompatible with data range
-        case incompatibleTypes(literal: String, range: String)
-
-        /// Empty data range (no possible values)
-        case emptyDataRange(String)
-
-        public var description: String {
-            switch self {
-            case .invalidLexicalForm(let lit, let dt, let reason):
-                return "Invalid lexical form '\(lit)' for \(dt): \(reason)"
-            case .facetViolation(let lit, let facet, let constraint):
-                return "Facet violation: '\(lit)' does not satisfy \(facet) \(constraint)"
-            case .unknownDatatype(let dt):
-                return "Unknown datatype: \(dt)"
-            case .incompatibleTypes(let lit, let range):
-                return "Incompatible types: '\(lit)' cannot be in range \(range)"
-            case .emptyDataRange(let range):
-                return "Empty data range: \(range)"
-            }
-        }
+    private var parser: XSDValueParser {
+        XSDValueParser(profile: profile, limits: limits)
     }
 
-    // MARK: - Supported Datatypes
-
-    /// Set of supported XSD datatypes
-    public static let supportedDatatypes: Set<String> = [
-        // Primitive types
-        XSDDatatype.string.iri,
-        XSDDatatype.boolean.iri,
-        XSDDatatype.decimal.iri,
-        XSDDatatype.float.iri,
-        XSDDatatype.double.iri,
-        XSDDatatype.duration.iri,
-        XSDDatatype.dateTime.iri,
-        XSDDatatype.time.iri,
-        XSDDatatype.date.iri,
-        XSDDatatype.anyURI.iri,
-        XSDDatatype.base64Binary.iri,
-        XSDDatatype.hexBinary.iri,
-
-        // Derived string types
-        XSDDatatype.normalizedString.iri,
-        XSDDatatype.token.iri,
-        XSDDatatype.language.iri,
-        XSDDatatype.nmtoken.iri,
-        XSDDatatype.name.iri,
-        XSDDatatype.ncname.iri,
-
-        // Derived numeric types
-        XSDDatatype.integer.iri,
-        XSDDatatype.nonPositiveInteger.iri,
-        XSDDatatype.negativeInteger.iri,
-        XSDDatatype.nonNegativeInteger.iri,
-        XSDDatatype.positiveInteger.iri,
-        XSDDatatype.long.iri,
-        XSDDatatype.int.iri,
-        XSDDatatype.short.iri,
-        XSDDatatype.byte.iri,
-        XSDDatatype.unsignedLong.iri,
-        XSDDatatype.unsignedInt.iri,
-        XSDDatatype.unsignedShort.iri,
-        XSDDatatype.unsignedByte.iri,
-
-        // RDF types
-        "rdf:langString",
-        "rdf:PlainLiteral"
-    ]
-
-    // MARK: - Initialization
-
-    public init() {}
-
-    // MARK: - Lexical Form Validation
-
-    /// Validate the lexical form of a literal
-    ///
-    /// - Parameter literal: The literal to validate
-    /// - Returns: ValidationError if invalid, nil if valid
-    public func validateLexicalForm(_ literal: OWLLiteral) -> ValidationError? {
-        let lexical = literal.lexicalForm
-        let datatype = literal.datatype
-
-        // Check if datatype is supported
-        guard Self.supportedDatatypes.contains(datatype) else {
-            return .unknownDatatype(datatype)
-        }
-
-        switch datatype {
-        // Boolean
-        case XSDDatatype.boolean.iri:
-            let valid = ["true", "false", "1", "0"]
-            if !valid.contains(lexical.lowercased()) {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "must be 'true', 'false', '1', or '0'")
-            }
-
-        // Integer types
-        case XSDDatatype.integer.iri, XSDDatatype.long.iri, XSDDatatype.int.iri,
-             XSDDatatype.short.iri, XSDDatatype.byte.iri:
-            if Int64(lexical) == nil {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "not a valid integer")
-            }
-
-        case XSDDatatype.nonNegativeInteger.iri, XSDDatatype.unsignedLong.iri,
-             XSDDatatype.unsignedInt.iri, XSDDatatype.unsignedShort.iri,
-             XSDDatatype.unsignedByte.iri:
-            guard let value = Int64(lexical), value >= 0 else {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "must be a non-negative integer")
-            }
-
-        case XSDDatatype.positiveInteger.iri:
-            guard let value = Int64(lexical), value > 0 else {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "must be a positive integer")
-            }
-
-        case XSDDatatype.nonPositiveInteger.iri:
-            guard let value = Int64(lexical), value <= 0 else {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "must be a non-positive integer")
-            }
-
-        case XSDDatatype.negativeInteger.iri:
-            guard let value = Int64(lexical), value < 0 else {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "must be a negative integer")
-            }
-
-        // Decimal/Float/Double
-        case XSDDatatype.decimal.iri:
-            if Decimal(string: lexical) == nil {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "not a valid decimal")
-            }
-
-        case XSDDatatype.float.iri:
-            if Float(lexical) == nil && !isSpecialFloatValue(lexical) {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "not a valid float")
-            }
-
-        case XSDDatatype.double.iri:
-            if Double(lexical) == nil && !isSpecialFloatValue(lexical) {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "not a valid double")
-            }
-
-        // Date/Time types
-        case XSDDatatype.dateTime.iri:
-            if !isValidDateTime(lexical) {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "not a valid ISO 8601 dateTime")
-            }
-
-        case XSDDatatype.date.iri:
-            if !isValidDate(lexical) {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "not a valid ISO 8601 date")
-            }
-
-        case XSDDatatype.time.iri:
-            if !isValidTime(lexical) {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "not a valid ISO 8601 time")
-            }
-
-        // URI
-        case XSDDatatype.anyURI.iri:
-            if URL(string: lexical) == nil {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "not a valid URI")
-            }
-
-        // Binary types
-        case XSDDatatype.base64Binary.iri:
-            if !isValidBase64(lexical) {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "not valid Base64")
-            }
-
-        case XSDDatatype.hexBinary.iri:
-            if !isValidHexBinary(lexical) {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "not valid hex binary")
-            }
-
-        // Language tag
-        case "rdf:langString":
-            if literal.language == nil || literal.language!.isEmpty {
-                return .invalidLexicalForm(literal: lexical, datatype: datatype,
-                    reason: "langString requires a language tag")
-            }
-
-        // String types - always valid lexically
-        case XSDDatatype.string.iri, XSDDatatype.normalizedString.iri,
-             XSDDatatype.token.iri, XSDDatatype.name.iri, XSDDatatype.ncname.iri,
-             XSDDatatype.nmtoken.iri, XSDDatatype.language.iri,
-             "rdf:PlainLiteral":
-            break
-
-        default:
-            break
-        }
-
-        return nil
+    public init(
+        profile: XSDDatatypeProfile = .owl2,
+        limits: XSDValidationLimits = .default
+    ) {
+        self.profile = profile
+        self.limits = limits
     }
 
-    // MARK: - Data Range Validation
+    public func validateLexicalForm(_ literal: OWLLiteral) throws {
+        _ = try parser.parse(literal)
+    }
 
-    /// Validate a literal against a data range
-    ///
-    /// - Parameters:
-    ///   - literal: The literal to validate
-    ///   - range: The data range to check against
-    /// - Returns: ValidationError if invalid, nil if valid
-    public func validate(_ literal: OWLLiteral, against range: OWLDataRange) -> ValidationError? {
+    public func compile(
+        _ range: OWLDataRange
+    ) throws -> CompiledOWLDataRange {
+        var state = CompilerState()
+        return CompiledOWLDataRange(
+            root: try compileNode(range, depth: 0, state: &state)
+        )
+    }
+
+    public func contains(
+        _ literal: OWLLiteral,
+        in range: CompiledOWLDataRange
+    ) throws -> DataRangeMembership {
+        let value = try parser.parse(literal)
+        return try contains(
+            literal: literal,
+            value: value,
+            in: range.root
+        )
+    }
+
+    public func membership(
+        of literal: OWLLiteral,
+        in range: OWLDataRange
+    ) throws -> DataRangeMembership {
+        try contains(literal, in: compile(range))
+    }
+
+    public func validateFacets(
+        _ literal: OWLLiteral,
+        facets: [FacetRestriction]
+    ) throws -> DataRangeMembership {
+        try membership(
+            of: literal,
+            in: .datatypeRestriction(
+                datatype: literal.datatype,
+                facets: facets
+            )
+        )
+    }
+
+    public func compare(
+        _ lhs: OWLLiteral,
+        _ rhs: OWLLiteral
+    ) throws -> XSDOrder {
+        let lhsValue = try parser.parse(lhs)
+        let rhsValue = try parser.parse(rhs)
+        return try comparison(lhsValue, rhsValue)
+    }
+
+    public func isIdenticalValue(
+        _ lhs: OWLLiteral,
+        _ rhs: OWLLiteral
+    ) throws -> Bool {
+        let left = try parser.parse(lhs)
+        let right = try parser.parse(rhs)
+        return try resolveIdentity(left.isIdentical(to: right))
+    }
+
+    private func compileNode(
+        _ range: OWLDataRange,
+        depth: Int,
+        state: inout CompilerState
+    ) throws -> CompiledOWLDataRange.Node {
+        guard depth <= limits.maxDataRangeDepth else {
+            throw XSDValidationFailure.resourceLimitExceeded(
+                resource: "dataRangeDepth",
+                limit: limits.maxDataRangeDepth,
+                actual: depth
+            )
+        }
+        state.nodeCount += 1
+        guard state.nodeCount <= limits.maxDataRangeNodes else {
+            throw XSDValidationFailure.resourceLimitExceeded(
+                resource: "dataRangeNodes",
+                limit: limits.maxDataRangeNodes,
+                actual: state.nodeCount
+            )
+        }
+
         switch range {
-        case .datatype(let dt):
-            // Check datatype compatibility
-            if literal.datatype != dt && !isSubtypeOf(literal.datatype, dt) {
-                return .incompatibleTypes(literal: literal.description, range: dt)
-            }
-            return validateLexicalForm(literal)
+        case .datatype(let iri):
+            return .datatype(try datatypeKind(iri))
 
         case .dataIntersectionOf(let ranges):
-            // Must satisfy all ranges
-            for r in ranges {
-                if let error = validate(literal, against: r) {
-                    return error
-                }
+            guard ranges.count >= 2 else {
+                throw invalidDataRangeCardinality(
+                    constructor: "DataIntersectionOf",
+                    minimum: 2,
+                    actual: ranges.count
+                )
             }
-            return nil
+            var nodes: [CompiledOWLDataRange.Node] = []
+            nodes.reserveCapacity(ranges.count)
+            for child in ranges {
+                nodes.append(try compileNode(
+                    child,
+                    depth: depth + 1,
+                    state: &state
+                ))
+            }
+            return .intersection(nodes)
 
         case .dataUnionOf(let ranges):
-            // Must satisfy at least one range
-            for r in ranges {
-                if validate(literal, against: r) == nil {
-                    return nil
-                }
+            guard ranges.count >= 2 else {
+                throw invalidDataRangeCardinality(
+                    constructor: "DataUnionOf",
+                    minimum: 2,
+                    actual: ranges.count
+                )
             }
-            return .incompatibleTypes(literal: literal.description, range: range.description)
+            var nodes: [CompiledOWLDataRange.Node] = []
+            nodes.reserveCapacity(ranges.count)
+            for child in ranges {
+                nodes.append(try compileNode(
+                    child,
+                    depth: depth + 1,
+                    state: &state
+                ))
+            }
+            return .union(nodes)
 
-        case .dataComplementOf(let inner):
-            // Must NOT satisfy the inner range
-            if validate(literal, against: inner) == nil {
-                return .incompatibleTypes(literal: literal.description, range: range.description)
-            }
-            return nil
+        case .dataComplementOf(let child):
+            return .complement(try compileNode(
+                child,
+                depth: depth + 1,
+                state: &state
+            ))
 
         case .dataOneOf(let literals):
-            // Must be one of the enumerated values
-            if !literals.contains(literal) {
-                return .incompatibleTypes(literal: literal.description, range: range.description)
+            guard !literals.isEmpty else {
+                throw invalidDataRangeCardinality(
+                    constructor: "DataOneOf",
+                    minimum: 1,
+                    actual: 0
+                )
             }
-            return nil
+            guard literals.count <= limits.maxDataOneOfLiterals else {
+                throw XSDValidationFailure.resourceLimitExceeded(
+                    resource: "dataOneOfLiterals",
+                    limit: limits.maxDataOneOfLiterals,
+                    actual: literals.count
+                )
+            }
+            try validateDataOneOfPayload(literals)
+            var values: [XSDParsedValue] = []
+            values.reserveCapacity(literals.count)
+            for literal in literals {
+                values.append(try parser.parse(literal))
+            }
+            return .oneOf(values)
 
-        case .datatypeRestriction(let dt, let facets):
-            // Check base datatype
-            if literal.datatype != dt && !isSubtypeOf(literal.datatype, dt) {
-                return .incompatibleTypes(literal: literal.description, range: dt)
+        case .datatypeRestriction(let iri, let facets):
+            guard !facets.isEmpty else {
+                throw invalidDataRangeCardinality(
+                    constructor: "DatatypeRestriction",
+                    minimum: 1,
+                    actual: 0
+                )
             }
-            // Check facets
-            return validateFacets(literal, facets: facets)
+            let kind = try datatypeKind(iri)
+            state.facetCount += facets.count
+            guard state.facetCount <= limits.maxFacetCount else {
+                throw XSDValidationFailure.resourceLimitExceeded(
+                    resource: "facetCount",
+                    limit: limits.maxFacetCount,
+                    actual: state.facetCount
+                )
+            }
+            var compiled: [CompiledFacet] = []
+            compiled.reserveCapacity(facets.count)
+            for facet in facets {
+                compiled.append(try compileFacet(facet, for: kind))
+            }
+            return .restriction(kind, compiled)
         }
     }
 
-    // MARK: - Facet Validation
-
-    /// Validate a literal against facet restrictions
-    ///
-    /// - Parameters:
-    ///   - literal: The literal to validate
-    ///   - facets: The facet restrictions
-    /// - Returns: ValidationError if invalid, nil if valid
-    public func validateFacets(_ literal: OWLLiteral, facets: [FacetRestriction]) -> ValidationError? {
-        for facet in facets {
-            if let error = validateSingleFacet(literal, facet: facet) {
-                return error
-            }
+    private func compileFacet(
+        _ restriction: FacetRestriction,
+        for kind: XSDDatatypeKind
+    ) throws -> CompiledFacet {
+        guard facet(restriction.facet, appliesTo: kind) else {
+            throw XSDValidationFailure.invalidRestriction(XSDDiagnostic(
+                code: "inapplicableFacet",
+                message: "\(restriction.facet.rawValue) does not apply to \(kind.canonicalIRI)"
+            ))
         }
-        return nil
-    }
 
-    private func validateSingleFacet(_ literal: OWLLiteral, facet: FacetRestriction) -> ValidationError? {
-        let lexical = literal.lexicalForm
-
-        switch facet.facet {
+        switch restriction.facet {
         case .minInclusive:
-            guard let comparison = compare(literal, facet.value) else {
-                return .facetViolation(literal: lexical, facet: "minInclusive",
-                    constraint: "cannot compare with \(facet.value.lexicalForm)")
-            }
-            if comparison == .orderedAscending {
-                return .facetViolation(literal: lexical, facet: "minInclusive",
-                    constraint: ">= \(facet.value.lexicalForm)")
-            }
-
+            return .minInclusive(try compileBound(restriction.value, for: kind))
         case .maxInclusive:
-            guard let comparison = compare(literal, facet.value) else {
-                return .facetViolation(literal: lexical, facet: "maxInclusive",
-                    constraint: "cannot compare with \(facet.value.lexicalForm)")
-            }
-            if comparison == .orderedDescending {
-                return .facetViolation(literal: lexical, facet: "maxInclusive",
-                    constraint: "<= \(facet.value.lexicalForm)")
-            }
-
+            return .maxInclusive(try compileBound(restriction.value, for: kind))
         case .minExclusive:
-            guard let comparison = compare(literal, facet.value) else {
-                return .facetViolation(literal: lexical, facet: "minExclusive",
-                    constraint: "cannot compare with \(facet.value.lexicalForm)")
-            }
-            if comparison != .orderedDescending {
-                return .facetViolation(literal: lexical, facet: "minExclusive",
-                    constraint: "> \(facet.value.lexicalForm)")
-            }
-
+            return .minExclusive(try compileBound(restriction.value, for: kind))
         case .maxExclusive:
-            guard let comparison = compare(literal, facet.value) else {
-                return .facetViolation(literal: lexical, facet: "maxExclusive",
-                    constraint: "cannot compare with \(facet.value.lexicalForm)")
-            }
-            if comparison != .orderedAscending {
-                return .facetViolation(literal: lexical, facet: "maxExclusive",
-                    constraint: "< \(facet.value.lexicalForm)")
-            }
-
+            return .maxExclusive(try compileBound(restriction.value, for: kind))
         case .length:
-            guard let length = facet.value.intValue else { break }
-            if lexical.count != length {
-                return .facetViolation(literal: lexical, facet: "length",
-                    constraint: "= \(length)")
-            }
-
+            return .length(try compileNonNegativeInteger(restriction.value))
         case .minLength:
-            guard let minLen = facet.value.intValue else { break }
-            if lexical.count < minLen {
-                return .facetViolation(literal: lexical, facet: "minLength",
-                    constraint: ">= \(minLen)")
-            }
-
+            return .minLength(try compileNonNegativeInteger(restriction.value))
         case .maxLength:
-            guard let maxLen = facet.value.intValue else { break }
-            if lexical.count > maxLen {
-                return .facetViolation(literal: lexical, facet: "maxLength",
-                    constraint: "<= \(maxLen)")
-            }
-
-        case .pattern:
-            let pattern = facet.value.lexicalForm
-            do {
-                let regex = try NSRegularExpression(pattern: pattern, options: [])
-                let range = NSRange(lexical.startIndex..., in: lexical)
-                if regex.firstMatch(in: lexical, options: [], range: range) == nil {
-                    return .facetViolation(literal: lexical, facet: "pattern",
-                        constraint: "matches '\(pattern)'")
-                }
-            } catch {
-                return .facetViolation(literal: lexical, facet: "pattern",
-                    constraint: "invalid regex '\(pattern)'")
-            }
-
+            return .maxLength(try compileNonNegativeInteger(restriction.value))
         case .totalDigits:
-            guard let maxDigits = facet.value.intValue else { break }
-            let digitCount = lexical.filter { $0.isNumber }.count
-            if digitCount > maxDigits {
-                return .facetViolation(literal: lexical, facet: "totalDigits",
-                    constraint: "<= \(maxDigits)")
+            let value = try compileNonNegativeInteger(restriction.value)
+            guard value.sign > 0 else {
+                throw XSDValidationFailure.invalidRestriction(XSDDiagnostic(
+                    code: "totalDigits",
+                    message: "totalDigits must be positive"
+                ))
             }
-
+            return .totalDigits(value)
         case .fractionDigits:
-            guard let maxFraction = facet.value.intValue else { break }
-            if let dotIndex = lexical.firstIndex(of: ".") {
-                let fractionPart = lexical[lexical.index(after: dotIndex)...]
-                if fractionPart.count > maxFraction {
-                    return .facetViolation(literal: lexical, facet: "fractionDigits",
-                        constraint: "<= \(maxFraction)")
+            return .fractionDigits(try compileNonNegativeInteger(restriction.value))
+        case .pattern:
+            let parsedPattern: XSDParsedValue
+            do {
+                parsedPattern = try parser.parse(restriction.value)
+            } catch let failure as XSDValidationFailure {
+                switch failure {
+                case .invalidLexicalForm(_, _, let diagnostic):
+                    throw XSDValidationFailure.invalidRestriction(diagnostic)
+                default:
+                    throw failure
                 }
             }
-
+            guard case .text(let pattern) = parsedPattern,
+                  pattern.kind == .string else {
+                throw XSDValidationFailure.invalidRestriction(XSDDiagnostic(
+                    code: "patternDatatype",
+                    message: "pattern must be an xsd:string literal"
+                ))
+            }
+            do {
+                return .pattern(try XSDRegularExpression(
+                    pattern: restriction.value.lexicalForm,
+                    limits: regularExpressionLimits
+                ))
+            } catch let error as XSDRegularExpression.Error {
+                throw mapRegularExpressionError(error)
+            }
         case .whiteSpace:
-            // Whitespace handling is about normalization, not validation
-            break
+            throw XSDValidationFailure.invalidRestriction(XSDDiagnostic(
+                code: "whiteSpaceFacet",
+                message: "whiteSpace is a pre-lexical schema facet, not an OWL runtime restriction"
+            ))
+        case .langRange:
+            let parsedRange: XSDParsedValue
+            do {
+                parsedRange = try parser.parse(restriction.value)
+            } catch let failure as XSDValidationFailure {
+                switch failure {
+                case .invalidLexicalForm(_, _, let diagnostic):
+                    throw XSDValidationFailure.invalidRestriction(diagnostic)
+                default:
+                    throw failure
+                }
+            }
+            guard case .text(let rangeText) = parsedRange,
+                  rangeText.kind == .string,
+                  let range = RDFLanguageRange(
+                    restriction.value.lexicalForm
+                  ) else {
+                throw XSDValidationFailure.invalidRestriction(XSDDiagnostic(
+                    code: "langRange",
+                    message: "rdf:langRange requires an xsd:string basic language range"
+                ))
+            }
+            return .languageRange(range)
         }
-
-        return nil
     }
 
-    // MARK: - Comparison
-
-    /// Compare two literals for ordering
-    ///
-    /// - Parameters:
-    ///   - lhs: First literal
-    ///   - rhs: Second literal
-    /// - Returns: ComparisonResult or nil if incomparable
-    public func compare(_ lhs: OWLLiteral, _ rhs: OWLLiteral) -> ComparisonResult? {
-        // Numeric comparison
-        // NaN is incomparable with any value (including itself) per IEEE 754.
-        // XSD facet constraints (minInclusive, maxExclusive, etc.) require ordered
-        // comparison, so NaN must return nil (incomparable).
-        if let lhsDouble = lhs.doubleValue, let rhsDouble = rhs.doubleValue {
-            if lhsDouble.isNaN || rhsDouble.isNaN { return nil }
-            if lhsDouble < rhsDouble { return .orderedAscending }
-            if lhsDouble > rhsDouble { return .orderedDescending }
-            return .orderedSame
+    private func validateDataOneOfPayload(
+        _ literals: [OWLLiteral]
+    ) throws {
+        var total = 0
+        for literal in literals {
+            try addDataOneOfPayload(literal.lexicalForm, to: &total)
+            try addDataOneOfPayload(literal.datatype, to: &total)
+            try addDataOneOfPayload(literal.language, to: &total)
+            try addDataOneOfPayload(literal.direction, to: &total)
         }
-
-        // Date comparison
-        if let lhsDate = lhs.dateValue, let rhsDate = rhs.dateValue {
-            return lhsDate.compare(rhsDate)
-        }
-
-        // String comparison (lexicographic)
-        if lhs.datatype == rhs.datatype {
-            return lhs.lexicalForm.compare(rhs.lexicalForm)
-        }
-
-        return nil
     }
 
-    // MARK: - Helper Methods
-
-    private func isSpecialFloatValue(_ value: String) -> Bool {
-        let special = ["INF", "-INF", "NaN", "+INF"]
-        return special.contains(value)
+    private func addDataOneOfPayload(
+        _ field: String?,
+        to total: inout Int
+    ) throws {
+        guard let field else { return }
+        let (next, overflow) = total.addingReportingOverflow(field.utf8.count)
+        let actual = overflow ? Int.max : next
+        guard !overflow,
+              actual <= limits.maxDataOneOfPayloadUTF8Bytes else {
+            throw XSDValidationFailure.resourceLimitExceeded(
+                resource: "dataOneOfPayloadUTF8Bytes",
+                limit: limits.maxDataOneOfPayloadUTF8Bytes,
+                actual: actual
+            )
+        }
+        total = actual
     }
 
-    private func isValidDateTime(_ value: String) -> Bool {
-        let formatter = ISO8601DateFormatter()
-        return formatter.date(from: value) != nil
+    private func compileBound(
+        _ literal: OWLLiteral,
+        for kind: XSDDatatypeKind
+    ) throws -> XSDParsedValue {
+        let value: XSDParsedValue
+        do {
+            value = try parser.parse(literal)
+        } catch let failure as XSDValidationFailure {
+            switch failure {
+            case .invalidLexicalForm(_, _, let diagnostic):
+                throw XSDValidationFailure.invalidRestriction(diagnostic)
+            default:
+                throw failure
+            }
+        }
+        guard valueBelongs(value, to: kind) else {
+            throw XSDValidationFailure.invalidRestriction(XSDDiagnostic(
+                code: "boundDatatype",
+                message: "bound is outside \(kind.canonicalIRI)'s value space"
+            ))
+        }
+        return value
     }
 
-    /// Validate XSD date format: YYYY-MM-DD with optional timezone
-    ///
-    /// XSD `xsd:date` allows: `2024-01-15`, `2024-01-15Z`, `2024-01-15+02:00`, `2024-01-15-05:00`
-    /// `ISO8601DateFormatter` with `.withFullDate` alone doesn't handle timezone suffixes.
-    ///
-    /// Reference: W3C XML Schema Part 2, Section 3.3.9
-    private func isValidDate(_ value: String) -> Bool {
-        let pattern = #"^(-?\d{4}-\d{2}-\d{2})(Z|[+-]\d{2}:\d{2})?$"#
-        guard value.range(of: pattern, options: .regularExpression) != nil else {
+    private func compileNonNegativeInteger(
+        _ literal: OWLLiteral
+    ) throws -> XSDDecimalValue {
+        let value: XSDParsedValue
+        do {
+            value = try parser.parse(literal)
+        } catch let failure as XSDValidationFailure {
+            switch failure {
+            case .invalidLexicalForm(_, _, let diagnostic):
+                throw XSDValidationFailure.invalidRestriction(diagnostic)
+            default:
+                throw failure
+            }
+        }
+        guard case .decimal(_, let decimal) = value,
+              decimal.fractionDigits == 0,
+              decimal.sign >= 0 else {
+            throw XSDValidationFailure.invalidRestriction(XSDDiagnostic(
+                code: "facetInteger",
+                message: "facet value must be a representable non-negative integer"
+            ))
+        }
+        return decimal
+    }
+
+    private func contains(
+        literal: OWLLiteral,
+        value: XSDParsedValue,
+        in node: CompiledOWLDataRange.Node
+    ) throws -> DataRangeMembership {
+        switch node {
+        case .datatype(let kind):
+            guard valueBelongs(value, to: kind) else {
+                return .notMember(XSDDiagnostic(
+                    code: "datatype",
+                    message: "value is outside \(kind.canonicalIRI)"
+                ))
+            }
+            return .member
+
+        case .intersection(let children):
+            for child in children {
+                let result = try contains(literal: literal, value: value, in: child)
+                if !result.isMember { return result }
+            }
+            return .member
+
+        case .union(let children):
+            for child in children {
+                if try contains(literal: literal, value: value, in: child).isMember {
+                    return .member
+                }
+            }
+            return .notMember(XSDDiagnostic(
+                code: "union",
+                message: "value is outside every union member"
+            ))
+
+        case .complement(let child):
+            let inner = try contains(literal: literal, value: value, in: child)
+            if inner.isMember {
+                return .notMember(XSDDiagnostic(
+                    code: "complement",
+                    message: "value belongs to the complemented range"
+                ))
+            }
+            return .member
+
+        case .oneOf(let allowed):
+            for candidate in allowed {
+                if try resolveIdentity(value.isIdentical(to: candidate)) {
+                    return .member
+                }
+            }
+            return .notMember(XSDDiagnostic(
+                code: "oneOf",
+                message: "value is not identical to an enumerated value"
+            ))
+
+        case .restriction(let kind, let facets):
+            guard valueBelongs(value, to: kind) else {
+                return .notMember(XSDDiagnostic(
+                    code: "restrictionDatatype",
+                    message: "value is outside \(kind.canonicalIRI)"
+                ))
+            }
+            for facet in facets {
+                let result = try evaluate(
+                    facet,
+                    literal: literal,
+                    value: value
+                )
+                if !result.isMember { return result }
+            }
+            return .member
+        }
+    }
+
+    private func evaluate(
+        _ facet: CompiledFacet,
+        literal: OWLLiteral,
+        value: XSDParsedValue
+    ) throws -> DataRangeMembership {
+        switch facet {
+        case .minInclusive(let bound):
+            return try orderedMembership(
+                value,
+                bound,
+                accepted: { $0 == .equal || $0 == .greater },
+                code: "minInclusive"
+            )
+        case .maxInclusive(let bound):
+            return try orderedMembership(
+                value,
+                bound,
+                accepted: { $0 == .equal || $0 == .less },
+                code: "maxInclusive"
+            )
+        case .minExclusive(let bound):
+            return try orderedMembership(
+                value,
+                bound,
+                accepted: { $0 == .greater },
+                code: "minExclusive"
+            )
+        case .maxExclusive(let bound):
+            return try orderedMembership(
+                value,
+                bound,
+                accepted: { $0 == .less },
+                code: "maxExclusive"
+            )
+        case .length(let required):
+            return lengthMembership(
+                value,
+                required: required,
+                accepted: { $0 == 0 },
+                code: "length"
+            )
+        case .minLength(let required):
+            return lengthMembership(
+                value,
+                required: required,
+                accepted: { $0 <= 0 },
+                code: "minLength"
+            )
+        case .maxLength(let required):
+            return lengthMembership(
+                value,
+                required: required,
+                accepted: { $0 >= 0 },
+                code: "maxLength"
+            )
+        case .pattern(let expression):
+            do {
+                let input: Substring
+                if case .text(let text) = value {
+                    input = text.value
+                } else {
+                    input = literal.lexicalForm[...]
+                }
+                guard try expression.wholeMatch(input) else {
+                    return .notMember(XSDDiagnostic(
+                        code: "pattern",
+                        message: "lexical form does not match the XSD pattern"
+                    ))
+                }
+                return .member
+            } catch let error as XSDRegularExpression.Error {
+                throw mapRegularExpressionError(error)
+            }
+        case .totalDigits(let maximum):
+            guard let decimal = value.decimalValue else {
+                throw internalRestrictionFailure("totalDigits requires decimal")
+            }
+            return maximum.compare(toNonNegativeInt: decimal.totalDigits) >= 0
+                ? .member
+                : .notMember(XSDDiagnostic(
+                    code: "totalDigits",
+                    message: "value has \(decimal.totalDigits) total digits; maximum is \(maximum.source)"
+                ))
+        case .fractionDigits(let maximum):
+            guard let decimal = value.decimalValue else {
+                throw internalRestrictionFailure("fractionDigits requires decimal")
+            }
+            return maximum.compare(toNonNegativeInt: decimal.fractionDigits) >= 0
+                ? .member
+                : .notMember(XSDDiagnostic(
+                    code: "fractionDigits",
+                    message: "value has \(decimal.fractionDigits) fraction digits; maximum is \(maximum.source)"
+                ))
+        case .languageRange(let range):
+            guard case .text(let text) = value,
+                  text.kind == .rdfPlainLiteral else {
+                throw internalRestrictionFailure(
+                    "rdf:langRange requires rdf:PlainLiteral"
+                )
+            }
+            return range.matches(text.language)
+                ? .member
+                : .notMember(XSDDiagnostic(
+                    code: "langRange",
+                    message: "language tag does not match the basic language range"
+                ))
+        }
+    }
+
+    private func orderedMembership(
+        _ value: XSDParsedValue,
+        _ bound: XSDParsedValue,
+        accepted: (XSDOrder) -> Bool,
+        code: String
+    ) throws -> DataRangeMembership {
+        let order = try comparison(value, bound)
+        guard order != .unordered, accepted(order) else {
+            return .notMember(XSDDiagnostic(
+                code: code,
+                message: order == .unordered
+                    ? "values are unordered"
+                    : "ordered facet is not satisfied"
+            ))
+        }
+        return .member
+    }
+
+    private func lengthMembership(
+        _ value: XSDParsedValue,
+        required: XSDDecimalValue,
+        accepted: (Int) -> Bool,
+        code: String
+    ) -> DataRangeMembership {
+        guard let length = value.length else {
+            return .notMember(XSDDiagnostic(
+                code: code,
+                message: "value has no XSD length measure"
+            ))
+        }
+        return accepted(required.compare(toNonNegativeInt: length))
+            ? .member
+            : .notMember(XSDDiagnostic(
+                code: code,
+                message: "length facet is not satisfied"
+            ))
+    }
+
+    private func comparison(
+        _ lhs: XSDParsedValue,
+        _ rhs: XSDParsedValue
+    ) throws -> XSDOrder {
+        switch lhs.compareForFacet(to: rhs) {
+        case .success(let order):
+            return order
+        case .failure(.duration(.arithmeticLimit)):
+            throw XSDValidationFailure.resourceLimitExceeded(
+                resource: "durationArithmetic",
+                limit: limits.maxDurationComponentDigits,
+                actual: limits.maxDurationComponentDigits
+            )
+        case .failure(.duration(.componentLimit(let actual, let limit))):
+            throw XSDValidationFailure.resourceLimitExceeded(
+                resource: "durationComponentDigits",
+                limit: limit,
+                actual: actual
+            )
+        case .failure(.duration(.invalid)):
+            throw internalRestrictionFailure("validated duration became invalid")
+        case .failure(.rationalWork(let limit, let actual)):
+            throw XSDValidationFailure.resourceLimitExceeded(
+                resource: "rationalComparisonWork",
+                limit: limit,
+                actual: actual
+            )
+        case .failure(.xmlWork(let limit, let actual)):
+            throw XSDValidationFailure.resourceLimitExceeded(
+                resource: "xmlComparisonWork",
+                limit: limit,
+                actual: actual
+            )
+        }
+    }
+
+    private func resolveIdentity(
+        _ result: Result<Bool, XSDValueComparisonFailure>
+    ) throws -> Bool {
+        switch result {
+        case .success(let identical):
+            return identical
+        case .failure(.rationalWork(let limit, let actual)):
+            throw XSDValidationFailure.resourceLimitExceeded(
+                resource: "rationalComparisonWork",
+                limit: limit,
+                actual: actual
+            )
+        case .failure(.duration):
+            throw internalRestrictionFailure(
+                "duration identity unexpectedly required comparison work"
+            )
+        case .failure(.xmlWork(let limit, let actual)):
+            throw XSDValidationFailure.resourceLimitExceeded(
+                resource: "xmlComparisonWork",
+                limit: limit,
+                actual: actual
+            )
+        }
+    }
+
+    private func valueBelongs(
+        _ value: XSDParsedValue,
+        to expected: XSDDatatypeKind
+    ) -> Bool {
+        switch (value, expected) {
+        case (_, .rdfsLiteral):
+            return true
+        case (.text(let text), .string):
+            guard text.kind.isStringFamily else { return false }
+            return XSDUnicodeRules.allXMLCharacters(text.value)
+        case (.text(let text), .normalizedString):
+            guard text.kind.isStringFamily else { return false }
+            return XSDUnicodeRules.isNormalizedString(text.value)
+        case (.text(let text), .token):
+            guard text.kind.isStringFamily else { return false }
+            return XSDUnicodeRules.isToken(text.value)
+        case (.text(let text), .language):
+            guard text.kind.isStringFamily else { return false }
+            return XSDUnicodeRules.isLanguage(text.value)
+        case (.text(let text), .nmtoken):
+            guard text.kind.isStringFamily else { return false }
+            return XSDUnicodeRules.isNMTOKEN(text.value)
+        case (.text(let text), .name):
+            guard text.kind.isStringFamily else { return false }
+            return XSDUnicodeRules.isName(text.value, allowsColon: true)
+        case (.text(let text), .ncname):
+            guard text.kind.isStringFamily else { return false }
+            return XSDUnicodeRules.isName(text.value, allowsColon: false)
+        case (.text(let text), .anyURI):
+            return text.kind == .anyURI
+        case (.text(let text), .rdfLangString):
+            return text.kind == .rdfLangString && text.language != nil
+        case (.text(let text), .rdfPlainLiteral):
+            return text.kind == .rdfPlainLiteral
+                || text.kind == .rdfLangString
+                || (text.kind.isStringFamily && text.language == nil)
+
+        case (.xmlLiteral, .rdfXMLLiteral):
+            return true
+
+        case (.boolean, .boolean):
+            return true
+
+        case (.decimal, .decimal):
+            return true
+        case (.decimal, .owlRational), (.decimal, .owlReal):
+            return true
+        case (.rational, .owlRational), (.rational, .owlReal):
+            return true
+        case (.decimal(_, let decimal), let integer) where integer.isInteger:
+            return decimal.fractionDigits == 0
+                && integerValue(decimal, belongsTo: integer)
+
+        case (.floating(let actual, _), .float):
+            return actual == .float
+        case (.floating(let actual, _), .double):
+            return actual == .double
+
+        case (.duration, .duration):
+            return true
+
+        case (.temporal(let actual, let temporal), .dateTime):
+            return (actual == .dateTime || actual == .dateTimeStamp)
+                && temporal.kind == .dateTime
+        case (.temporal(let actual, let temporal), .dateTimeStamp):
+            return (actual == .dateTime || actual == .dateTimeStamp)
+                && temporal.kind == .dateTime
+                && temporal.timezoneOffsetMinutes != nil
+        case (.temporal(let actual, _), .date):
+            return actual == .date
+        case (.temporal(let actual, _), .time):
+            return actual == .time
+
+        case (.binary(let binary), .hexBinary):
+            return binary.kind == .hexadecimal
+        case (.binary(let binary), .base64Binary):
+            return binary.kind == .base64
+        default:
             return false
         }
-        // Extract date portion (first 10 or 11 chars for negative years) for component validation
-        let datePortion = String(value.prefix(value.hasPrefix("-") ? 11 : 10))
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withFullDate]
-        return formatter.date(from: datePortion) != nil
     }
 
-    private func isValidTime(_ value: String) -> Bool {
-        let pattern = #"^\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?$"#
-        return value.range(of: pattern, options: .regularExpression) != nil
+    private func invalidDataRangeCardinality(
+        constructor: String,
+        minimum: Int,
+        actual: Int
+    ) -> XSDValidationFailure {
+        .invalidRestriction(XSDDiagnostic(
+            code: "dataRangeCardinality",
+            message: "\(constructor) requires at least \(minimum) operand(s); received \(actual)"
+        ))
     }
 
-    private func isValidBase64(_ value: String) -> Bool {
-        let base64Pattern = #"^[A-Za-z0-9+/]*={0,2}$"#
-        return value.range(of: base64Pattern, options: .regularExpression) != nil &&
-               value.count % 4 == 0
+    private func integerValue(
+        _ value: XSDDecimalValue,
+        belongsTo kind: XSDDatatypeKind
+    ) -> Bool {
+        switch kind {
+        case .integer:
+            return true
+        case .nonPositiveInteger:
+            return value.sign <= 0
+        case .negativeInteger:
+            return value.sign < 0
+        case .nonNegativeInteger:
+            return value.sign >= 0
+        case .positiveInteger:
+            return value.sign > 0
+        case .long:
+            return value.isWithin(minimum: "-9223372036854775808", maximum: "9223372036854775807")
+        case .int:
+            return value.isWithin(minimum: "-2147483648", maximum: "2147483647")
+        case .short:
+            return value.isWithin(minimum: "-32768", maximum: "32767")
+        case .byte:
+            return value.isWithin(minimum: "-128", maximum: "127")
+        case .unsignedLong:
+            return value.isWithin(minimum: "0", maximum: "18446744073709551615")
+        case .unsignedInt:
+            return value.isWithin(minimum: "0", maximum: "4294967295")
+        case .unsignedShort:
+            return value.isWithin(minimum: "0", maximum: "65535")
+        case .unsignedByte:
+            return value.isWithin(minimum: "0", maximum: "255")
+        default:
+            return false
+        }
     }
 
-    private func isValidHexBinary(_ value: String) -> Bool {
-        let hexPattern = #"^[0-9A-Fa-f]*$"#
-        return value.range(of: hexPattern, options: .regularExpression) != nil &&
-               value.count % 2 == 0
-    }
-
-    private func isSubtypeOf(_ sub: String, _ sup: String) -> Bool {
-        // XSD type hierarchy
-        let hierarchy: [String: Set<String>] = [
-            XSDDatatype.integer.iri: [XSDDatatype.decimal.iri],
-            XSDDatatype.long.iri: [XSDDatatype.integer.iri],
-            XSDDatatype.int.iri: [XSDDatatype.long.iri],
-            XSDDatatype.short.iri: [XSDDatatype.int.iri],
-            XSDDatatype.byte.iri: [XSDDatatype.short.iri],
-            XSDDatatype.nonNegativeInteger.iri: [XSDDatatype.integer.iri],
-            XSDDatatype.positiveInteger.iri: [XSDDatatype.nonNegativeInteger.iri],
-            XSDDatatype.unsignedLong.iri: [XSDDatatype.nonNegativeInteger.iri],
-            XSDDatatype.unsignedInt.iri: [XSDDatatype.unsignedLong.iri],
-            XSDDatatype.unsignedShort.iri: [XSDDatatype.unsignedInt.iri],
-            XSDDatatype.unsignedByte.iri: [XSDDatatype.unsignedShort.iri],
-            XSDDatatype.nonPositiveInteger.iri: [XSDDatatype.integer.iri],
-            XSDDatatype.negativeInteger.iri: [XSDDatatype.nonPositiveInteger.iri],
-            XSDDatatype.normalizedString.iri: [XSDDatatype.string.iri],
-            XSDDatatype.token.iri: [XSDDatatype.normalizedString.iri],
-            XSDDatatype.language.iri: [XSDDatatype.token.iri],
-            XSDDatatype.nmtoken.iri: [XSDDatatype.token.iri],
-            XSDDatatype.name.iri: [XSDDatatype.token.iri],
-            XSDDatatype.ncname.iri: [XSDDatatype.name.iri],
-        ]
-
-        // Check direct or transitive subtype
-        var current = sub
-        var visited = Set<String>()
-        while let supers = hierarchy[current], !supers.isEmpty {
-            if supers.contains(sup) {
-                return true
+    private func facet(
+        _ facet: XSDFacet,
+        appliesTo kind: XSDDatatypeKind
+    ) -> Bool {
+        switch profile {
+        case .owl2, .owl2RDF11:
+            switch facet {
+            case .minInclusive, .maxInclusive, .minExclusive, .maxExclusive:
+                return kind.isNumeric || kind == .dateTime || kind == .dateTimeStamp
+            case .length, .minLength, .maxLength:
+                return isStringLengthKind(kind) || isBinaryKind(kind)
+            case .pattern:
+                return isStringLengthKind(kind)
+            case .totalDigits, .fractionDigits, .whiteSpace:
+                return false
+            case .langRange:
+                return kind == .rdfPlainLiteral
             }
-            visited.insert(current)
-            // Get first super that hasn't been visited
-            if let next = supers.first(where: { !visited.contains($0) }) {
-                current = next
-            } else {
-                break
+        case .extendedXSD11:
+            switch facet {
+            case .minInclusive, .maxInclusive, .minExclusive, .maxExclusive:
+                return kind.isNumeric || kind == .duration
+                    || kind == .dateTime || kind == .dateTimeStamp
+                    || kind == .date || kind == .time
+            case .length, .minLength, .maxLength:
+                return isStringLengthKind(kind) || isBinaryKind(kind)
+            case .pattern:
+                return true
+            case .totalDigits, .fractionDigits:
+                return kind == .decimal || kind.isInteger
+            case .whiteSpace:
+                return false
+            case .langRange:
+                return kind == .rdfPlainLiteral
             }
         }
-        return false
+    }
+
+    private func isStringLengthKind(_ kind: XSDDatatypeKind) -> Bool {
+        switch kind {
+        case .string, .normalizedString, .token, .language,
+             .nmtoken, .name, .ncname, .anyURI, .rdfPlainLiteral:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isBinaryKind(_ kind: XSDDatatypeKind) -> Bool {
+        kind == .hexBinary || kind == .base64Binary
+    }
+
+    private func datatypeKind(_ iri: String) throws -> XSDDatatypeKind {
+        guard let kind = XSDDatatypeKind(iri: iri), profile.supports(kind) else {
+            throw XSDValidationFailure.unsupportedDatatype(iri)
+        }
+        return kind
+    }
+
+    private var regularExpressionLimits: XSDRegularExpression.Limits {
+        XSDRegularExpression.Limits(
+            patternUTF8Bytes: limits.maxPatternUTF8Bytes,
+            patternScalars: limits.maxPatternScalars,
+            nestingDepth: limits.maxRegexNestingDepth,
+            astNodes: limits.maxRegexASTNodes,
+            nfaStates: limits.maxRegexNFAStates,
+            quantifier: limits.maxRegexQuantifier,
+            activeTransitionWork: limits.maxRegexTransitionWork
+        )
+    }
+
+    private func mapRegularExpressionError(
+        _ error: XSDRegularExpression.Error
+    ) -> XSDValidationFailure {
+        switch error {
+        case .invalidSyntax(let offset, let reason):
+            return .invalidRestriction(XSDDiagnostic(
+                code: "patternSyntax",
+                message: "invalid XSD pattern at scalar offset \(offset): \(reason)"
+            ))
+        case .resourceLimit(let name, let limit, let actual):
+            return .resourceLimitExceeded(
+                resource: "regex.\(name)",
+                limit: limit,
+                actual: actual
+            )
+        }
+    }
+
+    private func internalRestrictionFailure(
+        _ message: String
+    ) -> XSDValidationFailure {
+        .invalidRestriction(XSDDiagnostic(
+            code: "compiledRestrictionInvariant",
+            message: message
+        ))
+    }
+
+    private struct CompilerState {
+        var nodeCount = 0
+        var facetCount = 0
     }
 }

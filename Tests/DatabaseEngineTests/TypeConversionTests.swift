@@ -6,6 +6,7 @@
 import Testing
 import TestHeartbeat
 import Foundation
+import DatabaseValue
 @testable import DatabaseEngine
 import Core
 import StorageKit
@@ -106,24 +107,30 @@ struct TypeConversionTests {
     // MARK: - toFieldValue Tests
 
     @Test("toFieldValue converts Bool")
-    func testToFieldValueBool() {
-        #expect(TypeConversion.toFieldValue(true) == .bool(true))
-        #expect(TypeConversion.toFieldValue(false) == .bool(false))
+    func testToFieldValueBool() throws {
+        #expect(try TypeConversion.toFieldValue(true) == .bool(true))
+        #expect(try TypeConversion.toFieldValue(false) == .bool(false))
     }
 
-    @Test("toFieldValue converts integers to int64")
-    func testToFieldValueIntegers() {
-        #expect(TypeConversion.toFieldValue(42 as Int) == .int64(42))
-        #expect(TypeConversion.toFieldValue(42 as Int64) == .int64(42))
-        #expect(TypeConversion.toFieldValue(42 as Int32) == .int64(42))
-        #expect(TypeConversion.toFieldValue(42 as UInt32) == .int64(42))
+    @Test("toFieldValue preserves signed and unsigned integer domains")
+    func testToFieldValueIntegers() throws {
+        #expect(try TypeConversion.toFieldValue(42 as Int) == .int64(42))
+        #expect(try TypeConversion.toFieldValue(42 as Int64) == .int64(42))
+        #expect(try TypeConversion.toFieldValue(42 as Int32) == .int64(42))
+        #expect(try TypeConversion.toFieldValue(42 as UInt32) == .uint64(42))
+        #expect(
+            try TypeConversion.toFieldValue(UInt64.max)
+                == .uint64(UInt64.max)
+        )
     }
 
     @Test("toFieldValue converts floating-point to double")
-    func testToFieldValueFloatingPoint() {
-        #expect(TypeConversion.toFieldValue(3.14 as Double) == .double(3.14))
+    func testToFieldValueFloatingPoint() throws {
+        #expect(
+            try TypeConversion.toFieldValue(3.14 as Double) == .double(3.14)
+        )
         // Float loses precision, so just check it's a double
-        if case .double = TypeConversion.toFieldValue(3.14 as Float) {
+        if case .double = try TypeConversion.toFieldValue(3.14 as Float) {
             // OK
         } else {
             Issue.record("Expected .double for Float")
@@ -131,26 +138,68 @@ struct TypeConversionTests {
     }
 
     @Test("toFieldValue converts String")
-    func testToFieldValueString() {
-        #expect(TypeConversion.toFieldValue("hello") == .string("hello"))
+    func testToFieldValueString() throws {
+        #expect(
+            try TypeConversion.toFieldValue("hello") == .string("hello")
+        )
     }
 
     @Test("toFieldValue handles UUID as string")
-    func testToFieldValueUUID() {
+    func testToFieldValueUUID() throws {
         let uuid = UUID()
-        #expect(TypeConversion.toFieldValue(uuid) == .string(uuid.uuidString))
+        #expect(
+            try TypeConversion.toFieldValue(uuid)
+                == .string(uuid.uuidString.lowercased())
+        )
     }
 
     @Test("toFieldValue handles Date as double")
-    func testToFieldValueDate() {
+    func testToFieldValueDate() throws {
         let date = Date(timeIntervalSince1970: 1000.0)
-        #expect(TypeConversion.toFieldValue(date) == .double(1000.0))
+        #expect(try TypeConversion.toFieldValue(date) == .double(1000.0))
     }
 
     @Test("toFieldValue handles Data")
-    func testToFieldValueData() {
+    func testToFieldValueData() throws {
         let data = Data([1, 2, 3])
-        #expect(TypeConversion.toFieldValue(data) == .data(data))
+        #expect(
+            try TypeConversion.toFieldValue(data)
+                == .data(DatabaseBytes(retaining: data))
+        )
+    }
+
+    @Test("toFieldValue rejects unsupported values with a typed error")
+    func testToFieldValueUnsupportedType() {
+        let value = UnsupportedValue()
+        let expected = TypeConversionError.unsupportedType(
+            String(reflecting: type(of: value))
+        )
+
+        #expect(throws: expected) {
+            try TypeConversion.toFieldValue(value)
+        }
+    }
+
+    @Test("toFieldValue reports the failing collection element")
+    func testToFieldValueInvalidCollectionElement() {
+        let unsupported = UnsupportedValue()
+        let values: [Any] = [Int64(1), unsupported]
+        let expected = TypeConversionError.invalidCollectionElement(
+            index: 1,
+            reason: .unsupportedType(
+                String(reflecting: type(of: unsupported))
+            )
+        )
+
+        #expect(throws: expected) {
+            try TypeConversion.toFieldValue(values)
+        }
+    }
+
+    @Test("toTupleElement preserves the full UInt64 domain")
+    func testToTupleElementFullWidthUInt64() throws {
+        let element = try TypeConversion.toTupleElement(UInt64.max)
+        #expect(element as? UInt64 == UInt64.max)
     }
 
     // MARK: - TupleElement Extraction Tests
@@ -171,17 +220,6 @@ struct TypeConversionTests {
     func testStringFrom() throws {
         let element: any TupleElement = "hello"
         #expect(try TypeConversion.string(from: element) == "hello")
-    }
-
-    @Test("valueOrNil returns nil on type mismatch")
-    func testValueOrNil() {
-        let stringElement: any TupleElement = "hello"
-        #expect(TypeConversion.valueOrNil(from: stringElement, as: Int64.self) == nil)
-        #expect(TypeConversion.valueOrNil(from: stringElement, as: String.self) == "hello")
-
-        let intElement: any TupleElement = Int64(42)
-        #expect(TypeConversion.valueOrNil(from: intElement, as: Int64.self) == 42)
-        #expect(TypeConversion.valueOrNil(from: intElement, as: String.self) == nil)
     }
 
     // MARK: - toTupleElement Tests
@@ -205,24 +243,13 @@ struct TypeConversionTests {
         #expect(boolElement as? Bool == true)
     }
 
-    @Test("toTupleElementOrNil returns nil for unsupported types")
-    func testToTupleElementOrNil() {
-        // Basic types should work
-        #expect(TypeConversion.toTupleElementOrNil(42 as Int) != nil)
-        #expect(TypeConversion.toTupleElementOrNil("hello") != nil)
-
-        // Custom struct should fail
-        struct CustomType {}
-        #expect(TypeConversion.toTupleElementOrNil(CustomType()) == nil)
-    }
-
     // MARK: - Edge Cases
 
     @Test("handles negative integers")
-    func testNegativeIntegers() {
+    func testNegativeIntegers() throws {
         #expect(TypeConversion.asInt64(-42) == -42)
         #expect(TypeConversion.asDouble(-3.14) == -3.14)
-        #expect(TypeConversion.toFieldValue(-42) == .int64(-42))
+        #expect(try TypeConversion.toFieldValue(-42) == .int64(-42))
     }
 
     @Test("handles zero values")
@@ -237,6 +264,8 @@ struct TypeConversionTests {
         #expect(TypeConversion.asInt64(Int64.max) == Int64.max)
         #expect(TypeConversion.asInt64(Int64.min) == Int64.min)
     }
+
+    private struct UnsupportedValue: Sendable {}
 }
 #endif
 

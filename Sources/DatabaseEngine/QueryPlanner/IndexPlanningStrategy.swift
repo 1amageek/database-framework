@@ -1,8 +1,13 @@
 // IndexPlanningStrategy.swift
 // QueryPlanner - Index-specific planning strategies
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
+import DatabaseMath
 import StorageKit
 
 /// Protocol for index-specific planning logic
@@ -103,17 +108,12 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
         var endBounds: [IndexScanBounds.BoundComponent] = []
         var selectivity: Double = 1.0
 
-        // Get the index key paths in order
-        let indexKeyPaths = index.keyPaths
-
         // Match conditions to index prefix
         var prefixMatched = 0
         var rangeFound = false
 
-        for keyPath in indexKeyPaths {
+        for fieldName in index.fieldNames {
             if rangeFound { break } // Can't match past a range condition
-
-            let fieldName = T.fieldName(for: keyPath)
 
             // Find condition for this field
             guard let condition = conditions.first(where: {
@@ -225,7 +225,7 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
 
         // Check for point lookup (all equality on full prefix)
         let isPointLookup = matchResult.satisfiedConditions.allSatisfy { $0.isEquality } &&
-            matchResult.satisfiedConditions.count == index.keyPaths.count
+            matchResult.satisfiedConditions.count == index.fieldNames.count
 
         if isPointLookup && !hasInCondition {
             // Single point lookup
@@ -288,7 +288,9 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
                     for value in inValues {
                         // Create an equality condition for this specific value
                         let eqCondition = ScalarFieldCondition<T>.equals(
-                            field: FieldReference<T>(anyKeyPath: condition.keyPath, fieldName: condition.fieldName),
+                            field: FieldReference<T>(
+                                fieldName: condition.fieldName
+                            ),
                             value: value,
                             predicate: condition.predicate
                         )
@@ -339,8 +341,7 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
         guard let firstSort = analysis.sortRequirements.first else { return false }
 
         // Check if first sort field matches first index field
-        guard let firstIndexKeyPath = index.keyPaths.first else { return false }
-        let firstIndexField = T.fieldName(for: firstIndexKeyPath)
+        guard let firstIndexField = index.fieldNames.first else { return false }
 
         if firstSort.fieldName == firstIndexField && firstSort.order == .descending {
             return true
@@ -366,10 +367,9 @@ public struct FullTextIndexStrategy: IndexPlanningStrategy {
     ) -> IndexMatchResult<T> {
         var satisfied: [any FieldConditionProtocol<T>] = []
 
-        guard let firstKeyPath = index.keyPaths.first else {
+        guard let indexedField = index.fieldNames.first else {
             return .empty()
         }
-        let indexedField = T.fieldName(for: firstKeyPath)
 
         for condition in conditions {
             guard condition.fieldName == indexedField else { continue }
@@ -458,10 +458,9 @@ public struct VectorIndexStrategy: IndexPlanningStrategy {
     ) -> IndexMatchResult<T> {
         var satisfied: [any FieldConditionProtocol<T>] = []
 
-        guard let firstKeyPath = index.keyPaths.first else {
+        guard let indexedField = index.fieldNames.first else {
             return .empty()
         }
-        let indexedField = T.fieldName(for: firstKeyPath)
 
         for condition in conditions {
             guard condition.fieldName == indexedField else { continue }
@@ -520,7 +519,7 @@ public struct VectorIndexStrategy: IndexPlanningStrategy {
         let k = Double(matchResult.estimatedEntries)
         let efSearch = k * 10 // Default ef_search
 
-        let searchCost = log2(max(2, totalRows)) * efSearch * 0.1
+        let searchCost = DatabaseMath.binaryLogarithm(max(2, totalRows)) * efSearch * 0.1
         return searchCost + costModel.fetchCost(records: k)
     }
 }
@@ -541,10 +540,9 @@ public struct SpatialIndexStrategy: IndexPlanningStrategy {
     ) -> IndexMatchResult<T> {
         var satisfied: [any FieldConditionProtocol<T>] = []
 
-        guard let firstKeyPath = index.keyPaths.first else {
+        guard let indexedField = index.fieldNames.first else {
             return .empty()
         }
-        let indexedField = T.fieldName(for: firstKeyPath)
 
         for condition in conditions {
             guard condition.fieldName == indexedField else { continue }

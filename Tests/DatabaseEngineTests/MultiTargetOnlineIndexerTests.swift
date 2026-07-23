@@ -7,7 +7,7 @@
 
 import Testing
 import TestHeartbeat
-import Foundation
+import StorageKit
 @testable import DatabaseEngine
 @testable import Core
 
@@ -47,8 +47,8 @@ struct RangeSetMultiTargetTests {
 
     @Test("RangeSet creation with initial range")
     func testRangeSetCreation() {
-        let begin: [UInt8] = [0x00]
-        let end: [UInt8] = [0xFF]
+        let begin: Bytes = [0x00]
+        let end: Bytes = [0xFF]
 
         let rangeSet = RangeSet(initialRange: (begin: begin, end: end))
 
@@ -57,8 +57,8 @@ struct RangeSetMultiTargetTests {
 
     @Test("RangeSet batch extraction")
     func testRangeSetBatchExtraction() {
-        let begin: [UInt8] = [0x00]
-        let end: [UInt8] = [0xFF]
+        let begin: Bytes = [0x00]
+        let end: Bytes = [0xFF]
 
         let rangeSet = RangeSet(initialRange: (begin: begin, end: end))
 
@@ -70,8 +70,8 @@ struct RangeSetMultiTargetTests {
 
     @Test("RangeSet marks completed ranges")
     func testRangeSetMarkCompleted() {
-        let begin: [UInt8] = [0x00]
-        let end: [UInt8] = [0xFF]
+        let begin: Bytes = [0x00]
+        let end: Bytes = [0xFF]
 
         var rangeSet = RangeSet(initialRange: (begin: begin, end: end))
 
@@ -86,18 +86,15 @@ struct RangeSetMultiTargetTests {
         }
     }
 
-    @Test("RangeSet Codable support")
-    func testRangeSetCodable() throws {
-        let begin: [UInt8] = [0x00]
-        let end: [UInt8] = [0xFF]
+    @Test("RangeSet storage encoding round-trips")
+    func rangeSetStorageEncodingRoundTrips() throws {
+        let begin: Bytes = [0x00]
+        let end: Bytes = [0xFF]
 
         let rangeSet = RangeSet(initialRange: (begin: begin, end: end))
 
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(rangeSet)
-
-        let decoder = JSONDecoder()
-        let decoded = try decoder.decode(RangeSet.self, from: data)
+        let data = try RangeSetCodec.encode(rangeSet)
+        let decoded = try RangeSetCodec.decode(data)
 
         #expect(!decoded.isEmpty)
     }
@@ -265,12 +262,12 @@ struct MultiTargetIndexerErrorHandlingTests {
 
     @Test("Index state errors are propagated")
     func testIndexStateErrorPropagation() {
-        enum TestError: Error {
+        enum MultiTargetIndexingFailure: Error {
             case indexNotFound(String)
             case invalidStateTransition(from: IndexState, to: IndexState)
         }
 
-        let error = TestError.indexNotFound("idx_missing")
+        let error = MultiTargetIndexingFailure.indexNotFound("idx_missing")
 
         switch error {
         case .indexNotFound(let name):

@@ -1,12 +1,13 @@
-import Foundation
 import StorageKit
 import Core
+import DatabaseValue
+import DatabaseWire
 
 /// Static utility for accessing Persistable item data
 ///
 /// DataAccess provides static functions for extracting metadata and field values
 /// from Persistable items. It uses the @dynamicMemberLookup subscript for field
-/// access and ProtobufEncoder/Decoder for serialization.
+/// access and the canonical compiled-record codec for serialization.
 ///
 /// **Design**: Stateless namespace with generic static functions
 /// **No instantiation needed**: All methods are static
@@ -36,10 +37,6 @@ import Core
 public struct DataAccess: Sendable {
     // Private init to prevent instantiation
     private init() {}
-
-    // Stateless codecs are safe to reuse across calls.
-    private static let protobufEncoder = ProtobufEncoder()
-    private static let protobufDecoder = ProtobufDecoder()
 
     // MARK: - KeyExpression Evaluation
 
@@ -83,7 +80,7 @@ public struct DataAccess: Sendable {
         keyPath: String
     ) throws -> [any TupleElement] {
         // Handle nested keyPaths (e.g., "user.address.city")
-        if keyPath.contains(".") {
+        if DatabaseText.contains(".", in: keyPath) {
             let components = keyPath.split(separator: ".").map(String.init)
             return try extractNestedField(from: item, components: components, fullPath: keyPath)
         }
@@ -319,25 +316,22 @@ public struct DataAccess: Sendable {
 
     // MARK: - Serialization
 
-    /// Serialize an item to bytes using ProtobufEncoder
+    /// Serialize an item to canonical compiled-record bytes.
     ///
     /// - Parameter item: The item to serialize
     /// - Returns: Serialized bytes
     /// - Throws: Error if serialization fails
     public static func serialize<Item: Persistable>(_ item: Item) throws -> Bytes {
-        let data = try protobufEncoder.encode(item)
-        return Array(data)
+        try DatabaseRecordStorageCodec.encode(item)
     }
 
-    /// Deserialize bytes to an item using ProtobufDecoder
+    /// Deserialize canonical compiled-record bytes.
     ///
     /// - Parameter bytes: The bytes to deserialize
     /// - Returns: Deserialized item
     /// - Throws: Error if deserialization fails
     public static func deserialize<Item: Persistable>(_ bytes: Bytes) throws -> Item {
-        try withBorrowedData(bytes) { data in
-            try protobufDecoder.decode(Item.self, from: data)
-        }
+        try DatabaseRecordStorageCodec.decode(Item.self, from: bytes)
     }
 
     /// Deserialize bytes to a type-erased Persistable using runtime type
@@ -353,38 +347,7 @@ public struct DataAccess: Sendable {
         _ bytes: Bytes,
         as type: any (Persistable & Codable).Type
     ) throws -> any Persistable {
-        let decoded = try withBorrowedData(bytes) { data in
-            try protobufDecoder.decodeAny(type, from: data)
-        }
-        guard let persistable = decoded as? any Persistable else {
-            throw FDBRuntimeError.internalError("Decoded value is not Persistable")
-        }
-        return persistable
-    }
-
-    /// Build a temporary `Data` view over borrowed bytes without copying.
-    ///
-    /// The `Data` instance must not escape the closure.
-    private static func withBorrowedData<T>(
-        _ bytes: Bytes,
-        _ body: (Data) throws -> T
-    ) throws -> T {
-        if bytes.isEmpty {
-            return try body(Data())
-        }
-
-        return try bytes.withUnsafeBytes { rawBuffer in
-            guard let baseAddress = rawBuffer.baseAddress else {
-                return try body(Data())
-            }
-
-            let data = Data(
-                bytesNoCopy: UnsafeMutableRawPointer(mutating: baseAddress),
-                count: rawBuffer.count,
-                deallocator: .none
-            )
-            return try body(data)
-        }
+        try DatabaseRecordStorageCodec.decodeAny(type, from: bytes)
     }
 
     // MARK: - Covering Index Support (Optional)
@@ -420,8 +383,7 @@ public struct DataAccess: Sendable {
 
     /// Convert any value to TupleElements
     ///
-    /// Delegates to TupleEncoder and converts errors to DataAccessError
-    /// for backward compatibility with existing code.
+    /// Delegates to TupleEncoder and exposes domain-specific indexing errors.
     ///
     /// - Parameter value: The value to convert
     /// - Returns: Array of TupleElements
@@ -430,12 +392,9 @@ public struct DataAccess: Sendable {
         do {
             return try TupleEncoder.encodeToArray(value)
         } catch let error as TupleEncodingError {
-            // Convert to DataAccessError for backward compatibility
             switch error {
             case .nilValueCannotBeEncoded:
                 throw DataAccessError.nilValueCannotBeIndexed
-            case .integerOverflow(let val):
-                throw DataAccessError.integerOverflow(value: val, targetType: "Int64")
             case .unsupportedType(let actualType):
                 throw DataAccessError.unsupportedType(actualType: actualType)
             }
@@ -525,7 +484,6 @@ public enum DataAccessError: Error, CustomStringConvertible {
     case reconstructionNotSupported(itemType: String, suggestion: String)
     case typeMismatch(itemType: String, keyPath: String, expected: String, actual: String)
     case nilValueCannotBeIndexed
-    case integerOverflow(value: UInt64, targetType: String)
     case unsupportedType(actualType: String)
 
     /// KeyPath type mismatch during direct extraction
@@ -546,10 +504,8 @@ public enum DataAccessError: Error, CustomStringConvertible {
             return "Type mismatch for field '\(keyPath)' in \(itemType): expected \(expected), got \(actual)"
         case .nilValueCannotBeIndexed:
             return "Nil values cannot be indexed. Optional fields with nil values should use sparse indexes or be excluded from indexing."
-        case .integerOverflow(let value, let targetType):
-            return "Integer overflow: value \(value) exceeds maximum for \(targetType) (\(Int64.max))"
         case .unsupportedType(let actualType):
-            return "Unsupported type '\(actualType)' for indexing. Supported types: String, Int, Int64, UInt64 (≤ Int64.max), Double, Float, Bool, UUID, Data, [UInt8], Tuple"
+            return "Unsupported type '\(actualType)' for indexing. Supported types: String, signed and unsigned integers, Double, Float, Bool, UUID, Data, [UInt8], Tuple"
         case .keyPathTypeMismatch(let expectedType, let keyPath):
             return "KeyPath '\(keyPath)' cannot be cast to PartialKeyPath<\(expectedType)>. Ensure the KeyPath was created for the correct type."
         }

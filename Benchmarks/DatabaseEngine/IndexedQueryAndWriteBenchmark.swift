@@ -2,9 +2,11 @@
 import Testing
 import Foundation
 import Core
+import DatabaseValue
 import StorageKit
 import TestSupport
 import DatabaseEngine
+import DatabaseRuntime
 import ScalarIndex
 import AggregationIndex
 
@@ -37,8 +39,8 @@ struct PlainBenchmarkRecord: Persistable {
         ["id", "runID", "category", "age", "score"]
     }
 
-    static var directoryPathComponents: [any DirectoryPathElement] {
-        [Path("test"), Path("performance"), Path("plain-records")]
+    static var directoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("test"), .staticPath("performance"), .staticPath("plain-records")]
     }
 
     subscript(dynamicMember member: String) -> (any Sendable)? {
@@ -111,8 +113,8 @@ struct SingleIndexBenchmarkRecord: Persistable {
         ["id", "runID", "category", "age", "score"]
     }
 
-    static var directoryPathComponents: [any DirectoryPathElement] {
-        [Path("test"), Path("performance"), Path("single-index-records")]
+    static var directoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("test"), .staticPath("performance"), .staticPath("single-index-records")]
     }
 
     static var _persistableDescriptors: [any Descriptor] {
@@ -195,8 +197,8 @@ struct TripleIndexBenchmarkRecord: Persistable {
         ["id", "runID", "category", "age", "score"]
     }
 
-    static var directoryPathComponents: [any DirectoryPathElement] {
-        [Path("test"), Path("performance"), Path("triple-index-records")]
+    static var directoryPathComponents: [DirectoryPathComponent] {
+        [.staticPath("test"), .staticPath("performance"), .staticPath("triple-index-records")]
     }
 
     static var _persistableDescriptors: [any Descriptor] {
@@ -269,7 +271,7 @@ private struct IndexedBenchmarkContext: Sendable {
     let tripleRunID: String
 
     init() async throws {
-        self.engine = try await FDBTestSetup.shared.makeEngine()
+        self.engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         self.plainRunID = "plain-\(UUID().uuidString.prefix(8))"
         self.singleRunID = "single-\(UUID().uuidString.prefix(8))"
         self.tripleRunID = "triple-\(UUID().uuidString.prefix(8))"
@@ -281,6 +283,7 @@ private struct IndexedBenchmarkContext: Sendable {
         self.container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         try await cleanup()
@@ -293,7 +296,7 @@ private struct IndexedBenchmarkContext: Sendable {
             ["test", "performance", "triple-index-records"],
         ] {
             do {
-                try await engine.directoryService.remove(path: path)
+                try await engine.removeDirectory(path: path)
             } catch {
                 // Ignore missing directory when the strategy did not materialize it.
             }
@@ -394,7 +397,7 @@ struct IndexedQueryAndWriteBenchmarkTests {
 
     @Test("write amplification across index counts", .timeLimit(.minutes(1)))
     func testWriteAmplificationAcrossIndexCounts() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             try await withIndexedBenchmarkContext { context in
                 var plainSeed = 0
                 let plainMeasurement = try await measureBenchmark(name: "0 indexes") {
@@ -425,7 +428,7 @@ struct IndexedQueryAndWriteBenchmarkTests {
 
     @Test("indexed equality query versus full scan", .timeLimit(.minutes(1)))
     func testIndexedEqualityQueryVersusFullScan() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             try await withIndexedBenchmarkContext { context in
                 for seed in 0..<queryDatasetSize {
                     try await context.insertPlain(context.makePlainRecord(seed: seed))

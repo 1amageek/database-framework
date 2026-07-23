@@ -1,7 +1,11 @@
 // FullTextDocumentIDKey.swift
 // FullTextIndex - Stable lookup key for fetched documents
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit

@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
 // MARK: - Test Model
 
-struct DistinctTestPageView: Persistable {
+struct DistinctIndexedPageView: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ struct DistinctTestPageView: Persistable {
         self.timestamp = timestamp
     }
 
-    static var persistableType: String { "DistinctTestPageView" }
+    static var persistableType: String { "DistinctIndexedPageView" }
     static var allFields: [String] { ["id", "pageId", "userId", "timestamp"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,44 +46,44 @@ struct DistinctTestPageView: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<DistinctTestPageView, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<DistinctIndexedPageView, Value>) -> String {
         switch keyPath {
-        case \DistinctTestPageView.id: return "id"
-        case \DistinctTestPageView.pageId: return "pageId"
-        case \DistinctTestPageView.userId: return "userId"
-        case \DistinctTestPageView.timestamp: return "timestamp"
+        case \DistinctIndexedPageView.id: return "id"
+        case \DistinctIndexedPageView.pageId: return "pageId"
+        case \DistinctIndexedPageView.userId: return "userId"
+        case \DistinctIndexedPageView.timestamp: return "timestamp"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<DistinctTestPageView>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<DistinctIndexedPageView>) -> String {
         switch keyPath {
-        case \DistinctTestPageView.id: return "id"
-        case \DistinctTestPageView.pageId: return "pageId"
-        case \DistinctTestPageView.userId: return "userId"
-        case \DistinctTestPageView.timestamp: return "timestamp"
+        case \DistinctIndexedPageView.id: return "id"
+        case \DistinctIndexedPageView.pageId: return "pageId"
+        case \DistinctIndexedPageView.userId: return "userId"
+        case \DistinctIndexedPageView.timestamp: return "timestamp"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<DistinctTestPageView> {
+        if let partial = keyPath as? PartialKeyPath<DistinctIndexedPageView> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Test Helper
+// MARK: - Distinct Index Context
 
-private struct TestContext {
+private struct DistinctIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: DistinctIndexMaintainer<DistinctTestPageView>
+    let maintainer: DistinctIndexMaintainer<DistinctIndexedPageView>
 
-    init(indexName: String = "DistinctTestPageView_pageId_userId") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+    init(indexName: String = "DistinctIndexedPageView_pageId_userId") async throws {
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "distinct", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -90,7 +91,7 @@ private struct TestContext {
         // Expression: pageId + userId (grouping + distinct value)
         let index = Index(
             name: indexName,
-            kind: DistinctIndexKind<DistinctTestPageView>(
+            kind: DistinctIndexKind<DistinctIndexedPageView>(
                 groupBy: [\.pageId],
                 value: \.userId
             ),
@@ -99,10 +100,10 @@ private struct TestContext {
                 FieldKeyExpression(fieldName: "userId")
             ]),
             subspaceKey: indexName,
-            itemTypes: Set(["DistinctTestPageView"])
+            itemTypes: Set(["DistinctIndexedPageView"])
         )
 
-        self.maintainer = DistinctIndexMaintainer<DistinctTestPageView>(
+        self.maintainer = DistinctIndexMaintainer<DistinctIndexedPageView>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
@@ -113,7 +114,7 @@ private struct TestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 
@@ -142,14 +143,14 @@ struct DistinctIndexBehaviorTests {
 
     @Test("Insert adds value to HyperLogLog")
     func testInsertAddsValue() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await DistinctIndexContext()
 
-        let pageView = DistinctTestPageView(pageId: "page1", userId: "user1")
+        let pageView = DistinctIndexedPageView(pageId: "page1", userId: "user1")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as DistinctTestPageView?,
+                oldItem: nil as DistinctIndexedPageView?,
                 newItem: pageView,
                 transaction: transaction
             )
@@ -164,17 +165,17 @@ struct DistinctIndexBehaviorTests {
 
     @Test("Multiple unique users increment distinct count")
     func testMultipleUniqueUsers() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await DistinctIndexContext()
 
         let pageViews = (1...10).map { i in
-            DistinctTestPageView(pageId: "page1", userId: "user\(i)")
+            DistinctIndexedPageView(pageId: "page1", userId: "user\(i)")
         }
 
         try await ctx.database.withTransaction { transaction in
             for pageView in pageViews {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as DistinctTestPageView?,
+                    oldItem: nil as DistinctIndexedPageView?,
                     newItem: pageView,
                     transaction: transaction
                 )
@@ -190,18 +191,18 @@ struct DistinctIndexBehaviorTests {
 
     @Test("Duplicate users do not increment distinct count")
     func testDuplicateUsersNotCounted() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await DistinctIndexContext()
 
         // Same user visits same page 5 times
         let pageViews = (1...5).map { i in
-            DistinctTestPageView(id: "view\(i)", pageId: "page1", userId: "user1")
+            DistinctIndexedPageView(id: "view\(i)", pageId: "page1", userId: "user1")
         }
 
         try await ctx.database.withTransaction { transaction in
             for pageView in pageViews {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as DistinctTestPageView?,
+                    oldItem: nil as DistinctIndexedPageView?,
                     newItem: pageView,
                     transaction: transaction
                 )
@@ -216,21 +217,21 @@ struct DistinctIndexBehaviorTests {
 
     @Test("Different groups have independent counts")
     func testDifferentGroupsIndependent() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await DistinctIndexContext()
 
         let pageViews = [
-            DistinctTestPageView(pageId: "page1", userId: "user1"),
-            DistinctTestPageView(pageId: "page1", userId: "user2"),
-            DistinctTestPageView(pageId: "page1", userId: "user3"),
-            DistinctTestPageView(pageId: "page2", userId: "user1"),
-            DistinctTestPageView(pageId: "page2", userId: "user4")
+            DistinctIndexedPageView(pageId: "page1", userId: "user1"),
+            DistinctIndexedPageView(pageId: "page1", userId: "user2"),
+            DistinctIndexedPageView(pageId: "page1", userId: "user3"),
+            DistinctIndexedPageView(pageId: "page2", userId: "user1"),
+            DistinctIndexedPageView(pageId: "page2", userId: "user4")
         ]
 
         try await ctx.database.withTransaction { transaction in
             for pageView in pageViews {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as DistinctTestPageView?,
+                    oldItem: nil as DistinctIndexedPageView?,
                     newItem: pageView,
                     transaction: transaction
                 )
@@ -246,19 +247,19 @@ struct DistinctIndexBehaviorTests {
         try await ctx.cleanup()
     }
 
-    // MARK: - Add-Only Behavior Tests
+    // MARK: - Delete and Update Tests
 
-    @Test("Delete does NOT decrease distinct count (add-only)")
-    func testDeleteDoesNotDecreaseCount() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+    @Test("Delete removes the final distinct value reference")
+    func testDeleteRemovesFinalReference() async throws {
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await DistinctIndexContext()
 
-        let pageView = DistinctTestPageView(pageId: "page1", userId: "user1")
+        let pageView = DistinctIndexedPageView(pageId: "page1", userId: "user1")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as DistinctTestPageView?,
+                oldItem: nil as DistinctIndexedPageView?,
                 newItem: pageView,
                 transaction: transaction
             )
@@ -267,40 +268,39 @@ struct DistinctIndexBehaviorTests {
         let (countBefore, _) = try await ctx.getDistinctCount(for: "page1")
         #expect(countBefore == 1)
 
-        // Delete - HLL is add-only, count should NOT decrease
+        // Delete the only reference.
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: pageView,
-                newItem: nil as DistinctTestPageView?,
+                newItem: nil as DistinctIndexedPageView?,
                 transaction: transaction
             )
         }
 
         let (countAfter, _) = try await ctx.getDistinctCount(for: "page1")
-        // HLL is add-only: delete does NOT remove value from HLL
-        #expect(countAfter == 1, "Distinct count should remain 1 after delete (add-only)")
+        #expect(countAfter == 0, "Distinct count should be zero after final delete")
 
         try await ctx.cleanup()
     }
 
-    @Test("Update adds new value (old value remains in HLL)")
-    func testUpdateAddsNewValue() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+    @Test("Update replaces the old distinct value")
+    func testUpdateReplacesOldValue() async throws {
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await DistinctIndexContext()
 
-        let pageView = DistinctTestPageView(id: "view1", pageId: "page1", userId: "user1")
+        let pageView = DistinctIndexedPageView(id: "view1", pageId: "page1", userId: "user1")
 
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil as DistinctTestPageView?,
+                oldItem: nil as DistinctIndexedPageView?,
                 newItem: pageView,
                 transaction: transaction
             )
         }
 
         // Update userId
-        let updatedPageView = DistinctTestPageView(id: "view1", pageId: "page1", userId: "user2")
+        let updatedPageView = DistinctIndexedPageView(id: "view1", pageId: "page1", userId: "user2")
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: pageView,
@@ -310,8 +310,7 @@ struct DistinctIndexBehaviorTests {
         }
 
         let (count, _) = try await ctx.getDistinctCount(for: "page1")
-        // Both user1 (old) and user2 (new) should be in HLL (add-only)
-        #expect(count == 2, "Distinct count should be 2 after update (both old and new values)")
+        #expect(count == 1, "Distinct count should contain only the replacement value")
 
         try await ctx.cleanup()
     }
@@ -320,22 +319,22 @@ struct DistinctIndexBehaviorTests {
 
     @Test("GetAllDistinctCounts returns all groups")
     func testGetAllDistinctCounts() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await DistinctIndexContext()
 
         let pageViews = [
-            DistinctTestPageView(pageId: "page1", userId: "user1"),
-            DistinctTestPageView(pageId: "page1", userId: "user2"),
-            DistinctTestPageView(pageId: "page2", userId: "user3"),
-            DistinctTestPageView(pageId: "page3", userId: "user4"),
-            DistinctTestPageView(pageId: "page3", userId: "user5"),
-            DistinctTestPageView(pageId: "page3", userId: "user6")
+            DistinctIndexedPageView(pageId: "page1", userId: "user1"),
+            DistinctIndexedPageView(pageId: "page1", userId: "user2"),
+            DistinctIndexedPageView(pageId: "page2", userId: "user3"),
+            DistinctIndexedPageView(pageId: "page3", userId: "user4"),
+            DistinctIndexedPageView(pageId: "page3", userId: "user5"),
+            DistinctIndexedPageView(pageId: "page3", userId: "user6")
         ]
 
         try await ctx.database.withTransaction { transaction in
             for pageView in pageViews {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as DistinctTestPageView?,
+                    oldItem: nil as DistinctIndexedPageView?,
                     newItem: pageView,
                     transaction: transaction
                 )
@@ -350,8 +349,8 @@ struct DistinctIndexBehaviorTests {
 
     @Test("GetDistinctCount for non-existent group returns zero")
     func testGetDistinctCountNonExistentReturnsZero() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await DistinctIndexContext()
 
         let (count, _) = try await ctx.getDistinctCount(for: "nonexistent")
         #expect(count == 0, "Distinct count for non-existent group should be 0")
@@ -363,13 +362,13 @@ struct DistinctIndexBehaviorTests {
 
     @Test("ScanItem adds to HyperLogLog")
     func testScanItemAddsToHLL() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await DistinctIndexContext()
 
         let pageViews = [
-            DistinctTestPageView(pageId: "page1", userId: "user1"),
-            DistinctTestPageView(pageId: "page1", userId: "user2"),
-            DistinctTestPageView(pageId: "page1", userId: "user3")
+            DistinctIndexedPageView(pageId: "page1", userId: "user1"),
+            DistinctIndexedPageView(pageId: "page1", userId: "user2"),
+            DistinctIndexedPageView(pageId: "page1", userId: "user3")
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -392,16 +391,16 @@ struct DistinctIndexBehaviorTests {
 
     @Test("HyperLogLog accuracy with large cardinality")
     func testLargeCardinality() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try await TestContext()
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await DistinctIndexContext()
 
         let uniqueUserCount = 1000
 
         try await ctx.database.withTransaction { transaction in
             for i in 1...uniqueUserCount {
-                let pageView = DistinctTestPageView(pageId: "popular-page", userId: "user\(i)")
+                let pageView = DistinctIndexedPageView(pageId: "popular-page", userId: "user\(i)")
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil as DistinctTestPageView?,
+                    oldItem: nil as DistinctIndexedPageView?,
                     newItem: pageView,
                     transaction: transaction
                 )

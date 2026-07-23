@@ -4,7 +4,11 @@
 // This file is part of SpatialIndex module, not DatabaseEngine.
 // DatabaseEngine does not know about SpatialIndexKind.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -148,16 +152,13 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
                 return false
             }
             // 2. Match by fieldName
-            guard let kind = descriptor.kind as? SpatialIndexKind<T> else {
-                return false
-            }
-            return kind.fieldNames.contains(fieldName)
+            return descriptor.fieldNames.contains(fieldName)
         }
     }
 
     // MARK: - FusionQuery
 
-    public func execute(candidates: Set<String>?) async throws -> [ScoredResult<T>] {
+    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
         guard let constraint = constraint else {
             throw FusionQueryError.invalidConfiguration("No spatial constraint specified")
         }
@@ -171,16 +172,9 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
             )
         }
 
-        // Get index configuration from kind
-        let level: Int
-        let encoding: SpatialEncoding
-        if let kind = descriptor.kind as? SpatialIndexKind<T> {
-            level = kind.level
-            encoding = kind.encoding
-        } else {
-            level = 15 // Default S2 level
-            encoding = .s2
-        }
+        let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)
+        let level = kind.level
+        let encoding = kind.encoding
 
         let indexName = descriptor.name
 
@@ -204,8 +198,8 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         items = items.filter { matches($0, constraint: constraint) }
 
         // Filter to candidates if provided
-        if let candidateIds = candidates {
-            items = items.filter { candidateIds.contains("\($0.id)") }
+        if let candidateIDs = candidates {
+            items = items.filter { candidateIDs.contains($0.id) }
         }
 
         // Calculate distance scores

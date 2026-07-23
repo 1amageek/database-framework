@@ -459,14 +459,10 @@ struct ExpansionRulesCardinalityTests {
             in: graph
         )
 
-        // applyMaxCardinalityRule returns RuleApplicationResult
-        switch result {
-        case .applied:
-            break // Merge was performed
-        case .notApplicable:
-            break // No merge needed
-        case .clash:
-            break // Nominal violation detected
+        if case .applied = result {
+            #expect(graph.successors(of: node, via: "ex:hasChild").count == 2)
+        } else {
+            Issue.record("Expected a cardinality merge, got \(result)")
         }
     }
 }

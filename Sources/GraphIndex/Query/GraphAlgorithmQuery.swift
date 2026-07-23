@@ -3,7 +3,11 @@
 //
 // Provides FDBContext extension for PageRank and Community Detection.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -48,41 +52,43 @@ public struct GraphAlgorithmEntryPoint<T: Persistable>: Sendable {
         _ from: KeyPath<T, V1>,
         _ edge: KeyPath<T, V2>,
         _ to: KeyPath<T, V3>
-    ) -> GraphAlgorithmBuilder<T> {
-        let fromField = T.fieldName(for: from)
-        let edgeField = T.fieldName(for: edge)
-        let toField = T.fieldName(for: to)
+    ) throws -> GraphAlgorithmBuilder<T> {
         return GraphAlgorithmBuilder(
             queryContext: queryContext,
-            fromFieldName: fromField,
-            edgeFieldName: edgeField,
-            toFieldName: toField
+            index: try PropertyGraphIndexResolver.exact(
+                signature: PropertyGraphIndexSignature(
+                    sourceFieldName: T.fieldName(for: from),
+                    labelFieldName: T.fieldName(for: edge),
+                    targetFieldName: T.fieldName(for: to)
+                ),
+                for: T.self,
+                in: queryContext
+            )
+        )
+    }
+
+    /// Select an entity-owned graph index by its exact declared name.
+    public func index(named indexName: String) throws -> GraphAlgorithmBuilder<T> {
+        GraphAlgorithmBuilder(
+            queryContext: queryContext,
+            index: try PropertyGraphIndexResolver.exact(
+                named: indexName,
+                for: T.self,
+                in: queryContext
+            )
         )
     }
 
     /// Use the default graph index (first GraphIndexKind found)
     ///
     /// - Returns: Graph algorithm builder configured with the default index
-    public func defaultIndex() -> GraphAlgorithmBuilder<T> {
-        let descriptor = T.indexDescriptors.first { desc in
-            desc.kindIdentifier == GraphIndexKind<T>.identifier
-        }
-
-        guard let desc = descriptor,
-              let kind = desc.kind as? GraphIndexKind<T> else {
-            return GraphAlgorithmBuilder(
-                queryContext: queryContext,
-                fromFieldName: "",
-                edgeFieldName: "",
-                toFieldName: ""
-            )
-        }
-
+    public func defaultIndex() throws -> GraphAlgorithmBuilder<T> {
         return GraphAlgorithmBuilder(
             queryContext: queryContext,
-            fromFieldName: kind.fromField,
-            edgeFieldName: kind.edgeField,
-            toFieldName: kind.toField
+            index: try PropertyGraphIndexResolver.unique(
+                for: T.self,
+                in: queryContext
+            )
         )
     }
 }
@@ -93,20 +99,14 @@ public struct GraphAlgorithmEntryPoint<T: Persistable>: Sendable {
 public struct GraphAlgorithmBuilder<T: Persistable>: Sendable {
 
     private let queryContext: IndexQueryContext
-    private let fromFieldName: String
-    private let edgeFieldName: String
-    private let toFieldName: String
+    private let index: DeclaredPropertyGraphIndex
 
     internal init(
         queryContext: IndexQueryContext,
-        fromFieldName: String,
-        edgeFieldName: String,
-        toFieldName: String
+        index: DeclaredPropertyGraphIndex
     ) {
         self.queryContext = queryContext
-        self.fromFieldName = fromFieldName
-        self.edgeFieldName = edgeFieldName
-        self.toFieldName = toFieldName
+        self.index = index
     }
 
     /// Configure PageRank algorithm
@@ -118,9 +118,7 @@ public struct GraphAlgorithmBuilder<T: Persistable>: Sendable {
     ) -> PageRankQueryBuilder<T> {
         PageRankQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: fromFieldName,
-            edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName,
+            index: index,
             configuration: configuration
         )
     }
@@ -134,9 +132,7 @@ public struct GraphAlgorithmBuilder<T: Persistable>: Sendable {
     ) -> CommunityDetectionQueryBuilder<T> {
         CommunityDetectionQueryBuilder(
             queryContext: queryContext,
-            fromFieldName: fromFieldName,
-            edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName,
+            index: index,
             configuration: configuration
         )
     }
@@ -161,23 +157,17 @@ public struct GraphAlgorithmBuilder<T: Persistable>: Sendable {
 public struct PageRankQueryBuilder<T: Persistable>: Sendable {
 
     private let queryContext: IndexQueryContext
-    private let fromFieldName: String
-    private let edgeFieldName: String
-    private let toFieldName: String
+    private let index: DeclaredPropertyGraphIndex
     private var configuration: PageRankConfiguration
     private var edgeLabelFilter: String?
 
     internal init(
         queryContext: IndexQueryContext,
-        fromFieldName: String,
-        edgeFieldName: String,
-        toFieldName: String,
+        index: DeclaredPropertyGraphIndex,
         configuration: PageRankConfiguration
     ) {
         self.queryContext = queryContext
-        self.fromFieldName = fromFieldName
-        self.edgeFieldName = edgeFieldName
-        self.toFieldName = toFieldName
+        self.index = index
         self.configuration = configuration
     }
 
@@ -225,19 +215,23 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: PageRankResult with scores for all nodes
     public func compute() async throws -> PageRankResult {
-        guard !fromFieldName.isEmpty else {
-            throw GraphAlgorithmError.indexNotConfigured
-        }
-
-        let indexSubspace = try await getIndexSubspace()
-
-        let computer = PageRankComputer<T>(
-            database: queryContext.context.container.engine,
-            subspace: indexSubspace,
-            configuration: configuration
+        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
+            index,
+            for: T.self,
+            in: queryContext
         )
 
-        return try await computer.compute(edgeLabel: edgeLabelFilter)
+        return try await queryContext.withTransaction { transaction in
+            let computer = PageRankComputer(
+                snapshot: GraphReadSnapshot(transaction: transaction),
+                subspace: resolvedIndex.indexSubspace,
+                strategy: resolvedIndex.metadata.strategy,
+                configuration: configuration
+            )
+            return try await computer.compute(
+                edgeLabel: edgeLabelFilter.map(GraphIdentity.identifier)
+            )
+        }
     }
 
     /// Compute personalized PageRank from a specific node
@@ -245,33 +239,24 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
     /// - Parameter startNode: Starting node for personalized PageRank
     /// - Returns: PageRankResult with scores relative to startNode
     public func computePersonalized(from startNode: String) async throws -> PageRankResult {
-        guard !fromFieldName.isEmpty else {
-            throw GraphAlgorithmError.indexNotConfigured
-        }
-
-        let indexSubspace = try await getIndexSubspace()
-
-        let computer = PageRankComputer<T>(
-            database: queryContext.context.container.engine,
-            subspace: indexSubspace,
-            configuration: configuration
+        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
+            index,
+            for: T.self,
+            in: queryContext
         )
 
-        return try await computer.computePersonalized(
-            from: startNode,
-            edgeLabel: edgeLabelFilter
-        )
-    }
-
-    private func getIndexSubspace() async throws -> Subspace {
-        let indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
-
-        guard let _ = queryContext.schema.indexDescriptor(named: indexName) else {
-            throw GraphAlgorithmError.indexNotFound(indexName)
+        return try await queryContext.withTransaction { transaction in
+            let computer = PageRankComputer(
+                snapshot: GraphReadSnapshot(transaction: transaction),
+                subspace: resolvedIndex.indexSubspace,
+                strategy: resolvedIndex.metadata.strategy,
+                configuration: configuration
+            )
+            return try await computer.computePersonalized(
+                from: .identifier(startNode),
+                edgeLabel: edgeLabelFilter.map(GraphIdentity.identifier)
+            )
         }
-
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        return typeSubspace.subspace(indexName)
     }
 }
 
@@ -292,23 +277,17 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
 public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
 
     private let queryContext: IndexQueryContext
-    private let fromFieldName: String
-    private let edgeFieldName: String
-    private let toFieldName: String
+    private let index: DeclaredPropertyGraphIndex
     private var configuration: CommunityDetectionConfiguration
     private var edgeLabelFilter: String?
 
     internal init(
         queryContext: IndexQueryContext,
-        fromFieldName: String,
-        edgeFieldName: String,
-        toFieldName: String,
+        index: DeclaredPropertyGraphIndex,
         configuration: CommunityDetectionConfiguration
     ) {
         self.queryContext = queryContext
-        self.fromFieldName = fromFieldName
-        self.edgeFieldName = edgeFieldName
-        self.toFieldName = toFieldName
+        self.index = index
         self.configuration = configuration
     }
 
@@ -370,19 +349,23 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: CommunityResult with node assignments
     public func detect() async throws -> CommunityResult {
-        guard !fromFieldName.isEmpty else {
-            throw GraphAlgorithmError.indexNotConfigured
-        }
-
-        let indexSubspace = try await getIndexSubspace()
-
-        let detector = CommunityDetector<T>(
-            database: queryContext.context.container.engine,
-            subspace: indexSubspace,
-            configuration: configuration
+        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
+            index,
+            for: T.self,
+            in: queryContext
         )
 
-        return try await detector.detect(edgeLabel: edgeLabelFilter)
+        return try await queryContext.withTransaction { transaction in
+            let detector = CommunityDetector(
+                snapshot: GraphReadSnapshot(transaction: transaction),
+                subspace: resolvedIndex.indexSubspace,
+                strategy: resolvedIndex.metadata.strategy,
+                configuration: configuration
+            )
+            return try await detector.detect(
+                edgeLabel: edgeLabelFilter.map(GraphIdentity.identifier)
+            )
+        }
     }
 
     /// Detect community for a specific node
@@ -392,34 +375,26 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
     ///   - maxHops: Maximum hops from node to consider
     /// - Returns: Set of node IDs in the same community
     public func detectLocal(for node: String, maxHops: Int = 3) async throws -> Set<String> {
-        guard !fromFieldName.isEmpty else {
-            throw GraphAlgorithmError.indexNotConfigured
-        }
-
-        let indexSubspace = try await getIndexSubspace()
-
-        let detector = CommunityDetector<T>(
-            database: queryContext.context.container.engine,
-            subspace: indexSubspace,
-            configuration: configuration
+        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
+            index,
+            for: T.self,
+            in: queryContext
         )
 
-        return try await detector.detectLocalCommunity(
-            for: node,
-            maxHops: maxHops,
-            edgeLabel: edgeLabelFilter
-        )
-    }
-
-    private func getIndexSubspace() async throws -> Subspace {
-        let indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
-
-        guard let _ = queryContext.schema.indexDescriptor(named: indexName) else {
-            throw GraphAlgorithmError.indexNotFound(indexName)
+        let identities = try await queryContext.withTransaction { transaction in
+            let detector = CommunityDetector(
+                snapshot: GraphReadSnapshot(transaction: transaction),
+                subspace: resolvedIndex.indexSubspace,
+                strategy: resolvedIndex.metadata.strategy,
+                configuration: configuration
+            )
+            return try await detector.detectLocalCommunity(
+                for: .identifier(node),
+                maxHops: maxHops,
+                edgeLabel: edgeLabelFilter.map(GraphIdentity.identifier)
+            )
         }
-
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        return typeSubspace.subspace(indexName)
+        return try Set(identities.map { try $0.requirePropertyGraphIdentifier() })
     }
 }
 

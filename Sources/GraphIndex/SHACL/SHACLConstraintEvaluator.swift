@@ -2,14 +2,19 @@
 // GraphIndex - Evaluate SHACL constraints against value nodes
 //
 // Delegates to existing components:
-// - OWLDatatypeValidator for XSD facet/datatype constraints
+// - SPARQLValueComparator for datatype and value-range semantics
 // - SPARQLQueryExecutor for cardinality and property pair constraints
 // - OWLReasoner for class hierarchy (when OWL entailment is enabled)
 //
 // Reference: W3C SHACL §4 (Core Constraint Components)
 // https://www.w3.org/TR/shacl/#core-components
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
+import DatabaseValue
 import StorageKit
 import Graph
 import Core
@@ -17,20 +22,31 @@ import DatabaseEngine
 
 import OntologyIndex
 /// Evaluates individual SHACL constraints against focus nodes and value nodes
-struct SHACLConstraintEvaluator: Sendable {
+public struct SHACLConstraintEvaluator: Sendable {
 
     private let executor: SPARQLQueryExecutor
-    private let datatypeValidator: OWLDatatypeValidator
+    private let transaction: any Transaction
+    private let graphScope: SHACLDataGraphScope
+    private let valueComparator: SPARQLValueComparator
     private let reasoner: OWLReasoner?
+    private let budget: SHACLValidationWorkBudget
 
-    init(
+    public init(
         executor: SPARQLQueryExecutor,
-        datatypeValidator: OWLDatatypeValidator = OWLDatatypeValidator(),
-        reasoner: OWLReasoner? = nil
+        transaction: any Transaction,
+        graphScope: SHACLDataGraphScope,
+        xsdValidationLimits: XSDValidationLimits = .default,
+        reasoner: OWLReasoner? = nil,
+        budget: SHACLValidationWorkBudget
     ) {
         self.executor = executor
-        self.datatypeValidator = datatypeValidator
+        self.transaction = transaction
+        self.graphScope = graphScope
+        self.valueComparator = SPARQLValueComparator(
+            limits: xsdValidationLimits
+        )
         self.reasoner = reasoner
+        self.budget = budget
     }
 
     // MARK: - Main Evaluation
@@ -48,50 +64,54 @@ struct SHACLConstraintEvaluator: Sendable {
     /// - Returns: Array of validation results (empty if constraint satisfied)
     func evaluate(
         constraint: SHACLConstraint,
-        focusNode: String,
+        focusNode: RDFTerm,
         valueNodes: [RDFTerm],
         path: SHACLPath?,
         severity: SHACLSeverity,
         messages: [String],
-        sourceShape: String?,
+        sourceShape: RDFTerm?,
         validator: SHACLValidator
     ) async throws -> [SHACLValidationResult] {
+        try budget.consume(
+            UInt64(max(1, valueNodes.count)),
+            at: .bindingCandidate
+        )
         switch constraint {
         // §4.1 Value Type Constraints
         case .class_(let classIRI):
             return try await evaluateClass(classIRI, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .datatype(let datatypeIRI):
-            return evaluateDatatype(datatypeIRI, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateDatatype(datatypeIRI, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .nodeKind(let kind):
-            return evaluateNodeKind(kind, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateNodeKind(kind, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
 
         // §4.2 Cardinality Constraints
         case .minCount(let min):
-            return evaluateMinCount(min, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateMinCount(min, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .maxCount(let max):
-            return evaluateMaxCount(max, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateMaxCount(max, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
 
         // §4.3 Value Range Constraints
         case .minExclusive(let bound):
-            return evaluateValueRange(.minExclusive, bound: bound, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateValueRange(.minExclusive, bound: bound, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .maxExclusive(let bound):
-            return evaluateValueRange(.maxExclusive, bound: bound, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateValueRange(.maxExclusive, bound: bound, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .minInclusive(let bound):
-            return evaluateValueRange(.minInclusive, bound: bound, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateValueRange(.minInclusive, bound: bound, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .maxInclusive(let bound):
-            return evaluateValueRange(.maxInclusive, bound: bound, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateValueRange(.maxInclusive, bound: bound, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
 
         // §4.4 String-based Constraints
         case .minLength(let len):
-            return evaluateStringLength(min: len, max: nil, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateStringLength(min: len, max: nil, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .maxLength(let len):
-            return evaluateStringLength(min: nil, max: len, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateStringLength(min: nil, max: len, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .pattern(let regex, let flags):
             return try evaluatePattern(regex, flags: flags, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .languageIn(let langs):
-            return evaluateLanguageIn(langs, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateLanguageIn(langs, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .uniqueLang:
-            return evaluateUniqueLang(focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateUniqueLang(focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
 
         // §4.5 Property Pair Constraints
         case .equals(let otherPath):
@@ -123,9 +143,9 @@ struct SHACLConstraintEvaluator: Sendable {
         case .closed(let ignoredProperties):
             return try await evaluateClosed(ignoredProperties: ignoredProperties, focusNode: focusNode, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .hasValue(let expected):
-            return evaluateHasValue(expected, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateHasValue(expected, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .in_(let allowedValues):
-            return evaluateIn(allowedValues, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluateIn(allowedValues, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         }
     }
 
@@ -133,13 +153,13 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateClass(
         _ classIRI: String,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
     ) async throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
             guard case .iri(let nodeIRI) = value else {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.class_(classIRI).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value is not an IRI, cannot be instance of \(classIRI)", severity: severity))
                 continue
@@ -153,17 +173,27 @@ struct SHACLConstraintEvaluator: Sendable {
                 // Fallback: SPARQL rdf:type query
                 let pattern = ExecutionPattern.basic([
                     ExecutionTriple(
-                        subject: .value(.string(nodeIRI)),
-                        predicate: .value(.string("rdf:type")),
-                        object: .value(.string(classIRI))
+                        subject: .value(.rdfTerm(.iri(nodeIRI))),
+                        predicate: .value(
+                            .rdfTerm(
+                                .iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
+                            )
+                        ),
+                        object: .value(.rdfTerm(.iri(classIRI)))
                     )
                 ])
-                let (bindings, _) = try await executor.execute(pattern: pattern, limit: 1, offset: 0)
+                let (bindings, _) = try await executor.executeInTransaction(
+                    pattern: graphScope.apply(to: pattern),
+                    transaction: transaction,
+                    limit: 1,
+                    offset: 0,
+                    workMeter: budget.workMeter
+                )
                 isInstance = !bindings.isEmpty
             }
 
             if !isInstance {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.class_(classIRI).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "\(nodeIRI) is not an instance of \(classIRI)", severity: severity))
             }
@@ -173,29 +203,28 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateDatatype(
         _ datatypeIRI: String,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
+    ) throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
             guard case .literal(let literal) = value else {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.datatype(datatypeIRI).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value is not a literal", severity: severity))
                 continue
             }
             // Check datatype matches
             if literal.datatype != datatypeIRI {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.datatype(datatypeIRI).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Expected datatype \(datatypeIRI), got \(literal.datatype)", severity: severity))
                 continue
             }
-            // Validate lexical form via OWLDatatypeValidator
-            if let error = datatypeValidator.validateLexicalForm(literal) {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+            if try !valueComparator.validateLexicalForm(literal) {
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.datatype(datatypeIRI).componentIRI, sourceShape: sourceShape,
-                    message: messages.first ?? "Invalid lexical form: \(error)", severity: severity))
+                    message: messages.first ?? "Literal is ill-typed for \(datatypeIRI)", severity: severity))
             }
         }
         return results
@@ -203,9 +232,9 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateNodeKind(
         _ kind: SHACLNodeKind,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
+    ) throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
             let matches: Bool
@@ -219,7 +248,7 @@ struct SHACLConstraintEvaluator: Sendable {
             default: matches = false
             }
             if !matches {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.nodeKind(kind).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value does not match node kind \(kind)", severity: severity))
             }
@@ -231,11 +260,11 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateMinCount(
         _ min: Int,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
+    ) throws -> [SHACLValidationResult] {
         if valueNodes.count < min {
-            return [makeResult(focusNode: focusNode, path: path, value: nil,
+            return [try makeResult(focusNode: focusNode, path: path, value: nil,
                 component: SHACLConstraint.minCount(min).componentIRI, sourceShape: sourceShape,
                 message: messages.first ?? "Expected at least \(min) values, got \(valueNodes.count)", severity: severity)]
         }
@@ -244,11 +273,11 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateMaxCount(
         _ max: Int,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
+    ) throws -> [SHACLValidationResult] {
         if valueNodes.count > max {
-            return [makeResult(focusNode: focusNode, path: path, value: nil,
+            return [try makeResult(focusNode: focusNode, path: path, value: nil,
                 component: SHACLConstraint.maxCount(max).componentIRI, sourceShape: sourceShape,
                 message: messages.first ?? "Expected at most \(max) values, got \(valueNodes.count)", severity: severity)]
         }
@@ -264,10 +293,14 @@ struct SHACLConstraintEvaluator: Sendable {
     private func evaluateValueRange(
         _ comparison: RangeComparison,
         bound: RDFTerm,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
-        guard case .literal(let boundLiteral) = bound else { return [] }
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
+    ) throws -> [SHACLValidationResult] {
+        guard case .literal(let boundLiteral) = bound else {
+            throw SHACLError.invalidConstraint(
+                "A SHACL value-range bound must be an RDF literal"
+            )
+        }
 
         var results: [SHACLValidationResult] = []
         let constraint: SHACLConstraint
@@ -278,26 +311,29 @@ struct SHACLConstraintEvaluator: Sendable {
         case .maxInclusive: constraint = .maxInclusive(bound)
         }
 
-        let facet: XSDFacet
-        switch comparison {
-        case .minExclusive: facet = .minExclusive
-        case .maxExclusive: facet = .maxExclusive
-        case .minInclusive: facet = .minInclusive
-        case .maxInclusive: facet = .maxInclusive
-        }
-
         for value in valueNodes {
             guard case .literal(let literal) = value else {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: constraint.componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value is not a literal", severity: severity))
                 continue
             }
-            let restriction = FacetRestriction(facet: facet, value: boundLiteral)
-            if let error = datatypeValidator.validateFacets(literal, facets: [restriction]) {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+            let order = try valueComparator.compare(boundLiteral, literal)
+            let satisfies: Bool
+            switch comparison {
+            case .minExclusive:
+                satisfies = order == .less
+            case .minInclusive:
+                satisfies = order == .less || order == .equal
+            case .maxExclusive:
+                satisfies = order == .greater
+            case .maxInclusive:
+                satisfies = order == .greater || order == .equal
+            }
+            if !satisfies {
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: constraint.componentIRI, sourceShape: sourceShape,
-                    message: messages.first ?? "\(error)", severity: severity))
+                    message: messages.first ?? "Value does not satisfy the SPARQL range comparison", severity: severity))
             }
         }
         return results
@@ -307,9 +343,9 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateStringLength(
         min: Int?, max: Int?,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
+    ) throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         let component: String
         if let min = min {
@@ -326,15 +362,16 @@ struct SHACLConstraintEvaluator: Sendable {
             case .literal(let lit): str = lit.lexicalForm
             case .iri(let iri): str = iri
             case .blankNode(let id): str = id
+            case .tripleTerm: str = value.description
             }
 
             if let min = min, str.count < min {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: component, sourceShape: sourceShape,
                     message: messages.first ?? "String length \(str.count) < minimum \(min)", severity: severity))
             }
             if let max = max, str.count > max {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: component, sourceShape: sourceShape,
                     message: messages.first ?? "String length \(str.count) > maximum \(max)", severity: severity))
             }
@@ -344,19 +381,18 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluatePattern(
         _ regex: String, flags: String?,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
     ) throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
-        var options: NSRegularExpression.Options = []
-        if let flags = flags {
-            if flags.contains("i") { options.insert(.caseInsensitive) }
-            if flags.contains("m") { options.insert(.anchorsMatchLines) }
-            if flags.contains("s") { options.insert(.dotMatchesLineSeparators) }
-            if flags.contains("x") { options.insert(.allowCommentsAndWhitespace) }
-        }
-
-        let nsRegex = try Self.compilePattern(regex, options: options)
+        let expression = try SHACLRegularExpression(
+            pattern: regex,
+            flags: flags
+        )
+        try budget.consume(
+            UInt64(regex.utf8.count),
+            at: .filterEvaluation
+        )
 
         for value in valueNodes {
             let str: String
@@ -364,11 +400,17 @@ struct SHACLConstraintEvaluator: Sendable {
             case .literal(let lit): str = lit.lexicalForm
             case .iri(let iri): str = iri
             case .blankNode(let id): str = id
+            case .tripleTerm: str = value.description
             }
 
-            let range = NSRange(str.startIndex..<str.endIndex, in: str)
-            if nsRegex.firstMatch(in: str, range: range) == nil {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+            let matches = try expression.matches(str) { inputUTF8ByteCount in
+                try budget.consume(
+                    UInt64(inputUTF8ByteCount),
+                    at: .filterEvaluation
+                )
+            }
+            if !matches {
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.pattern(regex, flags: flags).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value does not match pattern \(regex)", severity: severity))
             }
@@ -376,42 +418,38 @@ struct SHACLConstraintEvaluator: Sendable {
         return results
     }
 
-    static func compilePattern(
-        _ regex: String,
-        options: NSRegularExpression.Options
-    ) throws -> NSRegularExpression {
-        do {
-            return try NSRegularExpression(pattern: regex, options: options)
-        } catch {
-            throw SHACLError.invalidPattern(regex: regex, reason: error.localizedDescription)
-        }
-    }
-
     private func evaluateLanguageIn(
         _ langs: [String],
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
+    ) throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
             guard case .literal(let literal) = value else {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.languageIn(langs).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value is not a literal", severity: severity))
                 continue
             }
             guard let lang = literal.language else {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.languageIn(langs).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Literal has no language tag", severity: severity))
                 continue
             }
-            let matches = langs.contains { allowed in
-                lang.lowercased() == allowed.lowercased() ||
-                lang.lowercased().hasPrefix(allowed.lowercased() + "-")
+            let normalizedLanguage = lang.lowercased()
+            var matches = false
+            for allowed in langs {
+                try budget.consume(at: .filterEvaluation)
+                let normalizedAllowed = allowed.lowercased()
+                if normalizedLanguage == normalizedAllowed ||
+                    normalizedLanguage.hasPrefix(normalizedAllowed + "-") {
+                    matches = true
+                    break
+                }
             }
             if !matches {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.languageIn(langs).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Language tag '\(lang)' not in \(langs)", severity: severity))
             }
@@ -420,16 +458,17 @@ struct SHACLConstraintEvaluator: Sendable {
     }
 
     private func evaluateUniqueLang(
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
+    ) throws -> [SHACLValidationResult] {
         var seenLangs = Set<String>()
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
             if case .literal(let literal) = value, let lang = literal.language {
+                try budget.consume(at: .deduplication)
                 let normalized = lang.lowercased()
                 if seenLangs.contains(normalized) {
-                    results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                    results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                         component: SHACLConstraint.uniqueLang.componentIRI, sourceShape: sourceShape,
                         message: messages.first ?? "Duplicate language tag: \(lang)", severity: severity))
                 }
@@ -448,13 +487,11 @@ struct SHACLConstraintEvaluator: Sendable {
     private func evaluatePropertyPair(
         _ comparison: PairComparison,
         otherPath: SHACLPath,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
     ) async throws -> [SHACLValidationResult] {
         // Collect values from the other path
         let otherValues = try await collectValueNodes(from: focusNode, path: otherPath)
-        let otherFieldValues = otherValues.compactMap { $0.toFieldValue() }
-        let myFieldValues = valueNodes.compactMap { $0.toFieldValue() }
 
         let constraint: SHACLConstraint
         switch comparison {
@@ -467,41 +504,69 @@ struct SHACLConstraintEvaluator: Sendable {
         var results: [SHACLValidationResult] = []
         switch comparison {
         case .equals:
-            let mySet = Set(myFieldValues)
-            let otherSet = Set(otherFieldValues)
+            try budget.consume(UInt64(valueNodes.count), at: .deduplication)
+            try budget.consume(UInt64(otherValues.count), at: .deduplication)
+            let mySet = Set(valueNodes)
+            let otherSet = Set(otherValues)
             if mySet != otherSet {
-                results.append(makeResult(focusNode: focusNode, path: path, value: nil,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: nil,
                     component: constraint.componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value sets are not equal", severity: severity))
             }
         case .disjoint:
-            for val in myFieldValues {
-                if otherFieldValues.contains(val) {
-                    results.append(makeResult(focusNode: focusNode, path: path,
-                        value: fieldValueToRDFTerm(val),
+            try budget.consume(UInt64(otherValues.count), at: .deduplication)
+            let otherSet = Set(otherValues)
+            for value in valueNodes {
+                try budget.consume(at: .filterEvaluation)
+                if otherSet.contains(value) {
+                    results.append(try makeResult(focusNode: focusNode, path: path,
+                        value: value,
                         component: constraint.componentIRI, sourceShape: sourceShape,
-                        message: messages.first ?? "Value \(val) appears in both property sets", severity: severity))
+                        message: messages.first ?? "Value \(value) appears in both property sets", severity: severity))
                 }
             }
         case .lessThan:
-            for myVal in myFieldValues {
-                for otherVal in otherFieldValues {
-                    if myVal >= otherVal {
-                        results.append(makeResult(focusNode: focusNode, path: path,
-                            value: fieldValueToRDFTerm(myVal),
+            for value in valueNodes {
+                for otherValue in otherValues {
+                    try budget.consume(at: .joinCandidate)
+                    let satisfies: Bool
+                    if case .literal(let literal) = value,
+                       case .literal(let otherLiteral) = otherValue {
+                        satisfies = try valueComparator.compare(
+                            literal,
+                            otherLiteral
+                        ) == .less
+                    } else {
+                        satisfies = false
+                    }
+                    if !satisfies {
+                        results.append(try makeResult(focusNode: focusNode, path: path,
+                            value: value,
                             component: constraint.componentIRI, sourceShape: sourceShape,
-                            message: messages.first ?? "Value \(myVal) is not less than \(otherVal)", severity: severity))
+                            message: messages.first ?? "Value \(value) is not less than \(otherValue)", severity: severity))
                     }
                 }
             }
         case .lessThanOrEquals:
-            for myVal in myFieldValues {
-                for otherVal in otherFieldValues {
-                    if myVal > otherVal {
-                        results.append(makeResult(focusNode: focusNode, path: path,
-                            value: fieldValueToRDFTerm(myVal),
+            for value in valueNodes {
+                for otherValue in otherValues {
+                    try budget.consume(at: .joinCandidate)
+                    let satisfies: Bool
+                    if case .literal(let literal) = value,
+                       case .literal(let otherLiteral) = otherValue {
+                        let order = try valueComparator.compare(
+                            literal,
+                            otherLiteral
+                        )
+                        satisfies = order == .less || order == .equal
+                    } else {
+                        satisfies = false
+                    }
+                    if !satisfies {
+                        results.append(try makeResult(focusNode: focusNode, path: path,
+                            value: value,
                             component: constraint.componentIRI, sourceShape: sourceShape,
-                            message: messages.first ?? "Value \(myVal) is not <= \(otherVal)", severity: severity))
+                            message: messages.first ?? "Value \(value) is not <= \(otherValue)", severity: severity))
                     }
                 }
             }
@@ -519,82 +584,27 @@ struct SHACLConstraintEvaluator: Sendable {
     private func evaluateValueConformance(
         value: RDFTerm,
         against shape: SHACLShape,
-        focusNode: String,
+        focusNode: RDFTerm,
         validator: SHACLValidator
     ) async throws -> [SHACLValidationResult] {
-        if case .iri(let nodeIRI) = value {
-            return try await validator.validateNode(nodeIRI, against: shape)
-        }
-
-        // For literal/blank node values: evaluate constraints directly
-        var results: [SHACLValidationResult] = []
-
-        switch shape {
-        case .node(let ns):
-            // 1. Evaluate node-level constraints
-            for constraint in ns.constraints {
-                let constraintResults = try await evaluate(
-                    constraint: constraint,
-                    focusNode: focusNode,
-                    valueNodes: [value],
-                    path: nil,
-                    severity: ns.severity,
-                    messages: ns.messages,
-                    sourceShape: ns.iri,
-                    validator: validator
-                )
-                results.append(contentsOf: constraintResults)
-            }
-            // 2. Evaluate property shape constraints (literals have no properties → empty value nodes)
-            for ps in ns.propertyShapes {
-                let emptyValueNodes: [RDFTerm] = []
-                for constraint in ps.constraints {
-                    let constraintResults = try await evaluate(
-                        constraint: constraint,
-                        focusNode: focusNode,
-                        valueNodes: emptyValueNodes,
-                        path: ps.path,
-                        severity: ps.severity,
-                        messages: ps.messages,
-                        sourceShape: ps.iri,
-                        validator: validator
-                    )
-                    results.append(contentsOf: constraintResults)
-                }
-            }
-        case .property(let ps):
-            for constraint in ps.constraints {
-                let constraintResults = try await evaluate(
-                    constraint: constraint,
-                    focusNode: focusNode,
-                    valueNodes: [value],
-                    path: ps.path,
-                    severity: ps.severity,
-                    messages: ps.messages,
-                    sourceShape: ps.iri,
-                    validator: validator
-                )
-                results.append(contentsOf: constraintResults)
-            }
-        }
-
-        return results
+        try await validator.validateNode(value, against: shape)
     }
 
     private func evaluateNot(
         _ shape: SHACLShape,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?,
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?,
         validator: SHACLValidator
     ) async throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
+            try budget.consume(at: .bindingCandidate)
             let innerResults = try await evaluateValueConformance(
                 value: value, against: shape, focusNode: focusNode, validator: validator
             )
             // sh:not — conformance means FAILURE
             if innerResults.isEmpty {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.not(shape).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value conforms to negated shape", severity: severity))
             }
@@ -604,18 +614,19 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateAnd(
         _ shapes: [SHACLShape],
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?,
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?,
         validator: SHACLValidator
     ) async throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
             for shape in shapes {
+                try budget.consume(at: .joinCandidate)
                 let innerResults = try await evaluateValueConformance(
                     value: value, against: shape, focusNode: focusNode, validator: validator
                 )
                 if !innerResults.isEmpty {
-                    results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                    results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                         component: SHACLConstraint.and(shapes).componentIRI, sourceShape: sourceShape,
                         message: messages.first ?? "Value does not conform to all shapes in sh:and", severity: severity))
                     break
@@ -627,14 +638,15 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateOr(
         _ shapes: [SHACLShape],
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?,
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?,
         validator: SHACLValidator
     ) async throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
             var anyConforms = false
             for shape in shapes {
+                try budget.consume(at: .joinCandidate)
                 let innerResults = try await evaluateValueConformance(
                     value: value, against: shape, focusNode: focusNode, validator: validator
                 )
@@ -644,7 +656,7 @@ struct SHACLConstraintEvaluator: Sendable {
                 }
             }
             if !anyConforms {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.or(shapes).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value does not conform to any shape in sh:or", severity: severity))
             }
@@ -654,14 +666,15 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateXone(
         _ shapes: [SHACLShape],
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?,
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?,
         validator: SHACLValidator
     ) async throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
             var conformCount = 0
             for shape in shapes {
+                try budget.consume(at: .joinCandidate)
                 let innerResults = try await evaluateValueConformance(
                     value: value, against: shape, focusNode: focusNode, validator: validator
                 )
@@ -670,7 +683,7 @@ struct SHACLConstraintEvaluator: Sendable {
                 }
             }
             if conformCount != 1 {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.xone(shapes).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value conforms to \(conformCount) shapes (expected exactly 1)", severity: severity))
             }
@@ -682,17 +695,18 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateNodeConstraint(
         _ nodeShape: NodeShape,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?,
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?,
         validator: SHACLValidator
     ) async throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
+            try budget.consume(at: .bindingCandidate)
             let innerResults = try await evaluateValueConformance(
                 value: value, against: .node(nodeShape), focusNode: focusNode, validator: validator
             )
             if !innerResults.isEmpty {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.node(nodeShape).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value does not conform to node shape", severity: severity))
             }
@@ -703,12 +717,13 @@ struct SHACLConstraintEvaluator: Sendable {
     private func evaluateQualifiedValueShape(
         _ shape: SHACLShape,
         min: Int?, max: Int?,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?,
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?,
         validator: SHACLValidator
     ) async throws -> [SHACLValidationResult] {
         var conformingCount = 0
         for value in valueNodes {
+            try budget.consume(at: .bindingCandidate)
             let innerResults = try await evaluateValueConformance(
                 value: value, against: shape, focusNode: focusNode, validator: validator
             )
@@ -719,13 +734,13 @@ struct SHACLConstraintEvaluator: Sendable {
 
         var results: [SHACLValidationResult] = []
         if let min = min, conformingCount < min {
-            results.append(makeResult(focusNode: focusNode, path: path, value: nil,
+            results.append(try makeResult(focusNode: focusNode, path: path, value: nil,
                 component: SHACLConstraint.qualifiedValueShape(shape: shape, min: min, max: max).componentIRI,
                 sourceShape: sourceShape,
                 message: messages.first ?? "Qualified value count \(conformingCount) < minimum \(min)", severity: severity))
         }
         if let max = max, conformingCount > max {
-            results.append(makeResult(focusNode: focusNode, path: path, value: nil,
+            results.append(try makeResult(focusNode: focusNode, path: path, value: nil,
                 component: SHACLConstraint.qualifiedValueShape(shape: shape, min: min, max: max).componentIRI,
                 sourceShape: sourceShape,
                 message: messages.first ?? "Qualified value count \(conformingCount) > maximum \(max)", severity: severity))
@@ -737,25 +752,38 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateClosed(
         ignoredProperties: [String],
-        focusNode: String, path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
+        focusNode: RDFTerm, path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
     ) async throws -> [SHACLValidationResult] {
         // Query all predicates from the focus node
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
-                subject: .value(.string(focusNode)),
+                subject: .value(.rdfTerm(focusNode)),
                 predicate: .variable("?p"),
                 object: .wildcard
             )
         ])
-        let (bindings, _) = try await executor.execute(pattern: pattern, limit: nil, offset: 0)
+        let (bindings, _) = try await executor.executeInTransaction(
+            pattern: graphScope.apply(to: pattern),
+            transaction: transaction,
+            limit: nil,
+            offset: 0,
+            workMeter: budget.workMeter
+        )
+        try budget.consume(
+            UInt64(bindings.count),
+            at: .resultMaterialization
+        )
 
+        try budget.consume(UInt64(ignoredProperties.count), at: .deduplication)
         let ignoredSet = Set(ignoredProperties)
         var results: [SHACLValidationResult] = []
         for binding in bindings {
-            if let pValue = binding["?p"], let predicate = pValue.stringValue {
+            try budget.consume(at: .filterEvaluation)
+            if let pValue = binding["?p"],
+               case .rdfTerm(.iri(let predicate)) = pValue {
                 if !ignoredSet.contains(predicate) {
-                    results.append(makeResult(focusNode: focusNode, path: .predicate(predicate), value: nil,
+                    results.append(try makeResult(focusNode: focusNode, path: .predicate(predicate), value: nil,
                         component: SHACLConstraint.closed(ignoredProperties: ignoredProperties).componentIRI,
                         sourceShape: sourceShape,
                         message: messages.first ?? "Unexpected property: \(predicate)", severity: severity))
@@ -767,11 +795,19 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateHasValue(
         _ expected: RDFTerm,
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
-        if !valueNodes.contains(expected) {
-            return [makeResult(focusNode: focusNode, path: path, value: nil,
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
+    ) throws -> [SHACLValidationResult] {
+        var found = false
+        for value in valueNodes {
+            try budget.consume(at: .filterEvaluation)
+            if value == expected {
+                found = true
+                break
+            }
+        }
+        if !found {
+            return [try makeResult(focusNode: focusNode, path: path, value: nil,
                 component: SHACLConstraint.hasValue(expected).componentIRI, sourceShape: sourceShape,
                 message: messages.first ?? "Expected value \(expected) not found", severity: severity)]
         }
@@ -780,14 +816,16 @@ struct SHACLConstraintEvaluator: Sendable {
 
     private func evaluateIn(
         _ allowedValues: [RDFTerm],
-        focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
-        severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
+        focusNode: RDFTerm, valueNodes: [RDFTerm], path: SHACLPath?,
+        severity: SHACLSeverity, messages: [String], sourceShape: RDFTerm?
+    ) throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
+        try budget.consume(UInt64(allowedValues.count), at: .deduplication)
         let allowedSet = Set(allowedValues)
         for value in valueNodes {
+            try budget.consume(at: .filterEvaluation)
             if !allowedSet.contains(value) {
-                results.append(makeResult(focusNode: focusNode, path: path, value: value,
+                results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.in_(allowedValues).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Value \(value) not in allowed set", severity: severity))
             }
@@ -799,36 +837,52 @@ struct SHACLConstraintEvaluator: Sendable {
 
     /// Collect value nodes via a SHACL path from a focus node
     func collectValueNodes(
-        from focusNode: String,
+        from focusNode: RDFTerm,
         path: SHACLPath
     ) async throws -> [RDFTerm] {
-        let executionPath = path.toExecutionPropertyPath()
+        let executionPath = try path.toExecutionPropertyPath()
         let pattern = ExecutionPattern.propertyPath(
-            subject: .value(.string(focusNode)),
+            subject: .value(.rdfTerm(focusNode)),
             path: executionPath,
             object: .variable("?value")
         )
 
-        let (bindings, _) = try await executor.execute(pattern: pattern, limit: nil, offset: 0)
+        let (bindings, _) = try await executor.executeInTransaction(
+            pattern: graphScope.apply(to: pattern),
+            transaction: transaction,
+            limit: nil,
+            offset: 0,
+            workMeter: budget.workMeter
+        )
+        try budget.consume(
+            UInt64(bindings.count),
+            at: .resultMaterialization
+        )
 
-        return bindings.compactMap { binding -> RDFTerm? in
-            guard let fieldValue = binding["?value"] else { return nil }
-            return fieldValueToRDFTerm(fieldValue)
+        return try bindings.map { binding -> RDFTerm in
+            guard let fieldValue = binding["?value"] else {
+                throw SHACLError.resultBindingMissing(variable: "?value")
+            }
+            guard case .rdfTerm(let term) = fieldValue else {
+                throw SHACLError.resultBindingTypeMismatch(variable: "?value")
+            }
+            return term
         }
     }
 
     // MARK: - Helpers
 
     private func makeResult(
-        focusNode: String,
+        focusNode: RDFTerm,
         path: SHACLPath?,
         value: RDFTerm?,
         component: String,
-        sourceShape: String?,
+        sourceShape: RDFTerm?,
         message: String,
         severity: SHACLSeverity
-    ) -> SHACLValidationResult {
-        SHACLValidationResult(
+    ) throws -> SHACLValidationResult {
+        try budget.consume(at: .resultMaterialization)
+        return SHACLValidationResult(
             focusNode: focusNode,
             resultPath: path,
             value: value,
@@ -839,67 +893,44 @@ struct SHACLConstraintEvaluator: Sendable {
         )
     }
 
-    private func fieldValueToRDFTerm(_ fv: FieldValue) -> RDFTerm? {
-        switch fv {
-        case .string(let s):
-            return RDFTerm.decode(s)
-        case .int64(let i):
-            return .integer(Int(i))
-        case .double(let d):
-            return .decimal(d)
-        case .bool(let b):
-            return .boolean(b)
-        case .data, .null, .array:
-            return nil
-        }
-    }
 }
 
 // MARK: - SHACLPath → ExecutionPropertyPath Conversion
 
 extension SHACLPath {
     /// Convert to SPARQL execution property path
-    func toExecutionPropertyPath() -> ExecutionPropertyPath {
+    func toExecutionPropertyPath() throws -> ExecutionPropertyPath {
         switch self {
         case .predicate(let iri):
-            return .iri(iri)
+            return .iri(try DatabaseRDFPredicateIRI(iri))
         case .inverse(let inner):
-            return .inverse(inner.toExecutionPropertyPath())
+            return .inverse(try inner.toExecutionPropertyPath())
         case .sequence(let paths):
             guard let first = paths.first else { return .empty }
-            return paths.dropFirst().reduce(first.toExecutionPropertyPath()) { acc, next in
-                .sequence(acc, next.toExecutionPropertyPath())
+            var result = try first.toExecutionPropertyPath()
+            for path in paths.dropFirst() {
+                result = .sequence(
+                    result,
+                    try path.toExecutionPropertyPath()
+                )
             }
+            return result
         case .alternative(let paths):
             guard let first = paths.first else { return .empty }
-            return paths.dropFirst().reduce(first.toExecutionPropertyPath()) { acc, next in
-                .alternative(acc, next.toExecutionPropertyPath())
+            var result = try first.toExecutionPropertyPath()
+            for path in paths.dropFirst() {
+                result = .alternative(
+                    result,
+                    try path.toExecutionPropertyPath()
+                )
             }
+            return result
         case .zeroOrMore(let inner):
-            return .zeroOrMore(inner.toExecutionPropertyPath())
+            return .zeroOrMore(try inner.toExecutionPropertyPath())
         case .oneOrMore(let inner):
-            return .oneOrMore(inner.toExecutionPropertyPath())
+            return .oneOrMore(try inner.toExecutionPropertyPath())
         case .zeroOrOne(let inner):
-            return .zeroOrOne(inner.toExecutionPropertyPath())
-        }
-    }
-}
-
-// MARK: - RDFTerm → FieldValue Conversion
-
-extension RDFTerm {
-    /// Convert to FieldValue for comparison
-    func toFieldValue() -> FieldValue? {
-        switch self {
-        case .iri(let s):
-            return .string(s)
-        case .literal(let lit):
-            if let i = lit.intValue { return .int64(Int64(i)) }
-            if let d = lit.doubleValue { return .double(d) }
-            if let b = lit.boolValue { return .bool(b) }
-            return .string(lit.lexicalForm)
-        case .blankNode(let id):
-            return .string("_:\(id)")
+            return .zeroOrOne(try inner.toExecutionPropertyPath())
         }
     }
 }

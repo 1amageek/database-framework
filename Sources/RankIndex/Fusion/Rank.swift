@@ -4,7 +4,11 @@
 // This file is part of RankIndex module, not DatabaseEngine.
 // Rank is a reranking operation that scores items based on a numeric field.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Core
 import DatabaseEngine
 import StorageKit
@@ -45,7 +49,7 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Initialization (FusionContext)
 
-    /// Create a Rank query for an Int field
+    /// Create a Rank query for an exact numeric field.
     ///
     /// Uses FusionContext.current for context (automatically set by `context.fuse { }`).
     ///
@@ -56,7 +60,7 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
     ///     Rank(\.rating).order(.descending)
     /// }
     /// ```
-    public init(_ keyPath: KeyPath<T, Int>) {
+    public init<Value: RankNumericValue>(_ keyPath: KeyPath<T, Value>) {
         guard let context = FusionContext.current else {
             fatalError("Rank must be used within context.fuse { } block")
         }
@@ -64,44 +68,8 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
         self.queryContext = context
     }
 
-    /// Create a Rank query for an Int64 field
-    public init(_ keyPath: KeyPath<T, Int64>) {
-        guard let context = FusionContext.current else {
-            fatalError("Rank must be used within context.fuse { } block")
-        }
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Rank query for a Double field
-    public init(_ keyPath: KeyPath<T, Double>) {
-        guard let context = FusionContext.current else {
-            fatalError("Rank must be used within context.fuse { } block")
-        }
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Rank query for a Float field
-    public init(_ keyPath: KeyPath<T, Float>) {
-        guard let context = FusionContext.current else {
-            fatalError("Rank must be used within context.fuse { } block")
-        }
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Rank query for an optional Int field
-    public init(_ keyPath: KeyPath<T, Int?>) {
-        guard let context = FusionContext.current else {
-            fatalError("Rank must be used within context.fuse { } block")
-        }
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Rank query for an optional Double field
-    public init(_ keyPath: KeyPath<T, Double?>) {
+    /// Create a Rank query for an optional exact numeric field.
+    public init<Value: RankNumericValue>(_ keyPath: KeyPath<T, Value?>) {
         guard let context = FusionContext.current else {
             fatalError("Rank must be used within context.fuse { } block")
         }
@@ -111,38 +79,20 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Initialization (Explicit Context)
 
-    /// Create a Rank query for an Int field with explicit context
-    public init(_ keyPath: KeyPath<T, Int>, context: IndexQueryContext) {
+    /// Create a Rank query for an exact numeric field with explicit context.
+    public init<Value: RankNumericValue>(
+        _ keyPath: KeyPath<T, Value>,
+        context: IndexQueryContext
+    ) {
         self.fieldName = T.fieldName(for: keyPath)
         self.queryContext = context
     }
 
-    /// Create a Rank query for an Int64 field with explicit context
-    public init(_ keyPath: KeyPath<T, Int64>, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Rank query for a Double field with explicit context
-    public init(_ keyPath: KeyPath<T, Double>, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Rank query for a Float field with explicit context
-    public init(_ keyPath: KeyPath<T, Float>, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Rank query for an optional Int field with explicit context
-    public init(_ keyPath: KeyPath<T, Int?>, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Rank query for an optional Double field with explicit context
-    public init(_ keyPath: KeyPath<T, Double?>, context: IndexQueryContext) {
+    /// Create a Rank query for an optional exact numeric field with explicit context.
+    public init<Value: RankNumericValue>(
+        _ keyPath: KeyPath<T, Value?>,
+        context: IndexQueryContext
+    ) {
         self.fieldName = T.fieldName(for: keyPath)
         self.queryContext = context
     }
@@ -167,40 +117,46 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - FusionQuery
 
-    public func execute(candidates: Set<String>?) async throws -> [ScoredResult<T>] {
+    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
         // Rank query requires candidates from previous stages
         // It should not be used as the first stage
-        guard let candidateIds = candidates, !candidateIds.isEmpty else {
+        guard let candidateIDs = candidates, !candidateIDs.isEmpty else {
             // Return empty - Rank is designed for reranking, not initial search
             // If used as first stage, it contributes nothing to the fusion
             return []
         }
 
         // Fetch items
-        let items = try await queryContext.fetchItemsByStringIds(
-            type: T.self,
-            ids: Array(candidateIds)
+        let items = try await queryContext.fetchItems(
+            identifiers: Array(candidateIDs),
+            type: T.self
         )
 
-        // Extract numeric values
-        let itemsWithValue: [(item: T, value: Double)] = items.compactMap { item in
-            guard let rawValue = item[dynamicMember: fieldName] else { return nil }
-            guard let doubleValue = TypeConversion.asDouble(rawValue) else { return nil }
-            return (item: item, value: doubleValue)
+        var entries: [RankValueEntry<T>] = []
+        entries.reserveCapacity(items.count)
+        for item in items {
+            let value = try RankValueOrdering.numericValue(
+                from: item[dynamicMember: fieldName],
+                fieldName: fieldName
+            )
+            let identifierKey = try RankValueOrdering.identifierKey(for: item.id)
+            entries.append(
+                RankValueEntry(
+                    item: item,
+                    value: value,
+                    identifierKey: identifierKey
+                )
+            )
         }
 
-        guard !itemsWithValue.isEmpty else {
-            return items.map { ScoredResult(item: $0, score: 0.5) }
-        }
-
-        // Sort by value
-        let sorted: [(item: T, value: Double)]
+        let direction: RankValueDirection
         switch order {
         case .ascending:
-            sorted = itemsWithValue.sorted { $0.value < $1.value }
+            direction = .ascending
         case .descending:
-            sorted = itemsWithValue.sorted { $0.value > $1.value }
+            direction = .descending
         }
+        let sorted = try RankValueOrdering.sorted(entries, direction: direction)
 
         // Convert rank to score (1st = 1.0, last = 0.0)
         let count = Double(sorted.count)

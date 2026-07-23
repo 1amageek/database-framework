@@ -1,8 +1,8 @@
 /// GraphTableExecutor.swift
 /// SQL/PGQ GRAPH_TABLE query executor
 
-import Foundation
 import Core
+import DatabaseValue
 import Graph
 import DatabaseEngine
 import StorageKit
@@ -22,7 +22,7 @@ public struct GraphTableRow: Sendable {
     public let edgeLabel: String
 
     /// Properties from edge
-    public let properties: [String: any Sendable]
+    public let properties: [String: DatabaseValue]
 
     /// Flattened row fields used by canonical graph-table projection.
     public let fields: [String: FieldValue]
@@ -31,9 +31,9 @@ public struct GraphTableRow: Sendable {
         source: String,
         target: String,
         edgeLabel: String,
-        properties: [String: any Sendable],
+        properties: [String: DatabaseValue],
         fields: [String: FieldValue]? = nil
-    ) {
+    ) throws {
         self.source = source
         self.target = target
         self.edgeLabel = edgeLabel
@@ -47,7 +47,12 @@ public struct GraphTableRow: Sendable {
                 "edgeLabel": .string(edgeLabel)
             ]
             for (key, value) in properties {
-                fields[key] = FieldValue(value) ?? .string(String(describing: value))
+                guard let fieldValue = FieldValue(databaseValue: value) else {
+                    throw GraphTableError.typeMismatch(
+                        "Property '\(key)' cannot be represented by GRAPH_TABLE"
+                    )
+                }
+                fields[key] = fieldValue
             }
             self.fields = fields
         }
@@ -94,11 +99,13 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         }
 
         let indexDescriptor = try findGraphIndex()
-        let kind = indexDescriptor.kind as! GraphIndexKind<T>
+        let metadata = try PropertyGraphIndexMetadata(
+            canonical: indexDescriptor.kind
+        )
         let indexSubspace = try await queryContext.indexSubspace(for: T.self).subspace(indexDescriptor.name)
         let scanner = GraphPropertyScanner(
             indexSubspace: indexSubspace,
-            strategy: kind.strategy,
+            strategy: metadata.strategy,
             storedFieldNames: indexDescriptor.storedFieldNames
         )
 
@@ -110,7 +117,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
                     states: states,
                     with: step,
                     scanner: scanner,
-                    strategy: kind.strategy,
+                    strategy: metadata.strategy,
                     transaction: transaction
                 )
                 if states.isEmpty {
@@ -255,26 +262,35 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
                         right: rightResolution,
                         orientation: orientation,
                         strategy: strategy
-                    ),
-                    edge: label,
+                    ).map(GraphIdentity.identifier),
+                    edge: label.map(GraphIdentity.identifier),
                     to: scanTo(
                         left: leftResolution,
                         right: rightResolution,
                         orientation: orientation,
                         strategy: strategy
-                    ),
-                    graph: nil,
+                    ).map(GraphIdentity.identifier),
+                    scope: .all,
                     propertyFilters: propertyFilters.isEmpty ? nil : propertyFilters,
                     transaction: transaction
                 )
 
                 for try await edge in stream {
-                    let (leftID, rightID) = endpointIDs(for: edge, orientation: orientation)
+                    let (leftID, rightID) = try endpointIDs(
+                        for: edge,
+                        orientation: orientation
+                    )
                     guard endpointMatches(leftID, resolution: leftResolution),
                           endpointMatches(rightID, resolution: rightResolution) else {
                         continue
                     }
-                    guard let bindings = bind(step: step, leftID: leftID, rightID: rightID, edge: edge, onto: state.bindings) else {
+                    guard let bindings = try bind(
+                        step: step,
+                        leftID: leftID,
+                        rightID: rightID,
+                        edge: edge,
+                        onto: state.bindings
+                    ) else {
                         continue
                     }
                     matches.append(
@@ -341,7 +357,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
 
     private func supportsEndpointPrefixScan(_ strategy: GraphIndexStrategy) -> Bool {
         switch strategy {
-        case .adjacency, .hexastore:
+        case .adjacency, .hexastore, .quadStore:
             return true
         case .tripleStore, .namedGraphStore:
             return false
@@ -365,12 +381,18 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
     private func endpointIDs(
         for edge: GraphEdgeWithProperties,
         orientation: TraversalOrientation
-    ) -> (left: String, right: String) {
+    ) throws -> (left: String, right: String) {
         switch orientation {
         case .outgoing:
-            return (edge.source, edge.target)
+            return (
+                try edge.source.requirePropertyGraphIdentifier(),
+                try edge.target.requirePropertyGraphIdentifier()
+            )
         case .incoming:
-            return (edge.target, edge.source)
+            return (
+                try edge.target.requirePropertyGraphIdentifier(),
+                try edge.source.requirePropertyGraphIdentifier()
+            )
         }
     }
 
@@ -433,7 +455,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         rightID: String,
         edge: GraphEdgeWithProperties,
         onto existing: [String: FieldValue]
-    ) -> [String: FieldValue]? {
+    ) throws -> [String: FieldValue]? {
         var bindings = existing
 
         if let leftVariable = step.left.variable {
@@ -447,11 +469,16 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
             }
         }
         if let edgeVariable = step.edge.variable {
-            guard bind("\(edgeVariable).label", value: .string(edge.edgeLabel), into: &bindings) else {
+            let edgeLabel = try edge.edgeLabel.requirePropertyGraphIdentifier()
+            guard bind("\(edgeVariable).label", value: .string(edgeLabel), into: &bindings) else {
                 return nil
             }
             for (propertyName, propertyValue) in edge.properties {
-                let fieldValue = FieldValue(propertyValue) ?? .string(String(describing: propertyValue))
+                guard let fieldValue = FieldValue(databaseValue: propertyValue) else {
+                    throw GraphTableError.typeMismatch(
+                        "Property '\(propertyName)' cannot be represented by GRAPH_TABLE"
+                    )
+                }
                 guard bind("\(edgeVariable).\(propertyName)", value: fieldValue, into: &bindings) else {
                     return nil
                 }
@@ -489,22 +516,28 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         }
 
         let mergedProperties = first.edge.properties
+        let edgeLabel = try first.edge.edgeLabel.requirePropertyGraphIdentifier()
         var fields: [String: FieldValue] = [
             "source": .string(first.leftID),
             "target": .string(last.rightID),
-            "edgeLabel": .string(first.edge.edgeLabel)
+            "edgeLabel": .string(edgeLabel)
         ]
         for (key, value) in mergedProperties {
-            fields[key] = FieldValue(value) ?? .string(String(describing: value))
+            guard let fieldValue = FieldValue(databaseValue: value) else {
+                throw GraphTableError.typeMismatch(
+                    "Property '\(key)' cannot be represented by GRAPH_TABLE"
+                )
+            }
+            fields[key] = fieldValue
         }
         for (key, value) in state.bindings {
             fields[key] = value
         }
 
-        return GraphTableRow(
+        return try GraphTableRow(
             source: first.leftID,
             target: last.rightID,
-            edgeLabel: first.edge.edgeLabel,
+            edgeLabel: edgeLabel,
             properties: mergedProperties,
             fields: fields
         )
@@ -522,7 +555,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
             }
             return boolValue
         case .literal(let literal):
-            guard let boolValue = literal.toFieldValue()?.boolValue else {
+            guard let boolValue = try literal.toDatabaseValue().boolValue else {
                 throw GraphTableError.typeMismatch("Boolean expression must resolve to Bool")
             }
             return boolValue
@@ -728,41 +761,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
 
     /// Convert QueryIR.Literal to DatabaseEngine.FieldValue
     private func convertLiteralToFieldValue(_ literal: Literal) throws -> FieldValue {
-        switch literal {
-        case .null:
-            return .null
-        case .bool(let value):
-            return .bool(value)
-        case .int(let value):
-            return .int64(value)
-        case .double(let value):
-            return .double(value)
-        case .string(let value):
-            return .string(value)
-        case .date(let value):
-            return .double(value.timeIntervalSince1970)
-        case .timestamp(let value):
-            return .double(value.timeIntervalSince1970)
-        case .binary(let value):
-            return .data(value)
-        case .array:
-            // Arrays cannot be converted to simple FieldValue
-            throw GraphTableError.typeMismatch("Array literals not supported in property filters")
-        case .iri(let value):
-            // SPARQL IRI as string
-            return .string(value)
-        case .blankNode(let value):
-            // SPARQL blank node as string
-            return .string(value)
-        case .typedLiteral(let value, _):
-            // Typed literal - use value as string (ignore datatype)
-            return .string(value)
-        case .langLiteral(let value, _):
-            // Language-tagged literal - use value as string (ignore language tag)
-            return .string(value)
-        case .dirLangLiteral(let value, _, _):
-            return .string(value)
-        }
+        try literal.toFieldValue()
     }
 
     // MARK: - Index Resolution
@@ -771,15 +770,12 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
     private func findGraphIndex() throws -> IndexDescriptor {
         let descriptors = T.indexDescriptors
 
-        // Find first GraphIndexKind descriptor
-        for descriptor in descriptors {
-            if descriptor.kind is GraphIndexKind<T> {
-                return descriptor
-            }
+        for descriptor in descriptors where descriptor.kindIdentifier == "graph" {
+            return descriptor
         }
 
         throw GraphTableError.indexNotFound(
-            "No GraphIndexKind found for type \(T.self)"
+            "No property-graph index found for type \(T.self)"
         )
     }
 }

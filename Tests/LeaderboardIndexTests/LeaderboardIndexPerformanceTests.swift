@@ -7,13 +7,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import DatabaseValue
 import TestSupport
 @testable import DatabaseEngine
 @testable import LeaderboardIndex
 
 // MARK: - Test Model
 
-private struct PerfGameScore: Persistable {
+private struct LeaderboardBenchmarkScore: Persistable {
     typealias ID = String
 
     var id: String
@@ -28,7 +29,7 @@ private struct PerfGameScore: Persistable {
         self.region = region
     }
 
-    static var persistableType: String { "PerfGameScore" }
+    static var persistableType: String { "LeaderboardBenchmarkScore" }
     static var allFields: [String] { ["id", "playerId", "score", "region"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -45,51 +46,51 @@ private struct PerfGameScore: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<PerfGameScore, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<LeaderboardBenchmarkScore, Value>) -> String {
         switch keyPath {
-        case \PerfGameScore.id: return "id"
-        case \PerfGameScore.playerId: return "playerId"
-        case \PerfGameScore.score: return "score"
-        case \PerfGameScore.region: return "region"
+        case \LeaderboardBenchmarkScore.id: return "id"
+        case \LeaderboardBenchmarkScore.playerId: return "playerId"
+        case \LeaderboardBenchmarkScore.score: return "score"
+        case \LeaderboardBenchmarkScore.region: return "region"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<PerfGameScore>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<LeaderboardBenchmarkScore>) -> String {
         switch keyPath {
-        case \PerfGameScore.id: return "id"
-        case \PerfGameScore.playerId: return "playerId"
-        case \PerfGameScore.score: return "score"
-        case \PerfGameScore.region: return "region"
+        case \LeaderboardBenchmarkScore.id: return "id"
+        case \LeaderboardBenchmarkScore.playerId: return "playerId"
+        case \LeaderboardBenchmarkScore.score: return "score"
+        case \LeaderboardBenchmarkScore.region: return "region"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PerfGameScore> {
+        if let partial = keyPath as? PartialKeyPath<LeaderboardBenchmarkScore> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
     }
 }
 
-// MARK: - Performance Test Helper
+// MARK: - Leaderboard Benchmark Context
 
-private struct PerfTestContext {
+private struct LeaderboardBenchmarkContext {
     let database: any StorageEngine
     let subspace: Subspace
-    let maintainer: TimeWindowLeaderboardIndexMaintainer<PerfGameScore, Int64>
+    let maintainer: TimeWindowLeaderboardIndexMaintainer<LeaderboardBenchmarkScore>
     let indexName: String
 
     init(testName: String, window: LeaderboardWindowType = .daily, windowCount: Int = 7) async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
-        self.indexName = "PerfGameScore_leaderboard_score"
+        self.indexName = "LeaderboardBenchmarkScore_leaderboard_score"
         self.subspace = Subspace(prefix: Tuple("test", "leaderboard_perf", String(testId), testName).pack())
 
         let indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let kind = TimeWindowLeaderboardIndexKind<PerfGameScore, Int64>(
+        let kind = TimeWindowLeaderboardIndexKind<LeaderboardBenchmarkScore>(
             scoreField: \.score,
             groupBy: [],
             window: window,
@@ -100,12 +101,11 @@ private struct PerfTestContext {
             name: indexName,
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "score"),
-            keyPaths: [\PerfGameScore.score],
             subspaceKey: indexName,
-            itemTypes: Set(["PerfGameScore"])
+            itemTypes: Set(["LeaderboardBenchmarkScore"])
         )
 
-        self.maintainer = TimeWindowLeaderboardIndexMaintainer<PerfGameScore, Int64>(
+        self.maintainer = TimeWindowLeaderboardIndexMaintainer<LeaderboardBenchmarkScore>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
@@ -117,12 +117,12 @@ private struct PerfTestContext {
     func cleanup() async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
 }
 
-// MARK: - Benchmark Helper
+// MARK: - Benchmark Measurement
 
 private func benchmark(_ name: String, iterations: Int = 1, operation: () async throws -> Void) async throws -> (totalMs: Double, perIterationMs: Double) {
     let start = DispatchTime.now()
@@ -143,11 +143,11 @@ struct LeaderboardIndexInsertPerformanceTests {
 
     @Test("Bulk insert performance - 100 records")
     func testBulkInsert100Records() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "bulk_insert_100")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "bulk_insert_100")
 
             let scores = (0..<100).map { i in
-                PerfGameScore(
+                LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64.random(in: 0...10000),
@@ -159,7 +159,7 @@ struct LeaderboardIndexInsertPerformanceTests {
                 try await ctx.database.withTransaction { transaction in
                     for score in scores {
                         try await ctx.maintainer.updateIndex(
-                            oldItem: nil as PerfGameScore?,
+                            oldItem: nil as LeaderboardBenchmarkScore?,
                             newItem: score,
                             transaction: transaction
                         )
@@ -176,11 +176,11 @@ struct LeaderboardIndexInsertPerformanceTests {
 
     @Test("Bulk insert performance - 1000 records")
     func testBulkInsert1000Records() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "bulk_insert_1000")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "bulk_insert_1000")
 
             let scores = (0..<1000).map { i in
-                PerfGameScore(
+                LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64.random(in: 0...100000),
@@ -192,7 +192,7 @@ struct LeaderboardIndexInsertPerformanceTests {
                 try await ctx.database.withTransaction { transaction in
                     for score in scores {
                         try await ctx.maintainer.updateIndex(
-                            oldItem: nil as PerfGameScore?,
+                            oldItem: nil as LeaderboardBenchmarkScore?,
                             newItem: score,
                             transaction: transaction
                         )
@@ -209,11 +209,11 @@ struct LeaderboardIndexInsertPerformanceTests {
 
     @Test("Sequential insert performance")
     func testSequentialInsertPerformance() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "sequential_insert")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "sequential_insert")
 
             let scores = (0..<100).map { i in
-                PerfGameScore(
+                LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64(i * 100),
@@ -226,7 +226,7 @@ struct LeaderboardIndexInsertPerformanceTests {
                 let (ms, _) = try await benchmark("Insert single") {
                     try await ctx.database.withTransaction { transaction in
                         try await ctx.maintainer.updateIndex(
-                            oldItem: nil as PerfGameScore?,
+                            oldItem: nil as LeaderboardBenchmarkScore?,
                             newItem: score,
                             transaction: transaction
                         )
@@ -250,12 +250,12 @@ struct LeaderboardIndexQueryPerformanceTests {
 
     @Test("Top-K query performance")
     func testTopKQueryPerformance() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "topk_query")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "topk_query")
 
             // Setup: Insert 1000 records
             let scores = (0..<1000).map { i in
-                PerfGameScore(
+                LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64.random(in: 0...100000),
@@ -266,7 +266,7 @@ struct LeaderboardIndexQueryPerformanceTests {
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as PerfGameScore?,
+                        oldItem: nil as LeaderboardBenchmarkScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -303,12 +303,12 @@ struct LeaderboardIndexQueryPerformanceTests {
 
     @Test("Rank lookup performance")
     func testRankLookupPerformance() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "rank_lookup")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "rank_lookup")
 
             // Setup: Insert 1000 records with sequential scores
             let scores = (0..<1000).map { i in
-                PerfGameScore(
+                LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64(i * 10),  // 0, 10, 20, ... 9990
@@ -319,7 +319,7 @@ struct LeaderboardIndexQueryPerformanceTests {
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as PerfGameScore?,
+                        oldItem: nil as LeaderboardBenchmarkScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -368,12 +368,12 @@ struct LeaderboardIndexQueryPerformanceTests {
 
     @Test("Available windows query performance")
     func testAvailableWindowsPerformance() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "available_windows")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "available_windows")
 
             // Setup: Insert records
             let scores = (0..<100).map { i in
-                PerfGameScore(
+                LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64.random(in: 0...10000),
@@ -384,7 +384,7 @@ struct LeaderboardIndexQueryPerformanceTests {
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as PerfGameScore?,
+                        oldItem: nil as LeaderboardBenchmarkScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -415,12 +415,12 @@ struct LeaderboardIndexUpdatePerformanceTests {
 
     @Test("Score update performance")
     func testScoreUpdatePerformance() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "score_update")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "score_update")
 
             // Setup: Insert 100 records
             var scores = (0..<100).map { i in
-                PerfGameScore(
+                LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64(i * 100),
@@ -431,7 +431,7 @@ struct LeaderboardIndexUpdatePerformanceTests {
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as PerfGameScore?,
+                        oldItem: nil as LeaderboardBenchmarkScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -472,12 +472,12 @@ struct LeaderboardIndexUpdatePerformanceTests {
 
     @Test("Delete performance")
     func testDeletePerformance() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "delete")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "delete")
 
             // Setup: Insert 100 records
             let scores = (0..<100).map { i in
-                PerfGameScore(
+                LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64(i * 100),
@@ -488,7 +488,7 @@ struct LeaderboardIndexUpdatePerformanceTests {
             try await ctx.database.withTransaction { transaction in
                 for score in scores {
                     try await ctx.maintainer.updateIndex(
-                        oldItem: nil as PerfGameScore?,
+                        oldItem: nil as LeaderboardBenchmarkScore?,
                         newItem: score,
                         transaction: transaction
                     )
@@ -501,7 +501,7 @@ struct LeaderboardIndexUpdatePerformanceTests {
                     for score in scores {
                         try await ctx.maintainer.updateIndex(
                             oldItem: score,
-                            newItem: nil as PerfGameScore?,
+                            newItem: nil as LeaderboardBenchmarkScore?,
                             transaction: transaction
                         )
                     }
@@ -529,8 +529,8 @@ struct LeaderboardIndexScaleTests {
 
     @Test("Large leaderboard - 10000 entries")
     func testLargeLeaderboard() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "large_leaderboard")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "large_leaderboard")
 
             // Insert 10000 records in batches
             let batchSize = 500
@@ -539,7 +539,7 @@ struct LeaderboardIndexScaleTests {
             var insertMs: Double = 0
             for batch in stride(from: 0, to: totalRecords, by: batchSize) {
                 let scores = (batch..<min(batch + batchSize, totalRecords)).map { i in
-                    PerfGameScore(
+                    LeaderboardBenchmarkScore(
                         id: "game-\(i)",
                         playerId: "player-\(i)",
                         score: Int64.random(in: 0...1_000_000),
@@ -551,7 +551,7 @@ struct LeaderboardIndexScaleTests {
                     try await ctx.database.withTransaction { transaction in
                         for score in scores {
                             try await ctx.maintainer.updateIndex(
-                                oldItem: nil as PerfGameScore?,
+                                oldItem: nil as LeaderboardBenchmarkScore?,
                                 newItem: score,
                                 transaction: transaction
                             )
@@ -594,11 +594,11 @@ struct LeaderboardIndexScaleTests {
 
     @Test("ScanItem performance")
     func testScanItemPerformance() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "scan_item")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "scan_item")
 
             let scores = (0..<1000).map { i in
-                PerfGameScore(
+                LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64.random(in: 0...100000),
@@ -628,12 +628,12 @@ struct LeaderboardIndexScaleTests {
 
     @Test("Ties handling performance")
     func testTiesHandlingPerformance() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try await PerfTestContext(testName: "ties")
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let ctx = try await LeaderboardBenchmarkContext(testName: "ties")
 
             // Insert 1000 records with only 10 distinct scores (many ties)
             let scores = (0..<1000).map { i in
-                PerfGameScore(
+                LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64(i % 10) * 100,  // 0, 100, 200, ... 900 repeating
@@ -645,7 +645,7 @@ struct LeaderboardIndexScaleTests {
                 try await ctx.database.withTransaction { transaction in
                     for score in scores {
                         try await ctx.maintainer.updateIndex(
-                            oldItem: nil as PerfGameScore?,
+                            oldItem: nil as LeaderboardBenchmarkScore?,
                             newItem: score,
                             transaction: transaction
                         )
@@ -673,7 +673,7 @@ struct LeaderboardIndexScaleTests {
 
     @Test("Window types performance comparison")
     func testWindowTypesPerformance() async throws {
-        try await FDBTestSetup.shared.withSerializedAccess {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             // Test different window types
             let windowTypes: [(LeaderboardWindowType, String)] = [
                 (.hourly, "hourly"),
@@ -682,10 +682,10 @@ struct LeaderboardIndexScaleTests {
             ]
 
             for (windowType, name) in windowTypes {
-                let ctx = try await PerfTestContext(testName: "window_\(name)", window: windowType)
+                let ctx = try await LeaderboardBenchmarkContext(testName: "window_\(name)", window: windowType)
 
                 let scores = (0..<100).map { i in
-                    PerfGameScore(
+                    LeaderboardBenchmarkScore(
                         id: "game-\(i)",
                         playerId: "player-\(i)",
                         score: Int64.random(in: 0...10000),
@@ -697,7 +697,7 @@ struct LeaderboardIndexScaleTests {
                     try await ctx.database.withTransaction { transaction in
                         for score in scores {
                             try await ctx.maintainer.updateIndex(
-                                oldItem: nil as PerfGameScore?,
+                                oldItem: nil as LeaderboardBenchmarkScore?,
                                 newItem: score,
                                 transaction: transaction
                             )
