@@ -524,7 +524,10 @@ struct SPARQLRuntimeExpressionExecutionTests {
             ProjectionItem(.literal(.int(1)), alias: "second"),
         ])
 
-        #expect(throws: GraphPatternConversionError.self) {
+        #expect(
+            throws: GraphPatternConversionError
+                .projectionAliasDependency("?second")
+        ) {
             try GraphPatternConverter.applyingProjectionExpressions(
                 projection,
                 to: .basic([])

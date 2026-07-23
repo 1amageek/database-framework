@@ -599,6 +599,7 @@ public struct GraphPatternConverter: Sendable {
         }
 
         var result = pattern
+        var unresolvedAliases = aliases
         for item in items {
             guard let alias = item.alias else {
                 switch item.expression {
@@ -610,9 +611,19 @@ public struct GraphPatternConverter: Sendable {
             }
 
             let target = normalizedVariable(alias)
-            if case .aggregate = item.expression { continue }
+            if case .aggregate = item.expression {
+                unresolvedAliases.remove(target)
+                continue
+            }
 
             let plan = try SPARQLExpressionPlan(item.expression)
+            if let dependency = plan.referencedVariables
+                .intersection(unresolvedAliases)
+                .sorted()
+                .first {
+                throw GraphPatternConversionError
+                    .projectionAliasDependency(dependency)
+            }
             let expressionScope = result.outputVariables.union(inputVariables)
             if restrictExpressionReferencesToScope,
                let missingVariable = plan.referencedVariables
@@ -627,6 +638,7 @@ public struct GraphPatternConverter: Sendable {
                 throw GraphPatternConversionError.variableAlreadyInScope(target)
             }
             result = .extend(result, variable: target, expression: plan)
+            unresolvedAliases.remove(target)
         }
         return result
     }

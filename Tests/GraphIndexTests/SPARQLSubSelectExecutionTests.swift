@@ -374,7 +374,7 @@ struct SPARQLSubSelectExecutionTests {
                 .subquery(inner)
             )
         )
-        let meter = makeWorkMeter(maximumIntermediateRows: 1)
+        let meter = makeWorkMeter()
 
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
@@ -394,8 +394,8 @@ struct SPARQLSubSelectExecutionTests {
         )
     }
 
-    @Test("The isolated SubSelect cache enforces its aggregate row budget")
-    func isolatedCacheEnforcesAggregateRowBudget() async throws {
+    @Test("Isolated SubSelect execution enforces the request row budget")
+    func isolatedExecutionEnforcesRequestRowBudget() async throws {
         let first = SelectQuery(
             projection: .items([
                 ProjectionItem(.variable(Variable("first")))
@@ -432,10 +432,10 @@ struct SPARQLSubSelectExecutionTests {
                 offset: 0,
                 workMeter: makeWorkMeter(maximumIntermediateRows: 1)
             )
-            Issue.record("Expected the aggregate SubSelect row budget to fail")
+            Issue.record("Expected the SubSelect request row budget to fail")
         } catch let error as DatabaseWorkLimitError {
             #expect(error == .maximumIntermediateRows(
-                stage: .subqueryCache,
+                stage: .bindingCandidate,
                 consumed: 1,
                 requested: 1,
                 maximum: 1
