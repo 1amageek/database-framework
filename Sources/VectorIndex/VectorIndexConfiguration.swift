@@ -75,20 +75,15 @@ public protocol _VectorIndexConfiguration: IndexConfiguration {
 /// - Memory-constrained environments
 /// - Development/testing
 ///
-/// **Note**: `@unchecked Sendable` is used because `KeyPath` is immutable and thread-safe.
-public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfiguration, @unchecked Sendable {
+public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfiguration {
     /// Must match VectorIndexKind.identifier
     public static var kindIdentifier: String { "vector" }
 
-    /// Type-erased keyPath for protocol conformance
-    public var keyPath: AnyKeyPath { _keyPath }
+    /// Canonical target field name from the model's compiled schema.
+    public let fieldName: String
 
     /// Model type name for index name generation
     public var modelTypeName: String { String(describing: Model.self) }
-
-    // MARK: - Private Storage
-
-    private let _keyPath: KeyPath<Model, [Float]>
 
     // MARK: - Configuration Properties
 
@@ -114,7 +109,7 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
         algorithm: VectorAlgorithm = .auto(.default),
         subspaceKey: String? = nil
     ) {
-        self._keyPath = keyPath
+        self.fieldName = Model.fieldName(for: keyPath)
         self.algorithm = algorithm
         self.subspaceKey = subspaceKey
     }
@@ -130,7 +125,7 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
         hnsw hnswParameters: VectorHNSWParameters,
         subspaceKey: String? = nil
     ) {
-        self._keyPath = keyPath
+        self.fieldName = Model.fieldName(for: keyPath)
         self.algorithm = .hnsw(hnswParameters)
         self.subspaceKey = subspaceKey
     }

@@ -215,6 +215,7 @@ struct VectorIndexConfigurationTests {
 
         #expect(config.indexName == "HNSWDocument_embedding")
         #expect(config.modelTypeName == "HNSWDocument")
+        #expect(config.fieldName == "embedding")
     }
 
     @Test("VectorHNSWParameters default values")

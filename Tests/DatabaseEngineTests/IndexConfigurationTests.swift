@@ -166,8 +166,6 @@ struct DimensionIndexConfiguration: IndexConfiguration, Sendable {
     let _modelTypeName: String
     var modelTypeName: String { _modelTypeName }
 
-    var keyPath: AnyKeyPath { \IndexConfigurationRecord.embedding }
-
     var indexName: String { "\(_modelTypeName)_\(fieldName)" }
 
     let dimensions: Int
@@ -193,8 +191,6 @@ struct LanguageIndexConfiguration: IndexConfiguration, Sendable {
     let fieldName: String
     let _modelTypeName: String
     var modelTypeName: String { _modelTypeName }
-
-    var keyPath: AnyKeyPath { \IndexConfigurationRecord.content }
 
     var indexName: String { "\(_modelTypeName)_\(fieldName)" }
 

@@ -234,7 +234,6 @@ struct ContainerEmbeddingConfiguration: IndexConfiguration, Sendable {
     let fieldName: String
     let _modelTypeName: String
     var modelTypeName: String { _modelTypeName }
-    var keyPath: AnyKeyPath { \DBConfigurationTests.IndexConfigurationUser.embedding }
     var indexName: String { "\(_modelTypeName)_\(fieldName)" }
 
     let dimensions: Int
@@ -254,7 +253,6 @@ struct ContainerLocalizedTextConfiguration: IndexConfiguration, Sendable {
     let fieldName: String
     let _modelTypeName: String
     var modelTypeName: String { _modelTypeName }
-    var keyPath: AnyKeyPath { \DBConfigurationTests.IndexConfigurationUser.name }
     var indexName: String { "\(_modelTypeName)_\(fieldName)" }
 
     let language: String
