@@ -272,7 +272,20 @@ package final class DatabaseDataStore: DataStore, Sendable {
         switch condition.op {
         case .equal:
             let (begin, end) = valueSubspace.range()
-            scanRange = .exactMatch(begin: begin, end: end, valueSubspace: valueSubspace)
+            if condition.matchedFieldCount == indexedFieldCount {
+                scanRange = .exactMatch(
+                    begin: begin,
+                    end: end,
+                    valueSubspace: valueSubspace
+                )
+            } else {
+                scanRange = .range(
+                    begin: begin,
+                    end: end,
+                    baseSubspace: indexSubspaceForIndex,
+                    keyPathsCount: indexedFieldCount
+                )
+            }
 
         case .greaterThan:
             let beginKey = valueSubspace.range().1  // End of value range = start after
@@ -386,6 +399,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let fieldName: String
         let op: ComparisonOperator
         let valueTuple: Tuple
+        let matchedFieldCount: Int
     }
 
     /// The selected scalar index and its encoded lookup condition.
@@ -449,7 +463,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
                     ScalarIndexCondition(
                         fieldName: comparison.fieldName,
                         op: comparison.op,
-                        valueTuple: tuple
+                        valueTuple: tuple,
+                        matchedFieldCount: 1
                     )
                 ]
             default:
@@ -542,7 +557,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
                         condition: ScalarIndexCondition(
                             fieldName: firstFieldName,
                             op: .equal,
-                            valueTuple: Tuple(tupleElements)
+                            valueTuple: Tuple(tupleElements),
+                            matchedFieldCount: matchCount
                         )
                     )
                 }
@@ -1088,7 +1104,20 @@ package final class DatabaseDataStore: DataStore, Sendable {
         switch condition.op {
         case .equal:
             let (begin, end) = valueSubspace.range()
-            scanRange = .exactMatch(begin: begin, end: end, valueSubspace: valueSubspace)
+            if condition.matchedFieldCount == indexedFieldCount {
+                scanRange = .exactMatch(
+                    begin: begin,
+                    end: end,
+                    valueSubspace: valueSubspace
+                )
+            } else {
+                scanRange = .range(
+                    begin: begin,
+                    end: end,
+                    baseSubspace: indexSubspaceForIndex,
+                    keyPathsCount: indexedFieldCount
+                )
+            }
 
         case .greaterThan:
             let beginKey = valueSubspace.range().1  // End of value range = start after

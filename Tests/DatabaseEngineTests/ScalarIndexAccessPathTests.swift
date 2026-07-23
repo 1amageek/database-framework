@@ -52,6 +52,26 @@ private struct AggregationOnlyAccessPathEntity {
     )
 }
 
+@Persistable
+private struct CompoundOnlyAccessPathEntity {
+    #Directory<CompoundOnlyAccessPathEntity>(
+        "test",
+        "scalar_access_path",
+        "compound_only"
+    )
+
+    var id: String = ULID().ulidString
+    var group: String
+    var rank: Int
+
+    #Index(
+        ScalarIndexKind<CompoundOnlyAccessPathEntity>(
+            fields: [\.group, \.rank]
+        ),
+        name: "scalar_access_path_compound_only"
+    )
+}
+
 @Suite("Scalar index access paths", .serialized, .heartbeat)
 struct ScalarIndexAccessPathTests {
     private func setupContainer() async throws -> DBContainer {
@@ -60,7 +80,8 @@ struct ScalarIndexAccessPathTests {
         let schema = Schema(
             [
                 ScalarAccessPathEntity.self,
-                AggregationOnlyAccessPathEntity.self
+                AggregationOnlyAccessPathEntity.self,
+                CompoundOnlyAccessPathEntity.self
             ],
             version: Schema.Version(1, 0, 0)
         )
@@ -103,6 +124,32 @@ struct ScalarIndexAccessPathTests {
             .where(\.rank == 2)
             .count()
         #expect(count == 1)
+    }
+
+    @Test("A partial compound prefix preserves entity identity")
+    func partialCompoundPrefixPreservesEntityIdentity() async throws {
+        let container = try await setupContainer()
+        try await resetStorage(in: container)
+        let context = container.newContext()
+
+        let first = CompoundOnlyAccessPathEntity(group: "alpha", rank: 1)
+        let second = CompoundOnlyAccessPathEntity(group: "alpha", rank: 2)
+        try context.insert(first)
+        try context.insert(second)
+        try context.insert(
+            CompoundOnlyAccessPathEntity(group: "beta", rank: 1)
+        )
+        try await context.save()
+
+        let results = try await context.fetch(CompoundOnlyAccessPathEntity.self)
+            .where(\.group == "alpha")
+            .execute()
+        #expect(Set(results.map(\.id)) == Set([first.id, second.id]))
+
+        let count = try await context.fetch(CompoundOnlyAccessPathEntity.self)
+            .where(\.group == "alpha")
+            .count()
+        #expect(count == 2)
     }
 
     @Test("Typed queries never interpret aggregation storage as scalar storage")
