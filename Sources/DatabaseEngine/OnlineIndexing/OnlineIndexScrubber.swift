@@ -374,13 +374,13 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         // Record progress outside transaction
         if let lastKey = result.3 {
             let isComplete = result.0 < batchSize
-            rangeSet.recordProgress(
+            try rangeSet.recordProgress(
                 rangeIndex: bounds.rangeIndex,
                 lastProcessedKey: lastKey,
                 isComplete: isComplete
             )
         } else {
-            rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+            try rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
         }
 
         return Phase1Result(
@@ -539,13 +539,13 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         // Record progress outside transaction
         if let lastKey = result.3 {
             let isComplete = result.0 < batchSize
-            rangeSet.recordProgress(
+            try rangeSet.recordProgress(
                 rangeIndex: bounds.rangeIndex,
                 lastProcessedKey: lastKey,
                 isComplete: isComplete
             )
         } else {
-            rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+            try rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
         }
 
         return Phase2Result(

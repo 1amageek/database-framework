@@ -325,13 +325,13 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     var updatedRangeSet = currentRangeSet
                     if let lastKey = lastProcessedKey {
                         let isComplete = itemsInBatch < batchSize
-                        updatedRangeSet.recordProgress(
+                        try updatedRangeSet.recordProgress(
                             rangeIndex: bounds.rangeIndex,
                             lastProcessedKey: lastKey,
                             isComplete: isComplete
                         )
                     } else {
-                        updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                        try updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
                     }
                     try self.saveProgress(updatedRangeSet, transaction: transaction)
 
@@ -341,13 +341,13 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                 // Update in-memory rangeSet after successful commit
                 if let lastKey = lastProcessedKey {
                     let isComplete = itemsInBatch < batchSize
-                    rangeSet.recordProgress(
+                    try rangeSet.recordProgress(
                         rangeIndex: bounds.rangeIndex,
                         lastProcessedKey: lastKey,
                         isComplete: isComplete
                     )
                 } else {
-                    rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                    try rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
                 }
 
                 let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
@@ -455,13 +455,13 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     var updatedRangeSet = currentRangeSet
                     if let lastKey = lastProcessedKey {
                         let isComplete = itemsInBatch < batchSize
-                        updatedRangeSet.recordProgress(
+                        try updatedRangeSet.recordProgress(
                             rangeIndex: bounds.rangeIndex,
                             lastProcessedKey: lastKey,
                             isComplete: isComplete
                         )
                     } else {
-                        updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                        try updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
                     }
                     try self.saveProgress(updatedRangeSet, transaction: transaction)
 
@@ -471,13 +471,13 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                 // Update in-memory rangeSet after successful commit
                 if let lastKey = lastProcessedKey {
                     let isComplete = itemsInBatch < batchSize
-                    rangeSet.recordProgress(
+                    try rangeSet.recordProgress(
                         rangeIndex: bounds.rangeIndex,
                         lastProcessedKey: lastKey,
                         isComplete: isComplete
                     )
                 } else {
-                    rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                    try rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
                 }
 
                 // Update metrics outside transaction

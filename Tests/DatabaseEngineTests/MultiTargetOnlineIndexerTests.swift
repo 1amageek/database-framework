@@ -69,18 +69,14 @@ struct RangeSetMultiTargetTests {
     }
 
     @Test("RangeSet marks completed ranges")
-    func testRangeSetMarkCompleted() {
+    func testRangeSetMarkCompleted() throws {
         let begin: Bytes = [0x00]
         let end: Bytes = [0xFF]
 
         var rangeSet = RangeSet(initialRange: (begin: begin, end: end))
 
         if let bounds = rangeSet.nextBatchBounds() {
-            rangeSet.recordProgress(
-                rangeIndex: bounds.rangeIndex,
-                lastProcessedKey: bounds.end,
-                isComplete: true
-            )
+            try rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
             // After marking completed, the next batch should be nil
             #expect(rangeSet.nextBatchBounds() == nil)
         }
@@ -100,19 +96,50 @@ struct RangeSetMultiTargetTests {
     }
 
     @Test("Empty RangeSet is complete")
-    func testEmptyRangeSetIsComplete() {
+    func testEmptyRangeSetIsComplete() throws {
         var rangeSet = RangeSet(initialRange: (begin: [0x00], end: [0x01]))
 
         // Extract all batches and mark complete
         while let bounds = rangeSet.nextBatchBounds() {
-            rangeSet.recordProgress(
-                rangeIndex: bounds.rangeIndex,
-                lastProcessedKey: bounds.end,
-                isComplete: true
-            )
+            try rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
         }
 
         #expect(rangeSet.isEmpty)
+    }
+
+    @Test("RangeSet rejects invalid progress state")
+    func rangeSetRejectsInvalidProgressState() throws {
+        var rangeSet = RangeSet(initialRange: (begin: [0x10], end: [0x20]))
+
+        #expect(throws: RangeSetError.invalidRangeIndex(index: -1, count: 1)) {
+            try rangeSet.markRangeComplete(rangeIndex: -1)
+        }
+        #expect(throws: RangeSetError.progressKeyOutsideRange(index: 0, key: [0x20])) {
+            try rangeSet.recordProgress(
+                rangeIndex: 0,
+                lastProcessedKey: [0x20],
+                isComplete: false
+            )
+        }
+
+        try rangeSet.recordProgress(
+            rangeIndex: 0,
+            lastProcessedKey: [0x18],
+            isComplete: false
+        )
+        #expect(
+            throws: RangeSetError.progressRegression(
+                index: 0,
+                previous: [0x18],
+                next: [0x17]
+            )
+        ) {
+            try rangeSet.recordProgress(
+                rangeIndex: 0,
+                lastProcessedKey: [0x17],
+                isComplete: false
+            )
+        }
     }
 }
 
@@ -231,21 +258,17 @@ struct MultiTargetIndexerConcurrencyTests {
     }
 
     @Test("Progress tracking is atomic")
-    func testProgressTrackingAtomic() {
+    func testProgressTrackingAtomic() throws {
         // Progress is saved per transaction, ensuring atomicity
         // Verify the concept works with batch completion using new API
 
         var rangeSet = RangeSet(initialRange: (begin: [0x00], end: [0xFF]))
         var completedCount = 0
 
-        // Process batches using nextBatchBounds and recordProgress
+        // Process batches using nextBatchBounds and explicit completion
         while let bounds = rangeSet.nextBatchBounds() {
             // Simulate processing by marking as complete
-            rangeSet.recordProgress(
-                rangeIndex: bounds.rangeIndex,
-                lastProcessedKey: bounds.end,
-                isComplete: true
-            )
+            try rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
             completedCount += 1
         }
 

@@ -298,13 +298,13 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                     var updatedRangeSet = currentRangeSet
                     if let lastKey = lastProcessedKey {
                         let isComplete = itemsInBatch < self.batchSize
-                        updatedRangeSet.recordProgress(
+                        try updatedRangeSet.recordProgress(
                             rangeIndex: bounds.rangeIndex,
                             lastProcessedKey: lastKey,
                             isComplete: isComplete
                         )
                     } else {
-                        updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                        try updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
                     }
                     try self.saveProgress(updatedRangeSet, key: self.forwardProgressKey, transaction)
 
@@ -314,13 +314,13 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 // Update in-memory rangeSet after successful commit
                 if let lastKey = lastProcessedKey {
                     let isComplete = itemsInBatch < self.batchSize
-                    rangeSet.recordProgress(
+                    try rangeSet.recordProgress(
                         rangeIndex: bounds.rangeIndex,
                         lastProcessedKey: lastKey,
                         isComplete: isComplete
                     )
                 } else {
-                    rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                    try rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
                 }
 
                 // Record metrics

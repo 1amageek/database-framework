@@ -184,14 +184,7 @@ public struct RangeSet: Sendable {
         }
     }
 
-    /// Get all remaining ranges (for compatibility)
-    public var ranges: [Range] {
-        return continuations
-            .filter { $0.hasMoreToProcess }
-            .map { Range(begin: $0.nextBatchBegin, end: $0.rangeEnd) }
-    }
-
-    // MARK: - Batch Processing (New API)
+    // MARK: - Batch Processing
 
     /// Result type for next batch bounds
     public struct BatchBounds: Sendable {
@@ -242,8 +235,29 @@ public struct RangeSet: Sendable {
         rangeIndex: Int,
         lastProcessedKey: Bytes,
         isComplete: Bool
-    ) {
-        guard rangeIndex < continuations.count else { return }
+    ) throws {
+        guard continuations.indices.contains(rangeIndex) else {
+            throw RangeSetError.invalidRangeIndex(
+                index: rangeIndex,
+                count: continuations.count
+            )
+        }
+        let continuation = continuations[rangeIndex]
+        guard bytesGreaterThanOrEqual(lastProcessedKey, continuation.rangeBegin),
+              bytesLessThan(lastProcessedKey, continuation.rangeEnd) else {
+            throw RangeSetError.progressKeyOutsideRange(
+                index: rangeIndex,
+                key: lastProcessedKey
+            )
+        }
+        if let previous = continuation.lastProcessedKey,
+           bytesLessThan(lastProcessedKey, previous) {
+            throw RangeSetError.progressRegression(
+                index: rangeIndex,
+                previous: previous,
+                next: lastProcessedKey
+            )
+        }
 
         continuations[rangeIndex].lastProcessedKey = lastProcessedKey
         continuations[rangeIndex].isComplete = isComplete
@@ -252,8 +266,13 @@ public struct RangeSet: Sendable {
     /// Mark a range as complete without a specific key
     ///
     /// Used when a range is found to be empty or should be skipped.
-    public mutating func markRangeComplete(rangeIndex: Int) {
-        guard rangeIndex < continuations.count else { return }
+    public mutating func markRangeComplete(rangeIndex: Int) throws {
+        guard continuations.indices.contains(rangeIndex) else {
+            throw RangeSetError.invalidRangeIndex(
+                index: rangeIndex,
+                count: continuations.count
+            )
+        }
         continuations[rangeIndex].isComplete = true
     }
 
