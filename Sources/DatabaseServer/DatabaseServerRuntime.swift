@@ -111,6 +111,7 @@ public final class DatabaseServerRuntime: Sendable {
         self.endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
+            authorizationPolicy: configuration.authorizationPolicy,
             middlewares: configuration.middlewares,
             limits: configuration.wireLimits,
             errorMapper: configuration.errorMapper

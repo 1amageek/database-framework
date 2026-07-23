@@ -34,7 +34,13 @@ struct DatabaseStatementAdmissionEndpointTests {
             handlers: [AnyDatabaseOperationHandler(handler)],
             requiredOperations: [.mutationExecute]
         )
-        let endpoint = DatabaseEndpoint(container: container, registry: registry)
+        let endpoint = DatabaseEndpoint(
+            container: container,
+            registry: registry,
+            authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy(
+                UnrestrictedDatabaseOperationAuthorizationPolicy()
+            )
+        )
         let request = MutationExecuteOperation.Request(
             input: .statement(
                 .ir(

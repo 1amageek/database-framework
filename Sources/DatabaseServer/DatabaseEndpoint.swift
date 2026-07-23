@@ -5,6 +5,7 @@ import DatabaseWire
 public final class DatabaseEndpoint: Sendable {
     private let container: DBContainer
     private let registry: DatabaseOperationRegistry
+    private let authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy
     private let middlewares: [AnyDatabaseRequestMiddleware]
     private let limits: DatabaseWireLimits
     private let errorMapper: AnyDatabaseErrorMapper
@@ -12,11 +13,13 @@ public final class DatabaseEndpoint: Sendable {
     public init(
         container: DBContainer,
         registry: DatabaseOperationRegistry,
+        authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
         limits: DatabaseWireLimits = .default
     ) {
         self.container = container
         self.registry = registry
+        self.authorizationPolicy = authorizationPolicy
         self.middlewares = middlewares
         self.limits = limits
         self.errorMapper = AnyDatabaseErrorMapper(CanonicalDatabaseErrorMapper())
@@ -25,12 +28,14 @@ public final class DatabaseEndpoint: Sendable {
     public init<Mapper: DatabaseErrorMapper>(
         container: DBContainer,
         registry: DatabaseOperationRegistry,
+        authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
         limits: DatabaseWireLimits = .default,
         errorMapper: Mapper
     ) {
         self.container = container
         self.registry = registry
+        self.authorizationPolicy = authorizationPolicy
         self.middlewares = middlewares
         self.limits = limits
         self.errorMapper = AnyDatabaseErrorMapper(errorMapper)
@@ -52,6 +57,10 @@ public final class DatabaseEndpoint: Sendable {
         )
         let result: DatabaseOperationResult
         do {
+            try await authorizationPolicy.authorize(
+                request: request,
+                context: context
+            )
             result = try await handlerChain()(request, context)
         } catch is CancellationError {
             throw CancellationError()

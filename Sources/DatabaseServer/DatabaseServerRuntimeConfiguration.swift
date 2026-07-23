@@ -2,6 +2,7 @@ import DatabaseWire
 
 public final class DatabaseServerRuntimeConfiguration: Sendable {
     public let identity: DatabaseRuntimeIdentity
+    public let authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy
     public let middlewares: [AnyDatabaseRequestMiddleware]
     public let runtimeLimits: DatabaseRuntimeLimits
     public let wireLimits: DatabaseWireLimits
@@ -11,6 +12,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
     public init(
         identity: DatabaseRuntimeIdentity,
         serviceFactory: AnyDatabaseServerServiceFactory,
+        authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
         runtimeLimits: DatabaseRuntimeLimits = .default,
         wireLimits: DatabaseWireLimits = .default,
@@ -20,6 +22,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
     ) {
         self.identity = identity
         self.serviceFactory = serviceFactory
+        self.authorizationPolicy = authorizationPolicy
         self.middlewares = middlewares
         self.runtimeLimits = runtimeLimits
         self.wireLimits = wireLimits

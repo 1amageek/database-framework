@@ -1046,7 +1046,13 @@ struct SPARQLStatementMutationExecutorTests {
             handlers: [AnyDatabaseOperationHandler(handler)],
             requiredOperations: [.mutationExecute]
         )
-        let endpoint = DatabaseEndpoint(container: container, registry: registry)
+        let endpoint = DatabaseEndpoint(
+            container: container,
+            registry: registry,
+            authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy(
+                UnrestrictedDatabaseOperationAuthorizationPolicy()
+            )
+        )
         let payload = MutationExecuteOperation.Request(
             input: .statement(
                 .ir(

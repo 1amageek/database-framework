@@ -150,7 +150,13 @@ struct DatabaseQueryContinuationEndpointTests {
             handlers: [AnyDatabaseOperationHandler(QueryExecuteHandler())],
             requiredOperations: [.queryExecute]
         )
-        return DatabaseEndpoint(container: container, registry: registry)
+        return DatabaseEndpoint(
+            container: container,
+            registry: registry,
+            authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy(
+                UnrestrictedDatabaseOperationAuthorizationPolicy()
+            )
+        )
     }
 
     private func makeContainer(seedCount: Int = 0) async throws -> DBContainer {

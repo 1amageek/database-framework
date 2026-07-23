@@ -227,6 +227,9 @@ struct DatabaseServerRuntimeTests {
                     )
                         .makeServices(context: context)
                 },
+                authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy(
+                    UnrestrictedDatabaseOperationAuthorizationPolicy()
+                ),
                 wireLimits: wireLimits
             )
         )

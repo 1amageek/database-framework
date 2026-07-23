@@ -29,7 +29,11 @@ struct DatabaseEndpointTests {
             handlers: [AnyDatabaseOperationHandler(handler)],
             requiredOperations: [.capabilitiesDescribe]
         )
-        let endpoint = DatabaseEndpoint(container: container, registry: registry)
+        let endpoint = DatabaseEndpoint(
+            container: container,
+            registry: registry,
+            authorizationPolicy: Self.unrestrictedAuthorizationPolicy
+        )
         let request = try makeRequest(
             operation: CapabilitiesDescribeOperation.self,
             requestID: 9_223_372_036_854_775_001,
@@ -78,6 +82,7 @@ struct DatabaseEndpointTests {
         let endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
+            authorizationPolicy: Self.unrestrictedAuthorizationPolicy,
             middlewares: [AnyDatabaseRequestMiddleware(middleware)]
         )
         let request = try makeRequest(
@@ -108,7 +113,11 @@ struct DatabaseEndpointTests {
             handlers: [AnyDatabaseOperationHandler(handler)],
             requiredOperations: [.capabilitiesDescribe]
         )
-        let endpoint = DatabaseEndpoint(container: container, registry: registry)
+        let endpoint = DatabaseEndpoint(
+            container: container,
+            registry: registry,
+            authorizationPolicy: Self.unrestrictedAuthorizationPolicy
+        )
         let request = try makeRequest(
             operation: CapabilitiesDescribeOperation.self,
             requestID: 43,
@@ -142,6 +151,7 @@ struct DatabaseEndpointTests {
         let endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
+            authorizationPolicy: Self.unrestrictedAuthorizationPolicy,
             limits: limits,
             errorMapper: OversizedEndpointErrorMapper()
         )
@@ -220,7 +230,11 @@ struct DatabaseEndpointTests {
             ],
             requiredOperations: [.capabilitiesDescribe, .schemaDescribe]
         )
-        let endpoint = DatabaseEndpoint(container: container, registry: registry)
+        let endpoint = DatabaseEndpoint(
+            container: container,
+            registry: registry,
+            authorizationPolicy: Self.unrestrictedAuthorizationPolicy
+        )
 
         let capabilities: CapabilitiesDescribeOperation.Response = try await invoke(
             CapabilitiesDescribeOperation.self,
@@ -295,7 +309,18 @@ struct DatabaseEndpointTests {
             handlers: [AnyDatabaseOperationHandler(handler)],
             requiredOperations: [.capabilitiesDescribe]
         )
-        return DatabaseEndpoint(container: container, registry: registry)
+        return DatabaseEndpoint(
+            container: container,
+            registry: registry,
+            authorizationPolicy: Self.unrestrictedAuthorizationPolicy
+        )
+    }
+
+    private static var unrestrictedAuthorizationPolicy:
+        AnyDatabaseOperationAuthorizationPolicy {
+        AnyDatabaseOperationAuthorizationPolicy(
+            UnrestrictedDatabaseOperationAuthorizationPolicy()
+        )
     }
 
     private func makeRequest<Operation: DatabaseOperation>(

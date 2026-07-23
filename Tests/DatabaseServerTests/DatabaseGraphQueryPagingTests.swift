@@ -443,7 +443,13 @@ struct DatabaseGraphQueryPagingTests {
             handlers: [AnyDatabaseOperationHandler(QueryExecuteHandler())],
             requiredOperations: [.queryExecute]
         )
-        let endpoint = DatabaseEndpoint(container: container, registry: registry)
+        let endpoint = DatabaseEndpoint(
+            container: container,
+            registry: registry,
+            authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy(
+                UnrestrictedDatabaseOperationAuthorizationPolicy()
+            )
+        )
         let operationRequest = request(.construct(constructQuery()), limit: 2)
         let payload = try DatabaseEnvelopeCodec.encode(operationRequest)
         let frame = try DatabaseEnvelopeCodec.encode(
