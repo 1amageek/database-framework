@@ -419,34 +419,6 @@ public struct IndexRecommendation: Sendable {
     }
 }
 
-// MARK: - PlanExecutor Extension
-
-extension PlanExecutor {
-
-    /// Execute a plan with statistics tracking
-    public func executeWithTracking(
-        plan: QueryPlan<T>,
-        tracker: RuntimeStatisticsTracker
-    ) async throws -> [T] {
-        let startTime = Date()
-
-        let results = try await execute(plan: plan)
-
-        let executionTime = Date().timeIntervalSince(startTime)
-
-        // Record statistics
-        tracker.record(
-            plan: plan,
-            actualRowCount: results.count,
-            executionTime: executionTime,
-            indexScansPerformed: plan.usedIndexes.count,
-            entityFetches: results.count
-        )
-
-        return results
-    }
-}
-
 // MARK: - Statistics Drift Detection
 
 /// Detects when statistics have drifted significantly from reality

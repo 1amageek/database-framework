@@ -229,7 +229,7 @@ public struct IndexQueryContext: Sendable {
 
     /// Get a StorageReader for a type
     ///
-    /// Use this to access index data via IndexSearcher classes.
+    /// Feature-owned readers use this for physical index access.
     /// For types with dynamic directories, uses the partition binding if set.
     ///
     /// - Parameter type: The Persistable type

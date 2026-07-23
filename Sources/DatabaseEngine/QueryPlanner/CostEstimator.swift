@@ -213,9 +213,7 @@ public struct CostEstimator<T: Persistable> {
     /// is true, meaning the index contains ALL fields of type T. PlanEnumerator enforces this
     /// via `IndexOnlyScanAnalyzer.analyze()` check before creating the operator.
     ///
-    /// If the index is not truly covering (e.g., storedFields not available in IndexEntry),
-    /// the PlanExecutor will fall back to entity fetches at runtime, but this is an exceptional
-    /// case that should not occur if PlanEnumerator works correctly.
+    /// The planner must not emit this operator unless the index is fully covering.
     private func estimateIndexOnlyScan(
         _ op: IndexOnlyScanOperator<T>,
         analysis: QueryAnalysis<T>

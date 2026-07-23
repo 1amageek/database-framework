@@ -7,6 +7,7 @@
 import Core
 import Graph
 import DatabaseEngine
+import ScalarIndex
 import StorageKit
 
 /// Graph connectivity query for Fusion

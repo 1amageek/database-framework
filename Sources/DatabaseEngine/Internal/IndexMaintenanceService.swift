@@ -530,8 +530,7 @@ internal final class IndexMaintenanceService: Sendable {
                         }
                     }
 
-                    // Use Tuple's type-agnostic equality (compares encoded bytes)
-                    // This matches the pattern used in IndexSearcher and AverageIndexMaintainer
+                    // Tuple equality preserves the encoded element types.
                     if oldId == Tuple(existingIdElements) {
                         continue // Skip our own old entry
                     }

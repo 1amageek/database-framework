@@ -180,6 +180,7 @@ let package = Package(
             name: "GraphIndex",
             dependencies: [
                 "DatabaseMath",
+                "ScalarIndex",
                 .product(name: "DatabaseDigest", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
                 .product(name: "DatabaseValue", package: "database-kit"),

@@ -17,7 +17,8 @@ import Core
 /// **Design Principle**:
 /// - StorageReader provides raw KV operations only
 /// - Subspace resolution is done via Persistable type + DirectoryLayer
-/// - IndexSearcher receives pre-resolved Subspace, not raw StorageReader
+/// - Feature modules receive pre-resolved subspaces and interpret their own
+///   physical layouts
 ///
 /// **Note**: Index subspace is NOT exposed here. Use `IndexQueryContext.indexSubspace(for:)`
 /// which resolves subspace via DirectoryLayer based on Persistable type.
@@ -81,7 +82,6 @@ extension StorageReader {
 /// - `itemID`: Primary key of the referenced item
 /// - `keyValues`: Values extracted from the index key (indexed fields)
 /// - `coveringValue`: Canonical projection bytes from the index value
-/// - `score`: Optional relevance/distance score
 ///
 /// **Usage**:
 /// ```swift
@@ -99,31 +99,24 @@ public struct IndexEntry: Sendable {
     /// Canonical DBIX bytes stored in the index value.
     public let coveringValue: Bytes
 
-    /// Optional score (relevance, distance, etc.)
-    public let score: Double?
-
     public init(
         itemID: Tuple,
         keyValues: Tuple = Tuple(),
-        coveringValue: Bytes = [],
-        score: Double? = nil
+        coveringValue: Bytes = []
     ) {
         self.itemID = itemID
         self.keyValues = keyValues
         self.coveringValue = coveringValue
-        self.score = score
     }
 
     /// Convenience initializer for single-value ID
     public init(
         itemID: any TupleElement,
         keyValues: Tuple = Tuple(),
-        coveringValue: Bytes = [],
-        score: Double? = nil
+        coveringValue: Bytes = []
     ) {
         self.itemID = Tuple([itemID])
         self.keyValues = keyValues
         self.coveringValue = coveringValue
-        self.score = score
     }
 }
