@@ -78,7 +78,7 @@ struct PostgreSQLPointReadTests {
     private func setupSecuredContainer() async throws -> DBContainer {
         let engine = try await PostgreSQLScenarioCoordinator.shared.engine
         let schema = Schema([PGSecuredPointReadItem.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(
+        return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

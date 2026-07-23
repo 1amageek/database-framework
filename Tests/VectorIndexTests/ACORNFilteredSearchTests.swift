@@ -182,7 +182,10 @@ private struct ACORNSearchContext {
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         try await database.withTransaction { transaction in
             // Create fetch function using ItemStorage for proper envelope handling
-            let fetchItem: @Sendable (Tuple, any Transaction) async throws -> ACORNProduct? = { primaryKey, tx in
+            let fetchItem: @Sendable (
+                Tuple,
+                any TransactionAccess
+            ) async throws -> ACORNProduct? = { primaryKey, tx in
                 guard let id = primaryKey[0] as? String else { return nil }
                 let itemKey = self.itemsSubspace.pack(Tuple(id))
                 let storage = ItemStorage(transaction: tx, blobsSubspace: self.blobsSubspace, configuration: .v1)

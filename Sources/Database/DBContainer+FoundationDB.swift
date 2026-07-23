@@ -4,13 +4,13 @@ import DatabaseEngine
 import FDBStorage
 
 extension DBContainer {
-    /// Create a container backed by the default FoundationDB configuration.
-    public convenience init(
+    /// Opens a container backed by the default FoundationDB configuration.
+    public static func open(
         for schema: Schema,
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexConfiguration] = []
-    ) async throws {
-        try await self.init(
+    ) async throws -> DBContainer {
+        try await open(
             for: schema,
             configuration: FDBStorageEngine.Configuration(),
             security: security,
@@ -18,14 +18,17 @@ extension DBContainer {
         )
     }
 
-    /// Create a versioned container backed by the default FoundationDB configuration.
-    public convenience init<S: VersionedSchema, P: SchemaMigrationPlan>(
+    /// Opens a versioned container backed by the default FoundationDB configuration.
+    public static func open<
+        S: VersionedSchema,
+        P: SchemaMigrationPlan
+    >(
         for schema: S.Type,
         migrationPlan: P.Type,
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexConfiguration] = []
-    ) async throws {
-        try await self.init(
+    ) async throws -> DBContainer {
+        try await open(
             for: schema,
             migrationPlan: migrationPlan,
             configuration: FDBStorageEngine.Configuration(),

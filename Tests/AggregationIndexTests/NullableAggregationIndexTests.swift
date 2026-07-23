@@ -11,7 +11,7 @@ import Testing
 struct NullableAggregationIndexTests {
     @Test("Indexed grouping preserves null and unsigned presentation types")
     func indexedGroupingPreservesNullAndUnsignedTypes() async throws {
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema([NullableUnsignedAggregationRecord.self]),
             configuration: .init(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

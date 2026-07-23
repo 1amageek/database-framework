@@ -287,7 +287,7 @@ struct DatabaseEndpointTests {
             [DatabaseEndpointRecord.self],
             version: Schema.Version(1, 0, 0)
         )
-        return try await DBContainer(
+        return try await DBContainer.open(
             for: schema,
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

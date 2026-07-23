@@ -280,7 +280,7 @@ private struct IndexedBenchmarkContext: Sendable {
             [PlainBenchmarkRecord.self, SingleIndexBenchmarkRecord.self, TripleIndexBenchmarkRecord.self],
             version: .init(1, 0, 0)
         )
-        self.container = try await DBContainer(
+        self.container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

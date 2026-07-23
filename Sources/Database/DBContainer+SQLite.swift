@@ -18,7 +18,7 @@ extension DBContainer {
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexConfiguration] = []
     ) async throws -> DBContainer {
-        return try await DBContainer(
+        return try await DBContainer.open(
             for: schema,
             configuration: SQLiteStorageEngine.Configuration.file(path),
             security: security,
@@ -37,7 +37,7 @@ extension DBContainer {
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexConfiguration] = []
     ) async throws -> DBContainer {
-        return try await DBContainer(
+        return try await DBContainer.open(
             for: schema,
             configuration: SQLiteStorageEngine.Configuration.inMemory,
             security: security,

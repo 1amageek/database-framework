@@ -10,7 +10,6 @@ import FDBStorage
 #endif
 import Core
 import Synchronization
-import Logging
 
 /// DBContainer - Application resource manager for database persistence
 ///
@@ -58,7 +57,7 @@ import Logging
 ///
 /// // 2. Create container (async - connects to DB and initializes indexes)
 /// let schema = Schema([User.self])
-/// let container = try await DBContainer(
+/// let container = try await DBContainer.open(
 ///     for: schema,
 ///     configuration: DBConfiguration(backend: .custom(engine))
 /// )
@@ -69,6 +68,17 @@ import Logging
 /// try await context.save()
 /// ```
 public final class DBContainer: Sendable {
+    private struct PreparedStorage: Sendable {
+        let engine: any StorageEngine
+        let format: DatabaseFormatDescriptor
+        let partitionCatalog: DatabasePartitionCatalog
+        let metadataSubspace: Subspace
+    }
+
+    private struct DataStoreCache: Sendable {
+        var stores: [DatabaseStoreCacheKey: FDBDataStore] = [:]
+    }
+
     // MARK: - Properties
 
     /// The underlying storage engine
@@ -107,14 +117,14 @@ public final class DBContainer: Sendable {
     /// Index configurations grouped by indexName
     public let indexConfigurations: [String: [any IndexConfiguration]]
 
-    /// Logger
-    private let logger: Logger
+    /// Database event logger selected by the container configuration.
+    private let logger: DatabaseLogger
 
     /// DataStore cache keyed by resolved directory path
     ///
     /// Stores are immutable wrappers around a resolved subspace, so sharing them
     /// avoids rebuilding helper services on repeated point reads and saves.
-    private let dataStoreCache: Mutex<[DatabaseStoreCacheKey: FDBDataStore]>
+    private let dataStoreCache: Mutex<DataStoreCache>
 
     /// Persistent catalog of every resolved dynamic partition.
     private let partitionCatalog: DatabasePartitionCatalog
@@ -127,7 +137,79 @@ public final class DBContainer: Sendable {
 
     // MARK: - Initialization
 
-    /// Initialize DBContainer with schema and configuration
+    /// Opens a database container after preparing and validating its durable
+    /// storage dependencies.
+    public static func open(
+        for schema: Schema,
+        configuration: DBConfiguration,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
+        security: SecurityConfiguration = .enabled()
+    ) async throws -> DBContainer {
+        try await open(
+            for: schema,
+            configuration: configuration,
+            runtimeConfiguration: runtimeConfiguration,
+            security: security,
+            persistSchemaCatalog: true,
+            initializeIndexes: true
+        )
+    }
+
+    internal static func open(
+        testing schema: Schema,
+        configuration: DBConfiguration,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
+        security: SecurityConfiguration = .enabled(),
+        initializeIndexes: Bool = true
+    ) async throws -> DBContainer {
+        try await open(
+            for: schema,
+            configuration: configuration,
+            runtimeConfiguration: runtimeConfiguration,
+            security: security,
+            persistSchemaCatalog: false,
+            initializeIndexes: initializeIndexes
+        )
+    }
+
+    private static func open(
+        for schema: Schema,
+        configuration: DBConfiguration,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
+        security: SecurityConfiguration,
+        persistSchemaCatalog: Bool,
+        initializeIndexes: Bool
+    ) async throws -> DBContainer {
+        guard !schema.entities.isEmpty else {
+            throw FDBRuntimeError.internalError(
+                "Schema must contain at least one entity"
+            )
+        }
+        try runtimeConfiguration.validate(schema: schema)
+
+        let preparedStorage = try await prepareStorage(
+            configuration: configuration
+        )
+        let container = DBContainer(
+            schema: schema,
+            configuration: configuration,
+            runtimeConfiguration: runtimeConfiguration,
+            security: security,
+            preparedStorage: preparedStorage
+        )
+
+        if initializeIndexes {
+            try await container.ensureIndexesReady()
+        }
+
+        if persistSchemaCatalog {
+            let registry = SchemaRegistry(database: container.engine)
+            try await registry.persist(schema)
+        }
+        return container
+    }
+
+    /// Opens DBContainer with schema and configuration.
     ///
     /// Creates the storage engine based on the configuration's backend,
     /// then initializes all indexes to `readable` state.
@@ -135,13 +217,13 @@ public final class DBContainer: Sendable {
     /// **Example**:
     /// ```swift
     /// // Explicit backend configuration
-    /// let container = try await DBContainer(
+    /// let container = try await DBContainer.open(
     ///     for: schema,
     ///     configuration: .init(backend: .custom(engine))
     /// )
     ///
     /// // With security
-    /// let container = try await DBContainer(
+    /// let container = try await DBContainer.open(
     ///     for: schema,
     ///     configuration: .init(backend: .custom(engine)),
     ///     security: .enabled(adminRoles: ["admin"])
@@ -154,57 +236,13 @@ public final class DBContainer: Sendable {
     ///   - security: Security configuration (default: enabled)
     /// - Throws: Error if engine creation or index initialization fails
     ///
-    /// - Note: This initializer performs two side effects:
+    /// - Note: Opening performs two side effects:
     ///   1. **Index validation** — initializes index metadata only for empty stores and rejects incomplete indexes
     ///   2. **Schema persistence** — writes `Schema.Entity` via `SchemaRegistry.persist()`,
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
-    /// Initialize DBContainer with schema, configuration, and security.
-    public convenience init(
-        for schema: Schema,
-        configuration: DBConfiguration,
-        runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration = .enabled()
-    ) async throws {
-        try await self.init(
-            for: schema,
-            configuration: configuration,
-            runtimeConfiguration: runtimeConfiguration,
-            security: security,
-            persistSchemaCatalog: true
-        )
-    }
-
-    internal convenience init(
-        testing schema: Schema,
-        configuration: DBConfiguration,
-        runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration = .enabled(),
-        initializeIndexes: Bool = true
-    ) async throws {
-        try await self.init(
-            for: schema,
-            configuration: configuration,
-            runtimeConfiguration: runtimeConfiguration,
-            security: security,
-            persistSchemaCatalog: false,
-            initializeIndexes: initializeIndexes
-        )
-    }
-
-    internal init(
-        for schema: Schema,
-        configuration: DBConfiguration,
-        runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration,
-        persistSchemaCatalog: Bool,
-        initializeIndexes: Bool = true
-    ) async throws {
-        guard !schema.entities.isEmpty else {
-            throw FDBRuntimeError.internalError("Schema must contain at least one entity")
-        }
-        try runtimeConfiguration.validate(schema: schema)
-
-        // Create engine based on backend configuration
+    private static func prepareStorage(
+        configuration: DBConfiguration
+    ) async throws -> PreparedStorage {
         let resolvedEngine: any StorageEngine
         switch configuration.backend {
         #if FOUNDATION_DB
@@ -220,15 +258,35 @@ public final class DBContainer: Sendable {
         let persistedFormat = try await DatabaseFormatCatalog(
             database: resolvedEngine
         ).installIfEmptyOrValidate(expectedFormat)
-        self.engine = resolvedEngine
+        let partitionCatalog = try await DatabasePartitionCatalog(
+            engine: resolvedEngine
+        )
+        let metadataSubspace = try await resolvedEngine.createOrOpenDirectory(
+            path: ["_metadata"]
+        )
+        return PreparedStorage(
+            engine: resolvedEngine,
+            format: persistedFormat,
+            partitionCatalog: partitionCatalog,
+            metadataSubspace: metadataSubspace
+        )
+    }
 
+    private init(
+        schema: Schema,
+        configuration: DBConfiguration,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
+        security: SecurityConfiguration,
+        preparedStorage: PreparedStorage
+    ) {
+        self.engine = preparedStorage.engine
         self.schema = schema
         self.configuration = configuration
         self.runtimeConfiguration = runtimeConfiguration
         self.itemStorageFactory = ItemStorageFactory(
-            configuration: persistedFormat.itemStorage
+            configuration: preparedStorage.format.itemStorage
         )
-        self.databaseFormat = persistedFormat
+        self.databaseFormat = preparedStorage.format
         self.securityConfiguration = security
         self.securityDelegate = security.isEnabled
             ? RequestSecurityPolicyDelegate(configuration: security)
@@ -239,24 +297,13 @@ public final class DBContainer: Sendable {
             configuration.indexConfigurations
         )
 
-        self.migrationPlanStorage = Mutex(nil)
-        self.logger = Logger(label: "com.db.runtime.container")
-        self.dataStoreCache = Mutex([:])
-        self.partitionCatalog = try await DatabasePartitionCatalog(engine: resolvedEngine)
-        self.metadataSubspace = try await resolvedEngine.createOrOpenDirectory(
-            path: ["_metadata"]
+        self.logger = configuration.logging.logger(
+            label: "com.database.framework.container"
         )
-
-        if initializeIndexes {
-            // Initialize all indexes to readable state
-            try await ensureIndexesReady()
-        }
-
-        if persistSchemaCatalog {
-            // Persist schema catalog (entities + ontology) for CLI and dynamic tools
-            let registry = SchemaRegistry(database: engine)
-            try await registry.persist(schema)
-        }
+        self.migrationPlanStorage = Mutex(nil)
+        self.dataStoreCache = Mutex(DataStoreCache())
+        self.partitionCatalog = preparedStorage.partitionCatalog
+        self.metadataSubspace = preparedStorage.metadataSubspace
     }
 
     // MARK: - Index Initialization
@@ -493,7 +540,7 @@ public final class DBContainer: Sendable {
         path: DirectoryPath<T> = DirectoryPath()
     ) async throws -> FDBDataStore {
         let cacheKey = try storeCacheKey(for: type, path: AnyDirectoryPath(path))
-        if let cached = dataStoreCache.withLock({ $0[cacheKey] }) {
+        if let cached = dataStoreCache.withLock({ $0.stores[cacheKey] }) {
             return cached
         }
 
@@ -506,7 +553,7 @@ public final class DBContainer: Sendable {
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
-        dataStoreCache.withLock { $0[cacheKey] = store }
+        dataStoreCache.withLock { $0.stores[cacheKey] = store }
         return store
     }
 
@@ -523,7 +570,7 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil
     ) async throws -> FDBDataStore {
         let cacheKey = try storeCacheKey(for: type, path: path)
-        if let cached = dataStoreCache.withLock({ $0[cacheKey] }) {
+        if let cached = dataStoreCache.withLock({ $0.stores[cacheKey] }) {
             return cached
         }
 
@@ -536,7 +583,7 @@ public final class DBContainer: Sendable {
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
-        dataStoreCache.withLock { $0[cacheKey] = store }
+        dataStoreCache.withLock { $0.stores[cacheKey] = store }
         return store
     }
 
@@ -867,16 +914,16 @@ extension DBContainer {
 // MARK: - VersionedSchema Support
 
 extension DBContainer {
-    /// Initialize from an application-compiled schema and attach its migration plan.
-    public convenience init<P: SchemaMigrationPlan>(
+    /// Opens an application-compiled schema and attaches its migration plan.
+    public static func open<P: SchemaMigrationPlan>(
         for schema: Schema,
         migrationPlan: P.Type,
         configuration: DBConfiguration,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled()
-    ) async throws {
+    ) async throws -> DBContainer {
         try P.validate()
-        try await self.init(
+        let container = try await open(
             for: schema,
             configuration: configuration,
             runtimeConfiguration: runtimeConfiguration,
@@ -884,20 +931,24 @@ extension DBContainer {
             persistSchemaCatalog: false,
             initializeIndexes: false
         )
-        self.migrationPlanStorage.withLock { $0 = migrationPlan }
+        container.migrationPlanStorage.withLock { $0 = migrationPlan }
+        return container
     }
 
-    /// Initialize with VersionedSchema and MigrationPlan
-    public convenience init<S: VersionedSchema, P: SchemaMigrationPlan>(
+    /// Opens a versioned schema and attaches its migration plan.
+    public static func open<
+        S: VersionedSchema,
+        P: SchemaMigrationPlan
+    >(
         for schema: S.Type,
         migrationPlan: P.Type,
         configuration: DBConfiguration,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled()
-    ) async throws {
+    ) async throws -> DBContainer {
         try P.validate()
         let schemaInstance = S.makeSchema()
-        try await self.init(
+        let container = try await open(
             for: schemaInstance,
             configuration: configuration,
             runtimeConfiguration: runtimeConfiguration,
@@ -905,7 +956,8 @@ extension DBContainer {
             persistSchemaCatalog: false,
             initializeIndexes: false
         )
-        self.migrationPlanStorage.withLock { $0 = migrationPlan }
+        container.migrationPlanStorage.withLock { $0 = migrationPlan }
+        return container
     }
 
     /// Return exact pending migration identifiers for the compiled schema.

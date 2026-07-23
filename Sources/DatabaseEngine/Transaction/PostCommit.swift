@@ -9,7 +9,6 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Logging
 import StorageKit
 import Synchronization
 
@@ -232,12 +231,12 @@ public struct RetryingPostCommit: PostCommit {
 public struct CompositePostCommit: PostCommit {
     private let hooks: [any PostCommit]
     private let runConcurrently: Bool
-    private let logger: Logger
+    private let logger: DatabaseLogger
 
     public init(
         hooks: [any PostCommit],
         runConcurrently: Bool = false,
-        logger: Logger = Logger(label: "com.db.transaction.postcommit")
+        logger: DatabaseLogger = .disabled
     ) {
         self.hooks = hooks
         self.runConcurrently = runConcurrently

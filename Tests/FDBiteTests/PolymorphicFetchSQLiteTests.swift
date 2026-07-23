@@ -273,7 +273,7 @@ struct PolymorphicFetchSQLiteTests {
         )
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
 
-        return try await DBContainer(
+        return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try vectorRuntimeConfiguration(),
@@ -288,7 +288,7 @@ struct PolymorphicFetchSQLiteTests {
         )
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
 
-        return try await DBContainer(
+        return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try vectorRuntimeConfiguration(),
@@ -439,7 +439,7 @@ struct PolymorphicFetchSQLiteTests {
             [SQLitePolymorphicArticle.self, SQLitePolymorphicReport.self],
             version: Schema.Version(1, 0, 0)
         )
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -462,7 +462,7 @@ struct PolymorphicFetchSQLiteTests {
         #expect(persistedEntityNames.contains(SQLitePolymorphicArticle.persistableType))
         #expect(persistedEntityNames.contains(SQLitePolymorphicReport.persistableType))
 
-        let reopenedContainer = try await DBContainer(
+        let reopenedContainer = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -761,7 +761,7 @@ struct PolymorphicFetchSQLiteTests {
             [SQLiteSecurePolymorphicArticle.self],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

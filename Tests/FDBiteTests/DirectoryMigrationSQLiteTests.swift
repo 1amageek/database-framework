@@ -73,7 +73,7 @@ struct DirectoryMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let seededID = "sqlite-dir-migration-\(UUID().uuidString)"
 
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -86,7 +86,7 @@ struct DirectoryMigrationSQLiteTests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV2.self,
             migrationPlan: SQLiteDirectoryMigrationCopyPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -94,7 +94,7 @@ struct DirectoryMigrationSQLiteTests {
         )
         try await migratedContainer.migrateIfNeeded()
 
-        let verificationContainer = try await DBContainer(
+        let verificationContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

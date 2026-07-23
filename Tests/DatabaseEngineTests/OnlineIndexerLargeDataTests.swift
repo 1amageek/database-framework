@@ -44,7 +44,7 @@ struct OnlineIndexerLargeDataTests {
 
             // Create container with Player schema
             let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
-            self.container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            self.container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         }
 
         func cleanup() async throws {

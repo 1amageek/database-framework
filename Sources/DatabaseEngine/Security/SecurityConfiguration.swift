@@ -16,22 +16,22 @@ import Core
 /// **Usage**:
 /// ```swift
 /// // Security enabled with strict mode (default - secure by default)
-/// let container = try DBContainer(for: schema)
+/// let container = try DBContainer.open(for: schema)
 ///
 /// // Security enabled with custom admin roles
-/// let container = try DBContainer(
+/// let container = try DBContainer.open(
 ///     for: schema,
 ///     security: .enabled(adminRoles: ["admin", "superuser"])
 /// )
 ///
 /// // Non-strict mode (allows models without SecurityPolicy - for migration)
-/// let container = try DBContainer(
+/// let container = try DBContainer.open(
 ///     for: schema,
 ///     security: .enabled(strict: false)
 /// )
 ///
 /// // Security disabled (ONLY for testing)
-/// let testContainer = try DBContainer(
+/// let testContainer = try DBContainer.open(
 ///     for: schema,
 ///     security: .disabled
 /// )

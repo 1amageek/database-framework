@@ -335,7 +335,7 @@ struct DatabaseMutationStateStoreTests {
     private func makeMutationStateStoreContext(
         key: String
     ) async throws -> MutationStateStoreContext {
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema(
                 [DatabaseEndpointRecord.self],
                 version: Schema.Version(1, 0, 0)

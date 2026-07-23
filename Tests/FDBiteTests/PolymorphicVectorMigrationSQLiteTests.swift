@@ -271,7 +271,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
     @Test("SQLite migration backfills polymorphic entity vector index")
     func sqliteMigrationBackfillsPolymorphicEntityVectorIndex() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -303,7 +303,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV2.self,
             migrationPlan: SQLitePolymorphicVectorAddMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -338,7 +338,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
     @Test("SQLite custom migration rebuilds polymorphic entity vector index")
     func sqliteCustomMigrationRebuildsPolymorphicEntityVectorIndex() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -362,7 +362,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         try await Self.clearEntityVectorIndexEntries(container: initialContainer)
         #expect(try await Self.countEntityVectorIndexEntries(container: initialContainer) == 0)
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV3.self,
             migrationPlan: SQLitePolymorphicVectorRebuildMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),

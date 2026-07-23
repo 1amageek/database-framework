@@ -893,7 +893,7 @@ struct DatabaseFrameworkE2ETests {
     func sqliteLargeBlobIndexedUpdateDeleteAndRollbackKeepBlobsAndIndexesConsistent() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let schema = Schema([DatabaseFrameworkE2ELargeDocument.self], version: .init(1, 0, 0))
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -1521,7 +1521,7 @@ struct DatabaseFrameworkE2ETests {
     func sqliteMigrationRewritesLegacyRecordsAndServesNewIndexedSchema() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
 
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -1545,7 +1545,7 @@ struct DatabaseFrameworkE2ETests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV2.self,
             migrationPlan: DatabaseFrameworkE2EMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -1554,7 +1554,7 @@ struct DatabaseFrameworkE2ETests {
         try await migratedContainer.migrateIfNeeded()
         let migratedVersion = try await migratedContainer.getCurrentSchemaVersion()
 
-        let verificationContainer = try await DBContainer(
+        let verificationContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

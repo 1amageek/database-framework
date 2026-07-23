@@ -15,21 +15,21 @@ public protocol DatabaseContainerConfiguration: Sendable {
 }
 
 extension DBContainer {
-    /// Create a container from a backend-specific configuration.
+    /// Opens a container from a backend-specific configuration.
     ///
     /// The `configuration` label is shared across backends; the concrete value
     /// selects the storage engine.
-    public convenience init(
+    public static func open(
         for schema: Schema,
         configuration: any DatabaseContainerConfiguration,
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexConfiguration] = []
-    ) async throws {
+    ) async throws -> DBContainer {
         let dbConfiguration = try await configuration.makeDBConfiguration(
             indexConfigurations: indexConfigurations
         )
         let runtimeConfiguration = try DatabaseFrameworkRuntime.configuration()
-        try await self.init(
+        return try await open(
             for: schema,
             configuration: dbConfiguration,
             runtimeConfiguration: runtimeConfiguration,
@@ -37,19 +37,22 @@ extension DBContainer {
         )
     }
 
-    /// Create a versioned container from a backend-specific configuration.
-    public convenience init<S: VersionedSchema, P: SchemaMigrationPlan>(
+    /// Opens a versioned container from a backend-specific configuration.
+    public static func open<
+        S: VersionedSchema,
+        P: SchemaMigrationPlan
+    >(
         for schema: S.Type,
         migrationPlan: P.Type,
         configuration: any DatabaseContainerConfiguration,
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexConfiguration] = []
-    ) async throws {
+    ) async throws -> DBContainer {
         let dbConfiguration = try await configuration.makeDBConfiguration(
             indexConfigurations: indexConfigurations
         )
         let runtimeConfiguration = try DatabaseFrameworkRuntime.configuration()
-        try await self.init(
+        return try await open(
             for: schema,
             migrationPlan: migrationPlan,
             configuration: dbConfiguration,

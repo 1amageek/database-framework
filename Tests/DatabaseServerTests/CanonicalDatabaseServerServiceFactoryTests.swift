@@ -10,7 +10,7 @@ import Testing
 struct CanonicalDatabaseServerServiceFactoryTests {
     @Test("factory composes every canonical database service")
     func composesCanonicalServices() async throws {
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema(
                 [DatabaseGraphSourceEdge.self],
                 version: Schema.Version(1, 0, 0)

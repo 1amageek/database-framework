@@ -52,7 +52,7 @@ struct DatabaseTransactionTests {
             version: Schema.Version(1, 0, 0)
         )
 
-        return try await DBContainer(
+        return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

@@ -53,7 +53,7 @@ struct SPARQLAdvancedAggregationTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([AggregationEdge.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(
+        return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

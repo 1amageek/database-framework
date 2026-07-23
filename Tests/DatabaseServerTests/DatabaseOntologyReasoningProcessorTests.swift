@@ -362,7 +362,7 @@ struct DatabaseOntologyReasoningProcessorTests {
     }
 
     private func makeOntologyReasoningContext() async throws -> OntologyReasoningContext {
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema(
                 [DatabaseEndpointRecord.self],
                 version: Schema.Version(1, 0, 0)

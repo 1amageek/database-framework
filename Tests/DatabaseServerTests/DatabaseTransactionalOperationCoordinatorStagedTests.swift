@@ -308,7 +308,7 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
             maximumMutationAggregateBytes: Int = 8 * 1_024 * 1_024,
             engine: any StorageEngine = InMemoryEngine()
         ) async throws {
-            let container = try await DBContainer(
+            let container = try await DBContainer.open(
                 for: Schema(
                     [DatabaseEndpointRecord.self],
                     version: Schema.Version(1, 0, 0)

@@ -16,7 +16,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     @Test("Migration status and bounded execution use the compiled plan")
     func migrationsReportAndExecuteExactStages() async throws {
         let engine = InMemoryEngine()
-        let initial = try await DBContainer(
+        let initial = try await DBContainer.open(
             for: MaintenanceSchemaV1.self,
             migrationPlan: MaintenanceInitialMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -25,7 +25,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         try await initial.migrateIfNeeded()
 
-        let target = try await DBContainer(
+        let target = try await DBContainer.open(
             for: MaintenanceSchemaV3.self,
             migrationPlan: MaintenanceMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -96,7 +96,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     @Test("Persistent migration job resumes the compiled plan")
     func persistentMigrationJobResumes() async throws {
         let engine = InMemoryEngine()
-        let initial = try await DBContainer(
+        let initial = try await DBContainer.open(
             for: MaintenanceSchemaV1.self,
             migrationPlan: MaintenanceInitialMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -105,7 +105,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         try await initial.migrateIfNeeded()
 
-        let target = try await DBContainer(
+        let target = try await DBContainer.open(
             for: MaintenanceSchemaV3.self,
             migrationPlan: MaintenanceMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -753,7 +753,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         engine: any StorageEngine,
         wireLimits: DatabaseWireLimits = .default
     ) async throws -> MaintenanceServiceContext {
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema(
                 [CatalogPartitionedRecord.self],
                 version: Schema.Version(1, 0, 0)

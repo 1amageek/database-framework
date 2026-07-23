@@ -236,7 +236,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
     }
 
     private func makeContainer(engine: InMemoryEngine) async throws -> DBContainer {
-        try await DBContainer(
+        try await DBContainer.open(
             for: Schema(
                 [CatalogPartitionedRecord.self],
                 version: Schema.Version(1, 0, 0)

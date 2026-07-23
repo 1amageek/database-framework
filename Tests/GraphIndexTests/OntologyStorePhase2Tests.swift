@@ -48,7 +48,7 @@ struct OntologyStorePhase2Tests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([OntologyPhase2Dummy.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

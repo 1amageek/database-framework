@@ -307,7 +307,7 @@ struct MigrationExecutionFDBTests {
 
             try await clearState(in: engine, typeNames: [FDBStageBoundaryUserV1.persistableType])
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -321,7 +321,7 @@ struct MigrationExecutionFDBTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV3.self,
                 migrationPlan: FDBStageBoundaryMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -332,7 +332,7 @@ struct MigrationExecutionFDBTests {
             let events = await fdbMigrationEventRecorder.snapshot()
             let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
 
-            let verificationContainer = try await DBContainer(
+            let verificationContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV3.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -357,7 +357,7 @@ struct MigrationExecutionFDBTests {
             let engine = try await makeSystemPriorityEngine()
             try await clearState(in: engine, typeNames: [FDBIndexLifecycleUserV2.persistableType])
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: FDBIndexLifecycleSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -380,7 +380,7 @@ struct MigrationExecutionFDBTests {
 
             #expect(try await countKeys(in: ageIndexSubspace, engine: engine) > 0)
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: FDBIndexLifecycleSchemaV3.self,
                 migrationPlan: FDBIndexLifecycleMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -399,7 +399,7 @@ struct MigrationExecutionFDBTests {
             let indexRegistry = DatabaseIndexRegistry(container: migratedContainer, subspace: subspace)
             let removedIndexState = try await indexRegistry.state(of: "FDBIndexLifecycleUser_age")
 
-            let verificationContainer = try await DBContainer(
+            let verificationContainer = try await DBContainer.open(
                 for: FDBIndexLifecycleSchemaV3.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -430,7 +430,7 @@ struct MigrationExecutionFDBTests {
 
             try await clearState(in: engine, typeNames: [FDBStageFailureUserV1.persistableType])
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: FDBStageFailureSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -444,7 +444,7 @@ struct MigrationExecutionFDBTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: FDBStageFailureSchemaV3.self,
                 migrationPlan: FDBStageFailureMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -463,7 +463,7 @@ struct MigrationExecutionFDBTests {
             let registry = SchemaRegistry(database: engine)
             let entity = try await registry.load(typeName: FDBStageFailureUserV1.persistableType)
 
-            let verificationContainer = try await DBContainer(
+            let verificationContainer = try await DBContainer.open(
                 for: FDBStageFailureSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -491,7 +491,7 @@ struct MigrationExecutionFDBTests {
 
             try await clearState(in: engine, typeNames: [FDBStageBoundaryUserV1.persistableType])
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV3.self,
                 migrationPlan: FDBStageBoundaryMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),

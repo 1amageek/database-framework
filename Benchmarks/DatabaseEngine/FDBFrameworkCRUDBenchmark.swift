@@ -106,7 +106,7 @@ private struct CRUDBenchmarkContext: Sendable {
         self.rawSubspace = Subspace(prefix: Tuple(["test", "performance", "raw-crud", runID]).pack())
 
         let schema = Schema([CRUDBenchmarkRecord.self], version: .init(1, 0, 0))
-        self.container = try await DBContainer(
+        self.container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

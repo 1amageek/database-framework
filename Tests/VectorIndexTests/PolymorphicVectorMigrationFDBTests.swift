@@ -280,7 +280,7 @@ struct PolymorphicVectorMigrationFDBTests {
             let engine = try await Self.makeSystemPriorityEngine()
             try await Self.clearState(in: engine)
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -312,7 +312,7 @@ struct PolymorphicVectorMigrationFDBTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV2.self,
                 migrationPlan: FDBPolymorphicVectorAddMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -351,7 +351,7 @@ struct PolymorphicVectorMigrationFDBTests {
             let engine = try await Self.makeSystemPriorityEngine()
             try await Self.clearState(in: engine)
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -375,7 +375,7 @@ struct PolymorphicVectorMigrationFDBTests {
             try await Self.clearEntityVectorIndexEntries(container: initialContainer)
             #expect(try await Self.countEntityVectorIndexEntries(container: initialContainer) == 0)
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV3.self,
                 migrationPlan: FDBPolymorphicVectorRebuildMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),

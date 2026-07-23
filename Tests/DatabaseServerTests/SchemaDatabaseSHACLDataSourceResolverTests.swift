@@ -92,7 +92,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
 
     private func makeSHACLDataSourceResolutionContext()
         async throws -> SHACLDataSourceResolutionContext {
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema(
                 [DatabaseSHACLStatement.self],
                 version: Schema.Version(1, 0, 0)

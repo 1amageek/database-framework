@@ -89,7 +89,7 @@ struct DirectoryMigrationPostgreSQLTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: PGDirectoryMigrationSchemaV2.self,
                 migrationPlan: PGDirectoryMigrationCopyPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -128,7 +128,7 @@ struct DirectoryMigrationPostgreSQLTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: PGDirectoryMigrationSchemaV2.self,
                 migrationPlan: PGDirectoryMigrationCopyPlan.self,
                 configuration: .init(backend: .custom(engine)),

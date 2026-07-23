@@ -84,7 +84,7 @@ struct IndexStateInitializationTests {
             [DatabaseEndpointRecord.self],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

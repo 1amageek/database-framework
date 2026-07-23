@@ -325,7 +325,7 @@ struct PolymorphicMigrationSQLiteTests {
     @Test("SQLite migration backfills added polymorphic indexes and keeps them maintained")
     func sqliteMigrationBackfillsAddedPolymorphicIndexesAndKeepsThemMaintained() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -343,7 +343,7 @@ struct PolymorphicMigrationSQLiteTests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -352,7 +352,7 @@ struct PolymorphicMigrationSQLiteTests {
         )
         try await migratedContainer.migrateIfNeeded()
 
-        let verificationContainer = try await DBContainer(
+        let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -402,7 +402,7 @@ struct PolymorphicMigrationSQLiteTests {
     @Test("SQLite migration backfills polymorphic indexes across batch boundaries")
     func sqliteMigrationBackfillsPolymorphicIndexesAcrossBatchBoundaries() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -428,7 +428,7 @@ struct PolymorphicMigrationSQLiteTests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -437,7 +437,7 @@ struct PolymorphicMigrationSQLiteTests {
         )
         try await migratedContainer.migrateIfNeeded()
 
-        let verificationContainer = try await DBContainer(
+        let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -460,7 +460,7 @@ struct PolymorphicMigrationSQLiteTests {
     @Test("SQLite migration removes polymorphic index data and disables index state")
     func sqliteMigrationRemovesPolymorphicIndexDataAndDisablesIndexState() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -483,7 +483,7 @@ struct PolymorphicMigrationSQLiteTests {
             indexName: "SQLitePolymorphicMigrationDocument_title"
         ) == 2)
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV3.self,
             migrationPlan: SQLitePolymorphicRemovalMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -523,7 +523,7 @@ struct PolymorphicMigrationSQLiteTests {
     @Test("SQLite custom migration rebuilds corrupted polymorphic indexes")
     func sqliteCustomMigrationRebuildsCorruptedPolymorphicIndexes() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -554,7 +554,7 @@ struct PolymorphicMigrationSQLiteTests {
             indexName: "SQLitePolymorphicMigrationDocument_title"
         ) == 0)
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV4.self,
             migrationPlan: SQLitePolymorphicRebuildMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),

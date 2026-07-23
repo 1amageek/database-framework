@@ -276,7 +276,7 @@ struct PolymorphicMigrationFDBTests {
             let engine = try await Self.makeSystemPriorityEngine()
             try await Self.clearState(in: engine)
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -294,7 +294,7 @@ struct PolymorphicMigrationFDBTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.self,
                 migrationPlan: FDBPolymorphicMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -303,7 +303,7 @@ struct PolymorphicMigrationFDBTests {
             )
             try await migratedContainer.migrateIfNeeded()
 
-            let verificationContainer = try await DBContainer(
+            let verificationContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -357,7 +357,7 @@ struct PolymorphicMigrationFDBTests {
             let engine = try await Self.makeSystemPriorityEngine()
             try await Self.clearState(in: engine)
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -380,7 +380,7 @@ struct PolymorphicMigrationFDBTests {
                 indexName: "FDBPolymorphicMigrationDocument_title"
             ) == 2)
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV3.self,
                 migrationPlan: FDBPolymorphicRemovalMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -424,7 +424,7 @@ struct PolymorphicMigrationFDBTests {
             let engine = try await Self.makeSystemPriorityEngine()
             try await Self.clearState(in: engine)
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -455,7 +455,7 @@ struct PolymorphicMigrationFDBTests {
                 indexName: "FDBPolymorphicMigrationDocument_title"
             ) == 0)
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV4.self,
                 migrationPlan: FDBPolymorphicRebuildMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),

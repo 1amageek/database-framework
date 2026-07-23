@@ -1896,7 +1896,7 @@ struct DatabasePersistentJobServiceTests {
     private func makePersistentJobServiceContext<Operation: DatabaseResumableOperation>(
         operation: Operation
     ) async throws -> PersistentJobServiceContext {
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema(
                 [DatabaseEndpointRecord.self],
                 version: Schema.Version(1, 0, 0)

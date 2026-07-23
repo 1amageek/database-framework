@@ -329,7 +329,7 @@ struct DirectoryMigrationTests {
             let seededID = "dir-migration-\(UUID().uuidString)"
 
             // 1. Insert V1 data into the source-schema directory.
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -359,7 +359,7 @@ struct DirectoryMigrationTests {
             #expect(legacyCountBefore == 1)
 
             // 2. Run the migration plan that copies V1 → V2 directory and purges V1.
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: DirectoryMigrationSchemaV2.self,
                 migrationPlan: DirectoryMigrationCopyPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -368,7 +368,7 @@ struct DirectoryMigrationTests {
             try await migratedContainer.migrateIfNeeded()
 
             // 3. Data must be readable via the V2 schema (new directory).
-            let verificationContainer = try await DBContainer(
+            let verificationContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -426,7 +426,7 @@ struct DirectoryMigrationTests {
 
             let seededID = "dir-migration-idempotent-\(UUID().uuidString)"
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -440,7 +440,7 @@ struct DirectoryMigrationTests {
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             // First run: migrates.
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: DirectoryMigrationSchemaV2.self,
                 migrationPlan: DirectoryMigrationCopyPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -451,7 +451,7 @@ struct DirectoryMigrationTests {
             // Second run: already at V2, should be a no-op.
             try await migratedContainer.migrateIfNeeded()
 
-            let verificationContainer = try await DBContainer(
+            let verificationContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -482,7 +482,7 @@ struct DirectoryMigrationTests {
 
             let seededID = "dir-indexed-\(UUID().uuidString)"
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 testing: DirectoryIndexedSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -511,7 +511,7 @@ struct DirectoryMigrationTests {
             }
             #expect(legacyIndexBefore == 1)
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: DirectoryIndexedSchemaV2.self,
                 migrationPlan: DirectoryIndexedCopyPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -569,7 +569,7 @@ struct DirectoryMigrationTests {
 
             let seededID = "dir-add-idx-\(UUID().uuidString)"
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 testing: DirectoryAddIdxSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -582,7 +582,7 @@ struct DirectoryMigrationTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: DirectoryAddIdxSchemaV2.self,
                 migrationPlan: DirectoryAddIdxPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -629,7 +629,7 @@ struct DirectoryMigrationTests {
 
             let seededID = "dir-rem-idx-\(UUID().uuidString)"
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 testing: DirectoryRemIdxSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -658,7 +658,7 @@ struct DirectoryMigrationTests {
             }
             #expect(legacyIndexBefore == 1)
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: DirectoryRemIdxSchemaV2.self,
                 migrationPlan: DirectoryRemIdxPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -682,7 +682,7 @@ struct DirectoryMigrationTests {
             #expect(legacyIndexAfter == 0)
 
             // V2 data must exist in the current directory.
-            let verificationContainer = try await DBContainer(
+            let verificationContainer = try await DBContainer.open(
                 testing: DirectoryRemIdxSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -712,7 +712,7 @@ struct DirectoryMigrationTests {
                 }
             }
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 testing: DirectoryLightweightSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -720,7 +720,7 @@ struct DirectoryMigrationTests {
             )
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: DirectoryLightweightSchemaV2.self,
                 migrationPlan: DirectoryLightweightPlan.self,
                 configuration: .init(backend: .custom(engine)),

@@ -269,7 +269,7 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
 
     private func makeRDFGraphAlgorithmContext() async throws -> RDFGraphAlgorithmContext {
         let engine = InMemoryEngine()
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema(
                 [DatabaseEndpointRecord.self, Statement.self],
                 version: Schema.Version(1, 0, 0)

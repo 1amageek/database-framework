@@ -309,7 +309,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query with MIN aggregation
@@ -362,7 +362,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query with MAX aggregation
@@ -415,7 +415,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query with COUNT aggregation matching the index
@@ -467,7 +467,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query with SUM aggregation matching the index
@@ -526,7 +526,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query with both COUNT and MIN (both have indexes)
@@ -584,7 +584,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Build query grouping by DIFFERENT field (amount instead of region)

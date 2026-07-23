@@ -19,12 +19,12 @@ import Core
 /// let config = DBConfiguration(
 ///     backend: .fdb(.init(database: db))
 /// )
-/// let container = try await DBContainer(for: schema, configuration: config)
+/// let container = try await DBContainer.open(for: schema, configuration: config)
 ///
 /// // Custom backend (e.g., SQLite)
 /// let sqliteEngine = try SQLiteStorageEngine(configuration: .inMemory)
 /// let config = DBConfiguration(backend: .custom(sqliteEngine))
-/// let container = try await DBContainer(for: schema, configuration: config)
+/// let container = try await DBContainer.open(for: schema, configuration: config)
 ///
 /// // With index configurations
 /// let config = DBConfiguration(
@@ -37,7 +37,7 @@ import Core
 ///         )
 ///     ]
 /// )
-/// let container = try await DBContainer(for: schema, configuration: config)
+/// let container = try await DBContainer.open(for: schema, configuration: config)
 /// ```
 public struct DBConfiguration: DataStoreConfiguration, Sendable {
 
@@ -82,6 +82,9 @@ public struct DBConfiguration: DataStoreConfiguration, Sendable {
     /// Canonical physical record format for this database.
     public let itemStorage: ItemStorageConfiguration
 
+    /// Container-scoped operational logging policy.
+    public let logging: DatabaseLoggingConfiguration
+
     // MARK: - Initialization
 
     /// Create database configuration
@@ -94,12 +97,14 @@ public struct DBConfiguration: DataStoreConfiguration, Sendable {
         name: String? = nil,
         backend: StorageBackend,
         indexConfigurations: [any IndexConfiguration] = [],
-        itemStorage: ItemStorageConfiguration = .v1
+        itemStorage: ItemStorageConfiguration = .v1,
+        logging: DatabaseLoggingConfiguration = .system
     ) {
         self.name = name
         self.backend = backend
         self.indexConfigurations = indexConfigurations
         self.itemStorage = itemStorage
+        self.logging = logging
     }
 }
 

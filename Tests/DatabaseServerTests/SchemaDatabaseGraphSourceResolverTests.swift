@@ -96,7 +96,7 @@ struct SchemaDatabaseGraphSourceResolverTests {
     }
 
     private func makeContainer() async throws -> DBContainer {
-        try await DBContainer(
+        try await DBContainer.open(
             for: Schema(
                 [
                     DatabaseGraphSourceEdge.self,

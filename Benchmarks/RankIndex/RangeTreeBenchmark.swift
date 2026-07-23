@@ -37,7 +37,7 @@ struct RangeTreeBenchmark {
         }
 
         let schema = Schema([BenchmarkPlayer.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

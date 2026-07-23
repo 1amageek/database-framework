@@ -214,7 +214,7 @@ struct MigrationExecutionPostgreSQLTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -259,7 +259,7 @@ struct MigrationExecutionPostgreSQLTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: PGStageFailureSchemaV3.self,
                 migrationPlan: PGStageFailureMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -302,7 +302,7 @@ struct MigrationExecutionPostgreSQLTests {
             await pgMigrationEventRecorder.reset()
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -340,7 +340,7 @@ struct MigrationExecutionPostgreSQLTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),

@@ -60,7 +60,7 @@ struct ResolveDirectoryTests {
             NestedDirectoryItem.self
         ], version: Schema.Version(1, 0, 0))
 
-        return try await DBContainer(
+        return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -230,8 +230,8 @@ struct ResolveDirectoryTests {
 
             let schema = Schema([DirectoryUser.self], version: Schema.Version(1, 0, 0))
 
-            let container1 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
-            let container2 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container1 = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container2 = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
 
             let subspace1 = try await container1.resolveDirectory(for: DirectoryUser.self)
             let subspace2 = try await container2.resolveDirectory(for: DirectoryUser.self)

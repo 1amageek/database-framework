@@ -164,7 +164,7 @@ struct MigrationTests {
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([MigrationUser.self], version: Schema.Version(1, 0, 0))
 
-        return try await DBContainer(
+        return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -179,7 +179,7 @@ struct MigrationTests {
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([BatchMigrationRecord.self], version: Schema.Version(1, 0, 0))
 
-        return try await DBContainer(
+        return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -276,11 +276,11 @@ struct MigrationTests {
             try await clearMetadata(in: database)
 
             // Create first container and set version
-            let container1 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container1 = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             try await container1.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             // Create second container and read version
-            let container2 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container2 = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let version = try await container2.getCurrentSchemaVersion()
 
             #expect(version == Schema.Version(2, 0, 0))
@@ -319,7 +319,7 @@ struct MigrationTests {
             try await clearSchemaEntries(in: database, typeNames: [typeName])
             try await clearMetadata(in: database)
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: SchemaRegistryAppendOnlySchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(database)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -336,7 +336,7 @@ struct MigrationTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: SchemaRegistryAppendOnlySchemaV2.self,
                 migrationPlan: SchemaRegistryAppendOnlyMigrationPlan.self,
                 configuration: .init(backend: .custom(database)),
@@ -344,7 +344,7 @@ struct MigrationTests {
             )
             try await migratedContainer.migrateIfNeeded()
 
-            let verificationContainer = try await DBContainer(
+            let verificationContainer = try await DBContainer.open(
                 for: SchemaRegistryAppendOnlySchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(database)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -408,7 +408,7 @@ struct MigrationTests {
             try await clearSchemaEntries(in: database, typeNames: [typeName])
             try await clearMetadata(in: database)
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(database)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -424,7 +424,7 @@ struct MigrationTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.self,
                 migrationPlan: SchemaRegistryCustomMigrationPlan.self,
                 configuration: .init(backend: .custom(database)),
@@ -441,7 +441,7 @@ struct MigrationTests {
             #expect(entity?.fieldMapByName["email"]?.fieldNumber == 3)
             #expect(entity?.fieldMapByName["name"] == nil)
 
-            let verificationContainer = try await DBContainer(
+            let verificationContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(database)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -470,7 +470,7 @@ struct MigrationTests {
             try await clearSchemaEntries(in: database, typeNames: [typeName])
             try await clearMetadata(in: database)
 
-            let initialContainer = try await DBContainer(
+            let initialContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(database)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -495,7 +495,7 @@ struct MigrationTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.self,
                 migrationPlan: SchemaRegistryCustomMigrationPlan.self,
                 configuration: .init(backend: .custom(database)),
@@ -503,7 +503,7 @@ struct MigrationTests {
             )
             try await migratedContainer.migrateIfNeeded()
 
-            let verificationContainer = try await DBContainer(
+            let verificationContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(database)),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

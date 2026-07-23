@@ -928,7 +928,7 @@ struct DatabaseGraphQueryPagingTests {
     private func makeEmptyContainer(
         engine: any StorageEngine
     ) async throws -> DBContainer {
-        try await DBContainer(
+        try await DBContainer.open(
             for: Schema(
                 [DatabaseGraphQueryStatement.self],
                 version: Schema.Version(1, 0, 0)

@@ -142,7 +142,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: PGSchemaEvolutionSchemaV2.self,
                 migrationPlan: PGAppendOnlyMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -233,7 +233,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: PGMigrationSchemaV2.self,
                 migrationPlan: PGCustomMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
@@ -286,7 +286,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer(
+            let migratedContainer = try await DBContainer.open(
                 for: PGMigrationSchemaV2.self,
                 migrationPlan: PGCustomMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),

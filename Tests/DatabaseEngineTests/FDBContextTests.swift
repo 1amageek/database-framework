@@ -51,7 +51,7 @@ struct FDBContextTests {
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([ContextUser.self, ContextProduct.self], version: Schema.Version(1, 0, 0))
 
-        return try await DBContainer(
+        return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

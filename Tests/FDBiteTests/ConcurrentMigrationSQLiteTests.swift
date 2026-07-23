@@ -96,7 +96,7 @@ struct ConcurrentMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         await concurrentMigrationCounter.reset()
 
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -109,7 +109,7 @@ struct ConcurrentMigrationSQLiteTests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -134,7 +134,7 @@ struct ConcurrentMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         await concurrentMigrationCounter.reset()
 
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -153,13 +153,13 @@ struct ConcurrentMigrationSQLiteTests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-        let containerA = try await DBContainer(
+        let containerA = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
         )
-        let containerB = try await DBContainer(
+        let containerB = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -173,7 +173,7 @@ struct ConcurrentMigrationSQLiteTests {
         let versionA = try await containerA.getCurrentSchemaVersion()
         let versionB = try await containerB.getCurrentSchemaVersion()
 
-        let verificationContainer = try await DBContainer(
+        let verificationContainer = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

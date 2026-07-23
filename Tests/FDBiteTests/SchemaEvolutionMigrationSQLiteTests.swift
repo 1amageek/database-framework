@@ -115,7 +115,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
     func lightweightMigrationPreservesExistingDataEndToEnd() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
 
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -128,7 +128,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV2.self,
             migrationPlan: SQLiteAppendOnlyMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -136,7 +136,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         )
         try await migratedContainer.migrateIfNeeded()
 
-        let verificationContainer = try await DBContainer(
+        let verificationContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -201,7 +201,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let seededID = "sqlite-breaking-\(UUID().uuidString)"
 
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -214,7 +214,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -231,7 +231,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         #expect(entity?.fieldMapByName["email"]?.fieldNumber == 3)
         #expect(entity?.fieldMapByName["name"] == nil)
 
-        let verificationContainer = try await DBContainer(
+        let verificationContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -251,7 +251,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
     func customMigrationTransformsDataEndToEnd() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
 
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -270,7 +270,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
@@ -278,7 +278,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         )
         try await migratedContainer.migrateIfNeeded()
 
-        let verificationContainer = try await DBContainer(
+        let verificationContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

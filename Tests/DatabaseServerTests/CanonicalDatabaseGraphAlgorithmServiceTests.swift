@@ -422,7 +422,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
 
     private func makePropertyGraphAlgorithmContext() async throws -> PropertyGraphAlgorithmContext {
         let engine = CountingEngine()
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema(
                 [DatabaseEndpointRecord.self, WeightedGraphEdge.self],
                 version: Schema.Version(1, 0, 0)

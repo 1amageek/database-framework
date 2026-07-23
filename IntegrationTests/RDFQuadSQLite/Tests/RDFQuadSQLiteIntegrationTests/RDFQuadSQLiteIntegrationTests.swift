@@ -234,7 +234,7 @@ struct RDFQuadSQLiteIntegrationTests {
             version: Schema.Version(1, 0, 0)
         )
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: DBConfiguration(backend: .custom(engine)),
             runtimeConfiguration: try runtimeConfiguration(),
@@ -346,7 +346,7 @@ struct RDFQuadSQLiteIntegrationTests {
             version: Schema.Version(1, 0, 0)
         )
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: DBConfiguration(backend: .custom(engine)),
             runtimeConfiguration: try runtimeConfiguration(),

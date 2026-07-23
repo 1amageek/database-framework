@@ -29,7 +29,7 @@ struct DatabaseSchemaBootstrapTests {
     @Test("Unversioned rows cannot be silently adopted by initial schema")
     func rejectsUnversionedRows() async throws {
         let engine = InMemoryEngine()
-        let unversioned = try await DBContainer(
+        let unversioned = try await DBContainer.open(
             for: Schema(
                 [BootstrapIndexedRecord.self],
                 version: Schema.Version(1, 0, 0)
@@ -58,7 +58,7 @@ struct DatabaseSchemaBootstrapTests {
         let initial = try await makeVersionedContainer(engine: engine)
         try await initial.migrateIfNeeded()
 
-        let divergent = try await DBContainer(
+        let divergent = try await DBContainer.open(
             for: Schema(
                 [DatabaseEndpointRecord.self],
                 version: Schema.Version(1, 0, 0)
@@ -80,7 +80,7 @@ struct DatabaseSchemaBootstrapTests {
     private func makeVersionedContainer(
         engine: InMemoryEngine
     ) async throws -> DBContainer {
-        try await DBContainer(
+        try await DBContainer.open(
             for: BootstrapSchema.self,
             migrationPlan: BootstrapMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),

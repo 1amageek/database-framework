@@ -307,7 +307,7 @@ struct ConfigurationRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer
     func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Configuration observation does not mutate index data.
     }
@@ -315,7 +315,7 @@ struct ConfigurationRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer
     func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Configuration observation does not scan index data.
     }
@@ -332,7 +332,7 @@ struct LanguageRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer {
     func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Language configuration observation does not mutate index data.
     }
@@ -340,7 +340,7 @@ struct LanguageRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer {
     func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Language configuration observation does not scan index data.
     }

@@ -1,5 +1,4 @@
 import StorageKit
-import Logging
 
 /// Persists validated index lifecycle transitions.
 ///
@@ -18,7 +17,7 @@ public final class IndexLifecycleStore: Sendable {
     /// Container used for transaction execution.
     let container: DBContainer
     private let subspace: Subspace
-    private let logger: Logger
+    private let logger: DatabaseLogger
 
     // MARK: - Initialization
 
@@ -27,15 +26,13 @@ public final class IndexLifecycleStore: Sendable {
     /// - Parameters:
     ///   - container: DBContainer for transaction execution
     ///   - subspace: Subspace for storing index states
-    ///   - logger: Optional logger
     public init(
         container: DBContainer,
-        subspace: Subspace,
-        logger: Logger? = nil
+        subspace: Subspace
     ) {
         self.container = container
         self.subspace = subspace
-        self.logger = logger ?? Logger(
+        self.logger = container.configuration.logging.logger(
             label: "com.database.framework.index-lifecycle"
         )
     }

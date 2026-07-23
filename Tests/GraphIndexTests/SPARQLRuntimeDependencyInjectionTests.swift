@@ -46,7 +46,7 @@ struct SPARQLRuntimeDependencyInjectionTests {
         let functionRegistry = try SPARQLFunctionRegistry([
             IdentityFunction(identifier: functionIdentifier)
         ])
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             testing: Schema(
                 [Statement.self],
                 version: Schema.Version(1, 0, 0)

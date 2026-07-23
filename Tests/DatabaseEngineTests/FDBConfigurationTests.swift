@@ -40,7 +40,7 @@ struct DBConfigurationTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([IndexConfigurationUser.self])
 
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
@@ -69,7 +69,7 @@ struct DBConfigurationTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([IndexConfigurationUser.self])
 
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
@@ -96,7 +96,7 @@ struct DBConfigurationTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([IndexConfigurationUser.self])
 
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -115,7 +115,7 @@ struct DBConfigurationTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([IndexConfigurationUser.self])
 
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
@@ -149,7 +149,7 @@ struct DBConfigurationTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([IndexConfigurationUser.self])
 
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(
                 backend: .custom(database),

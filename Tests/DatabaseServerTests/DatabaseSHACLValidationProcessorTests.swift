@@ -123,7 +123,7 @@ struct DatabaseSHACLValidationProcessorTests {
     }
 
     private func makeSHACLValidationContext() async throws -> SHACLValidationContext {
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema(
                 [DatabaseSHACLStatement.self],
                 version: Schema.Version(1, 0, 0)

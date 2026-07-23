@@ -50,7 +50,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
     @Test("Database facade accepts SQLite configuration through the common label")
     func sqliteConfigurationRoundTrip() async throws {
         let schema = Schema([SQLiteFacadeUserV1.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: SQLiteStorageEngine.Configuration.inMemory,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -76,7 +76,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
             .path
         defer { try? FileManager.default.removeItem(atPath: dbPath) }
 
-        let initialContainer = try await DBContainer(
+        let initialContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV1.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -89,7 +89,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: SQLiteFacadeSchemaV1.versionIdentifier)
 
-        let migratedContainer = try await DBContainer(
+        let migratedContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV2.self,
             migrationPlan: SQLiteFacadeMigrationPlan.self,
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
@@ -97,7 +97,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
         )
         try await migratedContainer.migrateIfNeeded()
 
-        let verificationContainer = try await DBContainer(
+        let verificationContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV2.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

@@ -49,7 +49,7 @@ struct CanonicalAggregationReducerTests {
     @Test("non-empty global aggregate indexes accept zero grouping fields")
     func nonEmptyGlobalIndexesAcceptZeroGroupingFields() async throws {
         let schema = Schema([EmptyGlobalAggregationRecord.self])
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -985,7 +985,7 @@ struct CanonicalAggregationReducerTests {
 
     private func makeEmptyQueryContext() async throws -> FDBContext {
         let schema = Schema([EmptyGlobalAggregationRecord.self])
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -996,7 +996,7 @@ struct CanonicalAggregationReducerTests {
 
     private func makeGlobalSketchQueryContext() async throws -> FDBContext {
         let schema = Schema([IndexedGlobalSketchRecord.self])
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

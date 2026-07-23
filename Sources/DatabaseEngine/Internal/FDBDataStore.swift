@@ -1,7 +1,6 @@
 import StorageKit
 import Core
 import DatabaseValue
-import Logging
 
 /// Internal storage abstraction for FoundationDB
 ///
@@ -30,7 +29,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     let subspace: Subspace
     let schema: Schema
-    private let logger: Logger
+    private let logger: DatabaseLogger
 
     /// Delegate for operation callbacks (metrics, etc.)
     private let metricsDelegate: DataStoreDelegate
@@ -73,7 +72,6 @@ internal final class FDBDataStore: DataStore, Sendable {
         container: DBContainer,
         subspace: Subspace,
         persistableType: String? = nil,
-        logger: Logger? = nil,
         metricsDelegate: DataStoreDelegate? = nil,
         securityDelegate: (any DataStoreSecurityDelegate)? = nil,
         indexConfigurations: [any IndexConfiguration] = []
@@ -81,7 +79,9 @@ internal final class FDBDataStore: DataStore, Sendable {
         self.container = container
         self.subspace = subspace
         self.schema = container.schema
-        self.logger = logger ?? Logger(label: "com.fdb.runtime.datastore")
+        self.logger = container.configuration.logging.logger(
+            label: "com.database.framework.data-store"
+        )
         self.metricsDelegate = metricsDelegate ?? container.dataStoreDelegate
         self.securityDelegate = securityDelegate
         self.itemSubspace = subspace.subspace(SubspaceKey.items)
@@ -100,8 +100,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
         self.indexLifecycleStore = IndexLifecycleStore(
             container: container,
-            subspace: subspace,
-            logger: logger
+            subspace: subspace
         )
         self.violationTracker = UniquenessViolationTracker(
             container: container,
@@ -112,8 +111,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             violationTracker: violationTracker,
             indexSubspace: indexSubspace,
             maintainerProviders: container.runtimeConfiguration.indexMaintainerProviders,
-            configurations: indexConfigurations,
-            logger: logger
+            configurations: indexConfigurations
         )
     }
 

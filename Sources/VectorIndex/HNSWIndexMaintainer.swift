@@ -12,7 +12,6 @@ import Foundation
 import Core
 import DatabaseEngine
 import StorageKit
-import Logging
 import Synchronization
 import SwiftHNSW
 import Vector

@@ -57,7 +57,7 @@ struct ContextMutationIntentTests {
     private func makeUserContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([DelInsUser.self])
-        return try await DBContainer(
+        return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
@@ -68,7 +68,7 @@ struct ContextMutationIntentTests {
     private func makeArticleContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([DelInsArticle.self])
-        return try await DBContainer(
+        return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

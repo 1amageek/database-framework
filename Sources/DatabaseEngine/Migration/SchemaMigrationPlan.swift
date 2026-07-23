@@ -33,7 +33,7 @@ import Core
 /// }
 ///
 /// // Use with DBContainer
-/// let container = try await DBContainer(
+/// let container = try await DBContainer.open(
 ///     for: AppSchemaV3.self,
 ///     migrationPlan: AppMigrationPlan.self
 /// )

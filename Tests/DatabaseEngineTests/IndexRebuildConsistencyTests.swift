@@ -94,7 +94,7 @@ struct IndexRebuildConsistencyTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema(types, version: Schema.Version(1, 0, 0))
-        return try await DBContainer(
+        return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),

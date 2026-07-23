@@ -16,7 +16,7 @@
 ///
 /// **Container mode**:
 /// ```swift
-/// let container = try await DBContainer(for: schema)
+/// let container = try await DBContainer.open(for: schema)
 /// let repl = try await DatabaseREPL(container: container)
 /// try await repl.run()
 /// ```

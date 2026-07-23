@@ -17,7 +17,6 @@ import Foundation
 #endif
 import StorageKit
 import Core
-import Logging
 
 /// Centralized service for index maintenance operations
 ///
@@ -41,7 +40,7 @@ internal final class IndexMaintenanceService: Sendable {
     private let indexLifecycleStore: IndexLifecycleStore
     private let violationTracker: UniquenessViolationTracker
     private let indexSubspace: Subspace
-    private let logger: Logger
+    private let logger: DatabaseLogger
     private let configurations: [any IndexConfiguration]
     private let maintainerProviders: IndexMaintainerProviderRegistry
 
@@ -52,15 +51,16 @@ internal final class IndexMaintenanceService: Sendable {
         violationTracker: UniquenessViolationTracker,
         indexSubspace: Subspace,
         maintainerProviders: IndexMaintainerProviderRegistry,
-        configurations: [any IndexConfiguration] = [],
-        logger: Logger? = nil
+        configurations: [any IndexConfiguration] = []
     ) {
         self.indexLifecycleStore = indexLifecycleStore
         self.violationTracker = violationTracker
         self.indexSubspace = indexSubspace
         self.maintainerProviders = maintainerProviders
         self.configurations = configurations
-        self.logger = logger ?? Logger(label: "com.fdb.index.maintenance")
+        self.logger = indexLifecycleStore.container.configuration.logging.logger(
+            label: "com.database.framework.index-maintenance"
+        )
     }
 
     // MARK: - Public API

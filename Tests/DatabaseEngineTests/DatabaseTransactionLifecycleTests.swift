@@ -405,7 +405,7 @@ struct DatabaseTransactionLifecycleTests {
         engine: any StorageEngine,
         maintainers: [any PersistableMutationMaintainer]
     ) async throws -> DBContainer {
-        try await DBContainer(
+        try await DBContainer.open(
             testing: Schema(
                 [
                     TransactionLifecycleParent.self,

@@ -11,7 +11,6 @@ import Foundation
 #endif
 import StorageKit
 import Core
-import Logging
 
 // MARK: - UniquenessViolationTracker
 
@@ -65,8 +64,12 @@ public final class UniquenessViolationTracker: Sendable {
     /// Metadata subspace containing violation records
     private let metadataSubspace: Subspace
 
-    /// Logger
-    private let logger: Logger
+    /// Database event logger selected by the container configuration.
+    private var logger: DatabaseLogger {
+        container.configuration.logging.logger(
+            label: "com.database.framework.uniqueness-violation"
+        )
+    }
 
     // MARK: - Initialization
 
@@ -81,7 +84,6 @@ public final class UniquenessViolationTracker: Sendable {
     ) {
         self.container = container
         self.metadataSubspace = metadataSubspace
-        self.logger = Logger(label: "com.fdb.uniqueness.tracker")
     }
 
     // MARK: - Violation Subspace

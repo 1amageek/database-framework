@@ -160,7 +160,7 @@ struct DatabaseQueryContinuationEndpointTests {
     }
 
     private func makeContainer(seedCount: Int = 0) async throws -> DBContainer {
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             for: Schema(
                 [DatabaseEndpointRecord.self],
                 version: Schema.Version(1, 0, 0)

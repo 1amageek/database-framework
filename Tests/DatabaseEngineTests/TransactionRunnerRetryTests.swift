@@ -656,7 +656,7 @@ private final class FlakyCreateTransactionEngine: StorageEngine, Sendable {
     }
 
     func withTransaction<T: Sendable>(
-        _ operation: (any Transaction) async throws -> T
+        _ operation: (any TransactionAccess) async throws -> T
     ) async throws -> T {
         let transaction = try createTransaction()
         do {

@@ -7,7 +7,6 @@ import StorageKit
 import Core
 import DatabaseValue
 import Synchronization
-import Logging
 
 /// FDBContext - Central API for model persistence
 ///
@@ -105,8 +104,8 @@ public final class FDBContext: Sendable {
     /// Change tracking state
     private let stateLock: Mutex<ContextState>
 
-    /// Logger
-    private let logger: Logger
+    /// Database event logger selected by the container configuration.
+    private let logger: DatabaseLogger
 
     /// Cached stores keyed by (typeName, partitionPath) to avoid re-creation on every save()
     private let storeRegistry = Mutex(ContextDataStoreRegistry())
@@ -140,7 +139,9 @@ public final class FDBContext: Sendable {
         self.container = container
         self.readVersionCache = ReadVersionCache()
         self.stateLock = Mutex(ContextState(autosaveEnabled: autosaveEnabled))
-        self.logger = Logger(label: "com.fdb.runtime.context")
+        self.logger = container.configuration.logging.logger(
+            label: "com.database.framework.context"
+        )
     }
 
     // MARK: - State
@@ -1275,7 +1276,10 @@ extension FDBContext {
         try ensureUsable()
 
         // Use TransactionRunner with context's own ReadVersionCache
-        let runner = TransactionRunner(database: container.engine)
+        let runner = TransactionRunner(
+            database: container.engine,
+            logging: container.configuration.logging
+        )
         return try await runner.run(
             configuration: configuration,
             executionDeadline: executionDeadline,
@@ -1322,7 +1326,10 @@ extension FDBContext {
     ) async throws -> T {
         try ensureUsable()
 
-        let runner = TransactionRunner(database: container.engine)
+        let runner = TransactionRunner(
+            database: container.engine,
+            logging: container.configuration.logging
+        )
         return try await runner.run(
             configuration: configuration,
             executionDeadline: executionDeadline,

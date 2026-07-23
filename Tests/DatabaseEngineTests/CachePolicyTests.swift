@@ -137,7 +137,7 @@ struct CachePolicyTests {
             [CachePolicyRecord.self],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Create executor with cache policy
@@ -157,7 +157,7 @@ struct CachePolicyTests {
             [CachePolicyRecord.self],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Chain cache policy with other query methods
@@ -182,7 +182,7 @@ struct CachePolicyTests {
                 [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -220,7 +220,7 @@ struct CachePolicyTests {
                 [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -253,7 +253,7 @@ struct CachePolicyTests {
                 [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -288,7 +288,7 @@ struct CachePolicyTests {
                 [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -331,7 +331,7 @@ struct CachePolicyTests {
                 [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -356,7 +356,7 @@ struct CachePolicyTests {
                 [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -397,7 +397,7 @@ struct CachePolicyTests {
                 [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -426,7 +426,7 @@ struct CachePolicyTests {
                 [CachePolicyRecord.self],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Try to fetch non-existent ID with various cache policies

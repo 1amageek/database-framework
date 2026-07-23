@@ -4,7 +4,6 @@
 // Reference: FoundationDB transaction retry pattern
 // https://apple.github.io/foundationdb/developer-guide.html#transactions
 
-import Logging
 import Metrics
 import StorageKit
 import Synchronization
@@ -148,7 +147,7 @@ internal struct TransactionRunner: Sendable {
     /// StorageEngine is internally thread-safe (manages backend connections).
     private let database: any StorageEngine
 
-    private let logger = Logger(label: "com.database.transaction.runner")
+    private let logger: DatabaseLogger
 
     private static let retryCounter = Counter(label: "database_transaction_retries_total")
     private static let retryExhaustedCounter = Counter(label: "database_transaction_retry_exhausted_total")
@@ -164,8 +163,14 @@ internal struct TransactionRunner: Sendable {
 
     // MARK: - Initialization
 
-    init(database: any StorageEngine) {
+    init(
+        database: any StorageEngine,
+        logging: DatabaseLoggingConfiguration = .disabled
+    ) {
         self.database = database
+        self.logger = logging.logger(
+            label: "com.database.framework.transaction-runner"
+        )
     }
 
     // MARK: - Execution
@@ -348,9 +353,7 @@ internal struct TransactionRunner: Sendable {
                                 "operation": "\(operationDescription)",
                                 "attempt": "\(attempt + 1)",
                                 "maxAttempts": "\(maxAttempts)",
-                                "error": .string(
-                                    String(describing: storageError)
-                                )
+                                "error": String(describing: storageError)
                             ]
                         )
                         Self.retryCounter.increment()
@@ -371,9 +374,7 @@ internal struct TransactionRunner: Sendable {
                         metadata: [
                             "operation": "\(operationDescription)",
                             "attempts": "\(maxAttempts)",
-                            "error": .string(
-                                String(describing: storageError)
-                            )
+                            "error": String(describing: storageError)
                         ]
                     )
                     throw storageError

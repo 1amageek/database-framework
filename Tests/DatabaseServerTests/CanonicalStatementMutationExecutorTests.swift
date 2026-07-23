@@ -228,7 +228,7 @@ struct CanonicalStatementMutationExecutorTests {
     }
 
     private func makeContainer() async throws -> DBContainer {
-        try await DBContainer(
+        try await DBContainer.open(
             for: Schema(
                 [DatabaseEndpointRecord.self],
                 version: Schema.Version(1, 0, 0)

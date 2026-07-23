@@ -70,7 +70,7 @@ struct SPARQLFunctionIntegrationTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([SPARQLFunctionUser.self, SPARQLFunctionTriple.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(
+        let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
