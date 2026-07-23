@@ -222,13 +222,12 @@ struct DatabaseServerRuntimeTests {
             container: container,
             configuration: DatabaseServerRuntimeConfiguration(
                 identity: DatabaseRuntimeIdentity(version: "test-runtime"),
-                serviceFactory: AnyDatabaseServerServiceFactory { context in
-                    try await ConfiguredCommandServiceFactory(
+                serviceFactory: AnyDatabaseServerServiceFactory(
+                    ConfiguredCommandServiceFactory(
                         readCommands: readCommands,
                         writeCommands: writeCommands
                     )
-                        .makeServices(context: context)
-                },
+                ),
                 admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
                     UnrestrictedDatabaseOperationAdmissionPolicy()
                 ),
