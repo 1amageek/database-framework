@@ -101,6 +101,37 @@ struct ScalarIndexAccessPathTests {
         try await container.ensureIndexesReady()
     }
 
+    @Test("Planning is storage-neutral and preserves descriptor identity")
+    func planningPreservesDescriptorIdentity() throws {
+        let predicate: DatabaseEngine.Predicate<ScalarAccessPathEntity> =
+            (\ScalarAccessPathEntity.group == "alpha")
+            && (\ScalarAccessPathEntity.rank == 2)
+        let selection = try ScalarIndexAccessPlanner.select(
+            for: predicate,
+            descriptors: ScalarAccessPathEntity.indexDescriptors,
+            forcedIndexName: nil
+        )
+
+        #expect(selection?.descriptor.name == "scalar_access_path_group_rank")
+        let clauses = try #require(selection?.clauses)
+        #expect(clauses.map { $0.fieldName } == ["group", "rank"])
+        #expect(clauses.map { $0.value } == [FieldValue.string("alpha"), FieldValue.int64(2)])
+    }
+
+    @Test("Planning rejects a forced non-scalar descriptor")
+    func planningRejectsForcedNonScalarDescriptor() {
+        let predicate: DatabaseEngine.Predicate<AggregationOnlyAccessPathEntity> =
+            \AggregationOnlyAccessPathEntity.group == "alpha"
+
+        #expect(throws: CanonicalReadError.self) {
+            _ = try ScalarIndexAccessPlanner.select(
+                for: predicate,
+                descriptors: AggregationOnlyAccessPathEntity.indexDescriptors,
+                forcedIndexName: "scalar_access_path_count_group"
+            )
+        }
+    }
+
     @Test("Compound selection preserves the selected descriptor")
     func compoundSelectionPreservesDescriptor() async throws {
         let container = try await setupContainer()
