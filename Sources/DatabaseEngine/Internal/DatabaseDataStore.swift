@@ -214,6 +214,106 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let needsPostFiltering: Bool
     }
 
+    /// Resolve the physical access path using the same selection, encoding, and
+    /// lifecycle checks as query execution.
+    func executionPlan<T: Persistable>(
+        for query: Query<T>
+    ) async throws -> QueryAccessPlan {
+        try QueryResultWindow.validate(
+            limit: query.fetchLimit,
+            offset: query.fetchOffset
+        )
+
+        let predicate: Predicate<T>?
+        switch query.predicates.count {
+        case 0:
+            predicate = nil
+        case 1:
+            predicate = query.predicates[0]
+        default:
+            predicate = .and(query.predicates)
+        }
+
+        guard let predicate else {
+            if query.forcedIndex != nil {
+                throw CanonicalReadError.indexHintNotApplicable(
+                    "A forced index requires an indexable filter predicate"
+                )
+            }
+            return QueryAccessPlan(
+                accessPath: .fullScan,
+                indexedConditions: [],
+                residualFilterRequired: false,
+                sortRequired: !query.sortDescriptors.isEmpty,
+                fetchLimit: query.fetchLimit,
+                fetchOffset: query.fetchOffset
+            )
+        }
+
+        guard let selection = try ScalarIndexAccessPlanner.select(
+            for: predicate,
+            descriptors: T.indexDescriptors,
+            forcedIndexName: query.forcedIndex?.indexName
+        ) else {
+            if let forcedIndex = query.forcedIndex {
+                throw CanonicalReadError.indexHintNotApplicable(
+                    "Forced index '\(forcedIndex.indexName)' cannot serve the given predicate on type '\(T.persistableType)'"
+                )
+            }
+            return QueryAccessPlan(
+                accessPath: .fullScan,
+                indexedConditions: [],
+                residualFilterRequired: true,
+                sortRequired: !query.sortDescriptors.isEmpty,
+                fetchLimit: query.fetchLimit,
+                fetchOffset: query.fetchOffset
+            )
+        }
+
+        // Execution must be able to encode the selected values before this can
+        // be reported as a viable physical access path.
+        _ = try encodeScalarIndexAccess(selection)
+
+        let state = try await indexLifecycleStore.state(
+            of: selection.descriptor.name
+        )
+        guard state.isReadable else {
+            if query.forcedIndex != nil {
+                throw CanonicalReadError.indexHintNotReadable(
+                    indexName: selection.descriptor.name,
+                    state: String(describing: state)
+                )
+            }
+            return QueryAccessPlan(
+                accessPath: .fullScan,
+                indexedConditions: [],
+                residualFilterRequired: true,
+                sortRequired: !query.sortDescriptors.isEmpty,
+                fetchLimit: query.fetchLimit,
+                fetchOffset: query.fetchOffset
+            )
+        }
+
+        return QueryAccessPlan(
+            accessPath: .scalarIndex(
+                name: selection.descriptor.name,
+                kind: selection.descriptor.kindIdentifier,
+                indexedFields: selection.descriptor.fieldNames
+            ),
+            indexedConditions: selection.clauses.map { clause in
+                QueryAccessCondition(
+                    fieldName: clause.fieldName,
+                    comparison: clause.comparison,
+                    value: clause.value
+                )
+            },
+            residualFilterRequired: selection.requiresPostFilter,
+            sortRequired: !query.sortDescriptors.isEmpty,
+            fetchLimit: query.fetchLimit,
+            fetchOffset: query.fetchOffset
+        )
+    }
+
     /// Attempt to fetch using an index
     ///
     /// Returns nil if no suitable index is available for the predicate,

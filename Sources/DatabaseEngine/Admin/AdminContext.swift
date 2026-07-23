@@ -169,26 +169,30 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     // MARK: - Query Analysis
 
     public func explain<T: Persistable>(_ query: Query<T>) async throws -> QueryPlanPublic {
-        // Get indexes for the type
-        guard let entity = container.schema.entities.first(where: { $0.name == T.persistableType }) else {
-            // No indexes, return table scan plan
-            return QueryPlanPublic(
-                planType: .tableScan,
-                selectedIndex: nil,
-                estimatedCost: Double.infinity,
-                estimatedRows: 0,
-                indexConditions: [],
-                filterConditions: query.predicates.map { describeCondition($0) },
-                sortRequired: !query.sortDescriptors.isEmpty,
-                alternatives: nil
-            )
+        let context = container.newContext()
+        let accessPlan = try await context.executionPlan(for: query)
+        let planType: PublicPlanType
+        let selectedIndex: String?
+        switch accessPlan.accessPath {
+        case .fullScan:
+            planType = .tableScan
+            selectedIndex = nil
+        case .scalarIndex(let name, _, _):
+            planType = .indexScan
+            selectedIndex = name
         }
 
-        let indexes = entity.indexDescriptors
-        let planner = QueryPlanner<T>(indexes: indexes)
-
-        let internalPlan = try planner.plan(query: query)
-        return convertToPublicPlan(internalPlan)
+        return QueryPlanPublic(
+            planType: planType,
+            selectedIndex: selectedIndex,
+            indexConditions: accessPlan.indexedConditions.map {
+                "\($0.fieldName) \($0.comparison) \($0.value)"
+            },
+            filterConditions: accessPlan.residualFilterRequired
+                ? query.predicates.map { describeCondition($0) }
+                : [],
+            sortRequired: accessPlan.sortRequired
+        )
     }
 
     public func explainAnalyze<T: Persistable>(_ query: Query<T>) async throws -> QueryExecutionStatsPublic {
@@ -208,8 +212,6 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             plan: plan,
             actualRows: Int64(results.count),
             executionTime: executionTime,
-            bytesRead: 0, // Would need instrumentation to track
-            transactionRetries: 0,
             readVersion: readVersion,
             conflictRanges: nil
         )
@@ -435,96 +437,6 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         }
         // Use container's resolveDirectory to respect #Directory definitions
         return try await container.resolveDirectory(for: persistableType)
-    }
-
-    private func convertToPublicPlan<T: Persistable>(_ plan: DatabaseEngine.QueryPlan<T>) -> QueryPlanPublic {
-        let planType = determinePlanType(plan.rootOperator)
-        let selectedIndex = plan.usedIndexes.first?.name
-
-        return QueryPlanPublic(
-            planType: planType,
-            selectedIndex: selectedIndex,
-            estimatedCost: plan.estimatedCost.totalCost,
-            estimatedRows: Int64(plan.estimatedCost.entityFetches),
-            indexConditions: extractIndexConditions(plan.rootOperator),
-            filterConditions: extractFilterConditions(plan.rootOperator),
-            sortRequired: plan.estimatedCost.requiresSort,
-            alternatives: nil
-        )
-    }
-
-    private func determinePlanType<T: Persistable>(_ op: PlanOperator<T>) -> PublicPlanType {
-        switch op {
-        case .tableScan:
-            return .tableScan
-        case .indexScan:
-            return .indexScan
-        case .indexSeek:
-            return .indexSeek
-        case .indexOnlyScan:
-            return .indexOnly
-        case .union, .intersection:
-            return .multiIndexMerge
-        case .filter(let filterOp):
-            return determinePlanType(filterOp.input)
-        case .sort(let sortOp):
-            return determinePlanType(sortOp.input)
-        case .limit(let limitOp):
-            return determinePlanType(limitOp.input)
-        case .project(let projectOp):
-            return determinePlanType(projectOp.input)
-        default:
-            return .tableScan
-        }
-    }
-
-    private func extractIndexConditions<T: Persistable>(_ op: PlanOperator<T>) -> [String] {
-        var conditions: [String] = []
-
-        switch op {
-        case .indexScan(let scanOp):
-            conditions = scanOp.satisfiedConditions.map { condition in
-                let constraintType = condition.isEquality ? "=" : (condition.isRange ? "range" : (condition.isIn ? "IN" : "other"))
-                return "\(condition.fieldName) (\(constraintType))"
-            }
-        case .indexSeek(let seekOp):
-            conditions = seekOp.satisfiedConditions.map { condition in
-                let constraintType = condition.isEquality ? "=" : (condition.isRange ? "range" : (condition.isIn ? "IN" : "other"))
-                return "\(condition.fieldName) (\(constraintType))"
-            }
-        case .filter(let filterOp):
-            conditions = extractIndexConditions(filterOp.input)
-        case .sort(let sortOp):
-            conditions = extractIndexConditions(sortOp.input)
-        case .limit(let limitOp):
-            conditions = extractIndexConditions(limitOp.input)
-        default:
-            break
-        }
-
-        return conditions
-    }
-
-    private func extractFilterConditions<T: Persistable>(_ op: PlanOperator<T>) -> [String] {
-        var conditions: [String] = []
-
-        switch op {
-        case .filter(let filterOp):
-            conditions.append(describeCondition(filterOp.predicate))
-            conditions.append(contentsOf: extractFilterConditions(filterOp.input))
-        case .tableScan(let scanOp):
-            if let predicate = scanOp.filterPredicate {
-                conditions.append(describeCondition(predicate))
-            }
-        case .sort(let sortOp):
-            conditions = extractFilterConditions(sortOp.input)
-        case .limit(let limitOp):
-            conditions = extractFilterConditions(limitOp.input)
-        default:
-            break
-        }
-
-        return conditions
     }
 
     private func describeCondition<T>(_ predicate: Predicate<T>) -> String {

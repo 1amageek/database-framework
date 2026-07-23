@@ -569,6 +569,29 @@ public final class DatabaseContext: Sendable {
         }
     }
 
+    /// Resolve the storage access path that the current runtime would use.
+    internal func executionPlan<T: Persistable>(
+        for query: Query<T>
+    ) async throws -> QueryAccessPlan {
+        if T.hasDynamicDirectory {
+            guard let binding = query.partitionBinding else {
+                throw DirectoryPathError.dynamicFieldsRequired(
+                    typeName: T.persistableType,
+                    fields: T.directoryFieldNames
+                )
+            }
+            try binding.validate()
+        }
+
+        let store: DatabaseDataStore
+        if let binding = query.partitionBinding {
+            store = try await cachedStore(for: T.self, path: binding)
+        } else {
+            store = try await cachedStore(for: T.self)
+        }
+        return try await store.executionPlan(for: query)
+    }
+
     /// Executes a model query and dependent reads at one transaction read version.
     package func withFetchedModelsInTransaction<T: Persistable, Result: Sendable>(
         _ query: Query<T>,

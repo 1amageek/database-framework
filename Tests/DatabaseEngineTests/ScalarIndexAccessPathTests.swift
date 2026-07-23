@@ -158,6 +158,58 @@ struct ScalarIndexAccessPathTests {
         #expect(count == 1)
     }
 
+    @Test("Execution plan reports the access path used by model queries")
+    func executionPlanReportsSelectedAccessPath() async throws {
+        let container = try await setupContainer()
+        try await resetStorage(in: container)
+        let context = container.newContext()
+
+        let plan = try await context.fetch(ScalarAccessPathEntity.self)
+            .where(\.group == "alpha")
+            .where(\.rank == 2)
+            .executionPlan()
+
+        guard case .scalarIndex(
+            let name,
+            let kind,
+            let indexedFields
+        ) = plan.accessPath else {
+            Issue.record("Expected the readable compound scalar index")
+            return
+        }
+        #expect(name == "scalar_access_path_group_rank")
+        #expect(kind == "scalar")
+        #expect(indexedFields == ["group", "rank"])
+        #expect(plan.indexedConditions.map(\.fieldName) == ["group", "rank"])
+        #expect(plan.residualFilterRequired == false)
+    }
+
+    @Test("Administrative plans expose only measured values")
+    func administrativePlansDoNotFabricateMeasurements() async throws {
+        let container = try await setupContainer()
+        try await resetStorage(in: container)
+        let context = container.newContext()
+        try context.insert(ScalarAccessPathEntity(group: "alpha", rank: 2))
+        try await context.save()
+
+        let query = Query<ScalarAccessPathEntity>()
+            .where(\.group == "alpha")
+            .where(\.rank == 2)
+        let admin = container.newAdminContext()
+        let plan = try await admin.explain(query)
+
+        #expect(plan.planType == .indexScan)
+        #expect(plan.selectedIndex == "scalar_access_path_group_rank")
+        #expect(plan.estimatedCost == nil)
+        #expect(plan.estimatedRows == nil)
+        #expect(plan.filterConditions.isEmpty)
+
+        let statistics = try await admin.explainAnalyze(query)
+        #expect(statistics.actualRows == 1)
+        #expect(statistics.bytesRead == nil)
+        #expect(statistics.transactionRetries == nil)
+    }
+
     @Test("A partial compound prefix preserves entity identity")
     func partialCompoundPrefixPreservesEntityIdentity() async throws {
         let container = try await setupContainer()

@@ -969,65 +969,12 @@ public struct QueryExecutor<T: Persistable>: Sendable {
         try await limit(1).execute().first
     }
 
-    // MARK: - Query Planner Integration
-
-    /// Explain the query plan without executing
+    /// Resolve the physical storage path that execution would currently use.
     ///
-    /// Returns a human-readable explanation of how the query would be executed,
-    /// including estimated costs, index usage, and execution tree.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let explanation = try context.fetch(User.self)
-    ///     .where(\.age > 18)
-    ///     .orderBy(\.name)
-    ///     .explain()
-    /// print(explanation)
-    /// ```
-    ///
-    /// - Parameter hints: Optional query hints to influence planning
-    /// - Returns: Human-readable plan explanation
-    public func explain(hints: QueryHints = .default) throws -> PlanExplanation {
-        let planner = QueryPlanner<T>(
-            indexes: T.indexDescriptors,
-            statistics: HeuristicStatisticsProvider(),
-            costModel: .default
-        )
-        let plan: QueryPlan<T> = try planner.plan(query: query, hints: hints)
-        return PlanExplanation(plan: plan)
-    }
-
-    /// Explain the query plan with custom statistics
-    ///
-    /// Use this method when you have collected statistics for more accurate cost estimation.
-    ///
-    /// - Parameters:
-    ///   - statistics: Statistics provider with collected data
-    ///   - hints: Optional query hints to influence planning
-    /// - Returns: Human-readable plan explanation
-    public func explain(
-        with statistics: StatisticsProvider,
-        hints: QueryHints = .default
-    ) throws -> PlanExplanation {
-        let planner = QueryPlanner<T>(
-            indexes: T.indexDescriptors,
-            statistics: statistics,
-            costModel: .default
-        )
-        let plan: QueryPlan<T> = try planner.plan(query: query, hints: hints)
-        return PlanExplanation(plan: plan)
-    }
-
-    /// Get the raw query plan for advanced usage
-    ///
-    /// - Parameter hints: Optional query hints to influence planning
-    /// - Returns: The compiled query plan
-    public func plan(hints: QueryHints = .default) throws -> QueryPlan<T> {
-        let planner = QueryPlanner<T>(
-            indexes: T.indexDescriptors,
-            statistics: HeuristicStatisticsProvider(),
-            costModel: .default
-        )
-        return try planner.plan(query: query, hints: hints)
+    /// The operation is asynchronous because index lifecycle state is part of
+    /// the decision. The returned plan does not claim unmeasured cost or row
+    /// estimates.
+    public func executionPlan() async throws -> QueryAccessPlan {
+        try await context.executionPlan(for: query)
     }
 }
