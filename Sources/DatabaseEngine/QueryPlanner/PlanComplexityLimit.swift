@@ -630,22 +630,3 @@ public enum PlanningLimitExceededError: Error, CustomStringConvertible, Sendable
         }
     }
 }
-
-// MARK: - Extension to CascadesOptimizer
-
-extension CascadesError {
-    /// Create error for complexity exceeded
-    public static func complexityExceeded(complexity: Int, threshold: Int) -> CascadesError {
-        .invalidExpression("Plan complexity (\(complexity)) exceeds threshold (\(threshold))")
-    }
-
-    /// Create error for plan enumeration limit
-    public static func planEnumerationLimit(count: Int, limit: Int) -> CascadesError {
-        .invalidExpression("Plan enumeration count (\(count)) exceeds limit (\(limit))")
-    }
-
-    /// Create error for rule application limit
-    public static func ruleApplicationLimit(count: Int, limit: Int) -> CascadesError {
-        .invalidExpression("Rule application count (\(count)) exceeds limit (\(limit))")
-    }
-}

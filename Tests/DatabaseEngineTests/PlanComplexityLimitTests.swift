@@ -249,29 +249,6 @@ struct PlanComplexityLimitTests {
         #expect(stats.elapsedSeconds == 2.5)
     }
 
-    // MARK: - CascadesError Extension Tests
-
-    @Test func cascadesErrorComplexityExceeded() {
-        let error = CascadesError.complexityExceeded(complexity: 2000, threshold: 1000)
-
-        if case .invalidExpression(let message) = error {
-            #expect(message.contains("2000"))
-            #expect(message.contains("1000"))
-        } else {
-            Issue.record("Wrong error case")
-        }
-    }
-
-    @Test func cascadesErrorPlanEnumerationLimit() {
-        let error = CascadesError.planEnumerationLimit(count: 150, limit: 100)
-
-        if case .invalidExpression(let message) = error {
-            #expect(message.contains("150"))
-            #expect(message.contains("100"))
-        } else {
-            Issue.record("Wrong error case")
-        }
-    }
 }
 #endif
 

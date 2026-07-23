@@ -224,9 +224,6 @@ struct LiteralConversionTests {
         #expect(throws: expected) {
             let _: Predicate<Entity>? = try expression.toPredicate(for: Entity.self)
         }
-        #expect(throws: expected) {
-            _ = try PredicateExpr(expression)
-        }
     }
 
     @Test("Reverse predicates retain canonical field identity and behavior")
@@ -269,51 +266,14 @@ struct LiteralConversionTests {
         #expect(comparison.toExpression() == expression)
     }
 
-    @Test("Cascades LIKE bridge rejects a non-string pattern")
-    func cascadesLIKEConversionRejectsNonStringPattern() {
-        let like = PredicateExpr.comparison(
-            field: "value",
-            op: .like,
-            value: .int64(1)
-        )
-        let ilike = PredicateExpr.comparison(
-            field: "value",
-            op: .ilike,
-            value: .int64(1)
-        )
-
-        #expect(
-            throws: CascadesConversionError.likePatternRequiresString(
-                field: "value"
-            )
-        ) {
-            _ = try like.toExpression()
-        }
-        #expect(
-            throws: CascadesConversionError.ilikePatternRequiresString(
-                field: "value"
-            )
-        ) {
-            _ = try ilike.toExpression()
-        }
-    }
-
     @Test("Empty logical groups retain their boolean identities")
-    func emptyLogicalGroupsRetainBooleanIdentities() throws {
+    func emptyLogicalGroupsRetainBooleanIdentities() {
         #expect(
             Predicate<Entity>.and([]).toExpression()
                 == .literal(.bool(true))
         )
         #expect(
             Predicate<Entity>.or([]).toExpression()
-                == .literal(.bool(false))
-        )
-        #expect(
-            try PredicateExpr.and([]).toExpression()
-                == .literal(.bool(true))
-        )
-        #expect(
-            try PredicateExpr.or([]).toExpression()
                 == .literal(.bool(false))
         )
     }

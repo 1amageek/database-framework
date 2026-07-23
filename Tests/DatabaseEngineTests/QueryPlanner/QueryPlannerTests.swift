@@ -52,8 +52,8 @@ struct QueryPlannerUser: Persistable {
         ["id", "name", "email", "age", "score", "isActive", "department", "createdAt"]
     }
 
-    static var descriptors: [any Descriptor] {
-        return [
+    static var indexDescriptors: [IndexDescriptor] {
+        [
             IndexDescriptor(name: "idx_email", keyPaths: [\QueryPlannerUser.email], kind: ScalarIndexKind<QueryPlannerUser>(fields: [\.email])),
             IndexDescriptor(name: "idx_age", keyPaths: [\QueryPlannerUser.age], kind: ScalarIndexKind<QueryPlannerUser>(fields: [\.age])),
             IndexDescriptor(name: "idx_name_age", keyPaths: [\QueryPlannerUser.name, \QueryPlannerUser.age], kind: ScalarIndexKind<QueryPlannerUser>(fields: [\.name, \.age])),

@@ -287,15 +287,16 @@ let orders = try await context.fetch(TenantOrder.self)
 
 ## Query Planning
 
-Cascades framework for cost-based query optimization:
+`QueryPlanner<T>` owns the cost-based planning path used by fetch and admin
+operations:
 
 | Component | Description |
 |-----------|-------------|
-| `CascadesOptimizer` | Top-down rule-based optimizer |
-| `Memo` | Memoization structure |
-| `Rule` | Transformation rules |
-| `CostEstimator` | Statistics-driven cost model |
-| `StatisticsProvider` | Cardinality, histograms, HyperLogLog |
+| `QueryAnalyzer` | Normalizes predicates and derives query constraints |
+| `PlanEnumerator` | Enumerates table, index, union, and intersection candidates |
+| `CostEstimator` | Evaluates candidate cost from statistics and access paths |
+| `PlanOptimizer` | Applies semantic plan rewrites |
+| `StatisticsProvider` | Provides cardinality, histograms, and HyperLogLog estimates |
 
 ## Performance Characteristics
 
@@ -317,4 +318,3 @@ delay = min(initialDelay * 2^attempt, maxDelay) + jitter
 
 - [FoundationDB Record Layer](https://github.com/FoundationDB/fdb-record-layer)
 - [FDB Atomic Operations](https://apple.github.io/foundationdb/api-general.html#atomic-operations)
-- [Cascades Optimizer (Graefe 1995)](https://dl.acm.org/doi/10.1145/223784.223785)
