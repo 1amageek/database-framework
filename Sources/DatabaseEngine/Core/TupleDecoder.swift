@@ -23,7 +23,7 @@ import StorageKit
 /// | Int64/UInt64 | Signed and unsigned integer types (range checked) |
 /// | Double | Double, Float |
 /// | String | String |
-/// | Bool | Bool, also Int64 0/1 |
+/// | Bool | Bool |
 /// | [UInt8] | [UInt8], Data |
 /// | UUID | UUID |
 /// | Date | Date |
@@ -274,17 +274,11 @@ public struct TupleDecoder: Sendable {
     // MARK: - Bool Decoding
 
     /// Decode as Bool
-    ///
-    /// Also accepts Int64 (0 = false, non-zero = true) for compatibility.
-    ///
     /// - Parameter element: TupleElement to decode
     /// - Returns: Bool value
     /// - Throws: TupleDecodingError on type mismatch
     public static func decodeBool(_ element: any TupleElement) throws -> Bool {
         if let v = element as? Bool { return v }
-        // Int64 0/1 can be interpreted as Bool
-        if let v = element as? Int64 { return v != 0 }
-        if let v = element as? Int { return v != 0 }
         throw TupleDecodingError.typeMismatch(expected: "Bool", actual: String(describing: type(of: element)))
     }
 

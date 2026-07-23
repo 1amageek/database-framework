@@ -28,6 +28,9 @@ public enum FieldSecurityError: Error, Sendable, Equatable {
 
     /// Write access denied for specified fields
     case writeNotAllowed(type: String, fields: [String])
+
+    /// A restricted field cannot be represented by the canonical value model.
+    case unsupportedFieldValue(type: String, field: String, valueType: String)
 }
 
 // MARK: - CustomStringConvertible
@@ -39,6 +42,8 @@ extension FieldSecurityError: CustomStringConvertible {
             return "Read access denied for \(type).\(fields.joined(separator: ", "))"
         case .writeNotAllowed(let type, let fields):
             return "Write access denied for \(type).\(fields.joined(separator: ", "))"
+        case .unsupportedFieldValue(let type, let field, let valueType):
+            return "Restricted field \(type).\(field) has unsupported value type \(valueType)"
         }
     }
 }
@@ -56,6 +61,8 @@ extension FieldSecurityError: LocalizedError {
             return "Insufficient permissions to read fields: \(fields.joined(separator: ", "))"
         case .writeNotAllowed(_, let fields):
             return "Insufficient permissions to write fields: \(fields.joined(separator: ", "))"
+        case .unsupportedFieldValue(_, let field, let valueType):
+            return "Restricted field \(field) cannot be compared as \(valueType)"
         }
     }
 }

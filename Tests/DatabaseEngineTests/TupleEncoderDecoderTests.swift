@@ -462,25 +462,20 @@ struct TupleDecoderTests {
         #expect(result == true)
     }
 
-    @Test("decodes Bool from Int64 (0 = false)")
-    func testDecodeBoolFromInt0() throws {
+    @Test("rejects Bool encoded as Int64 zero")
+    func testDecodeBoolRejectsInt0() {
         let element: any TupleElement = Int64(0)
-        let result = try TupleDecoder.decodeBool(element)
-        #expect(result == false)
+        #expect(throws: TupleDecodingError.self) {
+            _ = try TupleDecoder.decodeBool(element)
+        }
     }
 
-    @Test("decodes Bool from Int64 (1 = true)")
-    func testDecodeBoolFromInt1() throws {
+    @Test("rejects Bool encoded as Int64 one")
+    func testDecodeBoolRejectsInt1() {
         let element: any TupleElement = Int64(1)
-        let result = try TupleDecoder.decodeBool(element)
-        #expect(result == true)
-    }
-
-    @Test("decodes Bool from Int64 (non-zero = true)")
-    func testDecodeBoolFromIntNonZero() throws {
-        let element: any TupleElement = Int64(42)
-        let result = try TupleDecoder.decodeBool(element)
-        #expect(result == true)
+        #expect(throws: TupleDecodingError.self) {
+            _ = try TupleDecoder.decodeBool(element)
+        }
     }
 
     // MARK: - Data Decoding

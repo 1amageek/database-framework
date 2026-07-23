@@ -60,66 +60,6 @@ public struct FieldSecurityEvaluator {
         return result
     }
 
-    /// Extract restricted field information from a value
-    ///
-    /// For Persistable types, uses static metadata (preferred).
-    /// For other types, falls back to runtime reflection (deprecated).
-    ///
-    /// - Parameter value: The value to inspect
-    /// - Returns: Dictionary of field name to restriction info
-    public static func extractRestrictedFields<T>(from value: T) -> [String: RestrictedFieldInfo] {
-        // For Persistable types, use static metadata
-        if let persistable = value as? any Persistable {
-            return extractRestrictedFieldsFromPersistable(persistable)
-        }
-
-        // Fallback to reflection for non-Persistable types
-        return extractRestrictedFieldsViaReflection(from: value)
-    }
-
-    /// Internal helper to extract from Persistable using static metadata
-    private static func extractRestrictedFieldsFromPersistable(_ value: any Persistable) -> [String: RestrictedFieldInfo] {
-        var result: [String: RestrictedFieldInfo] = [:]
-
-        for metadata in type(of: value).restrictedFieldsMetadata {
-            result[metadata.fieldName] = RestrictedFieldInfo(
-                fieldName: metadata.fieldName,
-                readAccess: metadata.readAccess,
-                writeAccess: metadata.writeAccess
-            )
-        }
-
-        return result
-    }
-
-    /// Fallback: Extract via reflection (for non-Persistable types)
-    ///
-    /// **Warning**: This approach has limitations:
-    /// - Access levels are lost after Codable decode
-    /// - Only works if the property wrapper storage is accessible
-    private static func extractRestrictedFieldsViaReflection<T>(from value: T) -> [String: RestrictedFieldInfo] {
-        var result: [String: RestrictedFieldInfo] = [:]
-        let mirror = Mirror(reflecting: value)
-
-        for child in mirror.children {
-            guard var label = child.label else { continue }
-
-            if let restricted = child.value as? any RestrictedProtocol {
-                if label.hasPrefix("_") {
-                    label = String(label.dropFirst())
-                }
-
-                result[label] = RestrictedFieldInfo(
-                    fieldName: label,
-                    readAccess: restricted.readAccess,
-                    writeAccess: restricted.writeAccess
-                )
-            }
-        }
-
-        return result
-    }
-
     // MARK: - Read Access Evaluation
 
     /// Check if a field can be read
@@ -129,12 +69,12 @@ public struct FieldSecurityEvaluator {
     ///   - value: The object containing the field
     ///   - auth: Authentication context (nil = unauthenticated)
     /// - Returns: true if read is allowed
-    public static func canRead<T>(
+    public static func canRead<T: Persistable>(
         field fieldName: String,
         in value: T,
         auth: (any AuthContext)?
     ) -> Bool {
-        let restrictions = extractRestrictedFields(from: value)
+        let restrictions = extractRestrictedFields(for: T.self)
 
         guard let info = restrictions[fieldName] else {
             return true // No restriction = public access
@@ -170,11 +110,11 @@ public struct FieldSecurityEvaluator {
     ///   - value: The object to check
     ///   - auth: Authentication context
     /// - Returns: List of field names that cannot be read
-    public static func unreadableFields<T>(
+    public static func unreadableFields<T: Persistable>(
         in value: T,
         auth: (any AuthContext)?
     ) -> [String] {
-        let restrictions = extractRestrictedFields(from: value)
+        let restrictions = extractRestrictedFields(for: T.self)
 
         return restrictions.compactMap { fieldName, info in
             info.readAccess.evaluate(auth: auth) ? nil : fieldName
@@ -207,12 +147,12 @@ public struct FieldSecurityEvaluator {
     ///   - value: The object containing the field
     ///   - auth: Authentication context (nil = unauthenticated)
     /// - Returns: true if write is allowed
-    public static func canWrite<T>(
+    public static func canWrite<T: Persistable>(
         field fieldName: String,
         in value: T,
         auth: (any AuthContext)?
     ) -> Bool {
-        let restrictions = extractRestrictedFields(from: value)
+        let restrictions = extractRestrictedFields(for: T.self)
 
         guard let info = restrictions[fieldName] else {
             return true // No restriction = public access
@@ -248,11 +188,11 @@ public struct FieldSecurityEvaluator {
     ///   - value: The object to check
     ///   - auth: Authentication context
     /// - Returns: List of field names that cannot be written
-    public static func unwritableFields<T>(
+    public static func unwritableFields<T: Persistable>(
         in value: T,
         auth: (any AuthContext)?
     ) -> [String] {
-        let restrictions = extractRestrictedFields(from: value)
+        let restrictions = extractRestrictedFields(for: T.self)
 
         return restrictions.compactMap { fieldName, info in
             info.writeAccess.evaluate(auth: auth) ? nil : fieldName
@@ -337,12 +277,16 @@ public struct FieldSecurityEvaluator {
             if !info.writeAccess.evaluate(auth: auth) {
                 // Check if field has changed
                 if let original = original {
-                    if fieldChanged(original: original, updated: updated, fieldName: fieldName) {
+                    if try fieldChanged(
+                        original: original,
+                        updated: updated,
+                        fieldName: fieldName
+                    ) {
                         violations.append(fieldName)
                     }
                 } else {
                     // New insert - check if value is non-default
-                    if !isDefaultValue(in: updated, fieldName: fieldName) {
+                    if !(try isDefaultValue(in: updated, fieldName: fieldName)) {
                         violations.append(fieldName)
                     }
                 }
@@ -365,12 +309,12 @@ public struct FieldSecurityEvaluator {
     ///   - auth: Authentication context
     /// - Throws: FieldSecurityError.writeNotAllowed
     public static func validateWrite<T: Persistable>(
-        originals: [String: T],
+        originals: [T.ID: T],
         updates: [T],
         auth: (any AuthContext)?
     ) throws {
         for updated in updates {
-            let original = originals["\(updated.id)"]
+            let original = originals[updated.id]
             try validateWrite(original: original, updated: updated, auth: auth)
         }
     }
@@ -382,41 +326,47 @@ public struct FieldSecurityEvaluator {
         original: T,
         updated: T,
         fieldName: String
-    ) -> Bool {
-        // Use dynamicMember subscript for field access
-        let originalValue = original[dynamicMember: fieldName]
-        let updatedValue = updated[dynamicMember: fieldName]
-
-        // Compare using string representation as fallback
-        return "\(originalValue ?? "nil")" != "\(updatedValue ?? "nil")"
+    ) throws -> Bool {
+        let originalValue = try canonicalFieldValue(in: original, fieldName: fieldName)
+        let updatedValue = try canonicalFieldValue(in: updated, fieldName: fieldName)
+        return originalValue != updatedValue
     }
 
     /// Check if a field has its default/zero value
-    private static func isDefaultValue<T: Persistable>(in value: T, fieldName: String) -> Bool {
-        guard let fieldValue = value[dynamicMember: fieldName] else {
-            return true // nil = default for Optional fields
-        }
-
-        // Check common default values
+    private static func isDefaultValue<T: Persistable>(
+        in value: T,
+        fieldName: String
+    ) throws -> Bool {
+        let fieldValue = try canonicalFieldValue(in: value, fieldName: fieldName)
         switch fieldValue {
-        case let str as String where str.isEmpty:
+        case .null:
             return true
-        case let num as Int where num == 0:
+        case .int64(0), .uint64(0), .double(0), .string(""), .bool(false):
             return true
-        case let num as Int64 where num == 0:
-            return true
-        case let num as Double where num == 0:
-            return true
-        case let num as Float where num == 0:
-            return true
-        case let bool as Bool where bool == false:
-            return true
-        case let arr as [Any] where arr.isEmpty:
-            return true
-        case let data as Data where data.isEmpty:
-            return true
+        case .data(let bytes):
+            return bytes.isEmpty
+        case .array(let values):
+            return values.isEmpty
         default:
             return false
+        }
+    }
+
+    private static func canonicalFieldValue<T: Persistable>(
+        in value: T,
+        fieldName: String
+    ) throws -> FieldValue {
+        guard let rawValue = value[dynamicMember: fieldName] else {
+            return .null
+        }
+        do {
+            return try TypeConversion.toFieldValue(rawValue)
+        } catch {
+            throw FieldSecurityError.unsupportedFieldValue(
+                type: T.persistableType,
+                field: fieldName,
+                valueType: String(reflecting: type(of: rawValue))
+            )
         }
     }
 }
