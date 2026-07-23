@@ -16,7 +16,7 @@ enum SchemaEntityRecordCodec {
             writer in
             writer.writeUInt32(magic)
             writer.writeUInt16(version)
-            try write(entity, into: &writer)
+            try writeCanonical(entity, into: &writer)
         }
         return Bytes(retaining: encoded)
     }
@@ -43,31 +43,28 @@ enum SchemaEntityRecordCodec {
         return entity
     }
 
-    private static func write(
+    static func writeCanonical(
         _ entity: Schema.Entity,
         into writer: inout DatabaseWireWriter
     ) throws {
         try writer.writeString(entity.name)
-        try writer.writeCount(entity.fields.count)
-        for field in entity.fields {
+        let fields = entity.fields.sorted {
+            ($0.fieldNumber, $0.name) < ($1.fieldNumber, $1.name)
+        }
+        try writer.writeCount(fields.count)
+        for field in fields {
             try write(field, into: &writer)
         }
 
-        try writer.writeCount(entity.directoryComponents.count)
-        for component in entity.directoryComponents {
-            switch component {
-            case .staticPath(let value):
-                writer.writeUInt8(0)
-                try writer.writeString(value)
-            case .dynamicField(let fieldName):
-                writer.writeUInt8(1)
-                try writer.writeString(fieldName)
-            }
-        }
-        try writer.writeString(entity.directoryLayer.rawValue)
+        try writeDirectory(
+            entity.directoryComponents,
+            layer: entity.directoryLayer,
+            into: &writer
+        )
 
-        try writer.writeCount(entity.indexes.count)
-        for index in entity.indexes {
+        let indexes = entity.indexes.sorted { $0.name < $1.name }
+        try writer.writeCount(indexes.count)
+        for index in indexes {
             try write(index, into: &writer)
         }
 
@@ -77,6 +74,25 @@ enum SchemaEntityRecordCodec {
         try writer.writeOptionalString(entity.objectPropertyFromField)
         try writer.writeOptionalString(entity.objectPropertyToField)
         try writeOptionalStringArray(entity.dataPropertyIRIs, into: &writer)
+    }
+
+    static func writeDirectory(
+        _ components: [DirectoryPathComponent],
+        layer: DirectoryLayer,
+        into writer: inout DatabaseWireWriter
+    ) throws {
+        try writer.writeCount(components.count)
+        for component in components {
+            switch component {
+            case .staticPath(let value):
+                writer.writeUInt8(0)
+                try writer.writeString(value)
+            case .dynamicField(let fieldName):
+                writer.writeUInt8(1)
+                try writer.writeString(fieldName)
+            }
+        }
+        try writer.writeString(layer.rawValue)
     }
 
     private static func write(
@@ -97,7 +113,7 @@ enum SchemaEntityRecordCodec {
         try writer.writeOptionalString(field.referenceTargetEntity)
     }
 
-    private static func write(
+    static func write(
         _ index: IndexDescriptorMetadata,
         into writer: inout DatabaseWireWriter
     ) throws {
@@ -187,7 +203,7 @@ enum SchemaEntityRecordCodec {
         }
     }
 
-    private static func writeStringArray(
+    static func writeStringArray(
         _ values: [String],
         into writer: inout DatabaseWireWriter
     ) throws {

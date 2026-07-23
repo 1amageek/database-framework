@@ -251,6 +251,15 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
         target: Schema.Version
     )
 
+    /// A persisted version is not represented by the compiled migration plan.
+    case schemaDefinitionNotFound(Schema.Version)
+
+    /// A version was committed without its canonical compiled-schema fingerprint.
+    case schemaFingerprintMissing(Schema.Version)
+
+    /// The persisted schema snapshot differs from the compiled definition.
+    case schemaFingerprintMismatch(Schema.Version)
+
     public var description: String {
         switch self {
         case .emptySchemaList:
@@ -297,6 +306,15 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
 
         case .missingMigrationPlan(let current, let target):
             return "Migration from \(current) to \(target) requires a compiled migration plan"
+
+        case .schemaDefinitionNotFound(let version):
+            return "Compiled migration plan has no schema definition for persisted version \(version)"
+
+        case .schemaFingerprintMissing(let version):
+            return "Persisted schema version \(version) has no canonical schema fingerprint"
+
+        case .schemaFingerprintMismatch(let version):
+            return "Persisted schema version \(version) does not match its compiled schema definition"
         }
     }
 }

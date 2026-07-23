@@ -107,7 +107,7 @@ struct ConcurrentMigrationSQLiteTests {
         user.id = "sqlite-reentrant-user"
         initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
         let container = try await DBContainer(
             for: SQLiteConcurrentMigrationSchemaV2.self,
@@ -151,7 +151,7 @@ struct ConcurrentMigrationSQLiteTests {
             initialContext.insert(user)
         }
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
         let containerA = try await DBContainer(
             for: SQLiteConcurrentMigrationSchemaV2.self,

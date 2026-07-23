@@ -3,14 +3,14 @@ import DatabaseWire
 public struct CapabilitiesDescribeHandler: DatabaseOperationHandler {
     public typealias Operation = CapabilitiesDescribeOperation
 
-    private let descriptor: DatabaseRuntimeDescriptor
+    private let identity: DatabaseRuntimeIdentity
     private let jobOperations: [DatabaseJobOperationIdentifier]
 
     public init(
-        descriptor: DatabaseRuntimeDescriptor,
+        identity: DatabaseRuntimeIdentity,
         jobOperations: [DatabaseJobOperationIdentifier]
     ) {
-        self.descriptor = descriptor
+        self.identity = identity
         self.jobOperations = jobOperations
     }
 
@@ -19,8 +19,8 @@ public struct CapabilitiesDescribeHandler: DatabaseOperationHandler {
         context: DatabaseOperationContext
     ) async throws -> CapabilitiesDescribeOperation.Response {
         CapabilitiesDescribeOperation.Response(
-            runtimeVersion: descriptor.runtimeVersion,
-            features: descriptor.features,
+            runtimeVersion: identity.version,
+            features: DatabaseRuntimeCapabilityCatalog.features,
             jobOperations: jobOperations
         )
     }

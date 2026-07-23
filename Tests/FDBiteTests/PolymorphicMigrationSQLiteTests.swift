@@ -341,7 +341,7 @@ struct PolymorphicMigrationSQLiteTests {
         initialContext.insert(article)
         initialContext.insert(report)
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
         let migratedContainer = try await DBContainer(
             for: SQLitePolymorphicMigrationSchemaV2.self,
@@ -428,7 +428,7 @@ struct PolymorphicMigrationSQLiteTests {
         initialContext.insert(report)
 
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
         let migratedContainer = try await DBContainer(
             for: SQLitePolymorphicMigrationSchemaV2.self,
@@ -477,7 +477,7 @@ struct PolymorphicMigrationSQLiteTests {
 
         try await initialContext.savePolymorphic(article, as: SQLitePolymorphicMigrationArticleV2.self)
         try await initialContext.savePolymorphic(report, as: SQLitePolymorphicMigrationArticleV2.self)
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
         #expect(try await Self.countPolymorphicIndexEntries(
             container: initialContainer,
@@ -541,7 +541,7 @@ struct PolymorphicMigrationSQLiteTests {
 
         try await initialContext.savePolymorphic(article, as: SQLitePolymorphicMigrationArticleV2.self)
         try await initialContext.savePolymorphic(report, as: SQLitePolymorphicMigrationArticleV2.self)
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
         try await Self.clearPolymorphicIndexEntries(
             container: initialContainer,

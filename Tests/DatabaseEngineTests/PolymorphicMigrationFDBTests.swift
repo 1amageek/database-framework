@@ -292,7 +292,7 @@ struct PolymorphicMigrationFDBTests {
             initialContext.insert(article)
             initialContext.insert(report)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: FDBPolymorphicMigrationSchemaV2.self,
@@ -374,7 +374,7 @@ struct PolymorphicMigrationFDBTests {
 
             try await initialContext.savePolymorphic(article, as: FDBPolymorphicMigrationArticleV2.self)
             try await initialContext.savePolymorphic(report, as: FDBPolymorphicMigrationArticleV2.self)
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             #expect(try await Self.countPolymorphicIndexEntries(
                 container: initialContainer,
@@ -442,7 +442,7 @@ struct PolymorphicMigrationFDBTests {
 
             try await initialContext.savePolymorphic(article, as: FDBPolymorphicMigrationArticleV2.self)
             try await initialContext.savePolymorphic(report, as: FDBPolymorphicMigrationArticleV2.self)
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             try await Self.clearPolymorphicIndexEntries(
                 container: initialContainer,

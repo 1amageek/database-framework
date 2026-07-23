@@ -52,6 +52,31 @@ struct DatabaseSchemaBootstrapTests {
         #expect(try await versioned.getCurrentSchemaVersion() == nil)
     }
 
+    @Test("A reused version cannot conceal a different compiled schema")
+    func rejectsDivergentSchemaAtCommittedVersion() async throws {
+        let engine = InMemoryEngine()
+        let initial = try await makeVersionedContainer(engine: engine)
+        try await initial.migrateIfNeeded()
+
+        let divergent = try await DBContainer(
+            for: Schema(
+                [DatabaseEndpointRecord.self],
+                version: Schema.Version(1, 0, 0)
+            ),
+            migrationPlan: BootstrapMigrationPlan.self,
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            security: .disabled
+        )
+
+        do {
+            _ = try await divergent.migrationStatus()
+            Issue.record("Expected the committed schema fingerprint to be rejected")
+        } catch MigrationPlanError.schemaFingerprintMismatch(let version) {
+            #expect(version == Schema.Version(1, 0, 0))
+        }
+    }
+
     private func makeVersionedContainer(
         engine: InMemoryEngine
     ) async throws -> DBContainer {

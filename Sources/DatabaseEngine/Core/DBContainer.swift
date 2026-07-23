@@ -790,33 +790,43 @@ extension DBContainer {
         return Schema.Version(major, minor, patch)
     }
 
-    /// Set the current schema version in storage
-    public func setCurrentSchemaVersion(_ version: Schema.Version) async throws {
+    /// Installs one compiled schema snapshot for migration test setup.
+    package func installSchemaSnapshot(
+        for version: Schema.Version
+    ) async throws {
+        let installedSchema = try schemaDefinition(for: version)
         let metadataSubspace = try await getMetadataSubspace()
         try await engine.withTransaction(configuration: .batch) { transaction in
-            try Self.setCurrentSchemaVersion(
-                version,
+            try Self.setCurrentSchemaSnapshot(
+                installedSchema,
                 metadataSubspace: metadataSubspace,
                 transaction: transaction
             )
         }
     }
 
-    private static func setCurrentSchemaVersion(
-        _ version: Schema.Version,
+    private static func setCurrentSchemaSnapshot(
+        _ schema: Schema,
         metadataSubspace: Subspace,
         transaction: any Transaction
     ) throws {
         let versionKey = metadataSubspace
             .subspace("schema")
             .pack(Tuple("version"))
+        let fingerprintKey = metadataSubspace
+            .subspace("schema")
+            .pack(Tuple("fingerprint"))
         try transaction.setValue(
             Tuple(
-                Int(version.major),
-                Int(version.minor),
-                Int(version.patch)
+                Int(schema.version.major),
+                Int(schema.version.minor),
+                Int(schema.version.patch)
             ).pack(),
             for: versionKey
+        )
+        try transaction.setValue(
+            try DatabaseSchemaFingerprint.compute(schema),
+            for: fingerprintKey
         )
     }
 }
@@ -897,6 +907,10 @@ extension DBContainer {
             )
         }
         if currentVersion == targetVersion {
+            try await validatePersistedSchemaFingerprint(
+                schema,
+                transaction: transaction
+            )
             return DatabaseMigrationStatus(
                 currentVersion: currentVersion,
                 targetVersion: targetVersion,
@@ -915,6 +929,15 @@ extension DBContainer {
                 target: targetVersion
             )
         }
+        guard let currentSchemaType = plan.schemas.first(where: {
+            $0.versionIdentifier == currentVersion
+        }) else {
+            throw MigrationPlanError.schemaDefinitionNotFound(currentVersion)
+        }
+        try await validatePersistedSchemaFingerprint(
+            currentSchemaType.makeSchema(),
+            transaction: transaction
+        )
         let stages = try plan.findPath(
             from: currentVersion,
             to: targetVersion
@@ -1021,6 +1044,46 @@ extension DBContainer {
         return targetVersion
     }
 
+    private func schemaDefinition(
+        for version: Schema.Version
+    ) throws -> Schema {
+        if schema.version == version {
+            return schema
+        }
+        guard let plan = migrationPlanStorage.withLock({ $0 }),
+              let versionedSchema = plan.schemas.first(where: {
+                  $0.versionIdentifier == version
+              }) else {
+            throw MigrationPlanError.schemaDefinitionNotFound(version)
+        }
+        return versionedSchema.makeSchema()
+    }
+
+    private func validatePersistedSchemaFingerprint(
+        _ expectedSchema: Schema,
+        transaction: any Transaction
+    ) async throws {
+        let fingerprintKey = metadataSubspace
+            .subspace("schema")
+            .pack(Tuple("fingerprint"))
+        guard let storedFingerprint = try await transaction.getValue(
+            for: fingerprintKey,
+            snapshot: false
+        ) else {
+            throw MigrationPlanError.schemaFingerprintMissing(
+                expectedSchema.version
+            )
+        }
+        let expectedFingerprint = try DatabaseSchemaFingerprint.compute(
+            expectedSchema
+        )
+        guard storedFingerprint == expectedFingerprint else {
+            throw MigrationPlanError.schemaFingerprintMismatch(
+                expectedSchema.version
+            )
+        }
+    }
+
     private func bootstrapInitialSchemaIfNeeded(
         targetVersion: Schema.Version,
         registry: SchemaRegistry
@@ -1054,11 +1117,6 @@ extension DBContainer {
                 indexNames: entity.indexDescriptors.map(\.name)
             ))
         }
-        let versionBytes = Tuple(
-            Int(targetVersion.major),
-            Int(targetVersion.minor),
-            Int(targetVersion.patch)
-        ).pack()
         let stores = staticStores
 
         return try await engine.withTransaction(
@@ -1088,11 +1146,15 @@ extension DBContainer {
                     transaction: transaction
                 )
             }
-            try registry.persistInitialSchema(
+            try await registry.persistInitialSchema(
                 self.schema,
                 transaction: transaction
             )
-            try transaction.setValue(versionBytes, for: versionKey)
+            try Self.setCurrentSchemaSnapshot(
+                self.schema,
+                metadataSubspace: metadataSubspace,
+                transaction: transaction
+            )
             return true
         }
     }
@@ -1199,8 +1261,8 @@ extension DBContainer {
                 mode: persistMode,
                 transaction: transaction
             )
-            try Self.setCurrentSchemaVersion(
-                stage.toVersionIdentifier,
+            try Self.setCurrentSchemaSnapshot(
+                targetSchema,
                 metadataSubspace: metadataSubspace,
                 transaction: transaction
             )

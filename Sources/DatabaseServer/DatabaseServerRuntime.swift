@@ -10,6 +10,7 @@ public final class DatabaseServerRuntime: Sendable {
         configuration: DatabaseServerRuntimeConfiguration
     ) async throws {
         try configuration.runtimeLimits.validateConfiguration()
+        try await container.migrateIfNeeded()
         let stateStore = try await DatabaseMutationStateStore(
             container: container
         )
@@ -30,14 +31,12 @@ public final class DatabaseServerRuntime: Sendable {
         let handlers = [
             AnyDatabaseOperationHandler(
                 CapabilitiesDescribeHandler(
-                    descriptor: configuration.descriptor,
+                    identity: configuration.identity,
                     jobOperations: services.jobService.jobOperations
                 )
             ),
             AnyDatabaseOperationHandler(
-                SchemaDescribeHandler(
-                    schemaVersion: configuration.descriptor.schemaVersion
-                )
+                SchemaDescribeHandler()
             ),
             AnyDatabaseOperationHandler(
                 QueryExecuteHandler(

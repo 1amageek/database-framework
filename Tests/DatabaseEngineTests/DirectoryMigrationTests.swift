@@ -340,7 +340,7 @@ struct DirectoryMigrationTests {
             seededUser.id = seededID
             initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             // Sanity check: data is physically under the V1 directory.
             let legacySubspace = try await initialContainer.resolveDirectory(for: DirectoryMigrationUserV1.self)
@@ -437,7 +437,7 @@ struct DirectoryMigrationTests {
             seededUser.id = seededID
             initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             // First run: migrates.
             let migratedContainer = try await DBContainer(
@@ -493,7 +493,7 @@ struct DirectoryMigrationTests {
             seededUser.id = seededID
             initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             // Sanity: V1 index subspace must hold one entry before migration.
             let legacySubspace = try await initialContainer.resolveDirectory(for: DirectoryIndexedUserV1.self)
@@ -580,7 +580,7 @@ struct DirectoryMigrationTests {
             seededUser.id = seededID
             initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: DirectoryAddIdxSchemaV2.self,
@@ -640,7 +640,7 @@ struct DirectoryMigrationTests {
             seededUser.id = seededID
             initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             // Sanity: source-schema index subspace holds one entry before migration.
             let legacySubspace = try await initialContainer.resolveDirectory(for: DirectoryRemIdxUserV1.self)
@@ -718,7 +718,7 @@ struct DirectoryMigrationTests {
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
                 security: .disabled,
             )
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: DirectoryLightweightSchemaV2.self,

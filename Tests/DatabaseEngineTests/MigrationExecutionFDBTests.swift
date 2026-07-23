@@ -319,7 +319,7 @@ struct MigrationExecutionFDBTests {
             user.id = "fdb-stage-boundary-user"
             initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: FDBStageBoundarySchemaV3.self,
@@ -376,7 +376,7 @@ struct MigrationExecutionFDBTests {
             user.id = "fdb-index-lifecycle-user"
             initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             #expect(try await countKeys(in: ageIndexSubspace, engine: engine) > 0)
 
@@ -442,7 +442,7 @@ struct MigrationExecutionFDBTests {
             user.id = "fdb-stage-failure-user"
             initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: FDBStageFailureSchemaV3.self,

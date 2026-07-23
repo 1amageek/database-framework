@@ -126,7 +126,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         user.id = "sqlite-lightweight-user"
         initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
         let migratedContainer = try await DBContainer(
             for: SQLiteSchemaEvolutionSchemaV2.self,
@@ -212,7 +212,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         seededUser.id = seededID
         initialContext.insert(seededUser)
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
         let migratedContainer = try await DBContainer(
             for: SQLiteMigrationSchemaV2.self,
@@ -268,7 +268,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         initialContext.insert(secondUser)
 
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
         let migratedContainer = try await DBContainer(
             for: SQLiteMigrationSchemaV2.self,

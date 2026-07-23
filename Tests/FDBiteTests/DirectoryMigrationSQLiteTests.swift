@@ -84,7 +84,7 @@ struct DirectoryMigrationSQLiteTests {
         seededUser.id = seededID
         initialContext.insert(seededUser)
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
         let migratedContainer = try await DBContainer(
             for: SQLiteDirectoryMigrationSchemaV2.self,

@@ -6,11 +6,7 @@ import Relationship
 public struct SchemaDescribeHandler: DatabaseOperationHandler {
     public typealias Operation = SchemaDescribeOperation
 
-    private let schemaVersion: DatabaseSchemaVersion
-
-    public init(schemaVersion: DatabaseSchemaVersion) {
-        self.schemaVersion = schemaVersion
-    }
+    public init() {}
 
     public func handle(
         _ request: DatabaseEmpty,
@@ -19,7 +15,10 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
         let entities = try context.container.schema.entities
             .sorted { $0.name < $1.name }
             .map(Self.describe)
-        return SchemaDescribeOperation.Response(version: schemaVersion, entities: entities)
+        return SchemaDescribeOperation.Response(
+            version: context.container.schema.version,
+            entities: entities
+        )
     }
 
     private static func describe(

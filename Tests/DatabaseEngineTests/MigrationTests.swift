@@ -250,15 +250,15 @@ struct MigrationTests {
         }
     }
 
-    @Test("setCurrentSchemaVersion and getCurrentSchemaVersion roundtrip")
-    func schemaVersionRoundtrip() async throws {
+    @Test("Installed schema snapshot exposes its compiled version")
+    func schemaSnapshotVersionRoundtrip() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
 
-            let testVersion = Schema.Version(1, 2, 3)
-            try await container.setCurrentSchemaVersion(testVersion)
+            let testVersion = Schema.Version(1, 0, 0)
+            try await container.installSchemaSnapshot(for: testVersion)
 
             let retrievedVersion = try await container.getCurrentSchemaVersion()
             #expect(retrievedVersion == testVersion)
@@ -277,7 +277,7 @@ struct MigrationTests {
 
             // Create first container and set version
             let container1 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
-            try await container1.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
+            try await container1.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             // Create second container and read version
             let container2 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
@@ -334,7 +334,7 @@ struct MigrationTests {
             user.id = userID
             initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: SchemaRegistryAppendOnlySchemaV2.self,
@@ -422,7 +422,7 @@ struct MigrationTests {
             seededUser.id = seededID
             initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: SchemaRegistryMigrationSchemaV2.self,
@@ -493,7 +493,7 @@ struct MigrationTests {
             initialContext.insert(secondUser)
 
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: SchemaRegistryMigrationSchemaV2.self,

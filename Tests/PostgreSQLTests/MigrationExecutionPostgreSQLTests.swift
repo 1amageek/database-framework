@@ -212,7 +212,7 @@ struct MigrationExecutionPostgreSQLTests {
             user.id = "pg-stage-boundary-user"
             initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: PGStageBoundarySchemaV3.self,
@@ -257,7 +257,7 @@ struct MigrationExecutionPostgreSQLTests {
             user.id = "pg-stage-failure-user"
             initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: PGStageFailureSchemaV3.self,
@@ -338,7 +338,7 @@ struct MigrationExecutionPostgreSQLTests {
             user.id = "pg-reentrant-user"
             initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: PGStageBoundarySchemaV3.self,

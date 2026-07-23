@@ -278,7 +278,7 @@ struct MigrationExecutionSQLiteTests {
         user.id = "sqlite-stage-boundary-user"
         initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
         let migratedContainer = try await DBContainer(
             for: SQLiteStageBoundarySchemaV3.self,
@@ -336,7 +336,7 @@ struct MigrationExecutionSQLiteTests {
         user.id = "sqlite-index-lifecycle-user"
         initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
         #expect(try await countKeys(in: ageIndexSubspace, engine: engine) > 0)
 
@@ -398,7 +398,7 @@ struct MigrationExecutionSQLiteTests {
         user.id = "sqlite-stage-failure-user"
         initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
         let migratedContainer = try await DBContainer(
             for: SQLiteStageFailureSchemaV3.self,

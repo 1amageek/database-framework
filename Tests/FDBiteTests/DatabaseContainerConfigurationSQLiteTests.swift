@@ -87,7 +87,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
         user.id = "sqlite-facade-migration"
         initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.setCurrentSchemaVersion(SQLiteFacadeSchemaV1.versionIdentifier)
+        try await initialContainer.installSchemaSnapshot(for: SQLiteFacadeSchemaV1.versionIdentifier)
 
         let migratedContainer = try await DBContainer(
             for: SQLiteFacadeSchemaV2.self,

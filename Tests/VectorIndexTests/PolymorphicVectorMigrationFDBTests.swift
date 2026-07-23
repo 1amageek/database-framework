@@ -310,7 +310,7 @@ struct PolymorphicVectorMigrationFDBTests {
             initialContext.insert(organization)
 
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: FDBPolymorphicVectorSchemaV2.self,
@@ -370,7 +370,7 @@ struct PolymorphicVectorMigrationFDBTests {
 
             try await context.savePolymorphic(person, as: FDBPolymorphicVectorPersonV2.self)
             try await context.savePolymorphic(organization, as: FDBPolymorphicVectorPersonV2.self)
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
             try await Self.clearEntityVectorIndexEntries(container: initialContainer)
             #expect(try await Self.countEntityVectorIndexEntries(container: initialContainer) == 0)
 

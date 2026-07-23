@@ -1,7 +1,7 @@
 import DatabaseWire
 
 public final class DatabaseServerRuntimeConfiguration: Sendable {
-    public let descriptor: DatabaseRuntimeDescriptor
+    public let identity: DatabaseRuntimeIdentity
     public let middlewares: [AnyDatabaseRequestMiddleware]
     public let runtimeLimits: DatabaseRuntimeLimits
     public let wireLimits: DatabaseWireLimits
@@ -9,7 +9,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
     private let serviceFactory: AnyDatabaseServerServiceFactory
 
     public init(
-        descriptor: DatabaseRuntimeDescriptor,
+        identity: DatabaseRuntimeIdentity,
         serviceFactory: AnyDatabaseServerServiceFactory,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
         runtimeLimits: DatabaseRuntimeLimits = .default,
@@ -18,7 +18,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
             CanonicalDatabaseErrorMapper()
         )
     ) {
-        self.descriptor = descriptor
+        self.identity = identity
         self.serviceFactory = serviceFactory
         self.middlewares = middlewares
         self.runtimeLimits = runtimeLimits

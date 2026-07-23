@@ -13,6 +13,10 @@ struct DatabaseServerRuntimeTests {
     func registersEveryOperationHandler() async throws {
         let container = try await makeContainer()
         let runtime = try await makeRuntime(container: container)
+        #expect(
+            try await container.getCurrentSchemaVersion()
+                == container.schema.version
+        )
         let response: CapabilitiesDescribeOperation.Response = try await invoke(
             CapabilitiesDescribeOperation.self,
             request: DatabaseEmpty(),
@@ -215,11 +219,7 @@ struct DatabaseServerRuntimeTests {
         return try await DatabaseServerRuntime(
             container: container,
             configuration: DatabaseServerRuntimeConfiguration(
-                descriptor: DatabaseRuntimeDescriptor(
-                    runtimeVersion: "test-runtime",
-                    schemaVersion: DatabaseSchemaVersion(1, 0, 0),
-                    features: []
-                ),
+                identity: DatabaseRuntimeIdentity(version: "test-runtime"),
                 serviceFactory: AnyDatabaseServerServiceFactory { context in
                     try await ConfiguredCommandServiceFactory(
                         readCommands: readCommands,

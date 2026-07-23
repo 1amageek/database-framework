@@ -86,13 +86,28 @@ public struct SchemaRegistry: Sendable {
     func persistInitialSchema(
         _ schema: Schema,
         transaction: any Transaction
-    ) throws {
+    ) async throws {
+        let targetNames = Set(schema.entities.map(\.name))
+        let catalogRange = Subspace(prefix: Tuple([Self.catalogPrefix]).pack())
+            .range()
+        let existingRows = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(catalogRange.begin),
+            to: .firstGreaterOrEqual(catalogRange.end),
+            snapshot: false
+        )
+        for (key, value) in existingRows {
+            let existing = try SchemaEntityRecordCodec.decode(value)
+            if !targetNames.contains(existing.name) {
+                try transaction.clear(key: key)
+            }
+        }
         for entity in schema.entities {
             try transaction.setValue(
                 try SchemaEntityRecordCodec.encode(entity),
                 for: Self.key(for: entity.name)
             )
         }
+        cache.clear()
     }
 
     // MARK: - Read

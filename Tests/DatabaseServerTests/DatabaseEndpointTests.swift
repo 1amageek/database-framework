@@ -200,21 +200,12 @@ struct DatabaseEndpointTests {
     @Test("capabilities and schema handlers describe the compiled runtime")
     func describesCapabilitiesAndSchema() async throws {
         let container = try await makeContainer()
-        let descriptor = DatabaseRuntimeDescriptor(
-            runtimeVersion: "3.2.1",
-            schemaVersion: DatabaseSchemaVersion(17, 0, 0),
-            features: [
-                CapabilitiesDescribeOperation.Feature(
-                    identifier: "query.execute",
-                    version: 3
-                )
-            ]
-        )
+        let identity = DatabaseRuntimeIdentity(version: "3.2.1")
         let registry = try DatabaseOperationRegistry(
             handlers: [
                 AnyDatabaseOperationHandler(
                     CapabilitiesDescribeHandler(
-                        descriptor: descriptor,
+                        identity: identity,
                         jobOperations: [
                             try DatabaseJobOperationIdentifier(
                                 family: .commandWrite,
@@ -224,7 +215,7 @@ struct DatabaseEndpointTests {
                     )
                 ),
                 AnyDatabaseOperationHandler(
-                    SchemaDescribeHandler(schemaVersion: descriptor.schemaVersion)
+                    SchemaDescribeHandler()
                 ),
             ],
             requiredOperations: [.capabilitiesDescribe, .schemaDescribe]
@@ -243,7 +234,25 @@ struct DatabaseEndpointTests {
         )
 
         #expect(capabilities.runtimeVersion == "3.2.1")
-        #expect(capabilities.features == descriptor.features)
+        #expect(
+            capabilities.features.map(\.identifier) == [
+                "capabilities.describe",
+                "schema.describe",
+                "query.execute",
+                "mutation.execute",
+                "graph.algorithm",
+                "ontology.execute",
+                "shacl.execute",
+                "command.read",
+                "command.write",
+                "maintenance.execute",
+                "job.start",
+                "job.status",
+                "job.result",
+                "job.cancel",
+            ]
+        )
+        #expect(capabilities.features.allSatisfy { $0.version == 1 })
         #expect(
             capabilities.jobOperations == [
                 try DatabaseJobOperationIdentifier(
@@ -252,7 +261,7 @@ struct DatabaseEndpointTests {
                 ),
             ]
         )
-        #expect(schema.version == DatabaseSchemaVersion(17, 0, 0))
+        #expect(schema.version == container.schema.version)
         #expect(schema.entities.count == 1)
         #expect(schema.entities[0].name == DatabaseEndpointRecord.persistableType)
         #expect(schema.entities[0].fields.map(\.name) == ["id", "title", "priority"])

@@ -87,7 +87,7 @@ struct DirectoryMigrationPostgreSQLTests {
             seededUser.id = seededID
             initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: PGDirectoryMigrationSchemaV2.self,
@@ -126,7 +126,7 @@ struct DirectoryMigrationPostgreSQLTests {
             seededUser.id = seededID
             initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
                 for: PGDirectoryMigrationSchemaV2.self,
