@@ -9,6 +9,36 @@ import Testing
 
 @Suite("Database mutation state store", .serialized)
 struct DatabaseMutationStateStoreTests {
+    @Test("Logical versions advance across committed transactions")
+    func advancesLogicalVersionsAcrossTransactions() async throws {
+        let storeContext = try await makeMutationStateStoreContext(
+            key: "logical-version"
+        )
+
+        let firstVersion = try await storeContext.container.engine
+            .withTransaction { transaction in
+                try await storeContext.stateStore.nextLogicalVersion(
+                    transaction: transaction
+                )
+            }
+        let secondVersion = try await storeContext.container.engine
+            .withTransaction { transaction in
+                try await storeContext.stateStore.nextLogicalVersion(
+                    transaction: transaction
+                )
+            }
+        let currentVersion = try await storeContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await storeContext.stateStore.currentLogicalVersion(
+                    transaction: transaction
+                )
+            }
+
+        #expect(firstVersion == 1)
+        #expect(secondVersion == 2)
+        #expect(currentVersion == 2)
+    }
+
     @Test("An empty response round-trips without a chunk")
     func roundTripsEmptyResponse() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "empty")

@@ -57,7 +57,16 @@ public struct DatabaseMutationStateStore: Sendable {
         guard bytes.count == MemoryLayout<UInt64>.size else {
             throw DatabaseMutationError.idempotencyRecordCorrupted
         }
-        return bytes.reduce(0) { ($0 << 8) | UInt64($1) }
+        return bytes.withUnsafeBytes { storage in
+            UInt64(storage[0]) << 56
+                | UInt64(storage[1]) << 48
+                | UInt64(storage[2]) << 40
+                | UInt64(storage[3]) << 32
+                | UInt64(storage[4]) << 24
+                | UInt64(storage[5]) << 16
+                | UInt64(storage[6]) << 8
+                | UInt64(storage[7])
+        }
     }
 
     func idempotencyRecord(
