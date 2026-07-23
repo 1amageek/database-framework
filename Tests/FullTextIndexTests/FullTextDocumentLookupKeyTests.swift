@@ -50,14 +50,14 @@ private struct FullTextIntIDDocument: Persistable {
     }
 }
 
-@Suite("Full-text document ID lookup key")
-struct FullTextDocumentIDKeyTests {
+@Suite("Full-text document lookup key")
+struct FullTextDocumentLookupKeyTests {
     @Test("document lookup key uses DataAccess ID extraction instead of forced casting")
     func documentLookupKeySupportsNonStringIDs() throws {
         let item = FullTextIntIDDocument(id: 42, body: "swift database")
 
-        let expected = FullTextDocumentIDKey.encoded(Tuple(Int64(42)))
-        let actual = try FullTextDocumentIDKey.encoded(for: item)
+        let expected = FullTextDocumentLookupKey.key(for: Tuple(Int64(42)))
+        let actual = try FullTextDocumentLookupKey.key(for: item)
 
         #expect(actual == expected)
     }

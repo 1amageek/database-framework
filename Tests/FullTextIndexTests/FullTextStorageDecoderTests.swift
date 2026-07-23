@@ -4,6 +4,60 @@ import StorageKit
 
 @Suite("Full-text storage decoder")
 struct FullTextStorageDecoderTests {
+    @Test("posting payload has one canonical frequency-first representation")
+    func postingContract() throws {
+        let posting = try FullTextStorageDecoder.posting(
+            from: Tuple(Int64(2), Int64(0), Int64(5)).pack(),
+            positionsStored: true,
+            term: "swift"
+        )
+        #expect(posting.termFrequency == 2)
+        #expect(posting.positions == [0, 5])
+
+        let frequencyOnly = try FullTextStorageDecoder.posting(
+            from: Tuple(Int64(3)).pack(),
+            positionsStored: false,
+            term: "swift"
+        )
+        #expect(frequencyOnly.termFrequency == 3)
+        #expect(frequencyOnly.positions.isEmpty)
+
+        #expect(throws: FullTextStorageError.self) {
+            _ = try FullTextStorageDecoder.posting(
+                from: Tuple(Int64(2), Int64(0)).pack(),
+                positionsStored: true,
+                term: "swift"
+            )
+        }
+        #expect(throws: FullTextStorageError.self) {
+            _ = try FullTextStorageDecoder.posting(
+                from: Tuple(Int64(1), Int64(0)).pack(),
+                positionsStored: false,
+                term: "swift"
+            )
+        }
+    }
+
+    @Test("document metadata requires exactly two nonnegative integers")
+    func documentMetadataContract() throws {
+        let metadata = try FullTextStorageDecoder.documentMetadata(
+            from: Tuple(Int64(4), Int64(12)).pack()
+        )
+        #expect(metadata.uniqueTermCount == 4)
+        #expect(metadata.docLength == 12)
+
+        #expect(throws: FullTextStorageError.self) {
+            _ = try FullTextStorageDecoder.documentMetadata(
+                from: Tuple(Int64(4)).pack()
+            )
+        }
+        #expect(throws: FullTextStorageError.self) {
+            _ = try FullTextStorageDecoder.documentMetadata(
+                from: Tuple(Int64(4), Int64(-1)).pack()
+            )
+        }
+    }
+
     @Test("facet keys decode string values and reject corrupt values")
     func facetKeyContract() throws {
         let fieldSubspace = Subspace(prefix: Tuple("fulltext", "facets", "category").pack())

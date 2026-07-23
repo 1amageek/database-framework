@@ -411,7 +411,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 transaction: transaction
             )
         case .any:
-            var idToElements: [String: [any TupleElement]] = [:]
+            var idToElements: [Bytes: [any TupleElement]] = [:]
             for group in termGroups {
                 let matches = try await searchTermsAND(
                     group,
@@ -424,12 +424,8 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             }
             matchingIds = Array(idToElements.values)
         case .phrase:
-            // Phrase search is handled by searchPhrase() in execute()/executeWithFacets().
-            // This path should not be reached, but fall back to AND as a safety measure.
-            matchingIds = try await searchTermsAND(
-                normalizedTerms,
-                termsSubspace: termsSubspace,
-                transaction: transaction
+            throw FullTextQueryError.invalidExecutionPath(
+                "Phrase matching must use the position-aware search path"
             )
         }
 
@@ -444,8 +440,8 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<String>? = nil
-        var idToElements: [String: [any TupleElement]] = [:]
+        var intersection: Set<Bytes>? = nil
+        var idToElements: [Bytes: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchTerm(
@@ -453,7 +449,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 termsSubspace: termsSubspace,
                 transaction: transaction
             )
-            var currentSet: Set<String> = []
+            var currentSet: Set<Bytes> = []
 
             for elements in results {
                 let idKey = elementsToStableKey(elements)
@@ -486,7 +482,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var idToElements: [String: [any TupleElement]] = [:]
+        var idToElements: [Bytes: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchTerm(
@@ -532,10 +528,11 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         return results
     }
 
-    /// Convert TupleElements to a stable key
-    private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
-        let packed = Tuple(elements).pack()
-        return Data(packed).base64EncodedString()
+    /// Preserve tuple type identity without converting the packed bytes.
+    private func elementsToStableKey(
+        _ elements: [any TupleElement]
+    ) -> Bytes {
+        Tuple(elements).pack()
     }
 
     private func normalizeQueryTermGroups(
@@ -652,16 +649,16 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             let items = try await self.queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
 
             // Create a map of id -> score for efficient lookup
-            var idToScore: [String: Double] = [:]
+            var idToScore: [Bytes: Double] = [:]
             for result in scoredResults {
-                let key = FullTextDocumentIDKey.encoded(result.id)
+                let key = FullTextDocumentLookupKey.key(for: result.id)
                 idToScore[key] = result.score
             }
 
             // Combine items with scores
             var results: [(item: T, score: Double)] = []
             for item in items {
-                let key = try FullTextDocumentIDKey.encoded(for: item)
+                let key = try FullTextDocumentLookupKey.key(for: item)
                 if let score = idToScore[key] {
                     results.append((item: item, score: score))
                 }
@@ -1036,6 +1033,9 @@ public enum FullTextQueryError: Error, CustomStringConvertible {
     /// The canonical query endpoint returned malformed metadata.
     case invalidResponse(String)
 
+    /// Internal dispatch selected a search path with incompatible semantics.
+    case invalidExecutionPath(String)
+
     public var description: String {
         switch self {
         case .noSearchTerms:
@@ -1046,6 +1046,8 @@ public enum FullTextQueryError: Error, CustomStringConvertible {
             return "Full-text index '\(name)' does not include the requested field"
         case .invalidResponse(let reason):
             return "Invalid full-text query response: \(reason)"
+        case .invalidExecutionPath(let reason):
+            return "Invalid full-text execution path: \(reason)"
         }
     }
 }

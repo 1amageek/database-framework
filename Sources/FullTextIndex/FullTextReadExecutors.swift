@@ -36,6 +36,7 @@ private enum FullTextReadError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
     case invalidResultCount(field: String, count: Int64)
+    case invalidExecutionPath(String)
 }
 
 private struct FullTextReadExecutor: IndexReadExecutor {
@@ -473,7 +474,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        var entityByID: [String: PolymorphicEntity] = [:]
+        var entityByID: [Bytes: PolymorphicEntity] = [:]
         entityByID.reserveCapacity(entities.count)
         for entity in entities {
             let identifier = try entity.item.persistableIdentifierTuple()
@@ -616,7 +617,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 transaction: transaction
             )
         case .any:
-            var idToElements: [String: [any TupleElement]] = [:]
+            var idToElements: [Bytes: [any TupleElement]] = [:]
             for group in termGroups {
                 let matches = try await searchTermsAND(
                     group,
@@ -629,10 +630,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             }
             matchingIDs = Array(idToElements.values)
         case .phrase:
-            matchingIDs = try await searchTermsAND(
-                normalizedTerms,
-                termsSubspace: termsSubspace,
-                transaction: transaction
+            throw FullTextReadError.invalidExecutionPath(
+                "Phrase matching must use the position-aware search path"
             )
         }
 
@@ -672,8 +671,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<String>? = nil
-        var idToElements: [String: [any TupleElement]] = [:]
+        var intersection: Set<Bytes>? = nil
+        var idToElements: [Bytes: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchTerm(
@@ -681,7 +680,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 termsSubspace: termsSubspace,
                 transaction: transaction
             )
-            var currentSet: Set<String> = []
+            var currentSet: Set<Bytes> = []
 
             for elements in results {
                 let idKey = stableKey(Tuple(elements))
@@ -713,7 +712,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var idToElements: [String: [any TupleElement]] = [:]
+        var idToElements: [Bytes: [any TupleElement]] = [:]
         for term in terms {
             let results = try await searchTerm(
                 term,
@@ -805,8 +804,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return [String(describing: raw)]
     }
 
-    private func stableKey(_ tuple: Tuple) -> String {
-        Data(tuple.pack()).base64EncodedString()
+    private func stableKey(_ tuple: Tuple) -> Bytes {
+        tuple.pack()
     }
 
     private func decodeMatchMode(

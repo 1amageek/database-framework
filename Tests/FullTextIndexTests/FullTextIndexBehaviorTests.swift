@@ -1,11 +1,9 @@
-#if FOUNDATION_DB
 // FullTextIndexBehaviorTests.swift
-// Integration tests for FullTextIndex behavior with FDB
+// Backend-neutral tests for FullTextIndex persistence behavior
 
 import Testing
 import Foundation
 import StorageKit
-import FDBStorage
 import Core
 import DatabaseValue
 import FullText
@@ -80,7 +78,7 @@ private struct FullTextIndexContext {
     let kind: FullTextIndexKind<SearchableArticle>
 
     init(tokenizer: TokenizationStrategy = .simple, storePositions: Bool = false, indexName: String = "SearchableArticle_content") async throws {
-        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        self.database = InMemoryEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "fulltext", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -147,18 +145,27 @@ private struct FullTextIndexContext {
             try await maintainer.searchTermsOR(terms, transaction: transaction)
         }
     }
+
+    func posting(term: String, id: String) async throws -> Bytes? {
+        try await database.withTransaction { transaction in
+            let key = indexSubspace
+                .subspace("terms")
+                .subspace(term)
+                .pack(Tuple(id))
+            return try await transaction.getValue(for: key, snapshot: true)
+        }
+    }
 }
 
 // MARK: - Behavior Tests
 
-@Suite("FullTextIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("FullTextIndex Behavior Tests", .serialized, .heartbeat)
 struct FullTextIndexBehaviorTests {
 
     // MARK: - Insert Tests
 
     @Test("Insert tokenizes and indexes")
     func testInsertTokenizesAndIndexes() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await FullTextIndexContext()
 
         let article = SearchableArticle(id: "a1", title: "Test", content: "Hello world")
@@ -177,9 +184,39 @@ struct FullTextIndexBehaviorTests {
         try await ctx.cleanup()
     }
 
+    @Test("Writer stores canonical frequency-first posting payload")
+    func writerStoresCanonicalPostingPayload() async throws {
+        let ctx = try await FullTextIndexContext(storePositions: true)
+        let article = SearchableArticle(
+            id: "a1",
+            title: "Test",
+            content: "swift database swift"
+        )
+
+        try await ctx.database.withTransaction { transaction in
+            try await ctx.maintainer.updateIndex(
+                oldItem: nil,
+                newItem: article,
+                transaction: transaction
+            )
+        }
+
+        let value = try #require(
+            try await ctx.posting(term: "swift", id: "a1")
+        )
+        let posting = try FullTextStorageDecoder.posting(
+            from: value,
+            positionsStored: true,
+            term: "swift"
+        )
+        #expect(posting.termFrequency == 2)
+        #expect(posting.positions == [0, 2])
+
+        try await ctx.cleanup()
+    }
+
     @Test("Multiple documents are indexed")
     func testMultipleDocuments() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await FullTextIndexContext()
 
         let articles = [
@@ -208,7 +245,6 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Delete removes all tokens")
     func testDeleteRemovesAllTokens() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await FullTextIndexContext()
 
         let article = SearchableArticle(id: "a1", title: "Test", content: "Hello world")
@@ -244,7 +280,6 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Update re-tokenizes")
     func testUpdateReTokenizes() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await FullTextIndexContext()
 
         let article = SearchableArticle(id: "a1", title: "Test", content: "Hello world")
@@ -283,7 +318,6 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Simple term search")
     func testSimpleTermSearch() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await FullTextIndexContext()
 
         let articles = [
@@ -319,7 +353,6 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Boolean AND query")
     func testBooleanANDQuery() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await FullTextIndexContext()
 
         let articles = [
@@ -347,7 +380,6 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Boolean OR query")
     func testBooleanORQuery() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await FullTextIndexContext()
 
         let articles = [
@@ -377,7 +409,6 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Stemming tokenizer")
     func testStemmingTokenizer() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await FullTextIndexContext(tokenizer: .stem)
 
         let article = SearchableArticle(id: "a1", title: "Test", content: "Running runners run")
@@ -401,7 +432,6 @@ struct FullTextIndexBehaviorTests {
 
     @Test("ScanItem tokenizes and indexes")
     func testScanItemTokenizesAndIndexes() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await FullTextIndexContext()
 
         let articles = [
@@ -429,7 +459,6 @@ struct FullTextIndexBehaviorTests {
 
     @Test("Case insensitive search")
     func testCaseInsensitiveSearch() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await FullTextIndexContext()
 
         let article = SearchableArticle(id: "a1", title: "Test", content: "Hello WORLD")
@@ -452,4 +481,3 @@ struct FullTextIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
-#endif

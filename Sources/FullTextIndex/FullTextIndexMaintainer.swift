@@ -5,7 +5,6 @@
 
 import Core
 import DatabaseEngine
-import DatabaseValue
 import FullText
 import QueryIR
 import StorageKit
@@ -27,7 +26,8 @@ public let fullTextMaxTermBytes: Int = 8000
 /// ```
 /// // Inverted index (term → documents)
 /// Key: [indexSubspace]["terms"][term][primaryKey]
-/// Value: Tuple(position1, position2, ...) or '' (no positions)
+/// Value: Tuple(termFrequency, position1, position2, ...)
+/// Positions are omitted when phrase search is disabled.
 ///
 /// // Document metadata (for BM25 ranking)
 /// Key: [indexSubspace]["docs"][primaryKey]
@@ -168,18 +168,10 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 // Add term entries
                 for (term, positions) in termPositions {
                     let termKey = try buildTermKey(term: term, id: newId)
-
-                    if storePositions {
-                        // Store positions for phrase search support
-                        let positionElements: [any TupleElement] = positions.map { Int64($0) as any TupleElement }
-                        let value = Tuple(positionElements).pack()
-                        try transaction.setValue(value, for: termKey)
-                    } else {
-                        // Store term frequency (tf) for BM25 scoring
-                        // Without this, all terms would be treated as tf=1
-                        let tfValue = Tuple(Int64(positions.count)).pack()
-                        try transaction.setValue(tfValue, for: termKey)
-                    }
+                    try transaction.setValue(
+                        postingValue(positions: positions),
+                        for: termKey
+                    )
 
                     // Increment df for this term (BM25)
                     let dfKey = dfSubspace.pack(Tuple(term))
@@ -227,18 +219,10 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         for (term, positions) in termPositions {
             let termKey = try buildTermKey(term: term, id: id)
-
-            if storePositions {
-                // Store positions for phrase search support
-                let positionElements: [any TupleElement] = positions.map { Int64($0) as any TupleElement }
-                let value = Tuple(positionElements).pack()
-                try transaction.setValue(value, for: termKey)
-            } else {
-                // Store term frequency (tf) for BM25 scoring
-                // Without this, all terms would be treated as tf=1
-                let tfValue = Tuple(Int64(positions.count)).pack()
-                try transaction.setValue(tfValue, for: termKey)
-            }
+            try transaction.setValue(
+                postingValue(positions: positions),
+                for: termKey
+            )
 
             // Increment df for this term (BM25)
             let dfKey = dfSubspace.pack(Tuple(term))
@@ -335,15 +319,14 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<String>? = nil
-        var idToElements: [String: [any TupleElement]] = [:]
+        var intersection: Set<Bytes>? = nil
+        var idToElements: [Bytes: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchNormalizedTerm(term, transaction: transaction)
-            var currentSet: Set<String> = []
+            var currentSet: Set<Bytes> = []
 
             for elements in results {
-                // Use Tuple.pack() + Base64 for stable, type-safe key generation
                 let idKey = elementsToStableKey(elements)
                 currentSet.insert(idKey)
 
@@ -385,13 +368,12 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let termGroups = normalizeQueryTermGroups(terms)
         guard !termGroups.isEmpty else { return [] }
 
-        var idToElements: [String: [any TupleElement]] = [:]
+        var idToElements: [Bytes: [any TupleElement]] = [:]
 
         for normalizedTerms in termGroups {
             let results = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
 
             for elements in results {
-                // Use Tuple.pack() + Base64 for stable, type-safe key generation
                 let idKey = elementsToStableKey(elements)
                 idToElements[idKey] = elements
             }
@@ -444,16 +426,12 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 for (index, key) in termKeys {
                     group.addTask {
                         if let value = try await transaction.getValue(for: key, snapshot: true) {
-                            let positionTuple = try Tuple.unpack(from: value)
-                            var positions: [Int] = []
-                            for i in 0..<positionTuple.count {
-                                if let pos = positionTuple[i] as? Int64 {
-                                    positions.append(Int(pos))
-                                } else if let pos = positionTuple[i] as? Int {
-                                    positions.append(pos)
-                                }
-                            }
-                            return (index, positions)
+                            let posting = try FullTextStorageDecoder.posting(
+                                from: value,
+                                positionsStored: true,
+                                term: terms[index]
+                            )
+                            return (index, posting.positions)
                         } else {
                             return (index, [])
                         }
@@ -605,16 +583,30 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         return key
     }
 
-    /// Convert TupleElements to a stable, type-safe key using Tuple.pack() + Base64
+    /// Encode the canonical posting payload as `(termFrequency, positions...)`.
     ///
-    /// This ensures consistent key generation regardless of element types.
-    /// Using String(describing:) is unstable because different types may have
-    /// the same string representation (e.g., Int64(123) vs Int(123)).
-    private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
-        let packed = Tuple(elements).pack()
-        return DatabaseLiteralEncoding.base64(
-            DatabaseBytes(retaining: packed)
-        )
+    /// Positions are omitted when the index does not support phrase search.
+    /// Tuple packing owns the final storage buffer; no intermediate packed
+    /// buffers are materialized.
+    private func postingValue(positions: [Int]) -> Bytes {
+        var elements: [any TupleElement] = []
+        elements.reserveCapacity(storePositions ? positions.count + 1 : 1)
+        elements.append(Int64(positions.count))
+        if storePositions {
+            for position in positions {
+                elements.append(Int64(position))
+            }
+        }
+        return Tuple(elements).pack()
+    }
+
+    /// Preserve tuple type identity while using the packed bytes directly as a
+    /// hash key. `Bytes` retains its immutable storage without materializing a
+    /// `Data` or Base64 representation.
+    private func elementsToStableKey(
+        _ elements: [any TupleElement]
+    ) -> Bytes {
+        Tuple(elements).pack()
     }
 
     // MARK: - BM25 Statistics
@@ -700,17 +692,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         guard let value = try await transaction.getValue(for: docKey, snapshot: true) else {
             return nil
         }
-        let tuple = try Tuple.unpack(from: value)
-        guard tuple.count >= 2,
-              let termCount = tuple[0] as? Int64,
-              let docLength = tuple[1] as? Int64 else {
-            // Legacy format: only termCount
-            if let termCount = tuple[0] as? Int64 {
-                return (uniqueTermCount: termCount, docLength: 0)
-            }
-            return nil
-        }
-        return (uniqueTermCount: termCount, docLength: docLength)
+        return try FullTextStorageDecoder.documentMetadata(from: value)
     }
 
     // MARK: - BM25 Scored Search
@@ -736,12 +718,6 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [(id: Tuple, score: Double)] {
         guard !terms.isEmpty else { return [] }
 
-        // Get corpus statistics
-        let stats = try await getBM25Statistics(transaction: transaction)
-        guard stats.totalDocuments > 0 else { return [] }
-
-        let scorer = BM25Scorer(params: bm25Params, statistics: stats)
-
         // Normalize search terms using the same tokenization pipeline as indexing
         // This ensures stemming, n-gram, or other transformations are applied consistently
         let normalizedTerms = normalizeQueryTerms(terms)
@@ -759,7 +735,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
             matchingDocs = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
         case .any:
             let groups = normalizeQueryTermGroups(terms)
-            var idToElements: [String: [any TupleElement]] = [:]
+            var idToElements: [Bytes: [any TupleElement]] = [:]
             for group in groups {
                 let matches = try await searchNormalizedTermsAND(group, transaction: transaction)
                 for elements in matches {
@@ -771,6 +747,18 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
             matchingDocs = try await searchPhrase(terms.joined(separator: " "), transaction: transaction)
         }
 
+        guard !matchingDocs.isEmpty else {
+            return []
+        }
+
+        // Postings without their corpus counters are persisted corruption, not
+        // an empty search result.
+        let stats = try await getBM25Statistics(transaction: transaction)
+        guard stats.totalDocuments > 0, stats.totalLength > 0 else {
+            throw FullTextStorageError.corruptedCorpusStatistics
+        }
+        let scorer = BM25Scorer(params: bm25Params, statistics: stats)
+
         // Calculate BM25 scores for each document
         var scoredResults: [(id: Tuple, score: Double)] = []
         scoredResults.reserveCapacity(matchingDocs.count)
@@ -780,7 +768,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
             // Get document metadata
             guard let metadata = try await getDocumentMetadata(id: docId, transaction: transaction) else {
-                continue
+                throw FullTextStorageError.missingDocumentMetadata
             }
 
             // Get term frequencies in this document
@@ -789,20 +777,12 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 let termSubspace = termsSubspace.subspace(term)
                 let termKey = termSubspace.pack(docId)
                 if let value = try await transaction.getValue(for: termKey, snapshot: true) {
-                    if storePositions {
-                        // Count positions as term frequency
-                        let positionTuple = try Tuple.unpack(from: value)
-                        termFrequencies[term] = positionTuple.count
-                    } else {
-                        // Read stored term frequency
-                        let tfTuple = try Tuple.unpack(from: value)
-                        if let tf = tfTuple.first as? Int64 {
-                            termFrequencies[term] = Int(tf)
-                        } else {
-                            // Fallback for legacy data without tf
-                            termFrequencies[term] = 1
-                        }
-                    }
+                    let posting = try FullTextStorageDecoder.posting(
+                        from: value,
+                        positionsStored: storePositions,
+                        term: term
+                    )
+                    termFrequencies[term] = posting.termFrequency
                 }
             }
 

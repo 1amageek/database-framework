@@ -230,7 +230,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     // MARK: - FullText Index Reading
 
     /// Index structure:
-    /// - `[indexSubspace]["terms"][term][primaryKey]` → positions or tf
+    /// - `[indexSubspace]["terms"][term][primaryKey]` → (termFrequency, positions...)
     /// - `[indexSubspace]["docs"][primaryKey]` → (uniqueTermCount, docLength)
     /// - `[indexSubspace]["stats"]["N"]` → total document count
     /// - `[indexSubspace]["stats"]["totalLength"]` → sum of document lengths
@@ -262,7 +262,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 transaction: transaction
             )
         case .any:
-            var idToElements: [String: [any TupleElement]] = [:]
+            var idToElements: [Bytes: [any TupleElement]] = [:]
             for group in termGroups {
                 let matches = try await searchTermsAND(
                     group,
@@ -289,9 +289,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
             statsSubspace: statsSubspace,
             transaction: transaction
         )
-        guard stats.totalDocuments > 0 else {
-            // No statistics, return with equal scores
-            return matchingIds.map { (id: Tuple($0), score: 1.0) }
+        guard stats.totalDocuments > 0, stats.totalLength > 0 else {
+            throw FullTextStorageError.corruptedCorpusStatistics
         }
 
         // Get document frequencies for all terms
@@ -316,7 +315,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 docsSubspace: docsSubspace,
                 transaction: transaction
             ) else {
-                continue
+                throw FullTextStorageError.missingDocumentMetadata
             }
 
             // Get term frequencies in this document
@@ -325,8 +324,12 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 let termSubspace = termsSubspace.subspace(term)
                 let termKey = termSubspace.pack(docId)
                 if let value = try await transaction.getValue(for: termKey, snapshot: true) {
-                    let tfTuple = try Tuple.unpack(from: value)
-                    termFrequencies[term] = tfTuple.count > 0 ? Int(tfTuple.count) : 1
+                    let posting = try FullTextStorageDecoder.posting(
+                        from: value,
+                        positionsStored: kind.storePositions,
+                        term: term
+                    )
+                    termFrequencies[term] = posting.termFrequency
                 }
             }
 
@@ -355,8 +358,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<String>? = nil
-        var idToElements: [String: [any TupleElement]] = [:]
+        var intersection: Set<Bytes>? = nil
+        var idToElements: [Bytes: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchTerm(
@@ -364,7 +367,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 termsSubspace: termsSubspace,
                 transaction: transaction
             )
-            var currentSet: Set<String> = []
+            var currentSet: Set<Bytes> = []
 
             for elements in results {
                 let idKey = elementsToStableKey(elements)
@@ -397,7 +400,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var idToElements: [String: [any TupleElement]] = [:]
+        var idToElements: [Bytes: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchTerm(
@@ -542,16 +545,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         guard let value = try await transaction.getValue(for: docKey, snapshot: true) else {
             return nil
         }
-        let tuple = try Tuple.unpack(from: value)
-        guard tuple.count >= 2,
-              let termCount = tuple[0] as? Int64,
-              let docLength = tuple[1] as? Int64 else {
-            if let termCount = tuple[0] as? Int64 {
-                return (uniqueTermCount: termCount, docLength: 0)
-            }
-            return nil
-        }
-        return (uniqueTermCount: termCount, docLength: docLength)
+        return try FullTextStorageDecoder.documentMetadata(from: value)
     }
 
     /// Calculate BM25 score for a document
@@ -593,9 +587,10 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Helpers
 
-    private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
-        let packed = Tuple(elements).pack()
-        return Data(packed).base64EncodedString()
+    private func elementsToStableKey(
+        _ elements: [any TupleElement]
+    ) -> Bytes {
+        Tuple(elements).pack()
     }
 
     private func normalizeQueryTermGroups(

@@ -5,6 +5,10 @@ import Foundation
 #endif
 
 public enum FullTextStorageError: Error, Sendable, CustomStringConvertible, Equatable {
+    case corruptedPosting(term: String)
+    case corruptedCorpusStatistics
+    case missingDocumentMetadata
+    case corruptedDocumentMetadata
     case corruptedFacetKey(field: String)
     case corruptedDocumentFacetValues(field: String)
     case corruptedAutocompleteSuggestionKey(field: String, prefix: String)
@@ -12,6 +16,14 @@ public enum FullTextStorageError: Error, Sendable, CustomStringConvertible, Equa
 
     public var description: String {
         switch self {
+        case .corruptedPosting(let term):
+            return "Corrupted full-text posting for term '\(term)'"
+        case .corruptedCorpusStatistics:
+            return "Corrupted full-text corpus statistics"
+        case .missingDocumentMetadata:
+            return "Full-text document metadata is missing"
+        case .corruptedDocumentMetadata:
+            return "Corrupted full-text document metadata"
         case .corruptedFacetKey(let field):
             return "Corrupted full-text facet key for field '\(field)'"
         case .corruptedDocumentFacetValues(let field):
