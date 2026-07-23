@@ -221,17 +221,36 @@ package final class DatabaseDataStore: DataStore, Sendable {
     private func fetchUsingIndex<T: Persistable>(
         _ predicate: Predicate<T>,
         type: T.Type,
-        limit: Int?
+        limit: Int?,
+        forcedIndexName: String? = nil
     ) async throws -> IndexFetchResult<T>? {
-        // Extract indexable condition from predicate
-        guard let condition = try extractIndexableCondition(from: predicate),
-              let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) else {
+        let candidateDescriptors = try scalarIndexCandidates(
+            for: T.self,
+            forcedIndexName: forcedIndexName
+        )
+        guard let accessPath = try selectScalarIndexAccessPath(
+            from: predicate,
+            in: candidateDescriptors
+        ) else {
+            if let forcedIndexName {
+                throw CanonicalReadError.indexHintNotApplicable(
+                    "Forced index '\(forcedIndexName)' cannot serve the given predicate on type '\(T.persistableType)'"
+                )
+            }
             return nil
         }
+        let condition = accessPath.condition
+        let matchingIndex = accessPath.descriptor
 
         // Check index state - only use readable indexes for queries
         let indexState = try await indexLifecycleStore.state(of: matchingIndex.name)
         guard indexState.isReadable else {
+            if forcedIndexName != nil {
+                throw CanonicalReadError.indexHintNotReadable(
+                    indexName: matchingIndex.name,
+                    state: String(describing: indexState)
+                )
+            }
             logger.debug("Index '\(matchingIndex.name)' is not readable (state: \(indexState)), falling back to scan")
             return nil
         }
@@ -276,8 +295,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
             scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: indexedFieldCount)
 
         default:
-            // Other comparisons (contains, hasPrefix, etc.) are not index-optimizable
-            return nil
+            throw CanonicalReadError.unsupportedAccessPath(
+                "Scalar index '\(matchingIndex.name)' cannot execute comparison operator '\(condition.op)'"
+            )
         }
 
         // Execute scan in transaction - all captured values are now Sendable
@@ -361,11 +381,43 @@ package final class DatabaseDataStore: DataStore, Sendable {
         case range(begin: Bytes, end: Bytes, baseSubspace: Subspace, keyPathsCount: Int)
     }
 
-    /// Extract a simple indexable condition from a predicate
-    private struct IndexableCondition: Sendable {
+    /// A scalar comparison encoded for an index-key prefix.
+    private struct ScalarIndexCondition: Sendable {
         let fieldName: String
         let op: ComparisonOperator
         let valueTuple: Tuple
+    }
+
+    /// The selected scalar index and its encoded lookup condition.
+    ///
+    /// Selection returns these values together so a compound-index decision
+    /// cannot be accidentally rebound to another descriptor with the same
+    /// leading field during execution.
+    private struct ScalarIndexAccessPath: Sendable {
+        let descriptor: IndexDescriptor
+        let condition: ScalarIndexCondition
+    }
+
+    private func scalarIndexCandidates<T: Persistable>(
+        for _: T.Type,
+        forcedIndexName: String?
+    ) throws -> [IndexDescriptor] {
+        guard let forcedIndexName else {
+            return T.indexDescriptors
+        }
+        guard let descriptor = T.indexDescriptors.first(where: {
+            $0.name == forcedIndexName
+        }) else {
+            throw CanonicalReadError.indexHintNotFound(
+                "Forced index '\(forcedIndexName)' not found on type '\(T.persistableType)'"
+            )
+        }
+        guard descriptor.kindIdentifier == "scalar" else {
+            throw CanonicalReadError.unsupportedAccessPath(
+                "Forced index '\(forcedIndexName)' has kind '\(descriptor.kindIdentifier)'; typed model queries require a scalar index"
+            )
+        }
+        return [descriptor]
     }
 
     /// Extract all indexable conditions from a predicate
@@ -377,7 +429,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// operator's value cannot be encoded into the FDB tuple form. Silently
     /// falling back to a full scan here would mask data-shape bugs and is
     /// explicitly prohibited by project policy.
-    private func extractAllIndexableConditions<T: Persistable>(from predicate: Predicate<T>) throws -> [IndexableCondition] {
+    private func extractAllScalarIndexConditions<T: Persistable>(
+        from predicate: Predicate<T>
+    ) throws -> [ScalarIndexCondition] {
         switch predicate {
         case .comparison(let comparison):
             switch comparison.op {
@@ -391,14 +445,22 @@ package final class DatabaseDataStore: DataStore, Sendable {
                         valueDescription: String(describing: comparison.value)
                     )
                 }
-                return [IndexableCondition(fieldName: comparison.fieldName, op: comparison.op, valueTuple: tuple)]
+                return [
+                    ScalarIndexCondition(
+                        fieldName: comparison.fieldName,
+                        op: comparison.op,
+                        valueTuple: tuple
+                    )
+                ]
             default:
                 return []
             }
 
         case .and(let predicates):
             // Extract all indexable conditions from AND predicates
-            return try predicates.flatMap { try extractAllIndexableConditions(from: $0) }
+            return try predicates.flatMap {
+                try extractAllScalarIndexConditions(from: $0)
+            }
 
         default:
             return []
@@ -415,15 +477,15 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// - Parameter descriptors: The indexes the condition must be matchable against.
     ///   Defaults to `T.indexDescriptors`; callers pass a narrower list when a
     ///   forced-index hint restricts selection to one descriptor.
-    private func extractIndexableCondition<T: Persistable>(
+    private func selectScalarIndexAccessPath<T: Persistable>(
         from predicate: Predicate<T>,
         in descriptors: [IndexDescriptor]? = nil
-    ) throws -> IndexableCondition? {
-        let allConditions = try extractAllIndexableConditions(from: predicate)
+    ) throws -> ScalarIndexAccessPath? {
+        let allConditions = try extractAllScalarIndexConditions(from: predicate)
         guard !allConditions.isEmpty else { return nil }
 
         // Build field-to-condition map for quick lookup
-        var conditionsByField: [String: IndexableCondition] = [:]
+        var conditionsByField: [String: ScalarIndexCondition] = [:]
         for condition in allConditions {
             // Prefer equals over range for the same field
             if let existing = conditionsByField[condition.fieldName] {
@@ -440,7 +502,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         // Priority 1: Find compound index matching multiple equals conditions
         for descriptor in descriptors {
-            guard descriptor.fieldNames.count > 1 else { continue }
+            guard descriptor.kindIdentifier == "scalar",
+                  descriptor.fieldNames.count > 1 else {
+                continue
+            }
 
             // Check whether the leading indexed fields have equality conditions.
             var matchCount = 0
@@ -472,10 +537,13 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 }
 
                 if tupleElements.count == matchCount, let firstFieldName {
-                    return IndexableCondition(
-                        fieldName: firstFieldName,
-                        op: .equal,
-                        valueTuple: Tuple(tupleElements)
+                    return ScalarIndexAccessPath(
+                        descriptor: descriptor,
+                        condition: ScalarIndexCondition(
+                            fieldName: firstFieldName,
+                            op: .equal,
+                            valueTuple: Tuple(tupleElements)
+                        )
                     )
                 }
             }
@@ -483,33 +551,30 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         // Priority 2: Single field with equals
         for condition in allConditions where condition.op == .equal {
-            if findMatchingIndex(for: condition, in: descriptors, type: T.self) != nil {
-                return condition
+            if let descriptor = descriptors.first(where: {
+                $0.kindIdentifier == "scalar"
+                    && $0.fieldNames.first == condition.fieldName
+            }) {
+                return ScalarIndexAccessPath(
+                    descriptor: descriptor,
+                    condition: condition
+                )
             }
         }
 
         // Priority 3: Any indexable condition
         for condition in allConditions {
-            if findMatchingIndex(for: condition, in: descriptors, type: T.self) != nil {
-                return condition
+            if let descriptor = descriptors.first(where: {
+                $0.kindIdentifier == "scalar"
+                    && $0.fieldNames.first == condition.fieldName
+            }) {
+                return ScalarIndexAccessPath(
+                    descriptor: descriptor,
+                    condition: condition
+                )
             }
         }
 
-        return allConditions.first
-    }
-
-    /// Find an index that matches the condition's field
-    private func findMatchingIndex<T: Persistable>(
-        for condition: IndexableCondition,
-        in descriptors: [IndexDescriptor],
-        type: T.Type
-    ) -> IndexDescriptor? {
-        // Find an index where the leading field matches the condition.
-        for descriptor in descriptors {
-            if descriptor.fieldNames.first == condition.fieldName {
-                return descriptor
-            }
-        }
         return nil
     }
 
@@ -652,6 +717,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         // For count, we can optimize by not deserializing if no predicate
         if combinedPredicate == nil {
+            if query.forcedIndex != nil {
+                throw CanonicalReadError.indexHintNotApplicable(
+                    "A forced index requires an indexable filter predicate"
+                )
+            }
             let totalCount = try await countAll(T.self)
             return QueryResultWindow.resultCount(
                 totalCount: totalCount,
@@ -661,18 +731,37 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
 
         // Try to use index for counting
-        if let predicate = combinedPredicate,
-           let condition = try extractIndexableCondition(from: predicate),
-           let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) {
-            let totalCount = try await countUsingIndex(
-                condition: condition,
-                index: matchingIndex
+        if let predicate = combinedPredicate {
+            let candidates = try scalarIndexCandidates(
+                for: T.self,
+                forcedIndexName: query.forcedIndex?.indexName
             )
-            return QueryResultWindow.resultCount(
-                totalCount: totalCount,
-                limit: query.fetchLimit,
-                offset: query.fetchOffset
-            )
+            if let accessPath = try selectScalarIndexAccessPath(
+                from: predicate,
+                in: candidates
+            ) {
+                let state = try await indexLifecycleStore.state(
+                    of: accessPath.descriptor.name
+                )
+                if state.isReadable {
+                    let totalCount = try await countUsingIndex(accessPath)
+                    return QueryResultWindow.resultCount(
+                        totalCount: totalCount,
+                        limit: query.fetchLimit,
+                        offset: query.fetchOffset
+                    )
+                }
+                if query.forcedIndex != nil {
+                    throw CanonicalReadError.indexHintNotReadable(
+                        indexName: accessPath.descriptor.name,
+                        state: String(describing: state)
+                    )
+                }
+            } else if let forcedIndex = query.forcedIndex {
+                throw CanonicalReadError.indexHintNotApplicable(
+                    "Forced index '\(forcedIndex.indexName)' cannot serve the given predicate on type '\(T.persistableType)'"
+                )
+            }
         }
 
         // Otherwise, fetch and count (security already evaluated above)
@@ -698,7 +787,12 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         // Try index-optimized fetch
         if let predicate = combinedPredicate,
-           let indexResult = try await fetchUsingIndex(predicate, type: T.self, limit: nil) {
+           let indexResult = try await fetchUsingIndex(
+               predicate,
+               type: T.self,
+               limit: nil,
+               forcedIndexName: query.forcedIndex?.indexName
+           ) {
             results = indexResult.models
 
             // If index didn't cover all predicate conditions, apply remaining filters
@@ -708,6 +802,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 }
             }
         } else {
+            if query.forcedIndex != nil {
+                throw CanonicalReadError.indexHintNotApplicable(
+                    "A forced index requires an indexable filter predicate"
+                )
+            }
             // Fall back to full table scan
             results = try await fetchAllInternal(T.self)
 
@@ -929,29 +1028,23 @@ package final class DatabaseDataStore: DataStore, Sendable {
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter?
     ) async throws -> IndexFetchResult<T>? {
-        // Restrict descriptors when a forced index hint is present.
-        let candidateDescriptors: [IndexDescriptor]
-        if let forcedIndexName {
-            guard let forced = T.indexDescriptors.first(where: { $0.name == forcedIndexName }) else {
-                throw CanonicalReadError.indexHintNotFound(
-                    "Forced index '\(forcedIndexName)' not found on type '\(T.persistableType)'"
-                )
-            }
-            candidateDescriptors = [forced]
-        } else {
-            candidateDescriptors = T.indexDescriptors
-        }
-
-        // Extract indexable condition from predicate
-        guard let condition = try extractIndexableCondition(from: predicate, in: candidateDescriptors),
-              let matchingIndex = findMatchingIndex(for: condition, in: candidateDescriptors, type: T.self) else {
-            if forcedIndexName != nil {
+        let candidateDescriptors = try scalarIndexCandidates(
+            for: T.self,
+            forcedIndexName: forcedIndexName
+        )
+        guard let accessPath = try selectScalarIndexAccessPath(
+            from: predicate,
+            in: candidateDescriptors
+        ) else {
+            if let forcedIndexName {
                 throw CanonicalReadError.indexHintNotApplicable(
-                    "Forced index '\(forcedIndexName!)' cannot serve the given predicate on type '\(T.persistableType)'"
+                    "Forced index '\(forcedIndexName)' cannot serve the given predicate on type '\(T.persistableType)'"
                 )
             }
             return nil
         }
+        let condition = accessPath.condition
+        let matchingIndex = accessPath.descriptor
         let needsPostFiltering = !isSimpleFieldPredicate(
             predicate,
             fieldName: condition.fieldName
@@ -968,6 +1061,12 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Use transaction-aware overload to avoid nested transaction deadlock
         let indexState = try await indexLifecycleStore.state(of: matchingIndex.name, transaction: transaction)
         guard indexState.isReadable else {
+            if forcedIndexName != nil {
+                throw CanonicalReadError.indexHintNotReadable(
+                    indexName: matchingIndex.name,
+                    state: String(describing: indexState)
+                )
+            }
             logger.debug("Index '\(matchingIndex.name)' is not readable (state: \(indexState)), falling back to scan")
             return nil
         }
@@ -1012,8 +1111,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
             scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: indexedFieldCount)
 
         default:
-            // Other comparisons (contains, hasPrefix, etc.) are not index-optimizable
-            return nil
+            throw CanonicalReadError.unsupportedAccessPath(
+                "Scalar index '\(matchingIndex.name)' cannot execute comparison operator '\(condition.op)'"
+            )
         }
 
         // Execute scan with provided transaction
@@ -1174,6 +1274,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         // For count, we can optimize by not deserializing if no predicate
         if combinedPredicate == nil {
+            if query.forcedIndex != nil {
+                throw CanonicalReadError.indexHintNotApplicable(
+                    "A forced index requires an indexable filter predicate"
+                )
+            }
             let totalCount = try await countAllWithTransaction(
                 T.self,
                 transaction: transaction
@@ -1186,19 +1291,41 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
 
         // Try to use index for counting
-        if let predicate = combinedPredicate,
-           let condition = try extractIndexableCondition(from: predicate),
-           let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) {
-            let totalCount = try await countUsingIndexWithTransaction(
-                condition: condition,
-                index: matchingIndex,
-                transaction: transaction
+        if let predicate = combinedPredicate {
+            let candidates = try scalarIndexCandidates(
+                for: T.self,
+                forcedIndexName: query.forcedIndex?.indexName
             )
-            return QueryResultWindow.resultCount(
-                totalCount: totalCount,
-                limit: query.fetchLimit,
-                offset: query.fetchOffset
-            )
+            if let accessPath = try selectScalarIndexAccessPath(
+                from: predicate,
+                in: candidates
+            ) {
+                let state = try await indexLifecycleStore.state(
+                    of: accessPath.descriptor.name,
+                    transaction: transaction
+                )
+                if state.isReadable {
+                    let totalCount = try await countUsingIndexWithTransaction(
+                        accessPath,
+                        transaction: transaction
+                    )
+                    return QueryResultWindow.resultCount(
+                        totalCount: totalCount,
+                        limit: query.fetchLimit,
+                        offset: query.fetchOffset
+                    )
+                }
+                if query.forcedIndex != nil {
+                    throw CanonicalReadError.indexHintNotReadable(
+                        indexName: accessPath.descriptor.name,
+                        state: String(describing: state)
+                    )
+                }
+            } else if let forcedIndex = query.forcedIndex {
+                throw CanonicalReadError.indexHintNotApplicable(
+                    "Forced index '\(forcedIndex.indexName)' cannot serve the given predicate on type '\(T.persistableType)'"
+                )
+            }
         }
 
         // Otherwise, fetch and count
@@ -1303,10 +1430,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     /// Count using index scan with an existing transaction
     private func countUsingIndexWithTransaction(
-        condition: IndexableCondition,
-        index: IndexDescriptor,
+        _ accessPath: ScalarIndexAccessPath,
         transaction: any TransactionAccess
     ) async throws -> Int {
+        let condition = accessPath.condition
+        let index = accessPath.descriptor
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
         let valueTuple = condition.valueTuple
 
@@ -1337,7 +1465,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
             endKey = valueSubspace.range().1
 
         default:
-            return 0  // Not index-optimizable
+            throw CanonicalReadError.unsupportedAccessPath(
+                "Scalar index '\(index.name)' cannot count comparison operator '\(condition.op)'"
+            )
         }
 
         var count = 0
@@ -1356,7 +1486,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
     }
 
     /// Count using index scan (without deserializing entities)
-    private func countUsingIndex(condition: IndexableCondition, index: IndexDescriptor) async throws -> Int {
+    private func countUsingIndex(
+        _ accessPath: ScalarIndexAccessPath
+    ) async throws -> Int {
+        let condition = accessPath.condition
+        let index = accessPath.descriptor
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
         let valueTuple = condition.valueTuple
 
@@ -1366,11 +1500,15 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         switch condition.op {
         case .equal:
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            let valueSubspace = Subspace(
+                prefix: indexSubspaceForIndex.prefix + valueTuple.pack()
+            )
             (beginKey, endKey) = valueSubspace.range()
 
         case .greaterThan:
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            let valueSubspace = Subspace(
+                prefix: indexSubspaceForIndex.prefix + valueTuple.pack()
+            )
             beginKey = valueSubspace.range().1  // Start after value range
             endKey = indexSubspaceForIndex.range().1
 
@@ -1383,12 +1521,16 @@ package final class DatabaseDataStore: DataStore, Sendable {
             endKey = indexSubspaceForIndex.pack(valueTuple)
 
         case .lessThanOrEqual:
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            let valueSubspace = Subspace(
+                prefix: indexSubspaceForIndex.prefix + valueTuple.pack()
+            )
             beginKey = indexSubspaceForIndex.range().0
             endKey = valueSubspace.range().1
 
         default:
-            return 0  // Not index-optimizable
+            throw CanonicalReadError.unsupportedAccessPath(
+                "Scalar index '\(index.name)' cannot count comparison operator '\(condition.op)'"
+            )
         }
 
         return try await container.engine.withTransaction(configuration: .default) { transaction in

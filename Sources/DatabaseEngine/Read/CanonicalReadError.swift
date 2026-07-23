@@ -47,6 +47,10 @@ public enum CanonicalReadError: Error, Sendable {
     /// predicate has no indexable condition on the index's leading field.
     case indexHintNotApplicable(String)
 
+    /// `SelectQuery.accessPath.index` named a scalar index whose lifecycle state
+    /// does not permit reads.
+    case indexHintNotReadable(indexName: String, state: String)
+
     // MARK: Partition
 
     /// A typed partition does not exactly match the compiled directory schema.

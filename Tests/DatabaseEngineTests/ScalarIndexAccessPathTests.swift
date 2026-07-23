@@ -1,0 +1,146 @@
+#if !os(WASI)
+#if FOUNDATION_DB
+import Testing
+import TestHeartbeat
+import Foundation
+import StorageKit
+import FDBStorage
+import Core
+import DatabaseValue
+import TestSupport
+@testable import DatabaseEngine
+import DatabaseRuntime
+@testable import ScalarIndex
+@testable import AggregationIndex
+
+@Persistable
+private struct ScalarAccessPathEntity {
+    #Directory<ScalarAccessPathEntity>(
+        "test",
+        "scalar_access_path",
+        "entities"
+    )
+
+    var id: String = ULID().ulidString
+    var group: String
+    var rank: Int
+
+    #Index(
+        ScalarIndexKind<ScalarAccessPathEntity>(fields: [\.group]),
+        name: "scalar_access_path_group"
+    )
+    #Index(
+        ScalarIndexKind<ScalarAccessPathEntity>(fields: [\.group, \.rank]),
+        name: "scalar_access_path_group_rank"
+    )
+}
+
+@Persistable
+private struct AggregationOnlyAccessPathEntity {
+    #Directory<AggregationOnlyAccessPathEntity>(
+        "test",
+        "scalar_access_path",
+        "aggregation_only"
+    )
+
+    var id: String = ULID().ulidString
+    var group: String
+
+    #Index(
+        CountIndexKind<AggregationOnlyAccessPathEntity>(groupBy: [\.group]),
+        name: "scalar_access_path_count_group"
+    )
+}
+
+@Suite("Scalar index access paths", .serialized, .heartbeat)
+struct ScalarIndexAccessPathTests {
+    private func setupContainer() async throws -> DBContainer {
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let schema = Schema(
+            [
+                ScalarAccessPathEntity.self,
+                AggregationOnlyAccessPathEntity.self
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
+        return try await DBContainer.open(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            security: .disabled
+        )
+    }
+
+    private func resetStorage(in container: DBContainer) async throws {
+        let path = ["test", "scalar_access_path"]
+        if try await container.engine.directoryExists(path: path) {
+            try await container.engine.removeDirectory(path: path)
+        }
+        try await container.ensureIndexesReady()
+    }
+
+    @Test("Compound selection preserves the selected descriptor")
+    func compoundSelectionPreservesDescriptor() async throws {
+        let container = try await setupContainer()
+        try await resetStorage(in: container)
+        let context = container.newContext()
+
+        let expected = ScalarAccessPathEntity(group: "alpha", rank: 2)
+        try context.insert(ScalarAccessPathEntity(group: "alpha", rank: 1))
+        try context.insert(expected)
+        try context.insert(ScalarAccessPathEntity(group: "beta", rank: 2))
+        try await context.save()
+
+        let results = try await context.fetch(ScalarAccessPathEntity.self)
+            .where(\.group == "alpha")
+            .where(\.rank == 2)
+            .execute()
+        #expect(results.map(\.id) == [expected.id])
+
+        let count = try await context.fetch(ScalarAccessPathEntity.self)
+            .where(\.group == "alpha")
+            .where(\.rank == 2)
+            .count()
+        #expect(count == 1)
+    }
+
+    @Test("Typed queries never interpret aggregation storage as scalar storage")
+    func aggregationIndexIsNotScalarAccessPath() async throws {
+        let container = try await setupContainer()
+        try await resetStorage(in: container)
+        let context = container.newContext()
+
+        let expected = AggregationOnlyAccessPathEntity(group: "alpha")
+        try context.insert(expected)
+        try context.insert(AggregationOnlyAccessPathEntity(group: "beta"))
+        try await context.save()
+
+        let fallbackResults = try await context.fetch(
+            AggregationOnlyAccessPathEntity.self
+        )
+        .where(\.group == "alpha")
+        .execute()
+        #expect(fallbackResults.map(\.id) == [expected.id])
+
+        var forcedQuery = Query<AggregationOnlyAccessPathEntity>()
+            .where(\.group == "alpha")
+        forcedQuery.forcedIndex = IndexHint(
+            indexName: "scalar_access_path_count_group"
+        )
+
+        do {
+            _ = try await QueryExecutor(
+                context: context,
+                query: forcedQuery
+            ).execute()
+            Issue.record("A non-scalar forced index must fail")
+        } catch CanonicalReadError.unsupportedAccessPath {
+            // Expected.
+        } catch {
+            Issue.record("Unexpected forced-index error: \(error)")
+        }
+    }
+}
+#endif
+#endif
