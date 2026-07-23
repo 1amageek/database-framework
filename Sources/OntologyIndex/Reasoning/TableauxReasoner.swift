@@ -67,8 +67,7 @@ public final class TableauxReasoner: Sendable {
         /// The satisfiability status
         public let status: SatisfiabilityStatus
 
-        /// Convenience property for backward compatibility
-        /// Returns true only for definite satisfiability, false otherwise
+        /// Whether a model was found.
         public var isSatisfiable: Bool {
             status == .satisfiable
         }
@@ -99,17 +98,6 @@ public final class TableauxReasoner: Sendable {
             self.statistics = statistics
         }
 
-        /// Convenience initializer for backward compatibility
-        public init(
-            isSatisfiable: Bool,
-            clash: ClashInfo? = nil,
-            statistics: Statistics
-        ) {
-            self.status = isSatisfiable ? .satisfiable : .unsatisfiable
-            self.clash = clash
-            self.failure = nil
-            self.statistics = statistics
-        }
     }
 
     /// Reasoning statistics
@@ -378,7 +366,7 @@ public final class TableauxReasoner: Sendable {
 
                 // No more choices - unsatisfiable
                 return SatisfiabilityResult(
-                    isSatisfiable: false,
+                    status: .unsatisfiable,
                     clash: clash,
                     statistics: stats
                 )
@@ -413,7 +401,11 @@ public final class TableauxReasoner: Sendable {
                         graph.addConcept(choice, to: nodeID)
                         deterministicDone = true // Break inner loop, continue outer
                     } else {
-                        return SatisfiabilityResult(isSatisfiable: false, clash: clash, statistics: stats)
+                        return SatisfiabilityResult(
+                            status: .unsatisfiable,
+                            clash: clash,
+                            statistics: stats
+                        )
                     }
                 case .failure(let failure):
                     return SatisfiabilityResult(
@@ -431,7 +423,11 @@ public final class TableauxReasoner: Sendable {
                     graph.addConcept(choice, to: nodeID)
                     continue
                 }
-                return SatisfiabilityResult(isSatisfiable: false, clash: clash, statistics: stats)
+                return SatisfiabilityResult(
+                    status: .unsatisfiable,
+                    clash: clash,
+                    statistics: stats
+                )
             }
 
             // Phase 4: Apply generating rules
@@ -469,7 +465,7 @@ public final class TableauxReasoner: Sendable {
                     stats.maxDepth = computeMaxDepth(graph: graph)
 
                     return SatisfiabilityResult(
-                        isSatisfiable: true,
+                        status: .satisfiable,
                         clash: nil,
                         statistics: stats
                     )
@@ -914,39 +910,5 @@ public final class TableauxReasoner: Sendable {
         }
 
         return result
-    }
-}
-
-// MARK: - Legacy Clash Type (for compatibility)
-
-extension TableauxReasoner {
-    /// Legacy Clash enum for backward compatibility
-    public enum Clash: Sendable, CustomStringConvertible {
-        case complementClash(node: String, class1: String, class2: String)
-        case disjointClash(node: String, class1: String, class2: String)
-        case cardinalityClash(node: String, role: String, expected: Int, actual: Int)
-        case datatypeClash(node: String, property: String, value: String, expected: String)
-        case functionalClash(node: String, role: String, values: [String])
-        case asymmetricReflexiveClash(node: String, role: String)
-        case irreflexiveClash(node: String, role: String)
-
-        public var description: String {
-            switch self {
-            case .complementClash(let node, let c1, let c2):
-                return "Complement clash at \(node): \(c1) and \(c2)"
-            case .disjointClash(let node, let c1, let c2):
-                return "Disjoint clash at \(node): \(c1) and \(c2)"
-            case .cardinalityClash(let node, let role, let expected, let actual):
-                return "Cardinality clash at \(node): \(role) expected \(expected), got \(actual)"
-            case .datatypeClash(let node, let prop, let value, let expected):
-                return "Datatype clash at \(node): \(prop) value \(value) not in \(expected)"
-            case .functionalClash(let node, let role, let values):
-                return "Functional clash at \(node): \(role) has multiple values \(values)"
-            case .asymmetricReflexiveClash(let node, let role):
-                return "Asymmetric reflexive clash at \(node): \(role)(x,x)"
-            case .irreflexiveClash(let node, let role):
-                return "Irreflexive clash at \(node): \(role)(x,x)"
-            }
-        }
     }
 }

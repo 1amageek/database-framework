@@ -4,6 +4,8 @@
 // Provides data structures for representing paths through graphs,
 // including shortest path results and path traversal information.
 
+import DatabaseEngine
+
 // MARK: - GraphPath
 
 /// Represents a path through the graph with all nodes and edges

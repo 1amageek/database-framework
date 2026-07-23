@@ -1271,18 +1271,6 @@ struct TableauxReasonerConfigurationTests {
         #expect(unknown.isUnknown)
     }
 
-    @Test("Legacy SatisfiabilityResult initializer")
-    func legacyInitializer() {
-        let sat = TableauxReasoner.SatisfiabilityResult(
-            isSatisfiable: true, statistics: .init()
-        )
-        #expect(sat.status == .satisfiable)
-
-        let unsat = TableauxReasoner.SatisfiabilityResult(
-            isSatisfiable: false, statistics: .init()
-        )
-        #expect(unsat.status == .unsatisfiable)
-    }
 }
 
 // MARK: - Data Properties

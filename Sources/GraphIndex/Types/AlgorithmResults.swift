@@ -9,6 +9,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
+import DatabaseEngine
 
 // MARK: - PageRank
 

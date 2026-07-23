@@ -125,9 +125,7 @@ extension SubspaceIndexMaintainer {
         return key
     }
 
-    /// Evaluate index fields from item using optimized DataAccess
-    ///
-    /// Uses KeyPath extraction when available, falls back to KeyExpression.
+    /// Evaluate the canonical index key expression for an item.
     ///
     /// - Parameter item: The item to extract fields from
     /// - Returns: Array of field values as TupleElements

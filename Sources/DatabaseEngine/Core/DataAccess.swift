@@ -249,40 +249,6 @@ public struct DataAccess: Sendable {
         return result
     }
 
-    /// Evaluate index field values with KeyPath optimization
-    ///
-    /// This method uses direct KeyPath extraction when available, falling back
-    /// to KeyExpression-based extraction for backward compatibility.
-    ///
-    /// **Recommended for IndexMaintainer implementations**:
-    /// ```swift
-    /// let fieldValues = try DataAccess.evaluateIndexFields(
-    ///     from: item,
-    ///     keyPaths: index.keyPaths,
-    ///     expression: index.rootExpression
-    /// )
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - item: The item to extract from
-    ///   - keyPaths: Optional KeyPaths for direct extraction
-    ///   - expression: KeyExpression fallback for string-based extraction
-    /// - Returns: Array of tuple elements representing the extracted values
-    /// - Throws: Error if extraction fails
-    public static func evaluateIndexFields<Item: Persistable>(
-        from item: Item,
-        keyPaths: [AnyKeyPath]?,
-        expression: KeyExpression
-    ) throws -> [any TupleElement] {
-        // Use KeyPath direct extraction when available (optimized path)
-        if let keyPaths = keyPaths {
-            return try extractFieldsUsingKeyPaths(from: item, keyPaths: keyPaths)
-        }
-
-        // Fallback to KeyExpression-based extraction (backward compatibility)
-        return try evaluate(item: item, expression: expression)
-    }
-
     /// Extract Range boundary value
     ///
     /// Extracts the lowerBound or upperBound from a Range-type field.
