@@ -10,6 +10,14 @@ public struct DatabaseWriteCommandRegistry: Sendable {
         commands.map(\.identifier)
     }
 
+    public func merging(
+        _ additionalRegistry: DatabaseWriteCommandRegistry
+    ) throws -> DatabaseWriteCommandRegistry {
+        try DatabaseWriteCommandRegistry(
+            commands: commands + additionalRegistry.commands
+        )
+    }
+
     func resolve(_ identifier: String) throws -> AnyDatabaseWriteCommand {
         guard let command = commands.first(where: {
             $0.identifier == identifier
