@@ -3,18 +3,11 @@ import GraphIndex
 import StorageKit
 
 public protocol DatabaseSHACLProcessor: Sendable {
-    func replace(
+    func validateShapes(
         graph: String,
         quads: [DatabaseRDFQuad],
-        workBudget: SHACLValidationWorkBudget,
-        transaction: any TransactionAccess
-    ) async throws
-
-    func delete(
-        graph: String,
-        workBudget: SHACLValidationWorkBudget,
-        transaction: any TransactionAccess
-    ) async throws
+        workBudget: SHACLValidationWorkBudget
+    ) throws
 
     func validate(
         shapesGraph: String,

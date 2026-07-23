@@ -149,17 +149,16 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
                 let transaction = transactionContext.storageAccess
+                try processor.validateShapes(
+                    graph: graph,
+                    quads: shapes,
+                    workBudget: workBudget
+                )
                 let revision = try await store.replace(
                     identifier: graph,
                     auxiliaryIdentifiers: [],
                     quads: shapes,
                     expectedRevision: expectedRevision,
-                    transaction: transaction
-                )
-                try await processor.replace(
-                    graph: graph,
-                    quads: shapes,
-                    workBudget: workBudget,
                     transaction: transaction
                 )
                 try workBudget.workMeter.recordOutputRows()
@@ -191,11 +190,6 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 let revision = try await store.delete(
                     identifier: graph,
                     expectedRevision: expectedRevision,
-                    transaction: transaction
-                )
-                try await processor.delete(
-                    graph: graph,
-                    workBudget: workBudget,
                     transaction: transaction
                 )
                 try workBudget.workMeter.recordOutputRows()

@@ -21,25 +21,14 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
         self.wireLimits = wireLimits
     }
 
-    public func replace(
+    public func validateShapes(
         graph: String,
         quads: [DatabaseRDFQuad],
-        workBudget: SHACLValidationWorkBudget,
-        transaction: any TransactionAccess
-    ) async throws {
+        workBudget: SHACLValidationWorkBudget
+    ) throws {
         try Task.checkCancellation()
         try workBudget.consume(UInt64(quads.count), at: .storageRow)
         _ = try decodeShapes(graph: graph, quads: quads)
-    }
-
-    public func delete(
-        graph: String,
-        workBudget: SHACLValidationWorkBudget,
-        transaction: any TransactionAccess
-    ) async throws {
-        try workBudget.consume(at: .storageRow)
-        _ = graph
-        _ = transaction
     }
 
     public func validate(
