@@ -13,7 +13,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     func execute(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField]
@@ -43,7 +43,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     func executeInTransaction(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
@@ -66,7 +66,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     func executeAskInTransaction(
-        context: FDBContext,
+        context: DatabaseContext,
         askQuery: AskQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
@@ -90,7 +90,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     func executeConstructInTransaction(
-        context: FDBContext,
+        context: DatabaseContext,
         constructQuery: ConstructQuery,
         resultScope: DatabaseGraphResultScope,
         options: ReadExecutionContext,
@@ -116,7 +116,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     func executeDescribeInTransaction(
-        context: FDBContext,
+        context: DatabaseContext,
         describeQuery: DescribeQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
@@ -159,7 +159,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     private func makeRuntime(
-        context: FDBContext,
+        context: DatabaseContext,
         partitions: [DatabaseObjectField],
         transaction: any TransactionAccess
     ) async throws -> (
@@ -191,7 +191,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     private func projectedSource(
-        context: FDBContext,
+        context: DatabaseContext,
         resolution: RDFDatasetReadResolution,
         partitions: [DatabaseObjectField],
         transaction: any TransactionAccess
@@ -213,7 +213,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     private func projectedSource<T: Persistable>(
-        context: FDBContext,
+        context: DatabaseContext,
         type: T.Type,
         resolution: RDFDatasetReadResolution,
         partitions: [DatabaseObjectField],
@@ -241,7 +241,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     private func makeExecutor(
-        context: FDBContext,
+        context: DatabaseContext,
         scanner: any RDFDatasetScanner,
         dataset: SPARQLDataset
     ) throws -> SPARQLQueryExecutor {
@@ -254,7 +254,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     private func executeSelect(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         storedFieldNames: [String],

@@ -1,8 +1,8 @@
-// FDBContext+SHACL.swift
-// GraphIndex - FDBContext extension for SHACL validation
+// DatabaseContext+SHACL.swift
+// GraphIndex - DatabaseContext extension for SHACL validation
 //
 // Provides high-level API for SHACL shapes management and validation.
-// Follows the OntologyContextAPI pattern (FDBContext+Ontology.swift).
+// Follows the OntologyContextAPI pattern (DatabaseContext+Ontology.swift).
 //
 // Reference: W3C SHACL https://www.w3.org/TR/shacl/
 
@@ -18,9 +18,9 @@ import DatabaseEngine
 import DatabaseWire
 
 import OntologyIndex
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Access SHACL validation API
     ///
     /// **Usage**:
@@ -62,12 +62,12 @@ extension FDBContext {
 /// All operations are performed within transactions managed by the context.
 public struct SHACLContextAPI: Sendable {
 
-    private let context: FDBContext
+    private let context: DatabaseContext
 
     /// SHACL subspace key prefix
     private static let shaclPrefix = Bytes("S".utf8)
 
-    internal init(context: FDBContext) {
+    internal init(context: DatabaseContext) {
         self.context = context
     }
 

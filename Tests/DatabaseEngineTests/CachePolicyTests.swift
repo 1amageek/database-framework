@@ -17,7 +17,7 @@ import DatabaseRuntime
 /// - ReadVersionCache integration with CachePolicy
 /// - Query.cachePolicy fluent API
 /// - QueryExecutor.cachePolicy fluent API
-/// - FDBContext.fetch() cache integration
+/// - DatabaseContext.fetch() cache integration
 @Suite("CachePolicy Tests", .serialized, .heartbeat)
 struct CachePolicyTests {
 
@@ -171,7 +171,7 @@ struct CachePolicyTests {
         #expect(executor.query.fetchLimit == 5)
     }
 
-    // MARK: - FDBContext Integration Tests
+    // MARK: - DatabaseContext Integration Tests
 
     @Test("fetch() with .cached uses ReadVersionCache")
     func fetchWithCachedUsesCache() async throws {

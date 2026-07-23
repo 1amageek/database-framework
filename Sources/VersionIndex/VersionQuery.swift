@@ -1,7 +1,7 @@
 // VersionQuery.swift
 // VersionIndex - Query extension for version history indexes
 //
-// Provides FDBContext extension and query builder for temporal versioning.
+// Provides DatabaseContext extension and query builder for temporal versioning.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -284,9 +284,9 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Start a version history query
     ///
     /// This method is available when you import `VersionIndex`.

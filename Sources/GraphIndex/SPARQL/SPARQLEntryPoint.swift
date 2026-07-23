@@ -1,7 +1,7 @@
 // SPARQLEntryPoint.swift
 // GraphIndex - Entry point for SPARQL-like queries
 //
-// Provides the FDBContext extension and entry point for SPARQL queries.
+// Provides the DatabaseContext extension and entry point for SPARQL queries.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -86,9 +86,9 @@ public struct SPARQLEntryPoint<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Start a SPARQL-like graph query
     ///

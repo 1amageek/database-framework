@@ -1,5 +1,5 @@
 // EntityIndexBuilder.swift
-// FDBIndexing - Entity-specific index building support
+// DatabaseEngine - Entity-specific index building support
 //
 // Provides runtime type dispatch for OnlineIndexer instantiation.
 

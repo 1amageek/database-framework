@@ -1,8 +1,8 @@
-// FDBContext+UniquenessViolation.swift
-// DatabaseEngine - Uniqueness violation API extension for FDBContext
+// DatabaseContext+UniquenessViolation.swift
+// DatabaseEngine - Uniqueness violation API extension for DatabaseContext
 //
 // This extension provides APIs for managing uniqueness violations that occur
-// during online index building. It is separated from the core FDBContext to
+// during online index building. It is separated from the core DatabaseContext to
 // follow the extension pattern for optional features.
 
 #if canImport(FoundationEssentials)
@@ -15,7 +15,7 @@ import StorageKit
 
 // MARK: - Uniqueness Violation API
 
-extension FDBContext {
+extension DatabaseContext {
     /// Scan uniqueness violations for an index
     ///
     /// Returns all violations for the specified index on the given Persistable type.
@@ -44,11 +44,8 @@ extension FDBContext {
         indexName: String,
         limit: Int? = nil
     ) async throws -> [UniquenessViolation] {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        return try await fdbStore.violationTracker.scanViolations(
+        let databaseStore = try await container.store(for: type)
+        return try await databaseStore.violationTracker.scanViolations(
             indexName: indexName,
             limit: limit
         )
@@ -82,11 +79,8 @@ extension FDBContext {
         limit: Int? = nil,
         partition: DirectoryPath<T>
     ) async throws -> [UniquenessViolation] {
-        let store = try await container.store(for: type, path: partition)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        return try await fdbStore.violationTracker.scanViolations(
+        let databaseStore = try await container.store(for: type, path: partition)
+        return try await databaseStore.violationTracker.scanViolations(
             indexName: indexName,
             limit: limit
         )
@@ -111,11 +105,8 @@ extension FDBContext {
         for type: T.Type,
         indexName: String
     ) async throws -> Bool {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        return try await fdbStore.violationTracker.hasViolations(indexName: indexName)
+        let databaseStore = try await container.store(for: type)
+        return try await databaseStore.violationTracker.hasViolations(indexName: indexName)
     }
 
     /// Check if an index has any uniqueness violations (partitioned type)
@@ -132,11 +123,8 @@ extension FDBContext {
         indexName: String,
         partition: DirectoryPath<T>
     ) async throws -> Bool {
-        let store = try await container.store(for: type, path: partition)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        return try await fdbStore.violationTracker.hasViolations(indexName: indexName)
+        let databaseStore = try await container.store(for: type, path: partition)
+        return try await databaseStore.violationTracker.hasViolations(indexName: indexName)
     }
 
     /// Get a summary of uniqueness violations for an index
@@ -164,11 +152,8 @@ extension FDBContext {
         for type: T.Type,
         indexName: String
     ) async throws -> ViolationSummary {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        return try await fdbStore.violationTracker.violationSummary(indexName: indexName)
+        let databaseStore = try await container.store(for: type)
+        return try await databaseStore.violationTracker.violationSummary(indexName: indexName)
     }
 
     /// Get a summary of uniqueness violations for a partitioned type
@@ -185,11 +170,8 @@ extension FDBContext {
         indexName: String,
         partition: DirectoryPath<T>
     ) async throws -> ViolationSummary {
-        let store = try await container.store(for: type, path: partition)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        return try await fdbStore.violationTracker.violationSummary(indexName: indexName)
+        let databaseStore = try await container.store(for: type, path: partition)
+        return try await databaseStore.violationTracker.violationSummary(indexName: indexName)
     }
 
     /// Clear a resolved uniqueness violation
@@ -216,11 +198,8 @@ extension FDBContext {
         indexName: String,
         valueKey: Bytes
     ) async throws {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        try await fdbStore.violationTracker.clearViolation(
+        let databaseStore = try await container.store(for: type)
+        try await databaseStore.violationTracker.clearViolation(
             indexName: indexName,
             valueKey: valueKey
         )
@@ -241,11 +220,8 @@ extension FDBContext {
         valueKey: Bytes,
         partition: DirectoryPath<T>
     ) async throws {
-        let store = try await container.store(for: type, path: partition)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        try await fdbStore.violationTracker.clearViolation(
+        let databaseStore = try await container.store(for: type, path: partition)
+        try await databaseStore.violationTracker.clearViolation(
             indexName: indexName,
             valueKey: valueKey
         )
@@ -262,11 +238,8 @@ extension FDBContext {
         for type: T.Type,
         indexName: String
     ) async throws {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        try await fdbStore.violationTracker.clearAllViolations(indexName: indexName)
+        let databaseStore = try await container.store(for: type)
+        try await databaseStore.violationTracker.clearAllViolations(indexName: indexName)
     }
 
     /// Clear all uniqueness violations for a partitioned type
@@ -282,11 +255,8 @@ extension FDBContext {
         indexName: String,
         partition: DirectoryPath<T>
     ) async throws {
-        let store = try await container.store(for: type, path: partition)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        try await fdbStore.violationTracker.clearAllViolations(indexName: indexName)
+        let databaseStore = try await container.store(for: type, path: partition)
+        try await databaseStore.violationTracker.clearAllViolations(indexName: indexName)
     }
 
     /// Verify if a uniqueness violation has been resolved
@@ -320,13 +290,10 @@ extension FDBContext {
         indexName: String,
         valueKey: Bytes
     ) async throws -> ViolationResolution {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
+        let databaseStore = try await container.store(for: type)
 
-        let indexSubspace = fdbStore.indexSubspace.subspace(indexName)
-        return try await fdbStore.violationTracker.verifyResolution(
+        let indexSubspace = databaseStore.indexSubspace.subspace(indexName)
+        return try await databaseStore.violationTracker.verifyResolution(
             indexName: indexName,
             valueKey: valueKey,
             indexSubspace: indexSubspace
@@ -349,13 +316,10 @@ extension FDBContext {
         valueKey: Bytes,
         partition: DirectoryPath<T>
     ) async throws -> ViolationResolution {
-        let store = try await container.store(for: type, path: partition)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
+        let databaseStore = try await container.store(for: type, path: partition)
 
-        let indexSubspace = fdbStore.indexSubspace.subspace(indexName)
-        return try await fdbStore.violationTracker.verifyResolution(
+        let indexSubspace = databaseStore.indexSubspace.subspace(indexName)
+        return try await databaseStore.violationTracker.verifyResolution(
             indexName: indexName,
             valueKey: valueKey,
             indexSubspace: indexSubspace

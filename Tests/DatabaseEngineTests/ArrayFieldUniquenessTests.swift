@@ -97,48 +97,48 @@ struct ArrayFieldUniquenessTests {
 
         // Make indexes readable via store
         let tagStore = try await container.store(for: TaggedDocument.self)
-        if let fdbStore = tagStore as? FDBDataStore {
-            let state = try await fdbStore.indexLifecycleStore.state(of: "TaggedDocument_tags")
+        if let databaseStore = tagStore as? DatabaseDataStore {
+            let state = try await databaseStore.indexLifecycleStore.state(of: "TaggedDocument_tags")
             if state != .readable {
                 if state == .disabled {
-                    try await fdbStore.indexLifecycleStore.enable("TaggedDocument_tags")
+                    try await databaseStore.indexLifecycleStore.enable("TaggedDocument_tags")
                 }
-                try await fdbStore.indexLifecycleStore.makeReadable("TaggedDocument_tags")
+                try await databaseStore.indexLifecycleStore.makeReadable("TaggedDocument_tags")
             }
         }
 
         let emailStore = try await container.store(for: UniqueEmail.self)
-        if let fdbStore = emailStore as? FDBDataStore {
-            let state = try await fdbStore.indexLifecycleStore.state(of: "UniqueEmail_email")
+        if let databaseStore = emailStore as? DatabaseDataStore {
+            let state = try await databaseStore.indexLifecycleStore.state(of: "UniqueEmail_email")
             if state != .readable {
                 if state == .disabled {
-                    try await fdbStore.indexLifecycleStore.enable("UniqueEmail_email")
+                    try await databaseStore.indexLifecycleStore.enable("UniqueEmail_email")
                 }
-                try await fdbStore.indexLifecycleStore.makeReadable("UniqueEmail_email")
+                try await databaseStore.indexLifecycleStore.makeReadable("UniqueEmail_email")
             }
         }
 
         // UUID ID model index
         let uuidStore = try await container.store(for: UUIDTaggedDocument.self)
-        if let fdbStore = uuidStore as? FDBDataStore {
-            let state = try await fdbStore.indexLifecycleStore.state(of: "UUIDTaggedDocument_tags")
+        if let databaseStore = uuidStore as? DatabaseDataStore {
+            let state = try await databaseStore.indexLifecycleStore.state(of: "UUIDTaggedDocument_tags")
             if state != .readable {
                 if state == .disabled {
-                    try await fdbStore.indexLifecycleStore.enable("UUIDTaggedDocument_tags")
+                    try await databaseStore.indexLifecycleStore.enable("UUIDTaggedDocument_tags")
                 }
-                try await fdbStore.indexLifecycleStore.makeReadable("UUIDTaggedDocument_tags")
+                try await databaseStore.indexLifecycleStore.makeReadable("UUIDTaggedDocument_tags")
             }
         }
 
         // Int64 ID model index
         let int64Store = try await container.store(for: Int64TaggedDocument.self)
-        if let fdbStore = int64Store as? FDBDataStore {
-            let state = try await fdbStore.indexLifecycleStore.state(of: "Int64TaggedDocument_tags")
+        if let databaseStore = int64Store as? DatabaseDataStore {
+            let state = try await databaseStore.indexLifecycleStore.state(of: "Int64TaggedDocument_tags")
             if state != .readable {
                 if state == .disabled {
-                    try await fdbStore.indexLifecycleStore.enable("Int64TaggedDocument_tags")
+                    try await databaseStore.indexLifecycleStore.enable("Int64TaggedDocument_tags")
                 }
-                try await fdbStore.indexLifecycleStore.makeReadable("Int64TaggedDocument_tags")
+                try await databaseStore.indexLifecycleStore.makeReadable("Int64TaggedDocument_tags")
             }
         }
 
@@ -292,7 +292,7 @@ struct ArrayFieldUniquenessTests {
 
     // Note: Tests for self-update scenarios are complex because try context.insert()
     // for an existing record requires the system to detect it as an update.
-    // This is handled by FDBDataStore when it detects the record already exists.
+    // This is handled by DatabaseDataStore when it detects the record already exists.
 
     @Test("Array field update: cannot add element that exists elsewhere")
     func arrayUpdateAddDuplicateThrows() async throws {

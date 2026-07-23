@@ -629,7 +629,7 @@ struct DatabaseFrameworkE2ETests {
         do {
             try await duplicateContext.save()
             Issue.record("Expected duplicate create to fail")
-        } catch let error as FDBContextError {
+        } catch let error as DatabaseContextError {
             if case .preconditionFailed(let typeName, let idDescription, let precondition, _) = error {
                 #expect(typeName == DatabaseFrameworkE2EAccount.persistableType)
                 #expect(idDescription == original.id)
@@ -1096,7 +1096,7 @@ struct DatabaseFrameworkE2ETests {
         do {
             try await retryingContext.save()
             Issue.record("Expected update on missing row to fail")
-        } catch let error as FDBContextError {
+        } catch let error as DatabaseContextError {
             if case .preconditionFailed(let typeName, let idDescription, let precondition, _) = error {
                 #expect(typeName == DatabaseFrameworkE2EAccount.persistableType)
                 #expect(idDescription == "database-framework-retry-account")
@@ -1194,7 +1194,7 @@ struct DatabaseFrameworkE2ETests {
         do {
             try await retryingContext.save()
             Issue.record("Expected multi-change save to fail")
-        } catch let error as FDBContextError {
+        } catch let error as DatabaseContextError {
             if case .preconditionFailed(let typeName, let idDescription, let precondition, _) = error {
                 #expect(typeName == DatabaseFrameworkE2EAccount.persistableType)
                 #expect(idDescription == "database-framework-missing-account")
@@ -1316,7 +1316,7 @@ struct DatabaseFrameworkE2ETests {
         do {
             try await retryingContext.save()
             Issue.record("Expected cross-store save to fail")
-        } catch let error as FDBContextError {
+        } catch let error as DatabaseContextError {
             if case .preconditionFailed(let typeName, let idDescription, let precondition, _) = error {
                 #expect(typeName == DatabaseFrameworkE2EAccount.persistableType)
                 #expect(idDescription == missingOriginal.id)

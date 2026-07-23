@@ -10,7 +10,7 @@ import StorageKit
 
 public protocol GraphTableSourceExecutor: Sendable {
     func execute(
-        context: FDBContext,
+        context: DatabaseContext,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField]
@@ -19,14 +19,14 @@ public protocol GraphTableSourceExecutor: Sendable {
 
 public protocol SPARQLSourceExecutor: Sendable {
     func execute(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField]
     ) async throws -> QueryResponse
 
     func executeInTransaction(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
@@ -34,7 +34,7 @@ public protocol SPARQLSourceExecutor: Sendable {
     ) async throws -> QueryResponse
 
     func executeAskInTransaction(
-        context: FDBContext,
+        context: DatabaseContext,
         askQuery: AskQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
@@ -42,7 +42,7 @@ public protocol SPARQLSourceExecutor: Sendable {
     ) async throws -> Bool
 
     func executeConstructInTransaction(
-        context: FDBContext,
+        context: DatabaseContext,
         constructQuery: ConstructQuery,
         resultScope: DatabaseGraphResultScope,
         options: ReadExecutionContext,
@@ -51,7 +51,7 @@ public protocol SPARQLSourceExecutor: Sendable {
     ) async throws -> DatabaseRetainedRDFGraph
 
     func executeDescribeInTransaction(
-        context: FDBContext,
+        context: DatabaseContext,
         describeQuery: DescribeQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],

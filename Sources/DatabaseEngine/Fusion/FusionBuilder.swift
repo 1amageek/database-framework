@@ -327,9 +327,9 @@ public struct FusionStageBuilder<T: Persistable> {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Create a fusion query combining multiple search sources
     ///

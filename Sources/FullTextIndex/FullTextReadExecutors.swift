@@ -42,7 +42,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
     let kindIdentifier = "fulltext"
 
     func executeRows<T: Persistable>(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
@@ -227,7 +227,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "fulltext"
 
     func executeRows(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
@@ -383,7 +383,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func executePlainSearch(
-        context: FDBContext,
+        context: DatabaseContext,
         group: PolymorphicGroup,
         kind: FullTextIndexKind<PolymorphicFullTextPlaceholder>,
         indexName: String,
@@ -429,7 +429,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func executeScoredSearch(
-        context: FDBContext,
+        context: DatabaseContext,
         group: PolymorphicGroup,
         kind: FullTextIndexKind<PolymorphicFullTextPlaceholder>,
         indexName: String,
@@ -496,7 +496,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func executeFacetedSearch(
-        context: FDBContext,
+        context: DatabaseContext,
         group: PolymorphicGroup,
         kind: FullTextIndexKind<PolymorphicFullTextPlaceholder>,
         indexName: String,

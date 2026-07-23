@@ -34,7 +34,7 @@ struct CoveringIndexBenchmark {
         self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
     }
 
-    private func makeContext() async throws -> FDBContext {
+    private func makeContext() async throws -> DatabaseContext {
         do {
             try await database.removeDirectory(path: ["benchmarks", "users"])
         } catch {
@@ -49,7 +49,7 @@ struct CoveringIndexBenchmark {
             security: .disabled
         )
         try await container.ensureIndexesReady()
-        return FDBContext(container: container)
+        return DatabaseContext(container: container)
     }
 
     @Test("Covering Index Baseline")

@@ -10,15 +10,15 @@ import TestSupport
 import DatabaseRuntime
 @testable import Core
 
-/// Tests for FDBContext functionality
+/// Tests for DatabaseContext functionality
 ///
 /// **Coverage**:
 /// - Autosave functionality
 /// - Change tracking (insert, delete, save, rollback)
 /// - Fetch operations with Query DSL
 /// - Model retrieval by ID
-@Suite("FDBContext Tests", .serialized, .heartbeat)
-struct FDBContextTests {
+@Suite("DatabaseContext Tests", .serialized, .heartbeat)
+struct DatabaseContextFoundationDBTests {
 
     // MARK: - Helper Types
 
@@ -381,7 +381,7 @@ struct FDBContextTests {
         let failures = results.filter { if case .failure = $0 { return true } else { return false } }
         for result in failures {
             if case .failure(let error) = result {
-                #expect(error is FDBContextError, "Concurrent save should throw FDBContextError")
+                #expect(error is DatabaseContextError, "Concurrent save should throw DatabaseContextError")
             }
         }
 

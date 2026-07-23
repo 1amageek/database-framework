@@ -3,7 +3,7 @@
 // End-to-end tests for SPARQL-like query functionality against FoundationDB
 //
 // These tests validate the complete query execution path:
-//   User Code → FDBContext.sparql() → SPARQLQueryBuilder → SPARQLQueryExecutor → FDB
+//   User Code → DatabaseContext.sparql() → SPARQLQueryBuilder → SPARQLQueryExecutor → FDB
 
 import Testing
 import Foundation
@@ -55,7 +55,7 @@ struct SPARQLIntegrationTests {
         try await container.ensureIndexesReady()
     }
 
-    private func insertStatements(_ statements: [SPARQLQueryStatement], context: FDBContext) async throws {
+    private func insertStatements(_ statements: [SPARQLQueryStatement], context: DatabaseContext) async throws {
         for statement in statements {
             try context.insert(statement)
         }

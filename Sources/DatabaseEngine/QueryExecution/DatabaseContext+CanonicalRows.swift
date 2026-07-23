@@ -100,7 +100,7 @@ private enum CanonicalPartitionRoutingMode: Sendable {
     case routed
 }
 
-extension FDBContext {
+extension DatabaseContext {
     public func query(
         _ selectQuery: SelectQuery,
         options: ReadExecutionOptions = .default,

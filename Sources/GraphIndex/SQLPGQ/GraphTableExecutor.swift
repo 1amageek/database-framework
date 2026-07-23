@@ -85,7 +85,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         transactionConfiguration: TransactionConfiguration = .default
     ) {
         self.init(
-            queryContext: IndexQueryContext(context: FDBContext(container: container)),
+            queryContext: IndexQueryContext(context: DatabaseContext(container: container)),
             graphTableSource: graphTableSource,
             transactionConfiguration: transactionConfiguration
         )
@@ -780,9 +780,9 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Execute SQL/PGQ GRAPH_TABLE query
     ///
     /// Example:

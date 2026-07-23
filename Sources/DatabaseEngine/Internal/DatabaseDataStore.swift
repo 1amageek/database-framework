@@ -2,10 +2,10 @@ import StorageKit
 import Core
 import DatabaseValue
 
-/// Internal storage abstraction for FoundationDB
+/// Canonical model persistence service over a `StorageEngine`.
 ///
-/// This class is not intended for direct user access. It provides the underlying
-/// storage operations that FDBContext uses internally.
+/// This class owns schema-aware item and index behavior. Backend-specific key-value
+/// behavior remains in the injected engine owned by `DBContainer`.
 ///
 /// Key structure:
 /// - Items: `[subspace]/items/[persistableType]/[id]` = serialized data
@@ -13,18 +13,13 @@ import DatabaseValue
 ///
 /// **Metrics**: Operations are tracked via DataStoreDelegate (default: MetricsDataStoreDelegate).
 /// Metrics include operation counts, durations, and item counts per type.
-internal final class FDBDataStore: DataStore, Sendable {
-    // MARK: - DataStore Protocol
-
-    /// Configuration type for FDBDataStore
-    typealias Configuration = DBConfiguration
-
+package final class DatabaseDataStore: DataStore, Sendable {
     /// Security delegate for access control evaluation
-    let securityDelegate: (any DataStoreSecurityDelegate)?
+    package let securityDelegate: (any DataStoreSecurityDelegate)?
 
     // MARK: - Properties
 
-    /// FDB Container reference for transaction execution
+    /// Container reference for transaction execution
     let container: DBContainer
 
     let subspace: Subspace
@@ -121,9 +116,9 @@ internal final class FDBDataStore: DataStore, Sendable {
     // Fetch operations use `container.engine.withTransaction()` directly without
     // ReadVersionCache. This is a deliberate simplification:
     //
-    // 1. FDBDataStore is a low-level storage component that doesn't own a cache
-    // 2. Cache ownership is at the FDBContext level (per unit-of-work)
-    // 3. For weak read semantics optimization, users should use FDBContext.withTransaction()
+    // 1. DatabaseDataStore is a low-level storage component that doesn't own a cache
+    // 2. Cache ownership is at the DatabaseContext level (per unit-of-work)
+    // 3. For weak read semantics optimization, users should use DatabaseContext.withTransaction()
     //
     // Example for optimized reads:
     // ```swift
@@ -133,7 +128,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     // ```
 
     /// Fetch all models of a type
-    func fetchAll<T: Persistable>(_ type: T.Type) async throws -> [T] {
+    package func fetchAll<T: Persistable>(_ type: T.Type) async throws -> [T] {
         // Evaluate LIST security via delegate
         try securityDelegate?.evaluateList(
             type: type,
@@ -182,7 +177,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     }
 
     /// Fetch a single model by ID
-    func fetch<T: Persistable>(_ type: T.Type, id: T.ID) async throws -> T? {
+    package func fetch<T: Persistable>(_ type: T.Type, id: T.ID) async throws -> T? {
         let result: T? = try await container.engine.withTransaction { [self] transaction in
             try await self.fetchByIDInTransaction(type, id: id, transaction: transaction)
         }
@@ -196,7 +191,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// 1. If predicate matches an index, use index scan instead of full table scan
     /// 2. If sorting matches an index, use index ordering
     /// 3. Fall back to full table scan + in-memory filtering if no suitable index
-    func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
+    package func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
         // Evaluate LIST security via delegate
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
         try securityDelegate?.evaluateList(
@@ -635,7 +630,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// 1. If no predicate, count all records without deserialization
     /// 2. If predicate matches an index, count using index scan
     /// 3. Fall back to fetch and count if no optimization possible
-    func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
+    package func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
         // Evaluate LIST security via delegate
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
         try securityDelegate?.evaluateList(
@@ -722,12 +717,12 @@ internal final class FDBDataStore: DataStore, Sendable {
         return results
     }
 
-    // MARK: - Transaction-Injected Fetch (for FDBContext)
+    // MARK: - Transaction-Injected Fetch (for DatabaseContext)
 
     /// Fetch items within an existing transaction
     ///
-    /// This method is called by FDBContext.fetch() which manages the transaction
-    /// and ReadVersionCache. FDBDataStore does not create transactions for this path.
+    /// This method is called by DatabaseContext.fetch() which manages the transaction
+    /// and ReadVersionCache. DatabaseDataStore does not create transactions for this path.
     ///
     /// - Parameters:
     ///   - query: Query to execute
@@ -754,7 +749,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Internal fetch within an existing transaction
     ///
     /// This method contains the core fetch logic without creating transactions.
-    /// Called by FDBContext.fetch() which manages transaction and cache.
+    /// Called by DatabaseContext.fetch() which manages transaction and cache.
     private func fetchInternalWithTransaction<T: Persistable>(
         _ query: Query<T>,
         transaction: any TransactionAccess
@@ -1112,7 +1107,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Fetch count within an existing transaction
     ///
-    /// Called by FDBContext.fetchCount() which manages transaction and ReadVersionCache.
+    /// Called by DatabaseContext.fetchCount() which manages transaction and ReadVersionCache.
     func fetchCountInTransaction<T: Persistable>(
         _ query: Query<T>,
         transaction: any TransactionAccess
@@ -1150,7 +1145,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Fetch a single model by ID within an existing transaction
     ///
     /// This method performs a direct key lookup (O(1)) rather than a query scan.
-    /// Called by FDBContext.model(for:as:) which manages transaction and ReadVersionCache.
+    /// Called by DatabaseContext.model(for:as:) which manages transaction and ReadVersionCache.
     ///
     /// - Parameters:
     ///   - type: The model type
@@ -1501,7 +1496,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     // MARK: - Batch Operations
 
     /// Execute a batch of saves and deletes in a single transaction
-    func executeBatch(
+    package func executeBatch(
         inserts: [any Persistable],
         deletes: [any Persistable]
     ) async throws {
@@ -1610,7 +1605,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Evaluate a `WritePrecondition` against an observed existence bit.
     ///
     /// Called after the existence probe (where required) but before any
-    /// mutation. Violations throw `FDBContextError.preconditionFailed` so
+    /// mutation. Violations throw `DatabaseContextError.preconditionFailed` so
     /// the enclosing transaction is aborted cleanly — no silent fallback.
     ///
     /// `.matchesStored` / `.matchesStoredOrAbsent` compare the caller's
@@ -1627,7 +1622,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             return
         case .notExists:
             if existingRowPresent {
-                throw FDBContextError.preconditionFailed(
+                throw DatabaseContextError.preconditionFailed(
                     typeName: typeName,
                     idDescription: idDescription,
                     precondition: precondition,
@@ -1636,7 +1631,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             }
         case .exists:
             if !existingRowPresent {
-                throw FDBContextError.preconditionFailed(
+                throw DatabaseContextError.preconditionFailed(
                     typeName: typeName,
                     idDescription: idDescription,
                     precondition: precondition,
@@ -1645,7 +1640,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             }
         case .matchesStored(let version):
             guard let currentVersion else {
-                throw FDBContextError.preconditionFailed(
+                throw DatabaseContextError.preconditionFailed(
                     typeName: typeName,
                     idDescription: idDescription,
                     precondition: precondition,
@@ -1653,7 +1648,7 @@ internal final class FDBDataStore: DataStore, Sendable {
                 )
             }
             if currentVersion != version {
-                throw FDBContextError.preconditionFailed(
+                throw DatabaseContextError.preconditionFailed(
                     typeName: typeName,
                     idDescription: idDescription,
                     precondition: precondition,
@@ -1663,7 +1658,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         case .matchesStoredOrAbsent(let version):
             guard let currentVersion else { return }
             if currentVersion != version {
-                throw FDBContextError.preconditionFailed(
+                throw DatabaseContextError.preconditionFailed(
                     typeName: typeName,
                     idDescription: idDescription,
                     precondition: precondition,
@@ -1759,8 +1754,8 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Execute operations within a transaction
     ///
     /// **Note**: This uses the database directly without ReadVersionCache.
-    /// For application operations that benefit from caching, use FDBContext.withTransaction().
-    func withTransaction<T: Sendable>(
+    /// For application operations that benefit from caching, use DatabaseContext.withTransaction().
+    package func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration,
         _ operation: @Sendable @escaping (
             DatabaseTransaction
@@ -1783,10 +1778,10 @@ internal final class FDBDataStore: DataStore, Sendable {
     }
 }
 
-// MARK: - FDBIndexError
+// MARK: - DatabaseIndexError
 
 /// Errors that can occur during index operations
-public enum FDBIndexError: Error, CustomStringConvertible {
+public enum DatabaseIndexError: Error, CustomStringConvertible {
     /// Unique constraint violation: duplicate value exists for another record
     case uniqueConstraintViolation(indexName: String, values: [String])
 

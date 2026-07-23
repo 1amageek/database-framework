@@ -23,7 +23,7 @@ import StorageKit
 /// - OPTIONAL (left outer join), UNION, and FILTER support
 ///
 /// Non-generic: accepts pre-resolved metadata instead of using `T.self`.
-/// Can be used from both generic (FDBContext) and dynamic (CLI) code paths.
+/// Can be used from both generic (DatabaseContext) and dynamic (CLI) code paths.
 ///
 /// **Reference**: W3C SPARQL 1.1 Query Language, Section 18.5 (SPARQL Algebra Evaluation)
 public struct SPARQLQueryExecutor: Sendable {

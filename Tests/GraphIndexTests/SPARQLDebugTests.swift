@@ -94,7 +94,7 @@ struct SPARQLDebugTests {
         }
 
         // Insert test data
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
         let alice = "https://example.com/person/alice-debug"
         let bob = "https://example.com/person/bob-debug"
         let knows = "https://example.com/vocabulary/knows"
@@ -176,7 +176,7 @@ struct SPARQLDebugTests {
         }
 
         // Insert test data
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
         let alice = "alice-direct"
         let bob = "bob-direct"
 

@@ -182,7 +182,7 @@ internal struct TransactionRunner: Sendable {
     ///   - readVersionCache: Optional cache for weak read semantics
     ///   - operation: The operation to execute within the transaction
     /// - Returns: The result of the operation
-    /// - Throws: FDBError if the transaction cannot be committed after retries
+    /// - Throws: The operation or storage error that remains after retries
     func run<T: Sendable>(
         configuration: TransactionConfiguration,
         executionDeadline: TransactionExecutionDeadline? = nil,

@@ -192,7 +192,7 @@ struct NamedGraphStoreSQLiteTests {
         }
     }
 
-    private func seededContext() async throws -> FDBContext {
+    private func seededContext() async throws -> DatabaseContext {
         let schema = Schema(
             [SQLiteNamedGraphStatement.self],
             version: Schema.Version(1, 0, 0)
@@ -210,7 +210,7 @@ struct NamedGraphStoreSQLiteTests {
     }
 
     private func makeScanner(
-        context: FDBContext
+        context: DatabaseContext
     ) async throws -> IndexedRDFDatasetScanner {
         let typeSubspace = try await context.indexQueryContext.indexSubspace(
             for: SQLiteNamedGraphStatement.self

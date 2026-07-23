@@ -74,7 +74,7 @@ struct PropertyPathAdvancedTests {
         )
     }
 
-    private func insertEdges(_ edges: [AdvancedPathEdge], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [AdvancedPathEdge], context: DatabaseContext) async throws {
         for edge in edges {
             try context.insert(edge)
         }
@@ -109,7 +109,7 @@ struct PropertyPathAdvancedTests {
 
     private func makeExecutor(
         container: DBContainer,
-        context: FDBContext,
+        context: DatabaseContext,
         configuration: ExecutionPropertyPathConfiguration
     ) async throws -> SPARQLQueryExecutor {
         let selections = try AdvancedPathEdge.indexDescriptors.compactMap(

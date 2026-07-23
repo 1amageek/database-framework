@@ -358,7 +358,7 @@ private struct IndexedBenchmarkContext: Sendable {
     }
 
     func indexedLookup(category: String) async throws -> [SingleIndexBenchmarkRecord] {
-        try await FDBContext(container: container)
+        try await DatabaseContext(container: container)
             .fetch(SingleIndexBenchmarkRecord.self)
             .where(\.runID == singleRunID)
             .where(\.category == category)
@@ -366,7 +366,7 @@ private struct IndexedBenchmarkContext: Sendable {
     }
 
     func scannedLookup(category: String) async throws -> [PlainBenchmarkRecord] {
-        let all = try await FDBContext(container: container)
+        let all = try await DatabaseContext(container: container)
             .fetch(PlainBenchmarkRecord.self)
             .execute()
         return all.filter { $0.runID == plainRunID && $0.category == category }

@@ -2,7 +2,7 @@ import Core
 import DatabaseEngine
 import Relationship
 
-extension FDBContext {
+extension DatabaseContext {
     /// Loads a record snapshot by its complete typed identity.
     public func get<Target: Persistable>(
         _ reference: DatabaseReference<Target>

@@ -373,27 +373,27 @@ struct DatabaseErrorMapperTests {
         expectMappings(
             [
                 (
-                    FDBContextError.concurrentSaveNotAllowed,
+                    DatabaseContextError.concurrentSaveNotAllowed,
                     .internalFailure,
                     "CONCURRENT_CONTEXT_SAVE"
                 ),
                 (
-                    FDBContextError.rollbackDuringSaveNotAllowed,
+                    DatabaseContextError.rollbackDuringSaveNotAllowed,
                     .internalFailure,
                     "CONTEXT_ROLLBACK_DURING_SAVE"
                 ),
                 (
-                    FDBContextError.saveIdentifierExhausted,
+                    DatabaseContextError.saveIdentifierExhausted,
                     .resourceLimit,
                     "CONTEXT_SAVE_LIMIT"
                 ),
                 (
-                    FDBContextError.invalidSaveState,
+                    DatabaseContextError.invalidSaveState,
                     .internalFailure,
                     "CONTEXT_SAVE_STATE_INVALID"
                 ),
                 (
-                    FDBContextError.preconditionFailed(
+                    DatabaseContextError.preconditionFailed(
                         typeName: "Event",
                         idDescription: "event-1",
                         precondition: .exists,
@@ -407,7 +407,7 @@ struct DatabaseErrorMapperTests {
         )
 
         let unknownCommit = CanonicalDatabaseErrorMapper().remoteError(
-            for: FDBContextError.commitOutcomeUnknown,
+            for: DatabaseContextError.commitOutcomeUnknown,
             context: context
         )
         #expect(unknownCommit.category == .unavailable)

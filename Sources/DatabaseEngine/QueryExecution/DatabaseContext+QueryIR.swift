@@ -194,9 +194,9 @@ package enum CanonicalPartitionBinding {
 
 }
 
-// MARK: - FDBContext + Typed SelectQuery Adapter
+// MARK: - DatabaseContext + Typed SelectQuery Adapter
 
-extension FDBContext {
+extension DatabaseContext {
     /// Execute a canonical read query and return wire-level rows after validating the typed source.
     public func query<T: Persistable>(
         _ selectQuery: QueryIR.SelectQuery,

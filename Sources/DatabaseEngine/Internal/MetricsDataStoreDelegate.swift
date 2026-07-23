@@ -2,20 +2,20 @@ import Metrics
 
 /// Internal delegate that records data store metrics using swift-metrics
 ///
-/// This delegate is the default implementation used by FDBDataStore.
+/// This delegate is the default implementation used by DatabaseDataStore.
 /// It records operation counts and durations to the configured metrics backend.
 ///
 /// **Metrics Recorded**:
-/// - `fdb_datastore_operations_total` (Counter): Total operation count by type and status
-/// - `fdb_datastore_operation_duration_seconds` (Timer): Operation duration by type
-/// - `fdb_datastore_items_total` (Counter): Total items processed by operation type
+/// - `database_persistence_operations_total` (Counter): Total operation count by type and status
+/// - `database_persistence_operation_duration_seconds` (Timer): Operation duration by type
+/// - `database_persistence_items_total` (Counter): Total items processed by operation type
 ///
 /// **Labels/Dimensions**:
 /// - `operation`: save, fetch, delete, batch
 /// - `item_type`: The persistable type name (e.g., "User", "Product")
 /// - `status`: success, failure
 ///
-/// **Usage**: Automatically used by FDBDataStore. No user configuration required.
+/// **Usage**: Automatically used by DatabaseDataStore. No user configuration required.
 /// Users can configure the metrics backend via `MetricsSystem.bootstrap()`.
 final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
     // MARK: - Metrics
@@ -48,69 +48,69 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
     init() {
         // Initialize counters
         self.saveCounter = Counter(
-            label: "fdb_datastore_operations_total",
+            label: "database_persistence_operations_total",
             dimensions: [("operation", "save"), ("status", "success")]
         )
         self.fetchCounter = Counter(
-            label: "fdb_datastore_operations_total",
+            label: "database_persistence_operations_total",
             dimensions: [("operation", "fetch"), ("status", "success")]
         )
         self.deleteCounter = Counter(
-            label: "fdb_datastore_operations_total",
+            label: "database_persistence_operations_total",
             dimensions: [("operation", "delete"), ("status", "success")]
         )
         self.batchCounter = Counter(
-            label: "fdb_datastore_operations_total",
+            label: "database_persistence_operations_total",
             dimensions: [("operation", "batch"), ("status", "success")]
         )
 
         // Initialize error counters
         self.saveErrorCounter = Counter(
-            label: "fdb_datastore_operations_total",
+            label: "database_persistence_operations_total",
             dimensions: [("operation", "save"), ("status", "failure")]
         )
         self.fetchErrorCounter = Counter(
-            label: "fdb_datastore_operations_total",
+            label: "database_persistence_operations_total",
             dimensions: [("operation", "fetch"), ("status", "failure")]
         )
         self.deleteErrorCounter = Counter(
-            label: "fdb_datastore_operations_total",
+            label: "database_persistence_operations_total",
             dimensions: [("operation", "delete"), ("status", "failure")]
         )
         self.batchErrorCounter = Counter(
-            label: "fdb_datastore_operations_total",
+            label: "database_persistence_operations_total",
             dimensions: [("operation", "batch"), ("status", "failure")]
         )
 
         // Initialize timers
         self.saveTimer = Metrics.Timer(
-            label: "fdb_datastore_operation_duration_seconds",
+            label: "database_persistence_operation_duration_seconds",
             dimensions: [("operation", "save")]
         )
         self.fetchTimer = Metrics.Timer(
-            label: "fdb_datastore_operation_duration_seconds",
+            label: "database_persistence_operation_duration_seconds",
             dimensions: [("operation", "fetch")]
         )
         self.deleteTimer = Metrics.Timer(
-            label: "fdb_datastore_operation_duration_seconds",
+            label: "database_persistence_operation_duration_seconds",
             dimensions: [("operation", "delete")]
         )
         self.batchTimer = Metrics.Timer(
-            label: "fdb_datastore_operation_duration_seconds",
+            label: "database_persistence_operation_duration_seconds",
             dimensions: [("operation", "batch")]
         )
 
         // Initialize item counters
         self.itemsSavedCounter = Counter(
-            label: "fdb_datastore_items_total",
+            label: "database_persistence_items_total",
             dimensions: [("operation", "save")]
         )
         self.itemsFetchedCounter = Counter(
-            label: "fdb_datastore_items_total",
+            label: "database_persistence_items_total",
             dimensions: [("operation", "fetch")]
         )
         self.itemsDeletedCounter = Counter(
-            label: "fdb_datastore_items_total",
+            label: "database_persistence_items_total",
             dimensions: [("operation", "delete")]
         )
     }
@@ -124,7 +124,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
         // Record per-type counter
         Counter(
-            label: "fdb_datastore_items_by_type_total",
+            label: "database_persistence_items_by_type_total",
             dimensions: [("operation", "save"), ("item_type", itemType)]
         ).increment(by: count)
     }
@@ -135,7 +135,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
         // Record per-type error
         Counter(
-            label: "fdb_datastore_errors_total",
+            label: "database_persistence_errors_total",
             dimensions: [("operation", "save"), ("item_type", itemType), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
     }
@@ -147,7 +147,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
         // Record per-type counter
         Counter(
-            label: "fdb_datastore_items_by_type_total",
+            label: "database_persistence_items_by_type_total",
             dimensions: [("operation", "fetch"), ("item_type", itemType)]
         ).increment(by: count)
     }
@@ -158,7 +158,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
         // Record per-type error
         Counter(
-            label: "fdb_datastore_errors_total",
+            label: "database_persistence_errors_total",
             dimensions: [("operation", "fetch"), ("item_type", itemType), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
     }
@@ -170,7 +170,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
         // Record per-type counter
         Counter(
-            label: "fdb_datastore_items_by_type_total",
+            label: "database_persistence_items_by_type_total",
             dimensions: [("operation", "delete"), ("item_type", itemType)]
         ).increment(by: count)
     }
@@ -181,7 +181,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
         // Record per-type error
         Counter(
-            label: "fdb_datastore_errors_total",
+            label: "database_persistence_errors_total",
             dimensions: [("operation", "delete"), ("item_type", itemType), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
     }
@@ -199,7 +199,7 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
         // Record error type
         Counter(
-            label: "fdb_datastore_errors_total",
+            label: "database_persistence_errors_total",
             dimensions: [("operation", "batch"), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
     }

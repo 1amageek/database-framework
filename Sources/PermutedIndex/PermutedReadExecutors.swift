@@ -37,7 +37,7 @@ private struct PermutedReadExecutor: IndexReadExecutor {
     let kindIdentifier = "permuted"
 
     func executeRows<T: Persistable>(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
@@ -151,7 +151,7 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "permuted"
 
     func executeRows(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,

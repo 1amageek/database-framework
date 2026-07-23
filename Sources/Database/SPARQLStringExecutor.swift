@@ -7,7 +7,7 @@ import QueryAST
 import QueryIR
 import StorageKit
 
-extension FDBContext {
+extension DatabaseContext {
     public func executeSPARQL<T: Persistable>(
         _ sparql: String,
         on type: T.Type,

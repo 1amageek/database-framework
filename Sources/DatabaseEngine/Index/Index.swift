@@ -5,9 +5,6 @@ import Core
 /// Defines a secondary index on record fields. Indexes are maintained automatically
 /// when records are inserted, updated, or deleted.
 ///
-/// **Note**: This is the FDBRuntime version which provides the core structure.
-/// The full Index implementation with all features is in fdb-record-layer.
-///
 public struct Index: Sendable {
     // MARK: - Properties
 

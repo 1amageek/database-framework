@@ -743,7 +743,7 @@ The `insert` and `update` commands write directly to the data store but do NOT u
 2. **IndexMaintainer unavailable**: Index maintenance logic requires typed context
 3. **Debug/development use**: CLI is primarily for development and debugging
 
-**For production data, use `FDBContext.save()` to ensure index consistency.**
+**For production data, use `DatabaseContext.save()` to ensure index consistency.**
 
 ### Operation Modes
 

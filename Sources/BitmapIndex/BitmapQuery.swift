@@ -1,7 +1,7 @@
 // BitmapQuery.swift
 // BitmapIndex - Query extension for bitmap indexes
 //
-// Provides FDBContext extension and query builder for set operations.
+// Provides DatabaseContext extension and query builder for set operations.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -325,9 +325,9 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Start a bitmap index query
     ///
     /// This method is available when you import `BitmapIndex`.

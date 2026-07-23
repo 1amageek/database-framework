@@ -167,7 +167,7 @@ private func deepE2ETicket(
 }
 
 private func deepE2EAggregates(
-    in context: FDBContext,
+    in context: DatabaseContext,
     tenantID: String
 ) async throws -> (count: Int64, sum: Double) {
     let results = try await context.aggregate(DeepE2EIndexedTicket.self)

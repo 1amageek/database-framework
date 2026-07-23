@@ -148,7 +148,7 @@ struct IndexStateBehaviorTests {
             let initialState = try await indexLifecycleStore.state(of: indexName)
             #expect(initialState == .disabled)
 
-            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
+            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user
             let user = IndexedUser(email: "alice@example.com", name: "Alice")
@@ -175,7 +175,7 @@ struct IndexStateBehaviorTests {
             let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .disabled)
 
-            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
+            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert two users with same email - should NOT throw because index is disabled
             let user1 = IndexedUser(id: "user1", email: "duplicate@example.com", name: "User 1")
@@ -211,7 +211,7 @@ struct IndexStateBehaviorTests {
             let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .writeOnly)
 
-            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
+            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user
             let user = IndexedUser(email: "bob@example.com", name: "Bob")
@@ -237,7 +237,7 @@ struct IndexStateBehaviorTests {
             // Enable index (puts it in writeOnly state)
             try await indexLifecycleStore.enable(indexName)
 
-            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
+            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert first user
             let user1 = IndexedUser(id: "user1", email: "unique@example.com", name: "User 1")
@@ -269,7 +269,7 @@ struct IndexStateBehaviorTests {
             try await indexLifecycleStore.enable(indexName)
             try await indexLifecycleStore.makeReadable(indexName)
 
-            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
+            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert first user
             let user1 = IndexedUser(id: "user1", email: "unique@example.com", name: "User 1")
@@ -303,7 +303,7 @@ struct IndexStateBehaviorTests {
             let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .readable)
 
-            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
+            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user
             let user = IndexedUser(email: "charlie@example.com", name: "Charlie")
@@ -325,9 +325,9 @@ struct IndexStateBehaviorTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
 
-            // Create FDBDataStore first, then use its internal indexLifecycleStore
+            // Create DatabaseDataStore first, then use its internal indexLifecycleStore
             // This ensures cache consistency between state changes and delete operations
-            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
+            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Start with readable index (using dataStore's indexLifecycleStore)
@@ -430,7 +430,7 @@ struct IndexStateBehaviorTests {
             let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .disabled)
 
-            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
+            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Batch insert via executeBatch
             let users = [

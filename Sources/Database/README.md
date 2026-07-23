@@ -33,7 +33,7 @@ The Database module re-exports the following modules:
 
 ## SQL Query Execution
 
-The Database module extends `FDBContext` with SQL query execution capabilities.
+The Database module extends `DatabaseContext` with SQL query execution capabilities.
 
 ### Basic SQL Queries
 
@@ -293,7 +293,7 @@ AND type = 'document'
 
 ## API Reference
 
-### FDBContext Extensions
+### DatabaseContext Extensions
 
 #### executeSQL(_:as:)
 

@@ -1,21 +1,19 @@
 // DataStore.swift
-// FDBRuntime - Protocol for storage backend abstraction
+// DatabaseEngine - Model persistence service contract
 //
-// This protocol enables different storage backend implementations:
-// - FDBDataStore: Default FoundationDB implementation
-// - Custom implementations: For testing or alternative backends
+// Storage backends conform to StorageEngine. DataStore is the higher-level
+// model persistence contract consumed by query and statistics services.
 //
 // Security: DataStore uses DataStoreSecurityDelegate for access control.
 // Auth context is obtained via TaskLocal (AuthContextKey.current).
 
 import Core
 
-/// Protocol for storage backend abstraction
+/// Model persistence service contract.
 ///
-/// **Purpose**: Abstract the storage layer to enable:
-/// - Different storage backends (FDB, in-memory, SQLite)
-/// - Easy testing with mock stores
-/// - Consistent API across implementations
+/// Backend-specific transaction and key-value behavior belongs to `StorageEngine`.
+/// The canonical runtime implementation applies schema, security, query, and
+/// mutation semantics on top of an injected engine.
 ///
 /// **Security**:
 /// DataStore holds a security delegate that evaluates permissions.
@@ -29,24 +27,7 @@ import Core
 /// }
 /// ```
 ///
-/// **Usage**:
-/// ```swift
-/// // Default: FDBDataStore is created automatically
-/// let container = try DBContainer.open(for: schema)
-///
-/// // Custom: Inject a different DataStore (e.g., for testing)
-/// let customStore = CustomDataStore(...)
-/// let container = try DBContainer.open(
-///     for: schema,
-///     dataStore: customStore
-/// )
-/// ```
 public protocol DataStore: AnyObject, Sendable {
-
-    // MARK: - Associated Types
-
-    /// The configuration type for this data store
-    associatedtype Configuration: DataStoreConfiguration
 
     // MARK: - Security
 
@@ -146,35 +127,4 @@ public protocol DataStore: AnyObject, Sendable {
             DatabaseTransaction
         ) async throws -> T
     ) async throws -> T
-
-}
-
-// MARK: - DataStoreConfiguration
-
-/// Configuration protocol for DataStore
-///
-/// Defines the configuration requirements for a data store.
-/// Concrete implementations provide store-specific settings.
-///
-/// **Configuration Pattern**:
-/// - DataStoreConfiguration requires `name` and `schema`
-/// - This follows standard ORM configuration patterns
-///
-/// **Example Implementation**:
-/// ```swift
-/// struct MyDataStoreConfiguration: DataStoreConfiguration {
-///     var name: String?
-///     var schema: Schema?
-///
-///     // Custom properties
-///     var connectionString: String
-///     var maxConnections: Int
-/// }
-/// ```
-public protocol DataStoreConfiguration: Sendable {
-    /// Optional name for debugging and identification
-    var name: String? { get }
-
-    /// Schema defining entities and indexes
-    var schema: Schema? { get }
 }

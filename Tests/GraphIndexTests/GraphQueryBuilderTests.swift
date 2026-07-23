@@ -76,7 +76,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = FDBContext(container: container)
+            let context = DatabaseContext(container: container)
 
             let alice = uniqueID("Alice")
             let edge1 = makeEdge(source: alice, predicate: "knows", target: uniqueID("Bob"))
@@ -113,7 +113,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = FDBContext(container: container)
+            let context = DatabaseContext(container: container)
 
             let alice = uniqueID("Alice")
             let bob = uniqueID("Bob")
@@ -146,7 +146,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = FDBContext(container: container)
+            let context = DatabaseContext(container: container)
 
             let alice = uniqueID("Alice")
             let bob = uniqueID("Bob")
@@ -180,7 +180,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = FDBContext(container: container)
+            let context = DatabaseContext(container: container)
 
             let alice = uniqueID("Alice")
             let bob = uniqueID("Bob")
@@ -211,7 +211,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = FDBContext(container: container)
+            let context = DatabaseContext(container: container)
 
             let alice = uniqueID("Alice")
             let nonExistent = uniqueID("NonExistent")
@@ -238,7 +238,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = FDBContext(container: container)
+            let context = DatabaseContext(container: container)
 
             let alice = uniqueID("Alice")
 
@@ -268,7 +268,7 @@ struct GraphQueryBuilderTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = FDBContext(container: container)
+            let context = DatabaseContext(container: container)
 
             // Test: Using field combination that doesn't have an index should throw
             // The actual index is defined on (source, predicate, target), not (id, source, target)

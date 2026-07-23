@@ -4,7 +4,7 @@ import Core
 /// Protocol for maintaining an index
 ///
 /// IndexMaintainer provides the interface for updating and building indexes.
-/// Concrete implementations are provided by upper layers (fdb-record-layer, etc.).
+/// Concrete implementations are provided by specialized index modules.
 ///
 /// **Responsibilities**:
 /// - Update index entries when items change
@@ -12,11 +12,11 @@ import Core
 /// - Use DataAccess to extract field values
 ///
 /// **Design**:
-/// - Protocol definition only in FDBIndexing
-/// - Concrete implementations in upper layers (fdb-record-layer, fdb-document-layer, etc.)
-/// - Each data model layer provides its own implementations
+/// - DatabaseEngine owns the maintenance contract
+/// - Specialized index modules own concrete implementations
+/// - Runtime configuration registers the selected providers explicitly
 ///
-/// **Usage Example** (fdb-record-layer):
+/// **Usage Example**:
 /// ```swift
 /// struct ValueIndexMaintainer<Item: Persistable>: IndexMaintainer {
 ///     func updateIndex(

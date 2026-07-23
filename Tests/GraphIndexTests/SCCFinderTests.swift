@@ -53,7 +53,7 @@ struct SCCFinderTests {
         return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
     }
 
-    private func insertEdges(_ edges: [EdgeForSCC], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [EdgeForSCC], context: DatabaseContext) async throws {
         for edge in edges {
             try context.insert(edge)
         }
@@ -405,7 +405,7 @@ struct GraphEdgeScannerBatchTests {
         return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
     }
 
-    private func insertEdges(_ edges: [EdgeForSCC], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [EdgeForSCC], context: DatabaseContext) async throws {
         for edge in edges {
             try context.insert(edge)
         }

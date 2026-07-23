@@ -2,7 +2,7 @@ import Core
 import DatabaseEngine
 import Relationship
 
-extension FDBContext {
+extension DatabaseContext {
     /// Creates a typed reference containing the model's complete persisted identity.
     public func reference<Target: Persistable>(
         to target: Target

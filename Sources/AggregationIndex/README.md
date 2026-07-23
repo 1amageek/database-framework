@@ -105,7 +105,7 @@ AggregationIndex follows the EntryPoint → QueryBuilder pattern used by other i
 **Key Components**:
 | Component | File | Role |
 |-----------|------|------|
-| `AggregationEntryPoint` | `AggregationEntryPoint.swift` | Entry point from `FDBContext.aggregate()` |
+| `AggregationEntryPoint` | `AggregationEntryPoint.swift` | Entry point from `DatabaseContext.aggregate()` |
 | `AggregationQueryBuilder` | `AggregationQuery.swift` | Fluent API for building queries |
 | `AggregationIndexMetadata` | `AggregationIndexMetadata.swift` | Strict canonical metadata validation and matching |
 | `*IndexMaintainerProvider` | `*IndexMaintainerProvider.swift` | Explicit runtime maintainer construction |

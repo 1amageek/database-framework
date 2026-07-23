@@ -30,7 +30,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
     let kindIdentifier = "vector"
 
     func executeRows<T: Persistable>(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
@@ -161,7 +161,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "vector"
 
     func executeRows(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
@@ -251,7 +251,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         indexSubspace: Subspace,
         queryVector: [Float],
         k: Int,
-        context: FDBContext,
+        context: DatabaseContext,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let index = Index(
@@ -441,7 +441,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
     private func resolvedIndexSubspace(
         baseIndexSubspace: Subspace,
-        context: FDBContext,
+        context: DatabaseContext,
         indexName: String
     ) -> Subspace {
         let configs = context.container.indexConfigurations[indexName] ?? []

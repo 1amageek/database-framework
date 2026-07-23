@@ -399,9 +399,9 @@ public struct PathPatternEntryPoint<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Start a variable-length path pattern query
     ///
     /// Find all paths matching a variable-length pattern.

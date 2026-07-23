@@ -44,7 +44,7 @@ struct OntologyStorePhase2Tests {
 
     // MARK: - Helpers
 
-    private func setupContext() async throws -> FDBContext {
+    private func setupContext() async throws -> DatabaseContext {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([OntologyPhase2Dummy.self], version: Schema.Version(1, 0, 0))
@@ -57,7 +57,7 @@ struct OntologyStorePhase2Tests {
         return container.newContext()
     }
 
-    private func cleanup(context: FDBContext) async throws {
+    private func cleanup(context: DatabaseContext) async throws {
         try await context.ontology.delete(iri: Self.testOntologyIRI)
     }
 

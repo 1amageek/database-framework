@@ -15,7 +15,7 @@ import DatabaseRuntime
 /// **Coverage**:
 /// - TransactionConfiguration presets
 /// - DatabaseTransaction CRUD operations
-/// - FDBContext.withTransaction API
+/// - DatabaseContext.withTransaction API
 /// - Snapshot vs transactional read semantics
 /// - Index updates within transactions
 @Suite("DatabaseTransaction Tests", .serialized, .heartbeat)
@@ -76,7 +76,8 @@ struct DatabaseTransactionTests {
         let config = TransactionConfiguration.default
         #expect(config.timeout == nil)
         #expect(config.maximumAttempts == 5)
-        #expect(config.maxRetryDelay == 1000)
+        #expect(config.maxRetryDelay == 250)
+        #expect(config.initialRetryDelay == 10)
         #expect(config.priority == .default)
         #expect(config.readPriority == .normal)
         #expect(config.disableReadCache == false)
@@ -100,7 +101,8 @@ struct DatabaseTransactionTests {
         let config = TransactionConfiguration.system
         #expect(config.timeout == 2_000)
         #expect(config.maximumAttempts == 5)
-        #expect(config.maxRetryDelay == 1000)  // Uses default
+        #expect(config.maxRetryDelay == 250)  // Uses default
+        #expect(config.initialRetryDelay == 10)
         #expect(config.priority == .system)
         #expect(config.readPriority == .high)
     }
@@ -110,7 +112,8 @@ struct DatabaseTransactionTests {
         let config = TransactionConfiguration.interactive
         #expect(config.timeout == 1_000)
         #expect(config.maximumAttempts == 3)
-        #expect(config.maxRetryDelay == 1000)  // Uses default
+        #expect(config.maxRetryDelay == 250)  // Uses default
+        #expect(config.initialRetryDelay == 10)
         #expect(config.priority == .default)
         #expect(config.readPriority == .normal)
     }

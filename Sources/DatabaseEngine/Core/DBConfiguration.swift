@@ -39,12 +39,7 @@ import Core
 /// )
 /// let container = try await DBContainer.open(for: schema, configuration: config)
 /// ```
-public struct DBConfiguration: DataStoreConfiguration, Sendable {
-
-    // MARK: - DataStoreConfiguration
-
-    /// Schema (always nil — schema is owned by DBContainer, not configuration)
-    public let schema: Schema? = nil
+public struct DBConfiguration: Sendable {
 
     /// Storage backend specification
     public enum StorageBackend: Sendable {

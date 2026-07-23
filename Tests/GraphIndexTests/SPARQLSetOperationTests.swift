@@ -61,7 +61,7 @@ struct SPARQLSetOperationTests {
         )
     }
 
-    private func insertEdges(_ edges: [SetOperationEdge], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [SetOperationEdge], context: DatabaseContext) async throws {
         for edge in edges {
             try context.insert(edge)
         }

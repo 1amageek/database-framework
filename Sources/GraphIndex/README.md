@@ -1220,7 +1220,7 @@ GraphIndex operates at the triple/edge level, which is below the Persistable-lev
 
 **When SecurityPolicy IS applied**:
 - `IndexQueryContext.batchFetchItems()`: Evaluates both LIST and GET security when fetching Persistable items by IDs obtained from graph queries.
-- `FDBDataStore.fetch()` / `fetchAll()`: All standard fetch operations apply LIST + GET filtering.
+- `DatabaseDataStore.fetch()` / `fetchAll()`: All standard fetch operations apply LIST + GET filtering.
 
 **Future direction**: Triple-level access control (e.g., Named Graph-based authorization) may be added in a future release to provide fine-grained security for SPARQL and graph traversal operations.
 

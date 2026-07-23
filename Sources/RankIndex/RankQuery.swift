@@ -456,9 +456,9 @@ public struct RankEntryPoint<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Start a ranking query
     ///

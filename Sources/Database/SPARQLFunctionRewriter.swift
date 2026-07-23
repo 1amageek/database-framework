@@ -17,7 +17,7 @@ import StorageKit
 
 /// Rewrites SelectQuery by executing SPARQL() subqueries
 ///
-/// **Design**: Pre-execution rewrite at FDBContext level.
+/// **Design**: Pre-execution rewrite at DatabaseContext level.
 /// - Finds SPARQL() function calls in Expression tree
 /// - Executes SPARQL queries within parent transaction
 /// - Inlines results as literal arrays
@@ -30,14 +30,14 @@ import StorageKit
 /// // Execute rewritten query through normal path
 /// ```
 internal struct SPARQLFunctionRewriter: Sendable {
-    private let context: FDBContext
+    private let context: DatabaseContext
     private let workMeter: DatabaseWorkMeter
 
-    /// Initialize with FDBContext
+    /// Initialize with DatabaseContext
     ///
     /// - Parameter context: The context for transaction and schema access
     internal init(
-        context: FDBContext,
+        context: DatabaseContext,
         workMeter: DatabaseWorkMeter
     ) {
         self.context = context

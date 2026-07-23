@@ -106,7 +106,7 @@ extension SelectQueryPushdownPlan {
 /// a `Query<T>` against the concrete Persistable type.
 ///
 /// The planner pushes work into the typed fetch path so that
-/// `FDBDataStore.fetchInternalWithTransaction` can engage index selection
+/// `DatabaseDataStore.fetchInternalWithTransaction` can engage index selection
 /// and range scans. Anything not convertible is left for residual evaluation
 /// by the caller.
 ///

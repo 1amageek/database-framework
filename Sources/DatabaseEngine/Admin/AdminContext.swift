@@ -40,7 +40,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     /// Get index build state from IndexLifecycleStore
     ///
     /// Uses the entity's directory subspace for index state storage,
-    /// consistent with FDBDataStore and DBContainer.ensureIndexesReady().
+    /// consistent with DatabaseDataStore and DBContainer.ensureIndexesReady().
     ///
     /// - Parameters:
     ///   - indexName: Name of the index
@@ -244,7 +244,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let subspace = try await resolveDirectoryForEntity(entity)
         let indexSubspace = subspace.subspace(SubspaceKey.indexes)
 
-        // Create IndexLifecycleStore using entity subspace (consistent with FDBDataStore)
+        // Create IndexLifecycleStore using entity subspace (consistent with DatabaseDataStore)
         let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
 
         progress?(0.1)

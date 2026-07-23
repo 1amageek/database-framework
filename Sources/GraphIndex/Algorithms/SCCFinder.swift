@@ -644,7 +644,7 @@ public struct StronglyConnectedComponentsQuery<Edge: Persistable>: Sendable {
     }
 }
 
-extension FDBContext {
+extension DatabaseContext {
     /// Select the entity's only property-graph index for SCC operations.
     public func stronglyConnectedComponents<Edge: Persistable>(
         for type: Edge.Type,

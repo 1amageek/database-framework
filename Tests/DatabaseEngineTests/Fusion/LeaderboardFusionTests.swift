@@ -221,7 +221,7 @@ struct LeaderboardIntegrationTests {
         try? await container.engine.removeDirectory(path: ["test", "leaderboard"])
     }
 
-    @Test("Insert and retrieve scores via FDBContext")
+    @Test("Insert and retrieve scores via DatabaseContext")
     func testInsertAndRetrieve() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)

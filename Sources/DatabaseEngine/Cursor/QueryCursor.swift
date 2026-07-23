@@ -48,7 +48,7 @@ public final class QueryCursor<T: Persistable & Codable>: Sendable {
 
     // MARK: - Properties
 
-    private let context: FDBContext
+    private let context: DatabaseContext
     private let query: Query<T>
     private let batchSize: Int
     private let state: Mutex<CursorState>
@@ -70,13 +70,13 @@ public final class QueryCursor<T: Persistable & Codable>: Sendable {
     /// Create a new cursor from a query
     ///
     /// - Parameters:
-    ///   - context: The FDBContext for database access
+    ///   - context: The DatabaseContext for database access
     ///   - query: The query to execute
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - continuation: Optional continuation token to resume from
     /// - Throws: `ContinuationError` if token is invalid
     internal init(
-        context: FDBContext,
+        context: DatabaseContext,
         query: Query<T>,
         batchSize: Int = 100,
         continuation: ContinuationToken? = nil
@@ -311,14 +311,14 @@ public struct CursorStatistics: Sendable {
 /// let firstPage = try await cursor.next()
 /// ```
 public struct CursorQueryBuilder<T: Persistable & Codable>: Sendable {
-    private let context: FDBContext
+    private let context: DatabaseContext
     private let continuation: ContinuationToken?
     private var query: Query<T>
     private var _batchSize: Int = 100
 
     // MARK: - Initialization
 
-    internal init(context: FDBContext, continuation: ContinuationToken? = nil) {
+    internal init(context: DatabaseContext, continuation: ContinuationToken? = nil) {
         self.context = context
         self.continuation = continuation
         self.query = Query<T>()

@@ -16,7 +16,7 @@ import Graph
 /// Ontology store for persistent TBox/RBox storage
 ///
 /// **Design**: Operations receive transactions as parameters.
-/// Does NOT create transactions - follows FDBDataStore pattern.
+/// Does NOT create transactions - follows DatabaseDataStore pattern.
 ///
 /// **Thread Safety**: This struct is Sendable and all methods are async.
 ///
@@ -901,7 +901,7 @@ public struct OntologyStore: Sendable {
     /// Reconstruct an OWLOntology from stored data
     ///
     /// Reads metadata, classes, properties, and axioms from the store
-    /// and assembles them into an OWLOntology. Does not require FDBContext.
+    /// and assembles them into an OWLOntology. Does not require DatabaseContext.
     ///
     /// - Parameters:
     ///   - iri: The ontology IRI

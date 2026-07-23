@@ -1,5 +1,5 @@
 // IndexAnnotatable.swift
-// FDBIndexing - Abstract index metadata protocol
+// DatabaseEngine - Abstract index metadata protocol
 //
 // Part of the FDB Record Layer abstraction redesign.
 // This protocol provides a minimal, FDB-independent way to declare

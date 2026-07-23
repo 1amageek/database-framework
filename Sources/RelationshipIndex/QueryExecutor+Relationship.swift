@@ -5,12 +5,12 @@ import Relationship
 
 /// Executes a model query and typed relationship joins in one transaction.
 public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
-    private let context: FDBContext
+    private let context: DatabaseContext
     package var query: Query<Model>
     private var joins: [RelationshipJoin<Model>]
 
     public init(
-        context: FDBContext,
+        context: DatabaseContext,
         query: Query<Model>
     ) {
         self.context = context

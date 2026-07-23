@@ -994,9 +994,9 @@ public struct FullTextEntryPoint<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Start a full-text search query
     ///

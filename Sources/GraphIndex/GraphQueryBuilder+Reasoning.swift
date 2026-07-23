@@ -4,7 +4,7 @@
 // Extends GraphQueryBuilder to support OWL DL inference during queries.
 //
 // Following CLAUDE.md extension pattern: new methods via extension,
-// not modifying core FDBContext or GraphQueryBuilder.
+// not modifying core DatabaseContext or GraphQueryBuilder.
 //
 // Inference strategies:
 //   1. Sub-property expansion: query all sub-roles of the bound edge

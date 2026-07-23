@@ -273,7 +273,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let transactionError = error as? DatabaseTransactionError {
             return Self.map(transactionError)
         }
-        if let contextError = error as? FDBContextError {
+        if let contextError = error as? DatabaseContextError {
             return Self.map(contextError)
         }
         if let identityError = error as? PersistableIdentityEncodingError {
@@ -945,7 +945,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
     }
 
     private static func map(
-        _ error: FDBContextError
+        _ error: DatabaseContextError
     ) -> DatabaseRemoteError {
         let category: DatabaseErrorCategory
         let code: String

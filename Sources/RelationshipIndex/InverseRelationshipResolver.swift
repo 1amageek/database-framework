@@ -121,7 +121,7 @@ public struct InverseRelationshipResolver: Sendable {
     }
 }
 
-extension FDBContext {
+extension DatabaseContext {
     public func inverseRelationshipResolver() -> InverseRelationshipResolver {
         InverseRelationshipResolver(container: container)
     }

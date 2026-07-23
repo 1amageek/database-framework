@@ -163,23 +163,23 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         ]
 
         self.itemsIndexedCounter = Counter(
-            label: "fdb_index_from_index_items_total",
+            label: "database_index_from_index_items_total",
             dimensions: baseDimensions
         )
         self.batchesProcessedCounter = Counter(
-            label: "fdb_index_from_index_batches_total",
+            label: "database_index_from_index_batches_total",
             dimensions: baseDimensions
         )
         self.batchDurationTimer = Metrics.Timer(
-            label: "fdb_index_from_index_batch_duration_seconds",
+            label: "database_index_from_index_batch_duration_seconds",
             dimensions: baseDimensions
         )
         self.errorsCounter = Counter(
-            label: "fdb_index_from_index_errors_total",
+            label: "database_index_from_index_errors_total",
             dimensions: baseDimensions
         )
         self.dataFetchesCounter = Counter(
-            label: "fdb_index_from_index_data_fetches_total",
+            label: "database_index_from_index_data_fetches_total",
             dimensions: baseDimensions
         )
     }

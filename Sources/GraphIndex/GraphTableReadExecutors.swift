@@ -16,7 +16,7 @@ public enum GraphTableReadExecutors {
 
 private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
     func execute(
-        context: FDBContext,
+        context: DatabaseContext,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField]
@@ -44,7 +44,7 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
     }
 
     private func execute(
-        context: FDBContext,
+        context: DatabaseContext,
         type: any Persistable.Type,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
@@ -60,7 +60,7 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
     }
 
     private func _execute<T: Persistable>(
-        context: FDBContext,
+        context: DatabaseContext,
         type: T.Type,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,

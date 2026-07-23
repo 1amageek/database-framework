@@ -1,10 +1,10 @@
 #if !os(WASI)
 #if FOUNDATION_DB
 // IndexMaintenanceE2ETests.swift
-// End-to-end tests verifying index maintenance via FDBContext.save()
+// End-to-end tests verifying index maintenance via DatabaseContext.save()
 //
 // These tests validate that the entire CRUD path correctly maintains indexes:
-//   User Code → FDBContext.save() → FDBDataStore → IndexMaintenanceService → IndexMaintainer
+//   User Code → DatabaseContext.save() → DatabaseDataStore → IndexMaintenanceService → IndexMaintainer
 //
 // This is distinct from existing IndexBehaviorTests which test IndexMaintainer directly.
 
@@ -152,7 +152,7 @@ struct IndexMaintenanceE2ETests {
 
     // MARK: - Scalar Index E2E Tests (Baseline - should work)
 
-    @Test("ScalarIndex: Insert via FDBContext.save() maintains index (baseline)")
+    @Test("ScalarIndex: Insert via DatabaseContext.save() maintains index (baseline)")
     func testScalarIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2EScalarUser.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_scalar_users"]])
@@ -197,7 +197,7 @@ struct IndexMaintenanceE2ETests {
 
     // MARK: - Count Index E2E Tests (Explicit case - should work)
 
-    @Test("CountIndex: Insert via FDBContext.save() maintains index (explicit case)")
+    @Test("CountIndex: Insert via DatabaseContext.save() maintains index (explicit case)")
     func testCountIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2ECountItem.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_count_items"]])
@@ -250,7 +250,7 @@ struct IndexMaintenanceE2ETests {
 
     // MARK: - FullText Index E2E Tests (Falls to default case - EXPECTED TO FAIL)
 
-    @Test("FullTextIndex: Insert via FDBContext.save() maintains index")
+    @Test("FullTextIndex: Insert via DatabaseContext.save() maintains index")
     func testFullTextIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2EFullTextArticle.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_fulltext_articles"]])
@@ -309,7 +309,7 @@ struct IndexMaintenanceE2ETests {
 
     // MARK: - Graph Index E2E Tests (Falls to default case - EXPECTED TO FAIL)
 
-    @Test("GraphIndex: Insert via FDBContext.save() maintains index")
+    @Test("GraphIndex: Insert via DatabaseContext.save() maintains index")
     func testGraphIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2EGraphEdge.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
@@ -367,7 +367,7 @@ struct IndexMaintenanceE2ETests {
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
     }
 
-    @Test("GraphIndex: Delete via FDBContext.save() removes all index entries")
+    @Test("GraphIndex: Delete via DatabaseContext.save() removes all index entries")
     func testGraphIndexDeleteViaSave() async throws {
         let container = try await setupContainer([E2EGraphEdge.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
@@ -424,9 +424,9 @@ struct IndexMaintenanceE2ETests {
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
     }
 
-    // MARK: - Comparison Test: Provider Registry vs FDBContext.save()
+    // MARK: - Comparison Test: Provider Registry vs DatabaseContext.save()
 
-    @Test("Provider registry and FDBContext.save() maintain identical graph entries")
+    @Test("Provider registry and DatabaseContext.save() maintain identical graph entries")
     func testComparisonDirectVsSave() async throws {
         let container = try await setupContainer([E2EGraphEdge.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
@@ -495,7 +495,7 @@ struct IndexMaintenanceE2ETests {
             )
         }
 
-        // Part 2: FDBContext.save()
+        // Part 2: DatabaseContext.save()
         let context = container.newContext()
 
         var contextEdge = E2EGraphEdge()
@@ -514,7 +514,7 @@ struct IndexMaintenanceE2ETests {
         // This is the key assertion
         #expect(
             contextSaveCount == 2,
-            "FDBContext.save() should create the same 2 entries as the provider registry, got \(contextSaveCount). The provider registry created \(directMaintainerCount)."
+            "DatabaseContext.save() should create the same 2 entries as the provider registry, got \(contextSaveCount). The provider registry created \(directMaintainerCount)."
         )
 
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])

@@ -1038,7 +1038,7 @@ public struct SearchStatisticsCollector: Sendable {
 ///
 /// **Usage**:
 /// ```swift
-/// let provider = FDBLiveStatisticsProvider(
+/// let provider = DatabaseLiveStatisticsProvider(
 ///     database: database,
 ///     subspace: subspace,
 ///     baseProvider: CollectedStatisticsProvider()
@@ -1057,7 +1057,7 @@ public struct SearchStatisticsCollector: Sendable {
 ///     chunkSize: 10_000_000  // 10MB chunks
 /// )
 /// ```
-public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, Sendable {
+public final class DatabaseLiveStatisticsProvider: LiveStatisticsProvider, Sendable {
 
     /// FDB Container for transaction execution
     private let container: DBContainer
@@ -1293,7 +1293,7 @@ public struct RangeChunk: Sendable {
     }
 }
 
-extension FDBLiveStatisticsProvider {
+extension DatabaseLiveStatisticsProvider {
     /// Divide a range into chunks for parallel processing
     ///
     /// Uses `getRangeSplitPoints` to find optimal split points based on

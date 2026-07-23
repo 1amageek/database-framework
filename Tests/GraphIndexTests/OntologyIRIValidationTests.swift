@@ -116,7 +116,7 @@ struct OntologyIRIValidationTests {
 
     // MARK: - Helpers
 
-    private func setupContext() async throws -> FDBContext {
+    private func setupContext() async throws -> DatabaseContext {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         if try await database.directoryExists(path: ["ontology_iri_validation_tests"]) {
@@ -137,7 +137,7 @@ struct OntologyIRIValidationTests {
         return container.newContext()
     }
 
-    private func loadTestOntology(context: FDBContext) async throws {
+    private func loadTestOntology(context: DatabaseContext) async throws {
         // Clean up first
         try await context.ontology.delete(iri: Self.ontologyIRI)
 

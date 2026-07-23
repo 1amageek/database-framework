@@ -75,7 +75,7 @@ public struct Migration: Sendable {
 /// Subspace information for a store during migrations
 ///
 /// This is a lightweight struct that holds only the subspace information
-/// needed during migrations, without requiring the full typed FDBStore.
+/// needed during migrations, without requiring a model persistence service.
 public struct MigrationStoreInfo: Sendable {
     /// Root subspace for the store
     public let subspace: Subspace
@@ -185,7 +185,7 @@ public struct MigrationContext: Sendable {
     public func storeInfo(for itemType: String, source: Bool = false) throws -> MigrationStoreInfo {
         let registry = source ? sourceStoreRegistry : targetStoreRegistry
         guard let info = registry[itemType] else {
-            throw FDBRuntimeError.invalidArgument(
+            throw DatabaseRuntimeError.invalidArgument(
                 "Store info for '\(itemType)' not found in \(source ? "source" : "target") registry. " +
                 "Available stores: \(registry.keys.sorted().joined(separator: ", "))"
             )
@@ -224,7 +224,7 @@ public struct MigrationContext: Sendable {
 
         // 2. Get store info for target entity (written to target-schema directory)
         guard let info = targetStoreRegistry[targetEntity.name] else {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "Store info for entity '\(targetEntity.name)' not found in target registry. " +
                 "Available stores: \(targetStoreRegistry.keys.sorted().joined(separator: ", "))"
             )
@@ -272,7 +272,7 @@ public struct MigrationContext: Sendable {
         let configs = indexConfigurations[index.name] ?? []
 
         guard let persistableType = targetEntity.persistableType else {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "Entity '\(targetEntity.name)' has no compiled Persistable type"
             )
         }
@@ -290,7 +290,7 @@ public struct MigrationContext: Sendable {
     /// Add a new logical polymorphic index and build it online.
     public func addPolymorphicIndex(indexName: String, batchSize: Int = 100) async throws {
         guard let group = schema.polymorphicGroup(containingIndexNamed: indexName) else {
-            throw FDBRuntimeError.indexNotFound(
+            throw DatabaseRuntimeError.indexNotFound(
                 "Polymorphic index '\(indexName)' not found in target schema"
             )
         }
@@ -319,7 +319,7 @@ public struct MigrationContext: Sendable {
                 try await removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion)
                 return
             }
-            throw FDBRuntimeError.indexNotFound(
+            throw DatabaseRuntimeError.indexNotFound(
                 "Index '\(indexName)' not found in source schema. Cannot determine target entity."
             )
         }
@@ -335,7 +335,7 @@ public struct MigrationContext: Sendable {
         // 3. Get store info from the source registry (the index lives under the
         //    source schema's directory — that's where it needs to be cleared).
         guard let info = sourceStoreRegistry[targetEntity.name] else {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "Store info for entity '\(targetEntity.name)' not found in source registry"
             )
         }
@@ -396,7 +396,7 @@ public struct MigrationContext: Sendable {
                 try await rebuildPolymorphicIndex(indexName: indexName, group: group, batchSize: batchSize)
                 return
             }
-            throw FDBRuntimeError.indexNotFound(
+            throw DatabaseRuntimeError.indexNotFound(
                 "Index '\(indexName)' not found in schema"
             )
         }
@@ -411,7 +411,7 @@ public struct MigrationContext: Sendable {
 
         // 3. Get store info for target entity (rebuild writes to target directory)
         guard let info = targetStoreRegistry[targetEntity.name] else {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "Store info for entity '\(targetEntity.name)' not found in target registry"
             )
         }
@@ -458,7 +458,7 @@ public struct MigrationContext: Sendable {
         let configs = indexConfigurations[indexName] ?? []
 
         guard let persistableType = targetEntity.persistableType else {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "Entity '\(targetEntity.name)' has no compiled Persistable type"
             )
         }
@@ -960,7 +960,7 @@ public struct MigrationContext: Sendable {
         }
 
         guard matchingGroups.count <= 1 else {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "Index '\(descriptor.name)' is associated with multiple polymorphic groups: " +
                 "\(matchingGroups.map(\.identifier).joined(separator: ", ")). " +
                 "Index names must be unique across all polymorphic groups."
@@ -992,14 +992,14 @@ public struct MigrationContext: Sendable {
         }
 
         guard !matchingEntities.isEmpty else {
-            throw FDBRuntimeError.indexNotFound(
+            throw DatabaseRuntimeError.indexNotFound(
                 "Index '\(descriptor.name)' is not associated with any entity in schema. " +
                 "Available entities: \(schema.entities.map { $0.name }.joined(separator: ", "))"
             )
         }
 
         guard matchingEntities.count == 1 else {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "Index '\(descriptor.name)' is associated with multiple entities: " +
                 "\(matchingEntities.map { $0.name }.joined(separator: ", ")). " +
                 "Index names must be unique across all entities."
@@ -1035,7 +1035,7 @@ public struct MigrationContext: Sendable {
         itemTypes: Set<String>
     ) throws -> Index {
         guard entity.persistableType != nil else {
-            throw FDBRuntimeError.internalError("Entity '\(entity.name)' has no Persistable type (decoded from wire?)")
+            throw DatabaseRuntimeError.internalError("Entity '\(entity.name)' has no Persistable type (decoded from wire?)")
         }
 
         // Build KeyExpression from field names using factory
@@ -1063,10 +1063,10 @@ extension Migration: Identifiable {
     }
 }
 
-// MARK: - FDBRuntimeError
+// MARK: - DatabaseRuntimeError
 
-/// FDBRuntime error types
-public enum FDBRuntimeError: Error, CustomStringConvertible {
+/// Database runtime errors.
+public enum DatabaseRuntimeError: Error, CustomStringConvertible {
     /// Invalid argument
     case invalidArgument(String)
 
@@ -1155,7 +1155,7 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
 	                                continuation.yield(item)
                             } catch {
                                 // Log decode error but continue processing
-                                continuation.finish(throwing: FDBRuntimeError.internalError(
+                                continuation.finish(throwing: DatabaseRuntimeError.internalError(
                                     "Failed to decode \(itemType) item: \(error)"
                                 ))
                                 return

@@ -840,11 +840,11 @@ extension Predicate {
 ///     .execute()
 /// ```
 public struct QueryExecutor<T: Persistable>: Sendable {
-    package let context: FDBContext
+    package let context: DatabaseContext
     package var query: Query<T>
 
     /// Initialize with context and query
-    public init(context: FDBContext, query: Query<T>) {
+    public init(context: DatabaseContext, query: Query<T>) {
         self.context = context
         self.query = query
     }

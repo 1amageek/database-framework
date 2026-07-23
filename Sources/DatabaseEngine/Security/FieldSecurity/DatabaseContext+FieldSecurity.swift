@@ -1,5 +1,5 @@
-// FDBContext+FieldSecurity.swift
-// DatabaseEngine - FDBContext extension for field-level security
+// DatabaseContext+FieldSecurity.swift
+// DatabaseEngine - DatabaseContext extension for field-level security
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -11,7 +11,7 @@ import StorageKit
 
 // MARK: - Secure Fetch
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Fetch with field-level security applied (masking restricted fields)
     ///
@@ -72,11 +72,11 @@ extension FDBContext {
 
 /// Query executor that applies field-level security masking to results
 public struct SecureQueryExecutor<T: Persistable>: Sendable {
-    private let context: FDBContext
+    private let context: DatabaseContext
     private let auth: (any AuthContext)?
     private var queryExecutor: QueryExecutor<T>
 
-    internal init(context: FDBContext, auth: (any AuthContext)?) {
+    internal init(context: DatabaseContext, auth: (any AuthContext)?) {
         self.context = context
         self.auth = auth
         self.queryExecutor = context.fetch(T.self)
@@ -160,7 +160,7 @@ public struct SecureQueryExecutor<T: Persistable>: Sendable {
 
 // MARK: - Write Validation
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Validate write permissions for a model before saving
     ///
@@ -211,7 +211,7 @@ extension FDBContext {
 
 // MARK: - Field Access Inspection
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Get list of fields that cannot be read by current user for a specific item
     ///
@@ -232,7 +232,7 @@ extension FDBContext {
 
 // MARK: - Convenience Methods
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Check if current user can read a specific field
     ///

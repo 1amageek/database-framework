@@ -1,7 +1,7 @@
 // PermutedQuery.swift
 // PermutedIndex - Query extension for permuted compound indexes
 //
-// Provides FDBContext extension and query builder for permuted field queries.
+// Provides DatabaseContext extension and query builder for permuted field queries.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -339,9 +339,9 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Start a permuted index query
     ///
     /// This method is available when you import `PermutedIndex`.

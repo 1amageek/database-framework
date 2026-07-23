@@ -40,20 +40,20 @@ import DatabaseValue
 /// ```
 public struct IndexQueryContext: Sendable {
 
-    /// The FDBContext this query context wraps
-    public let context: FDBContext
+    /// The DatabaseContext this query context wraps
+    public let context: DatabaseContext
 
     /// Type-erased partition binding for dynamic directories (optional)
     private let _partitionBinding: (any Sendable)?
 
     /// Create an index query context
-    public init(context: FDBContext) {
+    public init(context: DatabaseContext) {
         self.context = context
         self._partitionBinding = nil
     }
 
     /// Create an index query context with partition binding
-    private init(context: FDBContext, partitionBinding: (any Sendable)?) {
+    private init(context: DatabaseContext, partitionBinding: (any Sendable)?) {
         self.context = context
         self._partitionBinding = partitionBinding
     }
@@ -115,16 +115,13 @@ public struct IndexQueryContext: Sendable {
     /// - Parameter type: The Persistable type
     /// - Returns: The index subspace
     public func indexSubspace<T: Persistable>(for type: T.Type) async throws -> Subspace {
-        let store: any DataStore
+        let store: DatabaseDataStore
         if let binding = partitionBinding(for: type) {
             store = try await context.container.store(for: type, path: binding)
         } else {
             store = try await context.container.store(for: type)
         }
-        guard let fdbStore = store as? FDBDataStore else {
-            throw IndexQueryContextError.unsupportedStoreType
-        }
-        return fdbStore.indexSubspace
+        return store.indexSubspace
     }
 
     /// Resolves a declared index using only the caller's read transaction.
@@ -238,13 +235,13 @@ public struct IndexQueryContext: Sendable {
     /// - Parameter type: The Persistable type
     /// - Returns: A StorageReader for index access
     public func storageReader<T: Persistable>(for type: T.Type) async throws -> StorageReader {
-        let store: any DataStore
+        let store: DatabaseDataStore
         if let binding = partitionBinding(for: type) {
             store = try await context.container.store(for: type, path: binding)
         } else {
             store = try await context.container.store(for: type)
         }
-        return FDBStorageReaderAdapter(store: store)
+        return DatabaseStorageReaderAdapter(store: store)
     }
 
     /// Get the item subspace for a type (for transaction-scoped operations)
@@ -254,16 +251,13 @@ public struct IndexQueryContext: Sendable {
     /// - Parameter type: The persistable type
     /// - Returns: Subspace for items of this type
     public func itemSubspace<T: Persistable>(for type: T.Type) async throws -> Subspace {
-        let store: any DataStore
+        let store: DatabaseDataStore
         if let binding = partitionBinding(for: type) {
             store = try await context.container.store(for: type, path: binding)
         } else {
             store = try await context.container.store(for: type)
         }
-        guard let fdbStore = store as? FDBDataStore else {
-            throw IndexQueryError.unsupportedStore
-        }
-        return fdbStore.itemSubspace
+        return store.itemSubspace
     }
 
     /// Execute a closure within a transaction
@@ -470,20 +464,17 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         transaction: any TransactionAccess
     ) async throws -> T? {
-        let store: any DataStore
+        let store: DatabaseDataStore
         if let binding = partitionBinding(for: type) {
             store = try await context.container.store(for: type, path: binding)
         } else {
             store = try await context.container.store(for: type)
         }
-        guard let fdbStore = store as? FDBDataStore else {
-            throw IndexQueryContextError.unsupportedStoreType
-        }
         _ = try RecordIdentifierKeyCodec.value(
             from: id,
             expectedType: T.recordIdentifierType
         )
-        return try await fdbStore.fetchByIdentifierTupleInTransaction(
+        return try await store.fetchByIdentifierTupleInTransaction(
             type,
             identifier: id,
             transaction: transaction,
@@ -498,7 +489,7 @@ public struct IndexQueryContext: Sendable {
     /// - Parameter type: The persistable type
     /// - Returns: Array of all items
     public func fetchAllItems<T: Persistable>(type: T.Type) async throws -> [T] {
-        let store: any DataStore
+        let store: DatabaseDataStore
         if let binding = partitionBinding(for: type) {
             store = try await context.container.store(for: type, path: binding)
         } else {
@@ -531,19 +522,15 @@ public struct IndexQueryContext: Sendable {
             orderBy: nil
         )
 
-        let store: any DataStore
+        let store: DatabaseDataStore
         if let binding = partitionBinding(for: type) {
             store = try await context.container.store(for: type, path: binding)
         } else {
             store = try await context.container.store(for: type)
         }
-        guard let fdbStore = store as? FDBDataStore else {
-            return try await fetchItems(ids: ids, type: type)
-        }
-
         let fetcher = BatchFetcher<T>(
-            itemSubspace: fdbStore.itemSubspace,
-            blobsSubspace: fdbStore.blobsSubspace,
+            itemSubspace: store.itemSubspace,
+            blobsSubspace: store.blobsSubspace,
             itemType: T.persistableType,
             itemStorageFactory: context.container.itemStorageFactory,
             configuration: configuration
@@ -594,39 +581,24 @@ public struct IndexQueryContext: Sendable {
 
 /// Errors for IndexQueryContext operations
 public enum IndexQueryContextError: Error, CustomStringConvertible {
-    case unsupportedStoreType
     case indexNotFound(String)
 
     public var description: String {
         switch self {
-        case .unsupportedStoreType:
-            return "Store type is not FDBDataStore"
         case .indexNotFound(let name):
             return "Index not found: \(name)"
         }
     }
 }
 
-/// Errors that can occur during index query operations
-public enum IndexQueryError: Error, CustomStringConvertible {
-    case unsupportedStore
+// MARK: - Storage Reader Adapter
 
-    public var description: String {
-        switch self {
-        case .unsupportedStore:
-            return "Unsupported data store type for index query operation"
-        }
-    }
-}
+/// Adapter that wraps DatabaseDataStore to provide StorageReader interface
+internal struct DatabaseStorageReaderAdapter: StorageReader {
 
-// MARK: - FDB Storage Reader Adapter
+    private let store: DatabaseDataStore
 
-/// Adapter that wraps FDBDataStore to provide StorageReader interface
-internal struct FDBStorageReaderAdapter: StorageReader {
-
-    private let store: any DataStore
-
-    init(store: any DataStore) {
+    init(store: DatabaseDataStore) {
         self.store = store
     }
 
@@ -638,26 +610,18 @@ internal struct FDBStorageReaderAdapter: StorageReader {
         endInclusive: Bool,
         reverse: Bool
     ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
-        if let fdbStore = store as? FDBDataStore {
-            return fdbStore.scanRangeRaw(
-                subspace: subspace,
-                start: start,
-                end: end,
-                startInclusive: startInclusive,
-                endInclusive: endInclusive,
-                reverse: reverse
-            )
-        }
-        return AsyncThrowingStream { continuation in
-            continuation.finish()
-        }
+        store.scanRangeRaw(
+            subspace: subspace,
+            start: start,
+            end: end,
+            startInclusive: startInclusive,
+            endInclusive: endInclusive,
+            reverse: reverse
+        )
     }
 
     func getValue(key: Bytes) async throws -> Bytes? {
-        if let fdbStore = store as? FDBDataStore {
-            return try await fdbStore.getValueRaw(key: key)
-        }
-        return nil
+        try await store.getValueRaw(key: key)
     }
 
     func scanSubspace(
@@ -674,9 +638,9 @@ internal struct FDBStorageReaderAdapter: StorageReader {
     }
 }
 
-// MARK: - FDBDataStore Extensions
+// MARK: - DatabaseDataStore Extensions
 
-extension FDBDataStore {
+extension DatabaseDataStore {
 
     /// Scan a range within a subspace (raw key-value access)
     func scanRangeRaw(
@@ -765,9 +729,9 @@ extension FDBDataStore {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Get an index query context for executing index-based queries
     public var indexQueryContext: IndexQueryContext {

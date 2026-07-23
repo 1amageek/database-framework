@@ -93,7 +93,7 @@ struct GraphTableExecutorTests {
     @Test("Execute GRAPH_TABLE with simple edge pattern")
     func testBasicExecution() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -125,7 +125,7 @@ struct GraphTableExecutorTests {
     @Test("Execute with property filter - equality")
     func testPropertyFilterEquality() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -166,7 +166,7 @@ struct GraphTableExecutorTests {
     @Test("Execute with property filter - comparison")
     func testPropertyFilterComparison() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -205,7 +205,7 @@ struct GraphTableExecutorTests {
     @Test("Execute with multiple property filters")
     func testMultiplePropertyFilters() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -247,7 +247,7 @@ struct GraphTableExecutorTests {
     @Test("Convert SPARQL IRI literal")
     func testConvertIRILiteral() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -279,7 +279,7 @@ struct GraphTableExecutorTests {
     @Test("Convert typed literal")
     func testConvertTypedLiteral() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -313,7 +313,7 @@ struct GraphTableExecutorTests {
     @Test("Error: complex property expression")
     func testErrorComplexExpression() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         // Complex expression (subquery)
         let source = GraphTableSource(
@@ -393,7 +393,7 @@ struct GraphTableExecutorTests {
     @Test("Error: type mismatch (array literal)")
     func testErrorTypeMismatch() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         // Array literal (not supported)
         let source = GraphTableSource(
@@ -428,7 +428,7 @@ struct GraphTableExecutorTests {
     @Test("Property filter reduces scanned edges")
     func testPropertyFilterReducesScan() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 

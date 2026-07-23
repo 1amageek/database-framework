@@ -40,10 +40,10 @@ extension PlanExecutionError: CustomStringConvertible {
 /// - Index access via `IndexSearcher` + `context.storageReader`
 public final class PlanExecutor<T: Persistable & Codable>: Sendable {
 
-    private let context: FDBContext
+    private let context: DatabaseContext
     private let executionContext: any QueryExecutionContext
 
-    public init(context: FDBContext, executionContext: any QueryExecutionContext) {
+    public init(context: DatabaseContext, executionContext: any QueryExecutionContext) {
         self.context = context
         self.executionContext = executionContext
     }

@@ -18,7 +18,7 @@ public protocol IndexReadExecutor: Sendable {
     /// form (e.g. distance ascending, rank descending) together with any
     /// per-row annotations (`distance`, `score`, `rank`, …).
     func executeRows<T: Persistable>(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
@@ -33,7 +33,7 @@ public protocol PolymorphicIndexReadExecutor: Sendable {
     /// Produce an index-native row set for a polymorphic group. Same contract
     /// as `IndexReadExecutor.executeRows` — no SQL post-processing in executors.
     func executeRows(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
@@ -46,7 +46,7 @@ public protocol FusionReadExecutor: Sendable {
     var strategyIdentifier: String { get }
 
     func execute<T: Persistable>(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         fusionSource: FusionSource,
         as type: T.Type,

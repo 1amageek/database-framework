@@ -31,7 +31,7 @@ struct RangeTreeBenchmark {
         self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
     }
 
-    private func makeContext() async throws -> FDBContext {
+    private func makeContext() async throws -> DatabaseContext {
         if try await database.directoryExists(path: ["benchmarks", "rank_players"]) {
             try await database.removeDirectory(path: ["benchmarks", "rank_players"])
         }
@@ -44,7 +44,7 @@ struct RangeTreeBenchmark {
             security: .disabled
         )
         try await container.ensureIndexesReady()
-        return FDBContext(container: container)
+        return DatabaseContext(container: container)
     }
 
     @Test("TopKHeap Current Implementation")

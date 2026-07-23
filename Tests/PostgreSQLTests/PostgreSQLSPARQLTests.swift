@@ -44,7 +44,7 @@ struct PostgreSQLSPARQLTests {
         return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
     }
 
-    private func cleanupAndSetup() async throws -> (DBContainer, FDBContext) {
+    private func cleanupAndSetup() async throws -> (DBContainer, DatabaseContext) {
         let container = try await setupContainer()
         try await container.engine.removeDirectory(path: ["test", "pg", "sparql", "statements"])
         let container2 = try await setupContainer()
@@ -60,7 +60,7 @@ struct PostgreSQLSPARQLTests {
         return stmt
     }
 
-    private func insertStatements(_ statements: [PGStatement], context: FDBContext) async throws {
+    private func insertStatements(_ statements: [PGStatement], context: DatabaseContext) async throws {
         for statement in statements {
             try context.insert(statement)
         }

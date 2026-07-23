@@ -71,14 +71,14 @@ public enum PolymorphicQueryError: Error, Sendable, CustomStringConvertible {
 /// pass existential protocol metatypes such as `Document.self` into this generic
 /// API, but every conforming type maps to the same logical group.
 public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
-    private let context: FDBContext
+    private let context: DatabaseContext
     private let groupIdentifier: String
     private var limit: Int?
     private var offset: Int?
     private var orderBy: [SortKey] = []
     private var options: ReadExecutionOptions = .default
 
-    internal init(context: FDBContext, groupIdentifier: String) {
+    internal init(context: DatabaseContext, groupIdentifier: String) {
         self.context = context
         self.groupIdentifier = groupIdentifier
     }
@@ -310,7 +310,7 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     }
 }
 
-extension FDBContext {
+extension DatabaseContext {
     /// Start a polymorphic logical query using any concrete conforming type.
     ///
     /// All conforming types share the same logical group, so `Article.self` and

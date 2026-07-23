@@ -121,7 +121,7 @@ struct RDFQuadSQLiteTests {
         #expect(graphs == Set([firstGraph, secondGraph]))
     }
 
-    private func seededContext() async throws -> FDBContext {
+    private func seededContext() async throws -> DatabaseContext {
         let schema = Schema(
             [SQLiteRDFQuadStatement.self],
             version: Schema.Version(1, 0, 0)

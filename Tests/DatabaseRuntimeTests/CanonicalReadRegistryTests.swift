@@ -13,7 +13,7 @@ struct CanonicalReadRegistryTests {
         let kindIdentifier = "test.polymorphic.runtime"
 
         func executeRows(
-            context: FDBContext,
+            context: DatabaseContext,
             selectQuery: SelectQuery,
             indexScan: IndexScanSource,
             group: PolymorphicGroup,

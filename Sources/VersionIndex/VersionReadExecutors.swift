@@ -30,7 +30,7 @@ private struct VersionReadExecutor: IndexReadExecutor {
     let kindIdentifier = "version"
 
     func executeRows<T: Persistable>(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
@@ -125,7 +125,7 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "version"
 
     func executeRows(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
@@ -216,7 +216,7 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
     private func resolveRuntimeType(
         typeCode: Int64,
         group: PolymorphicGroup,
-        context: FDBContext
+        context: DatabaseContext
     ) -> (any Persistable.Type)? {
         for typeName in group.memberTypeNames {
             guard let type = context.container.schema.entity(named: typeName)?.persistableType,

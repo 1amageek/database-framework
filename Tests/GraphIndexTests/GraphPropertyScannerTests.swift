@@ -88,7 +88,7 @@ struct GraphPropertyScannerTests {
     @Test("Scan edges with properties (no filter)")
     func testScanWithPropertiesNoFilter() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -137,7 +137,7 @@ struct GraphPropertyScannerTests {
     @Test("Property filter: equality")
     func testPropertyFilterEquality() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -172,7 +172,7 @@ struct GraphPropertyScannerTests {
     @Test("Property filter: range")
     func testPropertyFilterRange() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -214,7 +214,7 @@ struct GraphPropertyScannerTests {
     @Test("Bug Fix 1: nil vs empty string distinction")
     func testNilPropertyFiltering() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -269,7 +269,7 @@ struct GraphPropertyScannerTests {
     @Test("Bug Fix 2 & 3: adjacency strategy with Named Graph support")
     func testAdjacencyWithNamedGraph() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")

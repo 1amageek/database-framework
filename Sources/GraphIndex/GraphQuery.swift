@@ -1,7 +1,7 @@
 // GraphQuery.swift
 // GraphIndex - Query extension for graph/RDF indexes
 //
-// Provides FDBContext extension and query builder following the standard pattern.
+// Provides DatabaseContext extension and query builder following the standard pattern.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -115,7 +115,7 @@ public struct GraphEntryPoint<T: Persistable>: Sendable {
 
 /// Non-generic graph query executor
 ///
-/// Can be used from both generic (FDBContext) and dynamic (CLI) code paths.
+/// Can be used from both generic (DatabaseContext) and dynamic (CLI) code paths.
 /// Accepts pre-resolved index metadata instead of using `T.self`.
 ///
 /// **Query Pattern Optimization**:
@@ -650,9 +650,9 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
 
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Start a graph query
     ///
     /// This method is available when you import `GraphIndex`.

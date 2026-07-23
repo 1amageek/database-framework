@@ -31,7 +31,7 @@ let context = container.newContext()
 let engine = container.engine
 ```
 
-### FDBContext
+### DatabaseContext
 
 Transaction manager and user-facing API. Owns ReadVersionCache.
 
@@ -54,7 +54,7 @@ let user = try await context.model(for: userId, as: User.self)
 
 **Design Principle**: `fetch()` returns only persisted data. Pending inserts/deletes are NOT mixed into results.
 
-### FDBDataStore
+### DatabaseDataStore
 
 Low-level data operations within transactions. Receives transaction as parameter.
 

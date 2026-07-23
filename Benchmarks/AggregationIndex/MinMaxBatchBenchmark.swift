@@ -31,7 +31,7 @@ struct MinMaxBatchBenchmark {
         self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
     }
 
-    private func makeContext() async throws -> FDBContext {
+    private func makeContext() async throws -> DatabaseContext {
         do {
             try await database.removeDirectory(path: ["benchmarks", "sales"])
         } catch {
@@ -46,7 +46,7 @@ struct MinMaxBatchBenchmark {
             security: .disabled
         )
         try await container.ensureIndexesReady()
-        return FDBContext(container: container)
+        return DatabaseContext(container: container)
     }
 
     @Test("MIN/MAX Index vs Full Scan")

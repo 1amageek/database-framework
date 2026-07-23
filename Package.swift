@@ -829,7 +829,9 @@ let package = Package(
                 .define("POSTGRESQL", .when(traits: ["PostgreSQL"])),
             ]
         ),
-        // SQLite backend tests (no libfdb_c required)
+        // SQLite backend tests. The package's default FoundationDB trait keeps
+        // the compiled adapter reachable through Database, so its client
+        // library remains a link-time dependency unless default traits are disabled.
         .testTarget(
             name: "FDBiteTests",
             dependencies: [
@@ -841,6 +843,16 @@ let package = Package(
             ],
             swiftSettings: [
                 .define("SQLITE", .when(traits: ["SQLite"])),
+            ],
+            linkerSettings: [
+                .unsafeFlags(
+                    ["-L/usr/local/lib"],
+                    .when(platforms: hostPlatforms, traits: ["FoundationDB"])
+                ),
+                .unsafeFlags(
+                    ["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"],
+                    .when(platforms: hostPlatforms, traits: ["FoundationDB"])
+                ),
             ]
         ),
     ],

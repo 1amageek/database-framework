@@ -2,14 +2,14 @@
 // DatabaseEngine - Write precondition for explicit operation semantics
 //
 // Precondition evaluated at save() time. Violations raise
-// FDBContextError.preconditionFailed instead of silently falling back
+// DatabaseContextError.preconditionFailed instead of silently falling back
 // (per CLAUDE.md "silent fallback 禁止").
 
 import DatabaseValue
 
 /// Precondition that a write operation asserts about the stored row at commit time.
 ///
-/// Each explicit operation on `FDBContext` (`create` / `upsert` / `replace` / `delete`)
+/// Each explicit operation on `DatabaseContext` (`create` / `upsert` / `replace` / `delete`)
 /// defaults to the precondition that matches its intent. Callers may override the
 /// default to opt into a different safety level.
 ///

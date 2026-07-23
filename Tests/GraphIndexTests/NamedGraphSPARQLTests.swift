@@ -192,7 +192,7 @@ struct NamedGraphSPARQLTests {
         #expect(bobRows.allSatisfy { $0["?company"] == .rdfTerm(.iri(beta)) })
     }
 
-    private func seededContext() async throws -> FDBContext {
+    private func seededContext() async throws -> DatabaseContext {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         if try await database.directoryExists(

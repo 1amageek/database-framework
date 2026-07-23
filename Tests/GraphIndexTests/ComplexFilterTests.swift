@@ -61,7 +61,7 @@ struct ComplexFilterTests {
         )
     }
 
-    private func insertEdges(_ edges: [FilterEdge], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [FilterEdge], context: DatabaseContext) async throws {
         for edge in edges {
             try context.insert(edge)
         }

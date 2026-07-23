@@ -702,7 +702,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
     private static func makeExecutor(
         container: DBContainer,
-        context: FDBContext,
+        context: DatabaseContext,
         ontologyContext: OntologyContext? = nil,
         configuration: ExecutionPropertyPathConfiguration = .default
     ) async throws -> SPARQLQueryExecutor {
@@ -752,7 +752,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
     private static func insertEdges(
         _ edges: [RuntimeSemanticPathEdge],
-        context: FDBContext
+        context: DatabaseContext
     ) async throws {
         for edge in edges {
             try context.insert(edge)

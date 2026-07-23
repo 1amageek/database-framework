@@ -146,31 +146,31 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         ]
 
         self.entriesScannedCounter = Counter(
-            label: "fdb_scrubber_entries_scanned_total",
+            label: "database_index_scrubber_entries_scanned_total",
             dimensions: baseDimensions
         )
         self.itemsScannedCounter = Counter(
-            label: "fdb_scrubber_items_scanned_total",
+            label: "database_index_scrubber_items_scanned_total",
             dimensions: baseDimensions
         )
         self.danglingEntriesCounter = Counter(
-            label: "fdb_scrubber_dangling_entries_total",
+            label: "database_index_scrubber_dangling_entries_total",
             dimensions: baseDimensions
         )
         self.missingEntriesCounter = Counter(
-            label: "fdb_scrubber_missing_entries_total",
+            label: "database_index_scrubber_missing_entries_total",
             dimensions: baseDimensions
         )
         self.entriesRepairedCounter = Counter(
-            label: "fdb_scrubber_entries_repaired_total",
+            label: "database_index_scrubber_entries_repaired_total",
             dimensions: baseDimensions
         )
         self.scrubDurationTimer = Metrics.Timer(
-            label: "fdb_scrubber_duration_seconds",
+            label: "database_index_scrubber_duration_seconds",
             dimensions: baseDimensions
         )
         self.errorsCounter = Counter(
-            label: "fdb_scrubber_errors_total",
+            label: "database_index_scrubber_errors_total",
             dimensions: baseDimensions
         )
     }

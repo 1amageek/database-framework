@@ -983,7 +983,7 @@ struct CanonicalAggregationReducerTests {
         )
     }
 
-    private func makeEmptyQueryContext() async throws -> FDBContext {
+    private func makeEmptyQueryContext() async throws -> DatabaseContext {
         let schema = Schema([EmptyGlobalAggregationRecord.self])
         let container = try await DBContainer.open(
             for: schema,
@@ -994,7 +994,7 @@ struct CanonicalAggregationReducerTests {
         return container.newContext()
     }
 
-    private func makeGlobalSketchQueryContext() async throws -> FDBContext {
+    private func makeGlobalSketchQueryContext() async throws -> DatabaseContext {
         let schema = Schema([IndexedGlobalSketchRecord.self])
         let container = try await DBContainer.open(
             for: schema,

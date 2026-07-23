@@ -23,8 +23,8 @@ import Synchronization
 /// - `subspace`: Each Persistable type defines its own directory via `#Directory`
 /// - `directoryLayer`: Used only for system-level operations
 /// - `dataStore`: Created dynamically based on resolved directory
-/// - **Transactions**: FDBContext manages transactions (Context-centric design)
-/// - **ReadVersionCache**: FDBContext owns cache per unit of work
+/// - **Transactions**: DatabaseContext manages transactions (Context-centric design)
+/// - **ReadVersionCache**: DatabaseContext owns cache per unit of work
 ///
 /// **Responsibilities**:
 /// - Schema management
@@ -37,12 +37,12 @@ import Synchronization
 /// DBContainer (Resource Manager)
 ///     ├── engine: StorageEngine (for system operations only)
 ///     ├── schema: Schema
-///     └── newContext() → FDBContext (owns transactions + cache)
+///     └── newContext() → DatabaseContext (owns transactions + cache)
 /// ```
 ///
 /// **Context-Centric Design**:
 /// - DBContainer does NOT create application transactions
-/// - FDBContext owns ReadVersionCache and creates transactions via TransactionRunner
+/// - DatabaseContext owns ReadVersionCache and creates transactions via TransactionRunner
 /// - System operations (DirectoryLayer, Migration) use `engine.withTransaction()` directly
 ///
 /// **Usage**:
@@ -76,7 +76,7 @@ public final class DBContainer: Sendable {
     }
 
     private struct DataStoreCache: Sendable {
-        var stores: [DatabaseStoreCacheKey: FDBDataStore] = [:]
+        var stores: [DatabaseStoreCacheKey: DatabaseDataStore] = [:]
     }
 
     // MARK: - Properties
@@ -85,7 +85,7 @@ public final class DBContainer: Sendable {
     ///
     /// Thread-safe: storage engines handle thread safety internally.
     /// Used for system operations (DirectoryLayer, Migration).
-    /// Application transactions should use FDBContext.withTransaction().
+    /// Application transactions should use DatabaseContext.withTransaction().
     public let engine: any StorageEngine
 
     /// Schema (version, entities, indexes)
@@ -181,7 +181,7 @@ public final class DBContainer: Sendable {
         initializeIndexes: Bool
     ) async throws -> DBContainer {
         guard !schema.entities.isEmpty else {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "Schema must contain at least one entity"
             )
         }
@@ -353,9 +353,9 @@ public final class DBContainer: Sendable {
     /// ```
     ///
     /// - Parameter autosaveEnabled: Whether to automatically save after operations (default: false)
-    /// - Returns: New FDBContext instance
-    public func newContext(autosaveEnabled: Bool = false) -> FDBContext {
-        return FDBContext(container: self, autosaveEnabled: autosaveEnabled)
+    /// - Returns: New DatabaseContext instance
+    public func newContext(autosaveEnabled: Bool = false) -> DatabaseContext {
+        return DatabaseContext(container: self, autosaveEnabled: autosaveEnabled)
     }
 
     // MARK: - Directory Resolution
@@ -528,17 +528,10 @@ public final class DBContainer: Sendable {
     /// path.set(\.tenantID, to: "tenant_123")
     /// let store = try await container.store(for: Order.self, path: path)
     /// ```
-    public func store<T: Persistable>(
+    package func store<T: Persistable>(
         for type: T.Type,
         path: DirectoryPath<T> = DirectoryPath()
-    ) async throws -> any DataStore {
-        try await fdbStore(for: type, path: path)
-    }
-
-    internal func fdbStore<T: Persistable>(
-        for type: T.Type,
-        path: DirectoryPath<T> = DirectoryPath()
-    ) async throws -> FDBDataStore {
+    ) async throws -> DatabaseDataStore {
         let cacheKey = try storeCacheKey(for: type, path: AnyDirectoryPath(path))
         if let cached = dataStoreCache.withLock({ $0.stores[cacheKey] }) {
             return cached
@@ -546,7 +539,7 @@ public final class DBContainer: Sendable {
 
         let subspace = try await resolveDirectory(for: type, path: path)
         try await ensureIndexesReady(for: type, subspace: subspace)
-        let store = FDBDataStore(
+        let store = DatabaseDataStore(
             container: self,
             subspace: subspace,
             persistableType: type.persistableType,
@@ -561,14 +554,7 @@ public final class DBContainer: Sendable {
     internal func store(
         for type: any Persistable.Type,
         path: AnyDirectoryPath? = nil
-    ) async throws -> any DataStore {
-        try await fdbStore(for: type, path: path)
-    }
-
-    internal func fdbStore(
-        for type: any Persistable.Type,
-        path: AnyDirectoryPath? = nil
-    ) async throws -> FDBDataStore {
+    ) async throws -> DatabaseDataStore {
         let cacheKey = try storeCacheKey(for: type, path: path)
         if let cached = dataStoreCache.withLock({ $0.stores[cacheKey] }) {
             return cached
@@ -576,7 +562,7 @@ public final class DBContainer: Sendable {
 
         let subspace = try await resolveDirectory(for: type, path: path)
         try await ensureIndexesReady(for: type, subspace: subspace)
-        let store = FDBDataStore(
+        let store = DatabaseDataStore(
             container: self,
             subspace: subspace,
             persistableType: type.persistableType,
@@ -590,11 +576,11 @@ public final class DBContainer: Sendable {
     /// Build a store whose directory and index state participate in the caller's
     /// transaction. The store is intentionally not inserted into the global
     /// cache until that transaction has committed.
-    internal func fdbStore(
+    internal func store(
         for type: any Persistable.Type,
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
-    ) async throws -> FDBDataStore {
+    ) async throws -> DatabaseDataStore {
         let subspace = try await resolveDirectory(
             for: type,
             path: path,
@@ -605,7 +591,7 @@ public final class DBContainer: Sendable {
             subspace: subspace,
             transaction: transaction
         )
-        return FDBDataStore(
+        return DatabaseDataStore(
             container: self,
             subspace: subspace,
             persistableType: type.persistableType,
@@ -672,7 +658,7 @@ public final class DBContainer: Sendable {
     /// Resolve directory for a polymorphic protocol
     ///
     /// Creates or opens the directory specified by the protocol's `#Directory` macro.
-    /// Used by `FDBContext.fetchPolymorphic()` to retrieve all items of conforming types.
+    /// Used by `DatabaseContext.fetchPolymorphic()` to retrieve all items of conforming types.
     ///
     /// **Example**:
     /// ```swift
@@ -696,7 +682,7 @@ public final class DBContainer: Sendable {
             case .staticPath(let value):
                 path.append(value)
             case .dynamicField:
-                throw FDBRuntimeError.internalError(
+                throw DatabaseRuntimeError.internalError(
                     "Polymorphic protocols cannot use Field path components. " +
                     "Use only static Path components (string literals) in #Directory."
                 )
@@ -722,7 +708,7 @@ public final class DBContainer: Sendable {
             case .staticPath(let value):
                 path.append(value)
             case .dynamicField:
-                throw FDBRuntimeError.internalError(
+                throw DatabaseRuntimeError.internalError(
                     "Polymorphic protocols cannot use Field path components. " +
                     "Use only static Path components (string literals) in #Directory."
                 )
@@ -735,7 +721,7 @@ public final class DBContainer: Sendable {
     /// Resolve a polymorphic group by its logical identifier.
     public func polymorphicGroup(identifier: String) throws -> PolymorphicGroup {
         guard let group = schema.polymorphicGroup(identifier: identifier) else {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "Polymorphic group '\(identifier)' is not registered in Schema."
             )
         }
@@ -849,7 +835,7 @@ extension DBContainer {
 
         let tuple = try Tuple.unpack(from: versionBytes)
         guard tuple.count == 3 else {
-            throw FDBRuntimeError.internalError("Invalid version format")
+            throw DatabaseRuntimeError.internalError("Invalid version format")
         }
 
         func toInt(_ value: Any) -> Int? {
@@ -865,7 +851,7 @@ extension DBContainer {
               let major = UInt32(exactly: majorValue),
               let minor = UInt32(exactly: minorValue),
               let patch = UInt32(exactly: patchValue) else {
-            throw FDBRuntimeError.internalError("Invalid version format")
+            throw DatabaseRuntimeError.internalError("Invalid version format")
         }
         return Schema.Version(major, minor, patch)
     }
@@ -1083,7 +1069,7 @@ extension DBContainer {
                     from: currentVersion,
                     to: targetVersion
                   ).first else {
-                throw FDBRuntimeError.internalError(
+                throw DatabaseRuntimeError.internalError(
                     "Migration status has no executable stage"
                 )
             }
@@ -1122,7 +1108,7 @@ extension DBContainer {
         }
         if let plan = migrationPlanStorage.withLock({ $0 }),
            plan.currentVersion != compiledVersion {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "Migration plan target does not match the compiled schema"
             )
         }
@@ -1319,7 +1305,7 @@ extension DBContainer {
             } else if targetSchema.polymorphicGroup(containingIndexNamed: indexName) != nil {
                 try await context.addPolymorphicIndex(indexName: indexName)
             } else {
-                throw FDBRuntimeError.indexNotFound(
+                throw DatabaseRuntimeError.indexNotFound(
                     "Index '\(indexName)' not found in target schema"
                 )
             }

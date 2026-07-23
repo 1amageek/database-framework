@@ -1,16 +1,16 @@
 #if !os(WASI)
 #if FOUNDATION_DB
 // WritePreconditionTests.swift
-// Regression tests for explicit FDBContext mutation intent and the
+// Regression tests for explicit DatabaseContext mutation intent and the
 // `WritePrecondition` values that control commit-time assertions.
 //
 // Contract under test:
 //   - `insert` defaults to `.notExists` — a duplicate key throws
-//     `FDBContextError.preconditionFailed` rather than silently upserting.
+//     `DatabaseContextError.preconditionFailed` rather than silently upserting.
 //   - `update` defaults to `.exists` — a missing row throws
-//     `FDBContextError.preconditionFailed` rather than silently inserting.
+//     `DatabaseContextError.preconditionFailed` rather than silently inserting.
 //   - `delete` with `.exists` — a missing row throws
-//     `FDBContextError.preconditionFailed` rather than being a no-op.
+//     `DatabaseContextError.preconditionFailed` rather than being a no-op.
 //   - `upsert` — blind write; succeeds whether the row exists or not.
 //
 // Operations that carry an explicit intent must surface mismatches through
@@ -107,7 +107,7 @@ struct WritePreconditionTests {
         duplicate.email = uniq("dup") + "@example.com"
         try context.insert(duplicate)
 
-        await #expect(throws: FDBContextError.self) {
+        await #expect(throws: DatabaseContextError.self) {
             try await context.save()
         }
 
@@ -175,7 +175,7 @@ struct WritePreconditionTests {
             precondition: .matchesStored(version: version)
         )
 
-        await #expect(throws: FDBContextError.self) {
+        await #expect(throws: DatabaseContextError.self) {
             try await context.save()
         }
 
@@ -197,7 +197,7 @@ struct WritePreconditionTests {
         // The row was never written, so update must reject `.exists`.
         try context.update(ghostNew)
 
-        await #expect(throws: FDBContextError.self) {
+        await #expect(throws: DatabaseContextError.self) {
             try await context.save()
         }
 
@@ -218,7 +218,7 @@ struct WritePreconditionTests {
 
         try context.delete(ghost, precondition: .exists)
 
-        await #expect(throws: FDBContextError.self) {
+        await #expect(throws: DatabaseContextError.self) {
             try await context.save()
         }
     }

@@ -154,19 +154,19 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         ]
 
         self.itemsIndexedCounter = Counter(
-            label: "fdb_indexer_items_indexed_total",
+            label: "database_indexer_items_indexed_total",
             dimensions: baseDimensions
         )
         self.batchesProcessedCounter = Counter(
-            label: "fdb_indexer_batches_processed_total",
+            label: "database_indexer_batches_processed_total",
             dimensions: baseDimensions
         )
         self.batchDurationTimer = Metrics.Timer(
-            label: "fdb_indexer_batch_duration_seconds",
+            label: "database_indexer_batch_duration_seconds",
             dimensions: baseDimensions
         )
         self.errorsCounter = Counter(
-            label: "fdb_indexer_errors_total",
+            label: "database_indexer_errors_total",
             dimensions: baseDimensions
         )
     }

@@ -607,7 +607,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
 
         let modelType = type(of: model)
         let partition = try partition(for: model)
-        let store = try await container.fdbStore(
+        let store = try await container.store(
             for: modelType,
             path: partition,
             transaction: storageAccess
@@ -668,7 +668,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
 
         let modelType = type(of: model)
         let partition = try partition(for: model)
-        let store = try await container.fdbStore(
+        let store = try await container.store(
             for: modelType,
             path: partition,
             transaction: storageAccess

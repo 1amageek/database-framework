@@ -1,7 +1,7 @@
 // ShortestPathQuery.swift
 // GraphIndex - Query API for shortest path algorithms
 //
-// Provides FDBContext extension and fluent query builder for shortest path queries.
+// Provides DatabaseContext extension and fluent query builder for shortest path queries.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -340,9 +340,9 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
 
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Start a shortest path query
     ///
     /// Find the shortest path between two nodes in a graph.

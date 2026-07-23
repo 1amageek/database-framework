@@ -85,7 +85,7 @@ struct SPARQLExecutionOrderTests {
         )
     }
 
-    private func insertEdges(_ edges: [ExecOrderEdge], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [ExecOrderEdge], context: DatabaseContext) async throws {
         for edge in edges {
             try context.insert(edge)
         }

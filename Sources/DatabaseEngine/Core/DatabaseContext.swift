@@ -8,18 +8,18 @@ import Core
 import DatabaseValue
 import Synchronization
 
-/// FDBContext - Central API for model persistence
+/// DatabaseContext - Central API for model persistence
 ///
-/// A model context is central to fdb-runtime as it's responsible for managing
+/// A model context is central to the database runtime because it manages
 /// the entire lifecycle of your persistent models. You use a context to insert
 /// new models, track and persist changes to those models, and to delete those
 /// models when you no longer need them.
 ///
 /// **Architecture** (Context-Centric Design):
-/// - FDBContext provides high-level API for persistence
-/// - **FDBContext owns transactions and ReadVersionCache** (not DBContainer)
+/// - DatabaseContext provides high-level API for persistence
+/// - **DatabaseContext owns transactions and ReadVersionCache** (not DBContainer)
 /// - Container resolves directories from Persistable type's `#Directory` declaration
-/// - FDBDataStore performs low-level FDB operations in the resolved directory
+/// - DatabaseDataStore applies schema-aware persistence over the configured StorageEngine
 ///
 /// **Transaction Management**:
 /// - Use `context.withTransaction()` for explicit transaction control
@@ -59,7 +59,7 @@ import Synchronization
 /// try context.delete(user)
 /// try await context.save()
 /// ```
-public final class FDBContext: Sendable {
+public final class DatabaseContext: Sendable {
     // MARK: - Properties
 
     /// The container that owns this context
@@ -130,7 +130,7 @@ public final class FDBContext: Sendable {
 
     // MARK: - Initialization
 
-    /// Initialize FDBContext
+    /// Initialize DatabaseContext
     ///
     /// - Parameters:
     ///   - container: The DBContainer to use for storage
@@ -231,13 +231,13 @@ public final class FDBContext: Sendable {
 
     private func cachedStore<T: Persistable>(
         for type: T.Type
-    ) async throws -> FDBDataStore {
+    ) async throws -> DatabaseDataStore {
         let storeKey = ContextDataStoreIdentity(typeName: T.persistableType, resolvedPath: [])
         if let cached = storeRegistry.withLock({ $0.stores[storeKey] }) {
             return cached
         }
 
-        let store = try await container.fdbStore(for: type)
+        let store = try await container.store(for: type)
         storeRegistry.withLock { $0.stores[storeKey] = store }
         return store
     }
@@ -248,14 +248,14 @@ public final class FDBContext: Sendable {
     /// every time, even though DBContainer already shares resolved stores globally.
     private func pointReadStore<T: Persistable>(
         for type: T.Type
-    ) async throws -> FDBDataStore {
-        try await container.fdbStore(for: type)
+    ) async throws -> DatabaseDataStore {
+        try await container.store(for: type)
     }
 
     private func cachedStore<T: Persistable>(
         for type: T.Type,
         path: DirectoryPath<T>
-    ) async throws -> FDBDataStore {
+    ) async throws -> DatabaseDataStore {
         let resolvedPath = try AnyDirectoryPath(path).resolve()
         let storeKey = ContextDataStoreIdentity(
             typeName: T.persistableType,
@@ -265,7 +265,7 @@ public final class FDBContext: Sendable {
             return cached
         }
 
-        let store = try await container.fdbStore(for: type, path: path)
+        let store = try await container.store(for: type, path: path)
         storeRegistry.withLock { $0.stores[storeKey] = store }
         return store
     }
@@ -273,14 +273,14 @@ public final class FDBContext: Sendable {
     private func pointReadStore<T: Persistable>(
         for type: T.Type,
         path: DirectoryPath<T>
-    ) async throws -> FDBDataStore {
-        try await container.fdbStore(for: type, path: path)
+    ) async throws -> DatabaseDataStore {
+        try await container.store(for: type, path: path)
     }
 
     private func ensureUsable() throws {
         try stateLock.withLock { state in
             guard !state.commitOutcomeUnknown else {
-                throw FDBContextError.commitOutcomeUnknown
+                throw DatabaseContextError.commitOutcomeUnknown
             }
         }
     }
@@ -396,7 +396,7 @@ public final class FDBContext: Sendable {
         let shouldScheduleAutosave = try stateLock.withLock {
             state -> Bool in
             guard !state.commitOutcomeUnknown else {
-                throw FDBContextError.commitOutcomeUnknown
+                throw DatabaseContextError.commitOutcomeUnknown
             }
             Self.apply(stagedMutation, to: &state.pending)
             if var activeSave = state.activeSave {
@@ -589,7 +589,7 @@ public final class FDBContext: Sendable {
         }
 
         // Get store for this type (partition-aware if needed)
-        let store: FDBDataStore
+        let store: DatabaseDataStore
         if let binding = query.partitionBinding {
             store = try await cachedStore(for: T.self, path: binding)
         } else {
@@ -632,7 +632,7 @@ public final class FDBContext: Sendable {
         }
 
         // Get store (partition-aware if needed)
-        let store: any DataStore
+        let store: DatabaseDataStore
         if let binding = query.partitionBinding {
             store = try await cachedStore(for: T.self, path: binding)
         } else {
@@ -644,11 +644,10 @@ public final class FDBContext: Sendable {
 
         // Execute count within transaction (uses ReadVersionCache)
         return try await self.withStorageAccess(configuration: config) { transaction in
-            guard let fdbStore = store as? FDBDataStore else {
-                // Fall back to original behavior if not FDBDataStore
-                return try await store.fetchCount(query)
-            }
-            return try await fdbStore.fetchCountInTransaction(query, transaction: transaction)
+            try await store.fetchCountInTransaction(
+                query,
+                transaction: transaction
+            )
         }
     }
 
@@ -947,11 +946,11 @@ public final class FDBContext: Sendable {
         case .noChanges:
             return
         case .alreadySaving:
-            throw FDBContextError.concurrentSaveNotAllowed
+            throw DatabaseContextError.concurrentSaveNotAllowed
         case .commitOutcomeUnknown:
-            throw FDBContextError.commitOutcomeUnknown
+            throw DatabaseContextError.commitOutcomeUnknown
         case .identifierExhausted:
-            throw FDBContextError.saveIdentifierExhausted
+            throw DatabaseContextError.saveIdentifierExhausted
         case .start(let identifier, let mutations):
             do {
                 try await saveGeneralPath(
@@ -960,7 +959,7 @@ public final class FDBContext: Sendable {
                 let shouldScheduleAutosave = try stateLock.withLock {
                     state -> Bool in
                     guard state.activeSave?.identifier == identifier else {
-                        throw FDBContextError.invalidSaveState
+                        throw DatabaseContextError.invalidSaveState
                     }
                     state.activeSave = nil
                     guard state.autosaveEnabled,
@@ -978,7 +977,7 @@ public final class FDBContext: Sendable {
                 try stateLock.withLock { state in
                     guard let activeSave = state.activeSave,
                           activeSave.identifier == identifier else {
-                        throw FDBContextError.invalidSaveState
+                        throw DatabaseContextError.invalidSaveState
                     }
                     if Self.isCommitOutcomeUnknown(error) {
                         state.commitOutcomeUnknown = true
@@ -1046,10 +1045,10 @@ public final class FDBContext: Sendable {
     public func rollback() throws {
         try stateLock.withLock { state in
             guard state.activeSave == nil else {
-                throw FDBContextError.rollbackDuringSaveNotAllowed
+                throw DatabaseContextError.rollbackDuringSaveNotAllowed
             }
             guard !state.commitOutcomeUnknown else {
-                throw FDBContextError.commitOutcomeUnknown
+                throw DatabaseContextError.commitOutcomeUnknown
             }
             state.pending.removeAll()
             state.autosaveScheduled = false
@@ -1173,7 +1172,7 @@ public final class FDBContext: Sendable {
 
 // MARK: - Errors
 
-public enum FDBContextError: Error, Sendable, Equatable, CustomStringConvertible {
+public enum DatabaseContextError: Error, Sendable, Equatable, CustomStringConvertible {
     case concurrentSaveNotAllowed
     case rollbackDuringSaveNotAllowed
     case commitOutcomeUnknown
@@ -1198,24 +1197,24 @@ public enum FDBContextError: Error, Sendable, Equatable, CustomStringConvertible
     public var description: String {
         switch self {
         case .concurrentSaveNotAllowed:
-            return "FDBContextError: Cannot save while another save operation is in progress"
+            return "DatabaseContextError: Cannot save while another save operation is in progress"
         case .rollbackDuringSaveNotAllowed:
-            return "FDBContextError: Cannot roll back staged changes while a save operation is in progress"
+            return "DatabaseContextError: Cannot roll back staged changes while a save operation is in progress"
         case .commitOutcomeUnknown:
-            return "FDBContextError: The previous commit outcome is unknown; this context cannot be reused"
+            return "DatabaseContextError: The previous commit outcome is unknown; this context cannot be reused"
         case .saveIdentifierExhausted:
-            return "FDBContextError: Save operation identifier space is exhausted"
+            return "DatabaseContextError: Save operation identifier space is exhausted"
         case .invalidSaveState:
-            return "FDBContextError: Save lifecycle state is inconsistent"
+            return "DatabaseContextError: Save lifecycle state is inconsistent"
         case .preconditionFailed(let typeName, let idDescription, let precondition, let reason):
-            return "FDBContextError: Precondition \(precondition) failed for \(typeName) id=\(idDescription): \(reason)"
+            return "DatabaseContextError: Precondition \(precondition) failed for \(typeName) id=\(idDescription): \(reason)"
         }
     }
 }
 
 // MARK: - Transaction API
 
-extension FDBContext {
+extension DatabaseContext {
     /// Execute a transactional operation with configurable retry and timeout
     ///
     /// Provides Firestore-like transaction semantics with explicit read isolation control.
@@ -1284,7 +1283,7 @@ extension FDBContext {
             configuration: configuration,
             executionDeadline: executionDeadline,
             readVersionCache: readVersionCache,
-            operationDescription: "FDBContext.withTransaction"
+            operationDescription: "DatabaseContext.withTransaction"
         ) { transaction in
             let transaction = DatabaseTransaction(
                 storageAccess: transaction,
@@ -1304,7 +1303,7 @@ extension FDBContext {
     /// Execute an operation with storage access and runner-owned lifecycle.
     ///
     /// **Design Intent**:
-    /// This is an internal API for FDBContext operations that need key-value
+    /// This is an internal API for DatabaseContext operations that need key-value
     /// capabilities such as `clearRange` without receiving commit or
     /// cancellation authority.
     ///
@@ -1334,7 +1333,7 @@ extension FDBContext {
             configuration: configuration,
             executionDeadline: executionDeadline,
             readVersionCache: readVersionCache,
-            operationDescription: "FDBContext.withStorageAccess",
+            operationDescription: "DatabaseContext.withStorageAccess",
             operation: operation
         )
     }
@@ -1361,7 +1360,7 @@ extension FDBContext {
 
 // MARK: - CustomStringConvertible
 
-extension FDBContext: CustomStringConvertible {
+extension DatabaseContext: CustomStringConvertible {
     public var description: String {
         let stateDescription = stateLock.withLock { state in
             var saves = 0
@@ -1383,7 +1382,7 @@ extension FDBContext: CustomStringConvertible {
         }
 
         return """
-        FDBContext(
+        DatabaseContext(
             pendingSaves: \(stateDescription.saves),
             pendingDeletes: \(stateDescription.deletes),
             saveInProgress: \(stateDescription.saveInProgress),
@@ -1396,7 +1395,7 @@ extension FDBContext: CustomStringConvertible {
 
 // MARK: - Polymorphic Fetch API
 
-extension FDBContext {
+extension DatabaseContext {
     /// Create a polymorphic fetch builder for querying multiple types via a shared protocol
     ///
     /// Enables querying all concrete types that conform to a `@Polymorphable` protocol.
@@ -1441,7 +1440,7 @@ extension FDBContext {
         }
 
         guard !conformingEntities.isEmpty else {
-            throw FDBRuntimeError.internalError(
+            throw DatabaseRuntimeError.internalError(
                 "No types found in Schema for polymorphic protocol '\(P.polymorphableType)'. " +
                 "Ensure conforming types are included in Schema initialization."
             )

@@ -37,7 +37,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
     let kindIdentifier = "bitmap"
 
     func executeRows<T: Persistable>(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
@@ -161,7 +161,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "bitmap"
 
     func executeRows(
-        context: FDBContext,
+        context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,

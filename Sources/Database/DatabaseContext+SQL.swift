@@ -1,5 +1,5 @@
-// FDBContext+SQL.swift
-// Database - FDBContext extension for executing SQL strings with SPARQL() function support
+// DatabaseContext+SQL.swift
+// Database - DatabaseContext extension for executing SQL strings with SPARQL() function support
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -13,9 +13,9 @@ import DatabaseEngine
 import DatabaseRuntime
 import DatabaseWire
 
-// MARK: - FDBContext + SQL String Execution
+// MARK: - DatabaseContext + SQL String Execution
 
-extension FDBContext {
+extension DatabaseContext {
     /// Execute a SQL query string and return typed results
     ///
     /// **SPARQL() Function Support**:

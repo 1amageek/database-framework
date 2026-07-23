@@ -201,13 +201,13 @@ private struct CRUDBenchmarkContext: Sendable {
     }
 
     func frameworkWrite(_ record: CRUDBenchmarkRecord) async throws {
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
         try context.insert(record)
         try await context.save()
     }
 
     func frameworkRead(id: String) async throws -> CRUDBenchmarkRecord? {
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
         return try await context.model(for: id, as: CRUDBenchmarkRecord.self, partition: path)
     }
 }
@@ -249,7 +249,7 @@ struct FDBFrameworkCRUDBenchmarkTests {
                     try await context.dataStoreWrite(context.makeRecord(seed: Int.random(in: 0...1_000_000)))
                 }
 
-                let frameworkMeasurement = try await measureBenchmark(name: "L4 FDBContext") {
+                let frameworkMeasurement = try await measureBenchmark(name: "L4 DatabaseContext") {
                     try await context.frameworkWrite(context.makeRecord(seed: Int.random(in: 0...1_000_000)))
                 }
 
@@ -297,7 +297,7 @@ struct FDBFrameworkCRUDBenchmarkTests {
                     #expect(record != nil)
                 }
 
-                let frameworkMeasurement = try await measureBenchmark(name: "L4 FDBContext Model") {
+                let frameworkMeasurement = try await measureBenchmark(name: "L4 DatabaseContext Model") {
                     let record = try await context.frameworkRead(id: nextID())
                     #expect(record != nil)
                 }

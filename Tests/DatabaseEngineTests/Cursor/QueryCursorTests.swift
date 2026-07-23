@@ -47,7 +47,7 @@ struct QueryCursorTests {
         try? await container.engine.removeDirectory(path: ["test", "cursor", "users"])
     }
 
-    private func seedUsers(context: FDBContext, count: Int) async throws -> [PaginatedUser] {
+    private func seedUsers(context: DatabaseContext, count: Int) async throws -> [PaginatedUser] {
         var users: [PaginatedUser] = []
         for i in 0..<count {
             let user = PaginatedUser(

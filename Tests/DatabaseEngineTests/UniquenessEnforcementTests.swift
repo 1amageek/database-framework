@@ -16,7 +16,7 @@ import DatabaseRuntime
 /// - UniquenessViolationError
 /// - UniquenessCheckMode
 /// - UniquenessViolationTracker operations
-/// - FDBContext violation API
+/// - DatabaseContext violation API
 @Suite("Uniqueness Enforcement Tests", .serialized, .heartbeat)
 struct UniquenessEnforcementTests {
 
@@ -286,12 +286,12 @@ struct UniquenessEnforcementTests {
             try await cleanup(container: container)
 
             let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let fdbStore = store as? FDBDataStore else {
-                Issue.record("Store is not FDBDataStore")
+            guard let databaseStore = store as? DatabaseDataStore else {
+                Issue.record("Store is not DatabaseDataStore")
                 return
             }
 
-            let tracker = fdbStore.violationTracker
+            let tracker = databaseStore.violationTracker
             let indexName = "test_violation_idx"
 
             // Record a violation
@@ -323,12 +323,12 @@ struct UniquenessEnforcementTests {
             try await cleanup(container: container)
 
             let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let fdbStore = store as? FDBDataStore else {
-                Issue.record("Store is not FDBDataStore")
+            guard let databaseStore = store as? DatabaseDataStore else {
+                Issue.record("Store is not DatabaseDataStore")
                 return
             }
 
-            let tracker = fdbStore.violationTracker
+            let tracker = databaseStore.violationTracker
             let indexName = "test_has_violations_idx"
 
             // Initially no violations
@@ -363,12 +363,12 @@ struct UniquenessEnforcementTests {
             try await cleanup(container: container)
 
             let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let fdbStore = store as? FDBDataStore else {
-                Issue.record("Store is not FDBDataStore")
+            guard let databaseStore = store as? DatabaseDataStore else {
+                Issue.record("Store is not DatabaseDataStore")
                 return
             }
 
-            let tracker = fdbStore.violationTracker
+            let tracker = databaseStore.violationTracker
             let indexName = "test_count_idx"
 
             // Add multiple violations
@@ -400,12 +400,12 @@ struct UniquenessEnforcementTests {
             try await cleanup(container: container)
 
             let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let fdbStore = store as? FDBDataStore else {
-                Issue.record("Store is not FDBDataStore")
+            guard let databaseStore = store as? DatabaseDataStore else {
+                Issue.record("Store is not DatabaseDataStore")
                 return
             }
 
-            let tracker = fdbStore.violationTracker
+            let tracker = databaseStore.violationTracker
             let indexName = "test_clear_idx"
             let valueKey = Tuple("clearme").pack()
 
@@ -441,12 +441,12 @@ struct UniquenessEnforcementTests {
             try await cleanup(container: container)
 
             let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let fdbStore = store as? FDBDataStore else {
-                Issue.record("Store is not FDBDataStore")
+            guard let databaseStore = store as? DatabaseDataStore else {
+                Issue.record("Store is not DatabaseDataStore")
                 return
             }
 
-            let tracker = fdbStore.violationTracker
+            let tracker = databaseStore.violationTracker
             let indexName = "test_summary_idx"
 
             // Add violations with different conflict counts
@@ -483,9 +483,9 @@ struct UniquenessEnforcementTests {
         }
     }
 
-    // MARK: - FDBContext Violation API Tests
+    // MARK: - DatabaseContext Violation API Tests
 
-    @Test("FDBContext scanUniquenessViolations")
+    @Test("DatabaseContext scanUniquenessViolations")
     func contextScanViolations() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
@@ -496,13 +496,13 @@ struct UniquenessEnforcementTests {
 
             // Add a violation directly to tracker
             let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let fdbStore = store as? FDBDataStore else {
-                Issue.record("Store is not FDBDataStore")
+            guard let databaseStore = store as? DatabaseDataStore else {
+                Issue.record("Store is not DatabaseDataStore")
                 return
             }
 
             try await container.engine.withTransaction { transaction in
-                try await fdbStore.violationTracker.recordViolation(
+                try await databaseStore.violationTracker.recordViolation(
                     indexName: indexName,
                     persistableType: "UniquenessConstrainedUser",
                     valueKey: Tuple("context@test.com").pack(),
@@ -527,7 +527,7 @@ struct UniquenessEnforcementTests {
         }
     }
 
-    @Test("FDBContext hasUniquenessViolations")
+    @Test("DatabaseContext hasUniquenessViolations")
     func contextHasViolations() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
@@ -545,13 +545,13 @@ struct UniquenessEnforcementTests {
 
             // Add a violation
             let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let fdbStore = store as? FDBDataStore else {
-                Issue.record("Store is not FDBDataStore")
+            guard let databaseStore = store as? DatabaseDataStore else {
+                Issue.record("Store is not DatabaseDataStore")
                 return
             }
 
             try await container.engine.withTransaction { transaction in
-                try await fdbStore.violationTracker.recordViolation(
+                try await databaseStore.violationTracker.recordViolation(
                     indexName: indexName,
                     persistableType: "UniquenessConstrainedUser",
                     valueKey: Tuple("test").pack(),
@@ -576,7 +576,7 @@ struct UniquenessEnforcementTests {
         }
     }
 
-    @Test("FDBContext uniquenessViolationSummary")
+    @Test("DatabaseContext uniquenessViolationSummary")
     func contextViolationSummary() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
@@ -587,13 +587,13 @@ struct UniquenessEnforcementTests {
 
             // Add violations
             let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let fdbStore = store as? FDBDataStore else {
-                Issue.record("Store is not FDBDataStore")
+            guard let databaseStore = store as? DatabaseDataStore else {
+                Issue.record("Store is not DatabaseDataStore")
                 return
             }
 
             try await container.engine.withTransaction { transaction in
-                try await fdbStore.violationTracker.recordViolation(
+                try await databaseStore.violationTracker.recordViolation(
                     indexName: indexName,
                     persistableType: "UniquenessConstrainedUser",
                     valueKey: Tuple("val1").pack(),

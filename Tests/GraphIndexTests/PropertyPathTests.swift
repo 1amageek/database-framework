@@ -67,7 +67,7 @@ struct PropertyPathTests {
         )
     }
 
-    private func insertEdges(_ edges: [EdgeForPropertyPath], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [EdgeForPropertyPath], context: DatabaseContext) async throws {
         for edge in edges {
             try context.insert(edge)
         }

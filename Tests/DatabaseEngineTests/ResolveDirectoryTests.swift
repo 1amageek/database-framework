@@ -256,7 +256,7 @@ struct ResolveDirectoryTests {
             let store = try await container.store(for: DirectoryUser.self)
 
             // Store should be functional
-            #expect(store is FDBDataStore)
+            #expect(store is DatabaseDataStore)
         }
     }
 }

@@ -141,10 +141,10 @@ struct MultiTargetIndexerMetricsTests {
     @Test("Counter metric names follow convention")
     func testMetricNameConvention() {
         let expectedNames = [
-            "fdb_multi_indexer_items_indexed_total",
-            "fdb_multi_indexer_batches_processed_total",
-            "fdb_multi_indexer_batch_duration_seconds",
-            "fdb_multi_indexer_errors_total"
+            "database_multi_indexer_items_indexed_total",
+            "database_multi_indexer_batches_processed_total",
+            "database_multi_indexer_batch_duration_seconds",
+            "database_multi_indexer_errors_total"
         ]
 
         for name in expectedNames {

@@ -161,9 +161,9 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension (Updated)
+// MARK: - DatabaseContext Extension (Updated)
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Start an aggregation query
     ///

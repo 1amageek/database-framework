@@ -1,5 +1,5 @@
 // AlgorithmConfiguration.swift
-// FDBIndexing - Runtime algorithm configuration
+// DatabaseEngine - Runtime algorithm configuration
 //
 // Allows runtime selection of index algorithms without changing model definitions.
 

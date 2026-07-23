@@ -1,7 +1,7 @@
 // GraphAlgorithmQuery.swift
 // GraphIndex - Unified entry point for graph algorithms
 //
-// Provides FDBContext extension for PageRank and Community Detection.
+// Provides DatabaseContext extension for PageRank and Community Detection.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -398,9 +398,9 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Start a graph algorithm query (PageRank, Community Detection)
     ///
     /// **Usage**:

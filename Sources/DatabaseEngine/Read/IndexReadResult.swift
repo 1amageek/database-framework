@@ -10,7 +10,7 @@ import DatabaseValue
 ///
 /// Read executors emit rows in a canonical shape: materialized fields plus optional
 /// index annotations (e.g. `distance`, `score`, `rank`). The dispatcher in
-/// `FDBContext+CanonicalRows.swift` applies the common SQL pipeline
+/// `DatabaseContext+CanonicalRows.swift` applies the common SQL pipeline
 /// (`WHERE` / `ORDER BY` / projection / `DISTINCT` / `LIMIT` / `OFFSET`) on top,
 /// so executors must not paginate or project themselves.
 public struct IndexReadRow: Sendable {

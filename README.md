@@ -41,7 +41,7 @@ storage configuration at initialization.
 
 - DBContainer owns the schema, storage engine, directory resolution, and
   index lifecycle.
-- FDBContext is the user-facing change-tracking context and transaction entry
+- DatabaseContext is the user-facing change-tracking context and transaction entry
   point. The name is historical: it is used with every StorageEngine, not only
   FoundationDB.
 - DatabaseEngine provides backend-neutral persistence, transaction
@@ -69,7 +69,7 @@ The common execution path is:
            DBContainer
                 |
                 v
-            FDBContext
+            DatabaseContext
                 |
                 v
       StorageEngine.withTransaction
@@ -272,7 +272,7 @@ for transactions.
            +--> newContext()
                     |
                     v
-                FDBContext
+                DatabaseContext
                   owns: pending changes, read-version/cache state,
                         transaction orchestration
 

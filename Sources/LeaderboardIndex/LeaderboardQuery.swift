@@ -1,7 +1,7 @@
 // LeaderboardQuery.swift
 // LeaderboardIndex - Query extension for time-windowed leaderboard indexes
 //
-// Provides FDBContext extension and query builder for leaderboard operations.
+// Provides DatabaseContext extension and query builder for leaderboard operations.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -395,9 +395,9 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Start a leaderboard query
     ///
     /// This method is available when you import `LeaderboardIndex`.

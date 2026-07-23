@@ -3,7 +3,7 @@
 // End-to-end integration tests for SHACL validation against FoundationDB
 //
 // These tests validate the complete SHACL validation path:
-//   User Code -> FDBContext.shacl -> SHACLValidator -> SHACLTargetResolver/SHACLConstraintEvaluator -> FDB
+//   User Code -> DatabaseContext.shacl -> SHACLValidator -> SHACLTargetResolver/SHACLConstraintEvaluator -> FDB
 //
 // Literal values use the canonical role-preserving RDF term storage codec.
 //
@@ -69,7 +69,7 @@ struct SHACLValidationTests {
         try await container.newContext().shacl.deleteAllShapesGraphs()
     }
 
-    private func insertStatements(_ statements: [SHACLValidationStatement], context: FDBContext) async throws {
+    private func insertStatements(_ statements: [SHACLValidationStatement], context: DatabaseContext) async throws {
         for statement in statements {
             try context.insert(statement)
         }
@@ -90,7 +90,7 @@ struct SHACLValidationTests {
 
     /// Insert a standard person dataset for SHACL tests.
     /// Insert a canonical RDF dataset for validation tests.
-    private func insertPersonData(context: FDBContext) async throws {
+    private func insertPersonData(context: DatabaseContext) async throws {
         try await insertStatements([
             // Alice is a Person with name and email
             makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: .iri("ex:Person")),
@@ -1471,7 +1471,7 @@ struct SHACLValidationTests {
         try await cleanup(container: container)
     }
 
-    // MARK: - FDBContext+SHACL API
+    // MARK: - DatabaseContext+SHACL API
 
     @Test("validateNode API validates a specific node against a shape")
     func testValidateNodeAgainstShape() async throws {

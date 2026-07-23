@@ -1,7 +1,7 @@
-// FDBContext+Ontology.swift
-// GraphIndex - FDBContext extension for ontology management
+// DatabaseContext+Ontology.swift
+// GraphIndex - DatabaseContext extension for ontology management
 //
-// Provides high-level API for ontology CRUD operations via FDBContext.
+// Provides high-level API for ontology CRUD operations via DatabaseContext.
 //
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/
 
@@ -15,9 +15,9 @@ import Graph
 import Core
 import DatabaseEngine
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
     /// Access ontology management API
     ///
     /// **Usage**:
@@ -60,14 +60,14 @@ public struct OntologyContextAPI: Sendable {
 
     // MARK: - Properties
 
-    private let context: FDBContext
+    private let context: DatabaseContext
 
     /// Ontology subspace key prefix
     private static let ontologyPrefix = Bytes("O".utf8)
 
     // MARK: - Initialization
 
-    internal init(context: FDBContext) {
+    internal init(context: DatabaseContext) {
         self.context = context
     }
 

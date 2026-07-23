@@ -111,7 +111,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Property filter pushdown - equality")
     func testPropertyFilterPushdownEquality() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -159,7 +159,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Property filter pushdown - range comparison")
     func testPropertyFilterPushdownRange() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -204,7 +204,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Property filter pushdown - string contains")
     func testPropertyFilterPushdownStringContains() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -238,7 +238,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("AND decomposition - multiple pushable filters")
     func testAndMultiplePushable() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -273,7 +273,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("AND decomposition - pushable + complex filter")
     func testAndPushableAndComplex() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -337,7 +337,7 @@ struct SPARQLPropertyFilterIntegrationTests {
             }
         }
 
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -369,7 +369,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Performance - property filter reduces scan")
     func testPerformancePropertyFilterReducesScan() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -415,7 +415,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Explicit projection excludes property variables")
     func testExplicitProjectionExcludesPropertyVariables() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -452,7 +452,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Property variables are bound in results")
     func testPropertyVariablesAreBound() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")

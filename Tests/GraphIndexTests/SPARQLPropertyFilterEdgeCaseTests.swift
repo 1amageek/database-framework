@@ -84,7 +84,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Complex filter: OR expression (post-scan)")
     func testOrExpressionPostScan() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -121,7 +121,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Complex filter: NOT expression (post-scan)")
     func testNotExpressionPostScan() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -153,7 +153,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Complex filter: regex (post-scan)")
     func testRegexPostScan() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -187,7 +187,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Explicit SELECT of property variable only")
     func testSelectPropertyVariableOnly() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -222,7 +222,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("SELECT mix of structure and property variables")
     func testSelectMixedVariables() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -254,7 +254,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Comparison operators: lessThanOrEqual")
     func testLessThanOrEqual() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -288,7 +288,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Comparison operators: greaterThan")
     func testGreaterThan() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -322,7 +322,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Comparison operators: notEquals")
     func testNotEquals() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -355,7 +355,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("String operators: hasPrefix")
     func testHasPrefix() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -387,7 +387,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("String operators: hasSuffix")
     func testHasSuffix() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -421,7 +421,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Empty result: filter excludes all records")
     func testEmptyResult() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 

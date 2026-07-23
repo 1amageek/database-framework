@@ -86,7 +86,7 @@ struct SPARQLGroupByTests {
         return container
     }
 
-    private func insertEdges(_ edges: [SocialEdgeForGroupBy], context: FDBContext) async throws {
+    private func insertEdges(_ edges: [SocialEdgeForGroupBy], context: DatabaseContext) async throws {
         for edge in edges {
             try context.insert(edge)
         }

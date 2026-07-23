@@ -1,7 +1,7 @@
 #if !os(WASI)
 #if FOUNDATION_DB
 // ContextMutationIntentTests.swift
-// Regression tests for explicit FDBContext mutation intent and index maintenance.
+// Regression tests for explicit DatabaseContext mutation intent and index maintenance.
 
 import Testing
 import Foundation

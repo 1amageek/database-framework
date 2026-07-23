@@ -828,9 +828,9 @@ public struct VectorEntryPoint<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - FDBContext Extension
+// MARK: - DatabaseContext Extension
 
-extension FDBContext {
+extension DatabaseContext {
 
     /// Start a vector similarity search query
     ///

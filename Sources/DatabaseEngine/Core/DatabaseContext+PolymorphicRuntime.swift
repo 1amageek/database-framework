@@ -23,7 +23,7 @@ public struct PolymorphicRecord: Sendable {
     }
 }
 
-extension FDBContext {
+extension DatabaseContext {
     public func executeCanonicalRead<T: Sendable>(
         configuration: TransactionConfiguration = .default,
         _ operation: @Sendable @escaping (any TransactionAccess) async throws -> T

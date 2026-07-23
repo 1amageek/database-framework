@@ -70,7 +70,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Type-safe property filter: equality")
     func testTypeSafeEqualityFilter() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -95,7 +95,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Type-safe property filter: range")
     func testTypeSafeRangeFilter() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
 
@@ -118,7 +118,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Multiple property filters (AND)")
     func testMultiplePropertyFilters() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -146,7 +146,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Type-erased property filter (whereRaw)")
     func testTypeErasedPropertyFilter() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -171,7 +171,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Property filter with nil values")
     func testPropertyFilterWithNilValues() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -198,7 +198,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Backward compatibility: no property filters")
     func testBackwardCompatibility() async throws {
         let container = try await setupContainer()
-        let context = FDBContext(container: container)
+        let context = DatabaseContext(container: container)
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")

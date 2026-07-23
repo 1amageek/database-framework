@@ -277,7 +277,7 @@ struct DatabaseTransactionLifecycleTests {
                 as: TransactionLifecycleParent.self
             ) == latest
         )
-        #expect(throws: FDBContextError.rollbackDuringSaveNotAllowed) {
+        #expect(throws: DatabaseContextError.rollbackDuringSaveNotAllowed) {
             try context.rollback()
         }
 
@@ -349,19 +349,19 @@ struct DatabaseTransactionLifecycleTests {
             id: "poisoned-followup",
             value: "must-not-stage"
         )
-        #expect(throws: FDBContextError.commitOutcomeUnknown) {
+        #expect(throws: DatabaseContextError.commitOutcomeUnknown) {
             try context.insert(followupModel)
         }
-        await #expect(throws: FDBContextError.commitOutcomeUnknown) {
+        await #expect(throws: DatabaseContextError.commitOutcomeUnknown) {
             try await context.model(
                 for: committedModel.id,
                 as: TransactionLifecycleParent.self
             )
         }
-        await #expect(throws: FDBContextError.commitOutcomeUnknown) {
+        await #expect(throws: DatabaseContextError.commitOutcomeUnknown) {
             try await context.withTransaction { _ in () }
         }
-        #expect(throws: FDBContextError.commitOutcomeUnknown) {
+        #expect(throws: DatabaseContextError.commitOutcomeUnknown) {
             try context.rollback()
         }
 
