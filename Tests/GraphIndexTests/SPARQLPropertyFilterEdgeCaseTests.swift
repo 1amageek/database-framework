@@ -88,9 +88,9 @@ struct SPARQLPropertyFilterEdgeCaseTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 10, note: "friend"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 50, note: "colleague"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("dave"), relation: "knows", score: 90, note: "family"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 10, note: "friend"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 50, note: "colleague"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("dave"), relation: "knows", score: 90, note: "family"))
         try await context.save()
 
         // OR: score < 20 OR score > 80 (both sides are post-scan)
@@ -125,8 +125,8 @@ struct SPARQLPropertyFilterEdgeCaseTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 50, note: "active"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 60, note: "inactive"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 50, note: "active"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 60, note: "inactive"))
         try await context.save()
 
         // NOT(note = "inactive")
@@ -157,9 +157,9 @@ struct SPARQLPropertyFilterEdgeCaseTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 10, note: "active-premium"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 20, note: "inactive"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("dave"), relation: "knows", score: 30, note: "active"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 10, note: "active-premium"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 20, note: "inactive"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("dave"), relation: "knows", score: 30, note: "active"))
         try await context.save()
 
         // note =~ /^active/
@@ -191,8 +191,8 @@ struct SPARQLPropertyFilterEdgeCaseTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 100, note: "test"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 200, note: "test"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 100, note: "test"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 200, note: "test"))
         try await context.save()
 
         // SELECT ?score WHERE { ... } FILTER(?score > 150)
@@ -227,7 +227,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
 
-        context.insert(EdgeCaseConnection(from: alice, target: bob, relation: "knows", score: 100, note: "friend"))
+        try context.insert(EdgeCaseConnection(from: alice, target: bob, relation: "knows", score: 100, note: "friend"))
         try await context.save()
 
         // SELECT ?target ?score WHERE { ... }
@@ -259,7 +259,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
         let alice = uniqueID("alice")
 
         for score in [10, 20, 30, 40, 50] {
-            context.insert(EdgeCaseConnection(from: alice, target: uniqueID("user\(score)"), relation: "knows", score: score, note: ""))
+            try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("user\(score)"), relation: "knows", score: score, note: ""))
         }
         try await context.save()
 
@@ -293,7 +293,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
         let alice = uniqueID("alice")
 
         for score in [10, 20, 30, 40, 50] {
-            context.insert(EdgeCaseConnection(from: alice, target: uniqueID("user\(score)"), relation: "knows", score: score, note: ""))
+            try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("user\(score)"), relation: "knows", score: score, note: ""))
         }
         try await context.save()
 
@@ -326,9 +326,9 @@ struct SPARQLPropertyFilterEdgeCaseTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 50, note: "test"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 100, note: "test"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("dave"), relation: "knows", score: 50, note: "test"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 50, note: "test"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 100, note: "test"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("dave"), relation: "knows", score: 50, note: "test"))
         try await context.save()
 
         // score != 50
@@ -359,9 +359,9 @@ struct SPARQLPropertyFilterEdgeCaseTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 0, note: "active-user"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 0, note: "inactive-user"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("dave"), relation: "knows", score: 0, note: "active-admin"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 0, note: "active-user"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 0, note: "inactive-user"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("dave"), relation: "knows", score: 0, note: "active-admin"))
         try await context.save()
 
         // note STARTS WITH "active"
@@ -391,9 +391,9 @@ struct SPARQLPropertyFilterEdgeCaseTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 0, note: "user-active"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 0, note: "user-disabled"))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("dave"), relation: "knows", score: 0, note: "admin-active"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 0, note: "user-active"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 0, note: "user-disabled"))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("dave"), relation: "knows", score: 0, note: "admin-active"))
         try await context.save()
 
         // note ENDS WITH "active"
@@ -425,8 +425,8 @@ struct SPARQLPropertyFilterEdgeCaseTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 10, note: ""))
-        context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 20, note: ""))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("bob"), relation: "knows", score: 10, note: ""))
+        try context.insert(EdgeCaseConnection(from: alice, target: uniqueID("carol"), relation: "knows", score: 20, note: ""))
         try await context.save()
 
         // score > 100 (no matches)

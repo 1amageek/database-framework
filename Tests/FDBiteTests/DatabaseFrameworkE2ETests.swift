@@ -241,11 +241,11 @@ struct DatabaseFrameworkE2ETests {
 
         var alice = DatabaseFrameworkE2EAccount(email: "alice@example.com", age: 31)
         alice.id = "database-framework-e2e-alice"
-        writeContext.insert(alice)
+        try writeContext.insert(alice)
 
         var bob = DatabaseFrameworkE2EAccount(email: "bob@example.com", age: 17)
         bob.id = "database-framework-e2e-bob"
-        writeContext.insert(bob)
+        try writeContext.insert(bob)
 
         try await writeContext.save()
 
@@ -263,7 +263,7 @@ struct DatabaseFrameworkE2ETests {
         #expect(adults.map(\.id) == ["database-framework-e2e-alice"])
         #expect(adults.first?.email == "alice@example.com")
 
-        readContext.delete(alice)
+        try readContext.delete(alice)
         try await readContext.save()
 
         let verifier = try await DBContainer.sqlite(
@@ -303,7 +303,7 @@ struct DatabaseFrameworkE2ETests {
 
         var original = DatabaseFrameworkE2EAccount(email: "old@example.com", age: 31)
         original.id = "database-framework-indexed-account"
-        context.insert(original)
+        try context.insert(original)
         try await context.save()
 
         let beforeReplace = try await context.fetch(DatabaseFrameworkE2EAccount.self)
@@ -314,7 +314,7 @@ struct DatabaseFrameworkE2ETests {
         var updated = original
         updated.email = "new@example.com"
         updated.age = 32
-        context.replace(old: original, with: updated)
+        try context.update(updated)
         try await context.save()
 
         let oldEmailResults = try await context.fetch(DatabaseFrameworkE2EAccount.self)
@@ -328,7 +328,7 @@ struct DatabaseFrameworkE2ETests {
         #expect(newEmailResults.map(\.id) == ["database-framework-indexed-account"])
         #expect(newEmailResults.first?.age == 32)
 
-        context.delete(updated)
+        try context.delete(updated)
         try await context.save()
 
         let afterDelete = try await context.fetch(DatabaseFrameworkE2EAccount.self)
@@ -337,8 +337,8 @@ struct DatabaseFrameworkE2ETests {
         #expect(afterDelete.isEmpty)
     }
 
-    @Test("SQLite stale replace keeps scalar index consistent with stored row")
-    func sqliteStaleReplaceKeepsScalarIndexConsistentWithStoredRow() async throws {
+    @Test("SQLite stale update keeps scalar index consistent with stored row")
+    func sqliteStaleUpdateKeepsScalarIndexConsistentWithStoredRow() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("database-framework-stale-replace-e2e-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -361,21 +361,21 @@ struct DatabaseFrameworkE2ETests {
         var original = DatabaseFrameworkE2EAccount(email: "stale-original@example.com", age: 31)
         original.id = "database-framework-stale-account"
         let seedContext = container.newContext()
-        seedContext.insert(original)
+        try seedContext.insert(original)
         try await seedContext.save()
 
         let firstContext = container.newContext()
         var firstUpdate = original
         firstUpdate.email = "stale-first@example.com"
         firstUpdate.age = 32
-        firstContext.replace(old: original, with: firstUpdate)
+        try firstContext.update(firstUpdate)
         try await firstContext.save()
 
         let secondContext = container.newContext()
         var secondUpdate = original
         secondUpdate.email = "stale-second@example.com"
         secondUpdate.age = 33
-        secondContext.replace(old: original, with: secondUpdate)
+        try secondContext.update(secondUpdate)
         try await secondContext.save()
 
         let verificationContainer = try await DBContainer.sqlite(
@@ -430,18 +430,18 @@ struct DatabaseFrameworkE2ETests {
         var original = DatabaseFrameworkE2EAccount(email: "delete-original@example.com", age: 31)
         original.id = "database-framework-stale-delete-account"
         let seedContext = container.newContext()
-        seedContext.insert(original)
+        try seedContext.insert(original)
         try await seedContext.save()
 
         var updated = original
         updated.email = "delete-current@example.com"
         updated.age = 32
         let updateContext = container.newContext()
-        updateContext.replace(old: original, with: updated)
+        try updateContext.update(updated)
         try await updateContext.save()
 
         let deleteContext = container.newContext()
-        deleteContext.delete(original, precondition: .exists)
+        try deleteContext.delete(original, precondition: .exists)
         try await deleteContext.save()
 
         let verificationContainer = try await DBContainer.sqlite(
@@ -491,18 +491,18 @@ struct DatabaseFrameworkE2ETests {
         var original = DatabaseFrameworkE2EAccount(email: "default-delete-original@example.com", age: 31)
         original.id = "database-framework-default-stale-delete-account"
         let seedContext = container.newContext()
-        seedContext.insert(original)
+        try seedContext.insert(original)
         try await seedContext.save()
 
         var updated = original
         updated.email = "default-delete-current@example.com"
         updated.age = 32
         let updateContext = container.newContext()
-        updateContext.replace(old: original, with: updated)
+        try updateContext.update(updated)
         try await updateContext.save()
 
         let deleteContext = container.newContext()
-        deleteContext.delete(original)
+        try deleteContext.delete(original)
         try await deleteContext.save()
 
         let verificationContainer = try await DBContainer.sqlite(
@@ -553,7 +553,7 @@ struct DatabaseFrameworkE2ETests {
         original.id = "database-framework-secure-stale-delete-document"
         try await AuthContextKey.$current.withValue(DatabaseFrameworkE2EAuth(userID: "alice")) {
             let createContext = container.newContext()
-            createContext.insert(original)
+            try createContext.insert(original)
             try await createContext.save()
         }
 
@@ -562,14 +562,14 @@ struct DatabaseFrameworkE2ETests {
         transferred.title = "Transferred"
         try await AuthContextKey.$current.withValue(DatabaseFrameworkE2EAuth(userID: "alice")) {
             let updateContext = container.newContext()
-            updateContext.replace(old: original, with: transferred)
+            try updateContext.update(transferred)
             try await updateContext.save()
         }
 
         do {
             try await AuthContextKey.$current.withValue(DatabaseFrameworkE2EAuth(userID: "alice")) {
                 let deleteContext = container.newContext()
-                deleteContext.delete(original)
+                try deleteContext.delete(original)
                 try await deleteContext.save()
             }
             Issue.record("Expected stale delete to be denied by current stored owner")
@@ -593,8 +593,8 @@ struct DatabaseFrameworkE2ETests {
         #expect(stored?.title == "Transferred")
     }
 
-    @Test("SQLite duplicate create preserves stored row and scalar index")
-    func sqliteDuplicateCreatePreservesStoredRowAndScalarIndex() async throws {
+    @Test("SQLite duplicate insert preserves stored row and scalar index")
+    func sqliteDuplicateInsertPreservesStoredRowAndScalarIndex() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("database-framework-duplicate-create-e2e-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -617,14 +617,14 @@ struct DatabaseFrameworkE2ETests {
         var original = DatabaseFrameworkE2EAccount(email: "create-original@example.com", age: 31)
         original.id = "database-framework-duplicate-create-account"
         let seedContext = container.newContext()
-        seedContext.insert(original)
+        try seedContext.insert(original)
         try await seedContext.save()
 
         var duplicate = original
         duplicate.email = "create-duplicate@example.com"
         duplicate.age = 32
         let duplicateContext = container.newContext()
-        duplicateContext.create(duplicate)
+        try duplicateContext.insert(duplicate)
 
         do {
             try await duplicateContext.save()
@@ -687,21 +687,21 @@ struct DatabaseFrameworkE2ETests {
         var original = DatabaseFrameworkE2EAccount(email: "upsert-original@example.com", age: 31)
         original.id = "database-framework-upsert-account"
         let seedContext = container.newContext()
-        seedContext.insert(original)
+        try seedContext.insert(original)
         try await seedContext.save()
 
         var current = original
         current.email = "upsert-current@example.com"
         current.age = 32
         let updateContext = container.newContext()
-        updateContext.replace(old: original, with: current)
+        try updateContext.update(current)
         try await updateContext.save()
 
         var upserted = original
         upserted.email = "upsert-final@example.com"
         upserted.age = 33
         let upsertContext = container.newContext()
-        upsertContext.upsert(upserted)
+        try upsertContext.upsert(upserted)
         try await upsertContext.save()
 
         let verificationContainer = try await DBContainer.sqlite(
@@ -767,14 +767,14 @@ struct DatabaseFrameworkE2ETests {
         )
         tenantB.id = "database-framework-tenant-b-account"
 
-        context.insert(tenantA)
-        context.insert(tenantB)
+        try context.insert(tenantA)
+        try context.insert(tenantB)
         try await context.save()
 
         var updatedTenantA = tenantA
         updatedTenantA.email = "tenant-a-updated@example.com"
         let updateContext = container.newContext()
-        updateContext.replace(old: tenantA, with: updatedTenantA)
+        try updateContext.update(updatedTenantA)
         try await updateContext.save()
 
         let tenantAAfterUpdate = try await container.newContext()
@@ -798,7 +798,7 @@ struct DatabaseFrameworkE2ETests {
         #expect(tenantBSharedEmail.map(\.id) == ["database-framework-tenant-b-account"])
 
         let deleteContext = container.newContext()
-        deleteContext.delete(updatedTenantA)
+        try deleteContext.delete(updatedTenantA)
         try await deleteContext.save()
 
         let tenantAAfterDelete = try await container.newContext()
@@ -816,8 +816,8 @@ struct DatabaseFrameworkE2ETests {
         #expect(tenantBAfterDelete.map(\.id) == ["database-framework-tenant-b-account"])
     }
 
-    @Test("SQLite dynamic directory replace moves rows and indexes across partitions")
-    func sqliteDynamicDirectoryReplaceMovesRowsAndIndexesAcrossPartitions() async throws {
+    @Test("SQLite partition move transfers rows and indexes atomically")
+    func sqlitePartitionMoveTransfersRowsAndIndexesAtomically() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("database-framework-dynamic-move-e2e-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -844,7 +844,7 @@ struct DatabaseFrameworkE2ETests {
         )
         original.id = "database-framework-tenant-move-account"
         let seedContext = container.newContext()
-        seedContext.insert(original)
+        try seedContext.insert(original)
         try await seedContext.save()
 
         var moved = original
@@ -852,7 +852,8 @@ struct DatabaseFrameworkE2ETests {
         moved.email = "move-current@example.com"
         moved.status = "moved"
         let moveContext = container.newContext()
-        moveContext.replace(old: original, with: moved)
+        try moveContext.delete(original, precondition: .exists)
+        try moveContext.insert(moved, precondition: .notExists)
         try await moveContext.save()
 
         let verificationContainer = try await DBContainer.sqlite(
@@ -907,7 +908,7 @@ struct DatabaseFrameworkE2ETests {
         )
         original.id = "database-framework-large-document"
         let seedContext = container.newContext()
-        seedContext.insert(original)
+        try seedContext.insert(original)
         try await seedContext.save()
 
         let blobCountAfterInsert = try await databaseFrameworkE2ECountKeys(
@@ -926,7 +927,7 @@ struct DatabaseFrameworkE2ETests {
         compact.title = "large-compact"
         compact.body = "small body"
         let updateContext = container.newContext()
-        updateContext.replace(old: original, with: compact)
+        try updateContext.update(compact)
         try await updateContext.save()
 
         let blobCountAfterCompact = try await databaseFrameworkE2ECountKeys(
@@ -952,7 +953,10 @@ struct DatabaseFrameworkE2ETests {
                 var rolledBack = compactForRollback
                 rolledBack.title = "large-rolled-back"
                 rolledBack.body = databaseFrameworkE2ELargeText()
-                try await transaction.set(rolledBack)
+                try await transaction.save(
+                    rolledBack,
+                    precondition: .exists
+                )
                 throw DatabaseFrameworkE2ETransactionError.expectedRollback
             }
             Issue.record("Expected transaction rollback")
@@ -978,7 +982,7 @@ struct DatabaseFrameworkE2ETests {
         #expect(compactAfterRollbackHits.map(\.id) == [original.id])
 
         let deleteContext = container.newContext()
-        deleteContext.delete(compact)
+        try deleteContext.delete(compact)
         try await deleteContext.save()
 
         let blobCountAfterDelete = try await databaseFrameworkE2ECountKeys(
@@ -1021,14 +1025,14 @@ struct DatabaseFrameworkE2ETests {
         )
         original.id = "database-framework-transaction-stale-delete-account"
         let seedContext = container.newContext()
-        seedContext.insert(original)
+        try seedContext.insert(original)
         try await seedContext.save()
 
         var current = original
         current.email = "transaction-delete-current@example.com"
         current.age = 32
         let updateContext = container.newContext()
-        updateContext.replace(old: original, with: current)
+        try updateContext.update(current)
         try await updateContext.save()
 
         let originalForTransactionDelete = original
@@ -1059,8 +1063,8 @@ struct DatabaseFrameworkE2ETests {
         #expect(currentEmailHits.isEmpty)
     }
 
-    @Test("SQLite failed replace leaves no partial writes and same-context retry succeeds")
-    func sqliteFailedReplaceLeavesNoPartialWritesAndSameContextRetrySucceeds() async throws {
+    @Test("SQLite failed update leaves no partial writes and same-context retry succeeds")
+    func sqliteFailedUpdateLeavesNoPartialWritesAndSameContextRetrySucceeds() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("database-framework-replace-retry-e2e-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1087,11 +1091,11 @@ struct DatabaseFrameworkE2ETests {
         updated.email = "after@example.com"
         updated.age = 30
 
-        retryingContext.replace(old: original, with: updated)
+        try retryingContext.update(updated)
 
         do {
             try await retryingContext.save()
-            Issue.record("Expected replace on missing row to fail")
+            Issue.record("Expected update on missing row to fail")
         } catch let error as FDBContextError {
             if case .preconditionFailed(let typeName, let idDescription, let precondition, _) = error {
                 #expect(typeName == DatabaseFrameworkE2EAccount.persistableType)
@@ -1126,7 +1130,7 @@ struct DatabaseFrameworkE2ETests {
         #expect(leakedNewEmail.isEmpty)
 
         let seedingContext = container.newContext()
-        seedingContext.insert(original)
+        try seedingContext.insert(original)
         try await seedingContext.save()
 
         try await retryingContext.save()
@@ -1184,8 +1188,8 @@ struct DatabaseFrameworkE2ETests {
         missingUpdated.email = "legacy-after@example.com"
         missingUpdated.age = 45
 
-        retryingContext.create(created)
-        retryingContext.replace(old: missingOriginal, with: missingUpdated)
+        try retryingContext.insert(created)
+        try retryingContext.update(missingUpdated)
 
         do {
             try await retryingContext.save()
@@ -1230,7 +1234,7 @@ struct DatabaseFrameworkE2ETests {
         #expect(persistedUpdated == nil)
 
         let seedingContext = container.newContext()
-        seedingContext.insert(missingOriginal)
+        try seedingContext.insert(missingOriginal)
         try await seedingContext.save()
 
         try await retryingContext.save()
@@ -1305,9 +1309,9 @@ struct DatabaseFrameworkE2ETests {
         missingUpdated.email = "cross-store-missing-after@example.com"
         missingUpdated.age = 41
 
-        retryingContext.create(staticCreated)
-        retryingContext.create(tenantCreated)
-        retryingContext.replace(old: missingOriginal, with: missingUpdated)
+        try retryingContext.insert(staticCreated)
+        try retryingContext.insert(tenantCreated)
+        try retryingContext.update(missingUpdated)
 
         do {
             try await retryingContext.save()
@@ -1345,7 +1349,7 @@ struct DatabaseFrameworkE2ETests {
         #expect(leakedReplacement.isEmpty)
 
         let seedContext = container.newContext()
-        seedContext.insert(missingOriginal)
+        try seedContext.insert(missingOriginal)
         try await seedContext.save()
 
         try await retryingContext.save()
@@ -1406,8 +1410,8 @@ struct DatabaseFrameworkE2ETests {
                 var bob = DatabaseFrameworkE2EAccount(email: "rollback-bob@example.com", age: 18)
                 bob.id = "database-framework-rollback-bob"
 
-                try await tx.set(alice)
-                try await tx.set(bob)
+                try await tx.save(alice)
+                try await tx.save(bob)
 
                 throw DatabaseFrameworkE2ETransactionError.expectedRollback
             }
@@ -1463,7 +1467,7 @@ struct DatabaseFrameworkE2ETests {
             order(id: "order-b-1", tenantID: tenantB, status: "open", total: 250),
         ]
         for order in orders {
-            context.insert(order)
+            try context.insert(order)
         }
         try await context.save()
 
@@ -1488,7 +1492,7 @@ struct DatabaseFrameworkE2ETests {
         #expect(skippedOrder.map(\.id) == ["order-a-1"])
 
         let updated = order(id: "order-a-1", tenantID: tenantA, status: "closed", total: 150)
-        context.insert(updated)
+        try context.insert(updated)
         try await context.save()
 
         let openCountAfterUpdate = try await context.fetch(DatabaseFrameworkE2EOrder.self)
@@ -1503,7 +1507,7 @@ struct DatabaseFrameworkE2ETests {
             .execute()
         #expect(tenantBOpen.map(\.id) == ["order-b-1"])
 
-        context.delete(updated)
+        try context.delete(updated)
         try await context.save()
 
         let tenantAAfterDelete = try await context.fetch(DatabaseFrameworkE2EOrder.self)
@@ -1536,8 +1540,8 @@ struct DatabaseFrameworkE2ETests {
         )
         bob.id = "database-framework-migrated-bob"
 
-        initialContext.insert(alice)
-        initialContext.insert(bob)
+        try initialContext.insert(alice)
+        try initialContext.insert(bob)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 

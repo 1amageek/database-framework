@@ -23,7 +23,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         requestPayload: DatabaseBytes,
         context: DatabaseOperationContext,
         timeoutMilliseconds: UInt32,
-        body: @Sendable @escaping (TransactionContext) async throws -> Value,
+        body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
         makeResponse: @Sendable @escaping (
             Value,
             UInt64
@@ -58,7 +58,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         prepare: @Sendable @escaping () async throws -> Preparation,
         body: @Sendable @escaping (
             Preparation,
-            TransactionContext
+            DatabaseTransaction
         ) async throws -> Value,
         makeResponse: @Sendable @escaping (
             Value,
@@ -110,7 +110,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         requestPayload: DatabaseBytes,
         context: DatabaseOperationContext,
         deadline: DatabaseExecutionDeadline,
-        body: @Sendable @escaping (TransactionContext) async throws -> Value,
+        body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
         decodeStoredResponse: @Sendable @escaping (
             DatabaseBytes
         ) throws -> Prepared,
@@ -142,7 +142,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 configuration: configuration,
                 executionDeadline: deadline.transactionExecutionDeadline
             ) { transactionContext in
-                let transaction = transactionContext.rawTransaction
+                let transaction = transactionContext.storageTransaction
                 if let stored = try await stateStore.idempotencyRecord(
                     for: idempotencyKey,
                     transaction: transaction,
@@ -266,7 +266,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         requestPayload: DatabaseBytes,
         context: DatabaseOperationContext,
         timeoutMilliseconds: UInt32,
-        body: @Sendable @escaping (TransactionContext) async throws -> Value,
+        body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
         makeResponse: @Sendable @escaping (
             Value,
             UInt64
@@ -330,7 +330,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 configuration: .readOnly.replacing(timeout: nil),
                 executionDeadline: deadline.transactionExecutionDeadline
             ) { transactionContext in
-                let transaction = transactionContext.rawTransaction
+                let transaction = transactionContext.storageTransaction
                 guard let stored = try await stateStore.idempotencyRecord(
                     for: idempotencyKey,
                     transaction: transaction,

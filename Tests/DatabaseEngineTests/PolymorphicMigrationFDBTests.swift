@@ -289,8 +289,8 @@ struct PolymorphicMigrationFDBTests {
             var report = FDBPolymorphicMigrationReportV1(title: "Legacy Needle Report", pageCount: 8)
             report.id = "fdb-polymorphic-migration-report"
 
-            initialContext.insert(article)
-            initialContext.insert(report)
+            try initialContext.insert(article)
+            try initialContext.insert(report)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -328,10 +328,8 @@ struct PolymorphicMigrationFDBTests {
                 pageCount: report.pageCount
             )
             updatedReport.id = report.id
-            try await verificationContext.savePolymorphic(
-                updatedReport,
-                as: FDBPolymorphicMigrationArticleV2.self
-            )
+            try verificationContext.upsert(updatedReport)
+            try await verificationContext.save()
 
             let afterUpdateNeedle = try await verificationContext
                 .findPolymorphic(FDBPolymorphicMigrationArticleV2.self)
@@ -372,8 +370,9 @@ struct PolymorphicMigrationFDBTests {
             var report = FDBPolymorphicMigrationReportV2(title: "Removal Needle Report", pageCount: 8)
             report.id = "fdb-polymorphic-removal-report"
 
-            try await initialContext.savePolymorphic(article, as: FDBPolymorphicMigrationArticleV2.self)
-            try await initialContext.savePolymorphic(report, as: FDBPolymorphicMigrationArticleV2.self)
+            try initialContext.upsert(article)
+            try initialContext.upsert(report)
+            try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             #expect(try await Self.countPolymorphicIndexEntries(
@@ -405,10 +404,8 @@ struct PolymorphicMigrationFDBTests {
                 body: "Body"
             )
             postRemovalArticle.id = "fdb-polymorphic-removal-after"
-            try await postRemovalContext.savePolymorphic(
-                postRemovalArticle,
-                as: FDBPolymorphicMigrationArticleV3.self
-            )
+            try postRemovalContext.upsert(postRemovalArticle)
+            try await postRemovalContext.save()
 
             let fetched = try await postRemovalContext.fetchPolymorphic(
                 FDBPolymorphicMigrationArticleV3.self
@@ -440,8 +437,9 @@ struct PolymorphicMigrationFDBTests {
             var report = FDBPolymorphicMigrationReportV2(title: "Rebuild Needle Report", pageCount: 5)
             report.id = "fdb-polymorphic-rebuild-report"
 
-            try await initialContext.savePolymorphic(article, as: FDBPolymorphicMigrationArticleV2.self)
-            try await initialContext.savePolymorphic(report, as: FDBPolymorphicMigrationArticleV2.self)
+            try initialContext.upsert(article)
+            try initialContext.upsert(report)
+            try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             try await Self.clearPolymorphicIndexEntries(

@@ -104,7 +104,7 @@ struct SPARQLDebugTests {
         statement.predicate = .iri(knows)
         statement.object = .iri(bob)
         statement.score = 100
-        context.insert(statement)
+        try context.insert(statement)
         try await context.save()
 
         // Check index descriptor
@@ -181,7 +181,7 @@ struct SPARQLDebugTests {
         let bob = "bob-direct"
 
         let edge = DebugEdge(from: alice, target: bob, label: "knows", score: 200)
-        context.insert(edge)
+        try context.insert(edge)
         try await context.save()
 
         // Get index descriptor

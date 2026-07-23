@@ -54,7 +54,7 @@ struct PartitionedDirectoryTests {
             var order = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
             order.id = orderID
 
-            context.insert(order)
+            try context.insert(order)
             try await context.save()
 
             // Fetch using partition
@@ -86,8 +86,8 @@ struct PartitionedDirectoryTests {
             var order2 = TenantOrder(tenantID: tenant2, status: "pending", total: 75.0)
             order2.id = order2ID
 
-            context.insert(order1)
-            context.insert(order2)
+            try context.insert(order1)
+            try context.insert(order2)
             try await context.save()
 
             // Fetch tenant1 orders
@@ -135,7 +135,7 @@ struct PartitionedDirectoryTests {
 
             var order = TenantOrder(tenantID: tenantID, status: "shipped", total: 200.0)
             order.id = orderID
-            context.insert(order)
+            try context.insert(order)
             try await context.save()
 
             let results = try await context.fetch(TenantOrder.self)
@@ -163,8 +163,8 @@ struct PartitionedDirectoryTests {
             var order2 = TenantOrder(tenantID: tenantID, status: "completed", total: 150.0)
             order2.id = order2ID
 
-            context.insert(order1)
-            context.insert(order2)
+            try context.insert(order1)
+            try context.insert(order2)
             try await context.save()
 
             // Filter by status within partition
@@ -191,7 +191,7 @@ struct PartitionedDirectoryTests {
 
             var order = TenantOrder(tenantID: tenantID, status: "pending", total: 50.0)
             order.id = orderID
-            context.insert(order)
+            try context.insert(order)
             try await context.save()
 
             // Verify exists
@@ -203,7 +203,7 @@ struct PartitionedDirectoryTests {
 
             // Delete
             if let toDelete = beforeDelete {
-                context.delete(toDelete)
+                try context.delete(toDelete)
                 try await context.save()
             }
 
@@ -247,8 +247,8 @@ struct PartitionedDirectoryTests {
             var order2 = TenantOrder(tenantID: tenant2, status: "pending", total: 200.0)
             order2.id = order2ID
 
-            context.insert(order1)
-            context.insert(order2)
+            try context.insert(order1)
+            try context.insert(order2)
             try await context.save()
 
             // Delete all from tenant1
@@ -294,7 +294,7 @@ struct PartitionedDirectoryTests {
 
             var order = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
             order.id = orderID
-            context.insert(order)
+            try context.insert(order)
             try await context.save()
 
             var found = false
@@ -348,7 +348,7 @@ struct PartitionedDirectoryTests {
             var player = Player(name: "Test Player", score: 100, level: 5)
             player.id = playerID
 
-            context.insert(player)
+            try context.insert(player)
             try await context.save()
 
             // Should work without partition
@@ -371,7 +371,7 @@ struct PartitionedDirectoryTests {
             var player = Player(name: "Delete Test", score: 50, level: 1)
             player.id = playerID
 
-            context.insert(player)
+            try context.insert(player)
             try await context.save()
 
             try await context.deleteAll(Player.self)
@@ -405,7 +405,7 @@ struct PartitionedDirectoryTests {
             var order = TenantOrder(tenantID: tenantID, status: "processing", total: 150.0)
             order.id = orderID
 
-            context.insert(order)
+            try context.insert(order)
             try await context.save()
 
             // Fetch using model(for:as:partition:)
@@ -419,29 +419,28 @@ struct PartitionedDirectoryTests {
         }
     }
 
-    // MARK: - TransactionContext Partition Tests
+    // MARK: - DatabaseTransaction Partition Tests
 
-    @Test("TransactionContext set/get works for dynamic directory types")
-    func testTransactionContextSetGetDynamicDirectory() async throws {
+    @Test("DatabaseTransaction saves and fetches dynamic directory types")
+    func transactionSavesAndFetchesDynamicDirectoryModel() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            // Use withTransaction to perform operations
-            try await container.engine.withTransaction { transaction in
-                let txContext = TransactionContext(transaction: transaction, container: container)
-
+            try await container.newContext().withTransaction { transaction in
                 var order = TenantOrder(tenantID: tenantID, status: "tx-test", total: 500.0)
                 order.id = orderID
 
-                // Set should work (extracts partition from model)
-                try await txContext.set(order)
+                try await transaction.save(order, precondition: .notExists)
 
-                // Get with partition binding should work
                 var binding = DirectoryPath<TenantOrder>()
                 binding.set(\.tenantID, to: tenantID)
-                let fetched = try await txContext.get(TenantOrder.self, id: orderID, partition: binding)
+                let fetched = try await transaction.fetch(
+                    TenantOrder.self,
+                    identifiedBy: orderID,
+                    in: binding
+                )
 
                 #expect(fetched != nil)
                 #expect(fetched?.status == "tx-test")
@@ -449,15 +448,17 @@ struct PartitionedDirectoryTests {
         }
     }
 
-    @Test("TransactionContext get throws without partition for dynamic types")
-    func testTransactionContextGetThrowsWithoutPartition() async throws {
+    @Test("DatabaseTransaction fetch rejects a missing dynamic partition")
+    func transactionFetchRejectsMissingDynamicPartition() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
 
             await #expect(throws: DirectoryPathError.self) {
-                try await container.engine.withTransaction { transaction in
-                    let txContext = TransactionContext(transaction: transaction, container: container)
-                    _ = try await txContext.get(TenantOrder.self, id: "any-id")
+                try await container.newContext().withTransaction { transaction in
+                    _ = try await transaction.fetch(
+                        TenantOrder.self,
+                        identifiedBy: "any-id"
+                    )
                 }
             }
         }

@@ -53,7 +53,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
     }
 
     @Test("Schema validation rejects a missing record mutation maintainer")
-    func missingRecordMutationMaintainerFailsValidation() throws {
+    func missingPersistableMutationMaintainerFailsValidation() throws {
         let descriptor = RuntimeConfigurationRelationshipOwner.relationshipDescriptors[0]
         let schema = Schema([
             RuntimeConfigurationRelationshipTarget.self,
@@ -66,7 +66,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
         )
 
         #expect(
-            throws: DatabaseRuntimeConfigurationError.missingRecordMutationMaintainer(
+            throws: DatabaseRuntimeConfigurationError.missingPersistableMutationMaintainer(
                 entityName: RuntimeConfigurationRelationshipOwner.persistableType,
                 descriptorName: descriptor.name,
                 identifier: descriptor.runtimeMaintainerIdentifier
@@ -77,16 +77,16 @@ struct DatabaseRuntimeConfigurationValidationTests {
     }
 
     @Test("Runtime configuration rejects duplicate record mutation maintainers")
-    func duplicateRecordMutationMaintainerFailsInitialization() throws {
+    func duplicatePersistableMutationMaintainerFailsInitialization() throws {
         let maintainer = RelationshipReferenceMaintainer()
 
         #expect(
-            throws: DatabaseRuntimeConfigurationError.duplicateRecordMutationMaintainer(
+            throws: DatabaseRuntimeConfigurationError.duplicatePersistableMutationMaintainer(
                 identifier: maintainer.identifier
             )
         ) {
             try DatabaseRuntimeConfiguration(
-                recordMutationMaintainers: [maintainer, maintainer]
+                persistableMutationMaintainers: [maintainer, maintainer]
             )
         }
     }

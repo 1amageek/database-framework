@@ -67,9 +67,6 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Index maintenance service for all index operations
     let indexMaintenanceService: IndexMaintenanceService
 
-    /// Container-wide derived record invariants.
-    private let recordMutationMaintenanceService: RecordMutationMaintenanceService
-
     // MARK: - Initialization
 
     init(
@@ -118,10 +115,6 @@ internal final class FDBDataStore: DataStore, Sendable {
             configurations: indexConfigurations,
             logger: logger
         )
-        self.recordMutationMaintenanceService = RecordMutationMaintenanceService(
-            container: container,
-            maintainers: container.runtimeConfiguration.recordMutationMaintainers
-        )
     }
 
     // MARK: - Fetch Operations
@@ -137,7 +130,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     // Example for optimized reads:
     // ```swift
     // let users = try await context.withTransaction(configuration: .readOnly) { tx in
-    //     try await tx.get(User.self, ids: userIds)
+    //     try await tx.fetch(User.self, ids: userIds)
     // }
     // ```
 
@@ -192,7 +185,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Fetch a single model by ID
     func fetch<T: Persistable>(_ type: T.Type, id: T.ID) async throws -> T? {
-        let result: T? = try await withAutoCommit { [self] transaction in
+        let result: T? = try await container.engine.withAutoCommit { [self] transaction in
             try await self.fetchByIDInTransaction(type, id: id, transaction: transaction)
         }
 
@@ -1445,10 +1438,14 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = MonotonicClock.now()
 
         do {
-            try await container.engine.withTransaction(configuration: .default) { transaction in
-                for model in models {
-                    try await self.saveModel(model, transaction: transaction)
-                }
+            let mutations = models.map {
+                PersistableMutation.save(
+                    model: $0,
+                    precondition: .none
+                )
+            }
+            try await withTransaction(configuration: .default) { transaction in
+                try await transaction.apply(mutations)
             }
 
             let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
@@ -1464,47 +1461,6 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
     }
 
-    /// Save a single model within a transaction
-    private func saveModel<T: Persistable>(
-        _ model: T,
-        transaction: any Transaction
-    ) async throws {
-        let idTuple = try model.recordIdentifierTuple()
-
-        // Serialize using the canonical compiled-record codec.
-        let data = try DataAccess.serialize(model)
-
-        // Build key
-        let typeSubspace = itemSubspace.subspace(T.persistableType)
-        let key = typeSubspace.pack(idTuple)
-
-        // Use ItemStorage for large value handling (stores chunks in blobs subspace)
-        let storage = self.container.itemStorageFactory.make(
-            transaction: transaction,
-            blobsSubspace: self.blobsSubspace
-        )
-
-        // Check for existing record (for index updates)
-        let oldModel: T?
-        if let existingBytes = try await storage.read(for: key) {
-            // Decode using the canonical compiled-record codec.
-            oldModel = try DataAccess.deserialize(existingBytes)
-        } else {
-            oldModel = nil
-        }
-
-        // Save the record (handles compression + external storage for >90KB)
-        try await storage.write(data, for: key)
-
-        // Update indexes via IndexMaintenanceService
-        try await indexMaintenanceService.updateIndexes(oldModel: oldModel, newModel: model, id: idTuple, transaction: transaction)
-        try await recordMutationMaintenanceService.update(
-            oldModel: oldModel,
-            newModel: model,
-            transaction: transaction
-        )
-    }
-
     // MARK: - Delete Operations
 
     /// Delete models
@@ -1514,10 +1470,14 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = MonotonicClock.now()
 
         do {
-            try await container.engine.withTransaction(configuration: .default) { transaction in
-                for model in models {
-                    try await self.deleteModel(model, transaction: transaction)
-                }
+            let mutations = models.map {
+                PersistableMutation.delete(
+                    model: $0,
+                    precondition: .exists
+                )
+            }
+            try await withTransaction(configuration: .default) { transaction in
+                try await transaction.apply(mutations)
             }
 
             let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
@@ -1533,60 +1493,10 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
     }
 
-    /// Delete a single model within a transaction
-    private func deleteModel<T: Persistable>(
-        _ model: T,
-        transaction: any Transaction
-    ) async throws {
-        let idTuple = try model.recordIdentifierTuple()
-
-        let typeSubspace = itemSubspace.subspace(T.persistableType)
-        let key = typeSubspace.pack(idTuple)
-
-        // Remove index entries first via IndexMaintenanceService
-        try await indexMaintenanceService.updateIndexes(oldModel: model, newModel: nil as T?, id: idTuple, transaction: transaction)
-        try await recordMutationMaintenanceService.update(
-            oldModel: model,
-            newModel: nil,
-            transaction: transaction
-        )
-
-        // Delete the record (handles external blob chunks)
-        let storage = self.container.itemStorageFactory.make(
-            transaction: transaction,
-            blobsSubspace: self.blobsSubspace
-        )
-        try await storage.delete(for: key)
-    }
-
     /// Delete model by ID
     func delete<T: Persistable>(_ type: T.Type, id: T.ID) async throws {
-        let idTuple = try RecordIdentifierKeyCodec.tuple(for: id)
-        let typeSubspace = itemSubspace.subspace(T.persistableType)
-        let key = typeSubspace.pack(idTuple)
-
-        try await container.engine.withTransaction(configuration: .default) { transaction in
-            let storage = self.container.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: self.blobsSubspace
-            )
-
-            // Load the model first for index cleanup
-            if let bytes = try await storage.read(for: key) {
-                // Decode using the canonical compiled-record codec.
-                let model: T = try DataAccess.deserialize(bytes)
-
-                // Remove index entries via IndexMaintenanceService
-                try await self.indexMaintenanceService.updateIndexes(oldModel: model, newModel: nil as T?, id: idTuple, transaction: transaction)
-                try await self.recordMutationMaintenanceService.update(
-                    oldModel: model,
-                    newModel: nil,
-                    transaction: transaction
-                )
-            }
-
-            // Delete the record (handles external blob chunks)
-            try await storage.delete(for: key)
+        try await withTransaction(configuration: .default) { transaction in
+            try await transaction.delete(type, identifiedBy: id)
         }
     }
 
@@ -1600,19 +1510,21 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = MonotonicClock.now()
 
         do {
-            if let fastPath = try await executeBatchFastPathIfEligible(
-                inserts: inserts,
-                deletes: deletes
-            ) {
-                _ = fastPath
-            } else {
-                _ = try await container.engine.withTransaction(configuration: .default) { transaction in
-                    try await self.executeBatchInTransaction(
-                        inserts: inserts,
-                        deletes: deletes,
-                        transaction: transaction
-                    )
-                }
+            var mutations: [PersistableMutation] = []
+            mutations.reserveCapacity(inserts.count + deletes.count)
+            for model in inserts {
+                mutations.append(
+                    .save(model: model, precondition: .none)
+                )
+            }
+            for model in deletes {
+                mutations.append(
+                    .delete(model: model, precondition: .exists)
+                )
+            }
+            let capturedMutations = mutations
+            try await withTransaction(configuration: .default) { transaction in
+                try await transaction.apply(capturedMutations)
             }
 
             let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
@@ -1629,235 +1541,13 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
     }
 
-    /// Attempt a single-model fast path for direct DataStore callers.
-    ///
-    /// Mirrors the FDBContext fast path for the same safe subset:
-    /// exactly one insert or delete, security disabled, and no indexes.
-    /// In that case, we can skip the existing-record read because overwrite
-    /// semantics are identical for no-index/no-security types. The write still
-    /// runs through TransactionRunner so retry/backoff policy remains centralized.
-    private func executeBatchFastPathIfEligible(
-        inserts: [any Persistable],
-        deletes: [any Persistable]
-    ) async throws -> Bool? {
-        let isSingleInsert = inserts.count == 1 && deletes.isEmpty
-        let isSingleDelete = inserts.isEmpty && deletes.count == 1
-        guard isSingleInsert || isSingleDelete else { return nil }
-
-        let model = isSingleInsert ? inserts[0] : deletes[0]
-        guard securityDelegate == nil else { return nil }
-        guard type(of: model).indexDescriptors.isEmpty else { return nil }
-
-        if isSingleInsert {
-            _ = try await withRawTransaction { transaction in
-                try await self.executeBatchInTransaction(
-                    inserts: inserts,
-                    deletes: [],
-                    transaction: transaction,
-                    skipExistingCheck: true
-                )
-            }
-        } else {
-            _ = try await withRawTransaction { transaction in
-                try await self.executeBatchInTransaction(
-                    inserts: [],
-                    deletes: deletes,
-                    transaction: transaction,
-                    skipExistingCheck: true
-                )
-            }
-        }
-
-        return true
-    }
-
-    // MARK: - Transaction-Scoped Operations (DataStore Protocol)
-
-    /// Execute batch operations within an externally-provided transaction
-    ///
-    /// Optimized for batch processing:
-    /// - Single encoder reused across all models
-    /// - Returns serialized data for dual-write optimization
-    ///
-    /// - Parameters:
-    ///   - inserts: Models to insert or update
-    ///   - deletes: Models to delete
-    ///   - transaction: The transaction to use
-    ///   - skipExistingCheck: When true, skips reading the pre-existing row (no
-    ///     security / no indexes / known-new inserts only). Forced `false` per
-    ///     operation when a non-`.none` precondition is supplied, since the
-    ///     precondition needs the existence read to evaluate.
-    ///   - insertPreconditions: Optional preconditions aligned positionally with
-    ///     `inserts`. Empty or `.none` means no check.
-    ///   - deletePreconditions: Optional preconditions aligned positionally with
-    ///     `deletes`. Empty or `.none` means no check.
-    /// - Returns: Serialized data for inserted models
-    @discardableResult
-    func executeBatchInTransaction(
-        inserts: [any Persistable],
-        deletes: [any Persistable],
-        transaction: any Transaction,
-        skipExistingCheck: Bool
-    ) async throws -> [SerializedModel] {
-        try await executeBatchInTransactionWithPreconditions(
-            inserts: inserts,
-            deletes: deletes,
-            transaction: transaction,
-            skipExistingCheck: skipExistingCheck,
-            insertPreconditions: [],
-            deletePreconditions: []
-        )
-    }
-
-    /// Same as `executeBatchInTransaction` but threads per-operation
-    /// `WritePrecondition` through. Used by `FDBContext.save()` to surface
-    /// `FDBContextError.preconditionFailed` instead of silent fallback.
-    @discardableResult
-    func executeBatchInTransactionWithPreconditions(
-        inserts: [any Persistable],
-        deletes: [any Persistable],
-        transaction: any Transaction,
-        skipExistingCheck: Bool,
-        insertPreconditions: [WritePrecondition],
-        deletePreconditions: [WritePrecondition]
-    ) async throws -> [SerializedModel] {
-        var serializedModels: [SerializedModel] = []
-
-        // Process inserts.
-        for (index, model) in inserts.enumerated() {
-            let precondition = insertPreconditions.indices.contains(index)
-                ? insertPreconditions[index]
-                : WritePrecondition.none
-
-            // Determine if we can skip reading existing records per model type:
-            // Safe only when ALL of:
-            // 1. Caller signals known inserts (skipExistingCheck)
-            // 2. Security is disabled (no CREATE/UPDATE evaluation needed)
-            // 3. Model type has no indexes (no oldModel needed for diff-based index update)
-            // 4. Precondition is `.none` (preconditions need the existence read)
-            let hasIndexes = !type(of: model).indexDescriptors.isEmpty
-            let canSkip = skipExistingCheck
-                && securityDelegate == nil
-                && !hasIndexes
-                && precondition == .none
-
-            let serialized = try await saveModelUntypedWithSecurityReturningData(
-                model,
-                transaction: transaction,
-                skipExistingCheck: canSkip,
-                precondition: precondition
-            )
-            serializedModels.append(serialized)
-        }
-
-        // Process deletes
-        for (index, model) in deletes.enumerated() {
-            let precondition = deletePreconditions.indices.contains(index)
-                ? deletePreconditions[index]
-                : WritePrecondition.none
-
-            try await deleteModelUntyped(
-                model,
-                transaction: transaction,
-                precondition: precondition
-            )
-        }
-
-        return serializedModels
-    }
-
-    /// Execute replace operations within an externally-provided transaction
-    ///
-    /// Used for the `.replace(old, new)` pending mutation flow. The caller supplies
-    /// the pre-image directly, so index maintenance can diff old → new without
-    /// re-reading storage. This is critical for in-tx `delete + insert` same-ID:
-    /// storage may still contain stale old data that a re-read would return.
-    ///
-    /// - Parameters:
-    ///   - pairs: (old, new) pairs. `old` is trusted as the pre-image.
-    ///   - transaction: The transaction to use
-    /// - Returns: Serialized data for the new models (for dual-write optimization)
-    @discardableResult
-    func executeReplaceInTransaction(
-        pairs: [(old: any Persistable, new: any Persistable)],
-        transaction: any Transaction,
-        preconditions: [WritePrecondition] = []
-    ) async throws -> [SerializedModel] {
-        var results: [SerializedModel] = []
-        results.reserveCapacity(pairs.count)
-        for (index, pair) in pairs.enumerated() {
-            let precondition = preconditions.indices.contains(index)
-                ? preconditions[index]
-                : WritePrecondition.none
-            let serialized = try await saveModelUntypedWithSecurityReturningData(
-                pair.new,
-                transaction: transaction,
-                skipExistingCheck: false,
-                providedOld: pair.old,
-                precondition: precondition
-            )
-            results.append(serialized)
-        }
-        return results
-    }
-
-    /// Execute operations within a raw transaction
-    ///
-    /// Provides raw Transaction for coordinating operations
-    /// across multiple DataStores in a single atomic transaction.
-    ///
-    /// **Design Intent - No ReadVersionCache**:
-    /// This method uses TransactionRunner directly, bypassing any ReadVersionCache.
-    /// This is intentional because:
-    ///
-    /// 1. **Write operations need latest data**: FDBDataStore primarily handles writes
-    ///    (`save()`, `delete()`) which require strong consistency, not stale cached reads.
-    ///
-    /// 2. **DataStore is a low-level component**: FDBDataStore doesn't own a cache;
-    ///    cache ownership is at the FDBContext level (per unit-of-work).
-    ///
-    /// 3. **Called by FDBContext.save()**: When FDBContext.save() uses this method,
-    ///    it's for write operations where cache staleness would be problematic.
-    ///
-    /// For read operations that benefit from weak read semantics, users should use
-    /// `FDBContext.withTransaction()` which properly uses the context's cache.
-    func withRawTransaction<T: Sendable>(
-        _ body: @Sendable @escaping (any Transaction) async throws -> T
-    ) async throws -> T {
-        let runner = TransactionRunner(database: container.engine)
-        return try await runner.run(
-            configuration: .default,
-            operationDescription: "FDBDataStore.withRawTransaction",
-            operation: body
-        )
-    }
-
-    /// Execute a low-level single-read optimization in auto-commit mode.
-    ///
-    /// Write paths use TransactionRunner through `withRawTransaction(_:)`.
-    func withAutoCommit<T: Sendable>(
-        _ body: @Sendable @escaping (any Transaction) async throws -> T
-    ) async throws -> T {
-        return try await container.engine.withAutoCommit(body)
-    }
-
-    /// Save model with security evaluation, returning serialized data for dual-write
-    ///
-    /// - Parameters:
-    ///   - model: The model to save
-    ///   - transaction: The transaction to use
-    ///   - skipExistingCheck: When true, skips reading existing record from storage.
-    ///     The caller (executeBatchInTransaction) ensures this is only true when ALL of:
-    ///     (1) security is disabled, (2) model type has no indexes, and
-    ///     (3) the operation is from FDBContext's insert path.
-    ///     This eliminates one storage read round-trip per insert.
-    private func saveModelUntypedWithSecurityReturningData(
+    /// Saves one persisted model through the complete security and maintenance
+    /// pipeline of the caller's logical transaction.
+    func save(
         _ model: any Persistable,
-        transaction: any Transaction,
-        skipExistingCheck: Bool = false,
-        providedOld: (any Persistable)? = nil,
-        precondition: WritePrecondition = .none
-    ) async throws -> SerializedModel {
+        precondition: WritePrecondition,
+        transaction: any Transaction
+    ) async throws -> PersistableWriteResult {
         let modelType = type(of: model)
         let persistableType = modelType.persistableType
         let idTuple = try model.recordIdentifierTuple()
@@ -1870,47 +1560,28 @@ internal final class FDBDataStore: DataStore, Sendable {
             blobsSubspace: self.blobsSubspace
         )
 
-        // Check for existing record and deserialize for security evaluation and index update
+        // Load the persisted value for security evaluation and index maintenance.
         var oldModel: (any Persistable)?
         let existingRowPresent: Bool
 
-        if let providedOld {
-            // Replace path: caller supplies the pre-image. For preconditions that
-            // need to verify current storage state (`.exists`, `.notExists`), read
-            // the current row and use it for index cleanup. A stale caller-provided
-            // pre-image must not leave the current index entry behind.
-            let needsExistenceProbe = precondition.requiresExistenceRead
-            if needsExistenceProbe {
-                if let oldData = try await storage.read(for: key) {
-                    oldModel = try DataAccess.deserializeAny(oldData, as: modelType)
-                    existingRowPresent = true
-                } else {
-                    oldModel = providedOld
-                    existingRowPresent = false
-                }
-            } else {
-                existingRowPresent = true  // trusted
-                oldModel = providedOld
-            }
-            if let oldModel {
-                try securityDelegate?.evaluateUpdate(oldModel, newResource: model)
-            }
-        } else if skipExistingCheck {
-            // Fast path: caller guarantees this is a new insert with no security checks needed
-            existingRowPresent = false
-        } else if let oldData = try await storage.read(for: key) {
-            // Update - deserialize old model (used for both security and index update)
-            oldModel = try DataAccess.deserializeAny(oldData, as: modelType)
-            try securityDelegate?.evaluateUpdate(oldModel!, newResource: model)
+        if let oldData = try await storage.read(for: key) {
+            let persistedModel = try DataAccess.deserializeAny(
+                oldData,
+                as: modelType
+            )
+            oldModel = persistedModel
+            try securityDelegate?.evaluateUpdate(
+                persistedModel,
+                newResource: model
+            )
             existingRowPresent = true
         } else {
-            // Create
             try securityDelegate?.evaluateCreate(model)
             existingRowPresent = false
         }
 
-        // Phase 2: evaluate write precondition against observed storage state.
-        // Must run BEFORE any write so violations abort cleanly (no partial state).
+        // Validate intent before the first write so a mismatch cannot leave
+        // partial primary or derived state.
         try Self.evaluateWritePrecondition(
             precondition,
             existingRowPresent: existingRowPresent,
@@ -1930,14 +1601,12 @@ internal final class FDBDataStore: DataStore, Sendable {
             id: idTuple,
             transaction: transaction
         )
-        try await recordMutationMaintenanceService.update(
-            oldModel: oldModel,
-            newModel: model,
-            transaction: transaction
+        return PersistableWriteResult(
+            model: model,
+            previousModel: oldModel,
+            encodedValue: data,
+            identifier: idTuple
         )
-
-        // Return serialized data for dual-write optimization
-        return SerializedModel(model: model, data: data, idTuple: idTuple)
     }
 
     /// Evaluate a `WritePrecondition` against an observed existence bit.
@@ -2013,74 +1682,50 @@ internal final class FDBDataStore: DataStore, Sendable {
         return try RecordVersionTokenCodec.digest(fields: fields)
     }
 
-    /// Delete model without type parameter (for batch operations)
-    ///
-    /// - Parameters:
-    ///   - model: The model to delete
-    ///   - transaction: The transaction to use
-    private func deleteModelUntyped(
+    /// Deletes the currently persisted value and its physical indexes.
+    /// A missing value produces no mutation.
+    func delete(
         _ model: any Persistable,
-        transaction: any Transaction,
-        precondition: WritePrecondition = .none
-    ) async throws {
+        precondition: WritePrecondition,
+        transaction: any Transaction
+    ) async throws -> (any Persistable)? {
         let persistableType = type(of: model).persistableType
         let idTuple = try model.recordIdentifierTuple()
-
         let key = itemKey(for: persistableType, id: idTuple)
-
-        // Phase 2: evaluate write precondition before touching storage. Indexed
-        // deletes and secured deletes also need the current row so stale
-        // caller-provided models do not leave the current index entry behind or
-        // authorize deletion against stale field values.
-        var indexOldModel = model
-        let needsCurrentRow = precondition.requiresExistenceRead
-            || !type(of: model).indexDescriptors.isEmpty
-            || securityDelegate != nil
-        if needsCurrentRow {
-            let storageProbe = self.container.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: self.blobsSubspace
+        let storage = container.itemStorageFactory.make(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
+        guard let existingData = try await storage.read(for: key) else {
+            try Self.evaluateWritePrecondition(
+                precondition,
+                existingRowPresent: false,
+                currentVersion: nil,
+                typeName: persistableType,
+                idDescription: String(describing: model.id)
             )
-            let existingRowPresent: Bool
-            if let existingData = try await storageProbe.read(for: key) {
-                indexOldModel = try DataAccess.deserializeAny(existingData, as: type(of: model))
-                existingRowPresent = true
-            } else {
-                existingRowPresent = false
-            }
-            if precondition.requiresExistenceRead {
-                try Self.evaluateWritePrecondition(
-                    precondition,
-                    existingRowPresent: existingRowPresent,
-                    currentVersion: existingRowPresent
-                        ? try Self.recordVersionDigest(for: indexOldModel)
-                        : nil,
-                    typeName: persistableType,
-                    idDescription: String(describing: model.id)
-                )
-            }
+            return nil
         }
-
-        try securityDelegate?.evaluateDelete(indexOldModel)
-
-        // Remove index entries first via IndexMaintenanceService (efficient diff-based update)
+        let persistedModel = try DataAccess.deserializeAny(
+            existingData,
+            as: type(of: model)
+        )
+        try Self.evaluateWritePrecondition(
+            precondition,
+            existingRowPresent: true,
+            currentVersion: try Self.recordVersionDigest(for: persistedModel),
+            typeName: persistableType,
+            idDescription: String(describing: model.id)
+        )
+        try securityDelegate?.evaluateDelete(persistedModel)
         try await indexMaintenanceService.updateIndexesUntyped(
-            oldModel: indexOldModel,
+            oldModel: persistedModel,
             newModel: nil,
             id: idTuple,
             transaction: transaction
         )
-        try await recordMutationMaintenanceService.update(
-            oldModel: indexOldModel,
-            newModel: nil,
-            transaction: transaction
-        )
-
-        let storage = self.container.itemStorageFactory.make(
-            transaction: transaction,
-            blobsSubspace: self.blobsSubspace
-        )
         try await storage.delete(for: key)
+        return persistedModel
     }
 
     // MARK: - Predicate Evaluation
@@ -2111,26 +1756,6 @@ internal final class FDBDataStore: DataStore, Sendable {
     // evaluateFieldComparison and compareModels removed — unified into
     // FieldComparison.evaluate(on:) and SortDescriptor.orderedComparison()
 
-    // MARK: - Clear Operations
-
-    /// Clear all records of a type
-    func clearAll<T: Persistable>(_ type: T.Type) async throws {
-        // Admin-only operation
-        try securityDelegate?.requireAdmin(operation: "clearAll", targetType: T.persistableType)
-
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
-            let typeSubspace = self.itemSubspace.subspace(T.persistableType)
-            let (begin, end) = typeSubspace.range()
-            try transaction.clearRange(beginKey: begin, endKey: end)
-
-            // Also clear indexes for this type
-            for descriptor in T.indexDescriptors {
-                let indexRange = self.indexSubspace.subspace(descriptor.name).range()
-                try transaction.clearRange(beginKey: indexRange.0, endKey: indexRange.1)
-            }
-        }
-    }
-
     // MARK: - Transaction Operations
 
     /// Execute operations within a transaction
@@ -2139,20 +1764,23 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// For application operations that benefit from caching, use FDBContext.withTransaction().
     func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration,
-        _ operation: @Sendable @escaping (any TransactionContextProtocol) async throws -> T
+        _ operation: @Sendable @escaping (
+            DatabaseTransaction
+        ) async throws -> T
     ) async throws -> T {
         return try await container.engine.withTransaction(configuration: configuration) { transaction in
-            // Create a secure transaction context
-            let context = SecureTransactionContext(
+            let databaseTransaction = DatabaseTransaction(
                 transaction: transaction,
-                itemSubspace: self.itemSubspace,
-                indexSubspace: self.indexSubspace,
-                blobsSubspace: self.blobsSubspace,
-                indexMaintenanceService: self.indexMaintenanceService,
-                securityDelegate: self.securityDelegate,
-                itemStorageFactory: self.container.itemStorageFactory
+                container: self.container
             )
-            return try await operation(context)
+            do {
+                let result = try await operation(databaseTransaction)
+                try await databaseTransaction.prepareForCommit()
+                return result
+            } catch {
+                await databaseTransaction.invalidate()
+                throw error
+            }
         }
     }
 }

@@ -290,7 +290,7 @@ struct PolymorphicVectorMigrationFDBTests {
 
             var anchor = FDBPolymorphicVectorPersonV1(name: "Alice", embedding: [1, 0, 0])
             anchor.id = "fdb-polymorphic-vector-person-anchor"
-            initialContext.insert(anchor)
+            try initialContext.insert(anchor)
 
             for offset in 0..<105 {
                 var person = FDBPolymorphicVectorPersonV1(
@@ -298,7 +298,7 @@ struct PolymorphicVectorMigrationFDBTests {
                     embedding: [0, 1, 0]
                 )
                 person.id = "fdb-polymorphic-vector-person-\(offset)"
-                initialContext.insert(person)
+                try initialContext.insert(person)
             }
 
             var organization = FDBPolymorphicVectorOrganizationV1(
@@ -307,7 +307,7 @@ struct PolymorphicVectorMigrationFDBTests {
                 embedding: [0.95, 0.05, 0]
             )
             organization.id = "fdb-polymorphic-vector-organization"
-            initialContext.insert(organization)
+            try initialContext.insert(organization)
 
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
@@ -368,8 +368,9 @@ struct PolymorphicVectorMigrationFDBTests {
             )
             organization.id = "fdb-polymorphic-vector-rebuild-organization"
 
-            try await context.savePolymorphic(person, as: FDBPolymorphicVectorPersonV2.self)
-            try await context.savePolymorphic(organization, as: FDBPolymorphicVectorPersonV2.self)
+            try context.upsert(person)
+            try context.upsert(organization)
+            try await context.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
             try await Self.clearEntityVectorIndexEntries(container: initialContainer)
             #expect(try await Self.countEntityVectorIndexEntries(container: initialContainer) == 0)

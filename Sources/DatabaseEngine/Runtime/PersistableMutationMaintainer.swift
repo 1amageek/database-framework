@@ -1,8 +1,7 @@
 import Core
-import StorageKit
 
-/// Maintains container-wide invariants derived from record mutations.
-public protocol RecordMutationMaintainer: Sendable {
+/// Maintains container-wide invariants derived from persisted model mutations.
+public protocol PersistableMutationMaintainer: Sendable {
     /// Stable identifier referenced by compiled runtime-maintained descriptors.
     var identifier: String { get }
 
@@ -13,14 +12,12 @@ public protocol RecordMutationMaintainer: Sendable {
     func update(
         oldModel: (any Persistable)?,
         newModel: (any Persistable)?,
-        container: DBContainer,
-        transaction: any Transaction
+        context: borrowing PersistableMutationContext
     ) async throws
 
     /// Validates invariants after all primary mutations are visible in the transaction.
     func validateFinalState(
         of models: [any Persistable],
-        container: DBContainer,
-        transaction: any Transaction
+        context: borrowing PersistableValidationContext
     ) async throws
 }

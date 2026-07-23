@@ -2,22 +2,18 @@ import Core
 import DatabaseEngine
 import DatabaseValue
 import Relationship
-import StorageKit
 
 /// Enforces relationship delete rules through the canonical inverse-reference catalog.
 public final class RelationshipMaintainer: Sendable {
-    private let container: DBContainer
     private let schema: Schema
     private let maximumMutations: Int
     private let maximumWorkUnits: UInt64
 
     public init(
-        container: DBContainer,
         schema: Schema,
         maximumMutations: Int = 1_000,
         maximumWorkUnits: UInt64 = 1_000_000
     ) {
-        self.container = container
         self.schema = schema
         self.maximumMutations = maximumMutations
         self.maximumWorkUnits = maximumWorkUnits
@@ -25,34 +21,34 @@ public final class RelationshipMaintainer: Sendable {
 
     public func enforceDeleteRules(
         for item: any Persistable,
-        transaction: any Transaction,
-        handler: ModelPersistenceHandler
+        context: borrowing PersistableMutationContext
     ) async throws {
         var state = EnforcementState(maximumWorkUnits: maximumWorkUnits)
         try await enforceDeleteRules(
             for: item,
-            transaction: transaction,
-            handler: handler,
+            context: context,
             state: &state
         )
     }
 
     private func enforceDeleteRules(
         for item: any Persistable,
-        transaction: any Transaction,
-        handler: ModelPersistenceHandler,
+        context: borrowing PersistableMutationContext,
         state: inout EnforcementState
     ) async throws {
-        let target = try DatabaseRecordIdentityEncoder.encode(item)
+        let target = try PersistableIdentityEncoder.encode(item)
         guard !state.visited.contains(target),
               try await !RelationshipDeleteMarker.isMarked(
                 target,
-                transaction: transaction
+                transaction: context.storageTransaction
               ) else {
             return
         }
         state.visited.insert(target)
-        try RelationshipDeleteMarker.mark(target, transaction: transaction)
+        try RelationshipDeleteMarker.mark(
+            target,
+            transaction: context.storageTransaction
+        )
 
         for entity in schema.entities {
             guard let ownerType = entity.persistableType else { continue }
@@ -63,29 +59,23 @@ public final class RelationshipMaintainer: Sendable {
                 let owners = try await referrers(
                     of: target,
                     descriptor: descriptor,
-                    transaction: transaction,
+                    context: context,
                     state: &state
                 )
                 var active: [(RecordIdentity, any Persistable)] = []
                 let resolver = RelationshipReferenceResolver(schema: schema)
                 for identity in owners {
+                    if try await context.isDeletionScheduled(for: identity) {
+                        continue
+                    }
                     if try await RelationshipDeleteMarker.isMarked(
                         identity,
-                        transaction: transaction
+                        transaction: context.storageTransaction
                     ) {
                         continue
                     }
                     try state.consumeWork()
-                    let resolved = try CanonicalRelationshipIdentity.resolve(
-                        identity,
-                        container: container
-                    )
-                    guard let owner = try await handler.load(
-                        identity.entity,
-                        id: resolved.id,
-                        partition: resolved.partition,
-                        transaction: transaction
-                    ) else {
+                    guard let owner = try await context.fetch(identity) else {
                         throw RelationshipError.catalogOwnerMissing(identity)
                     }
                     guard try resolver.references(
@@ -112,22 +102,20 @@ public final class RelationshipMaintainer: Sendable {
                     case .cascade:
                         try await enforceDeleteRules(
                             for: owner,
-                            transaction: transaction,
-                            handler: handler,
+                            context: context,
                             state: &state
                         )
                         try RelationshipDeleteMarker.mark(
                             identity,
-                            transaction: transaction
+                            transaction: context.storageTransaction
                         )
-                        try await handler.delete(
+                        try await context.delete(
                             owner,
-                            precondition: .exists,
-                            transaction: transaction
+                            precondition: .exists
                         )
                         try RelationshipDeleteMarker.clear(
                             identity,
-                            transaction: transaction
+                            transaction: context.storageTransaction
                         )
                     case .nullify:
                         let updated = try RelationshipRecordEditor(
@@ -137,10 +125,9 @@ public final class RelationshipMaintainer: Sendable {
                             from: owner,
                             descriptor: descriptor
                         )
-                        try await handler.save(
+                        try await context.save(
                             updated,
-                            precondition: .exists,
-                            transaction: transaction
+                            precondition: .exists
                         )
                     case .deny, .noAction:
                         break
@@ -151,14 +138,14 @@ public final class RelationshipMaintainer: Sendable {
 
         try RelationshipDeleteMarker.clear(
             target,
-            transaction: transaction
+            transaction: context.storageTransaction
         )
     }
 
     private func referrers(
         of target: RecordIdentity,
         descriptor: RelationshipDescriptor,
-        transaction: any Transaction,
+        context: borrowing PersistableMutationContext,
         state: inout EnforcementState
     ) async throws -> [RecordIdentity] {
         let remaining = state.remainingWork
@@ -172,7 +159,7 @@ public final class RelationshipMaintainer: Sendable {
             of: target,
             descriptor: descriptor,
             limit: Int(requested),
-            transaction: transaction
+            transaction: context.storageTransaction
         )
         guard UInt64(identities.count) <= remaining else {
             throw RelationshipError.workLimitExceeded(

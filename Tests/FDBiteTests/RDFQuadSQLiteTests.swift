@@ -131,21 +131,21 @@ struct RDFQuadSQLiteTests {
             security: .disabled
         )
         let context = container.newContext()
-        context.insert(
+        try context.insert(
             statement(
                 event: "first",
                 title: "First",
                 graph: try RDFGraphName(iri: firstGraph)
             )
         )
-        context.insert(
+        try context.insert(
             statement(
                 event: "second",
                 title: "Second",
                 graph: try RDFGraphName(iri: secondGraph)
             )
         )
-        context.insert(statement(event: "default", title: "Default", graph: nil))
+        try context.insert(statement(event: "default", title: "Default", graph: nil))
         try await context.save()
         return context
     }

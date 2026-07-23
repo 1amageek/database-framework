@@ -151,19 +151,11 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
                 referencesByModel.append(modelReferences)
             }
 
-            let handler = container.newContext().makePersistenceHandler()
             var loadedByIdentity: [RecordIdentity: any Persistable] = [:]
             loadedByIdentity.reserveCapacity(orderedIdentities.count)
             for identity in orderedIdentities {
-                let resolved = try CanonicalRelationshipIdentity.resolve(
-                    identity,
-                    container: container
-                )
-                if let loaded = try await handler.load(
-                    identity.entity,
-                    id: resolved.id,
-                    partition: resolved.partition,
-                    transaction: transaction
+                if let loaded = try await transaction.fetchPersistedModel(
+                    identifiedBy: identity
                 ) {
                     loadedByIdentity[identity] = loaded
                 }

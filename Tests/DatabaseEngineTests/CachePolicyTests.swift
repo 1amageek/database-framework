@@ -188,7 +188,7 @@ struct CachePolicyTests {
             // Insert test data
             let testId = "cache-test-\(UUID().uuidString.prefix(8))"
             let model = CachePolicyRecord(id: testId, value: 42)
-            context.insert(model)
+            try context.insert(model)
             try await context.save()
 
             // First fetch with .cached - should populate cache
@@ -226,7 +226,7 @@ struct CachePolicyTests {
             // Insert test data
             let testId = "server-test-\(UUID().uuidString.prefix(8))"
             let model = CachePolicyRecord(id: testId, value: 100)
-            context.insert(model)
+            try context.insert(model)
             try await context.save()
 
             // First fetch with .server
@@ -259,7 +259,7 @@ struct CachePolicyTests {
             // Insert test data
             let testId = "count-test-\(UUID().uuidString.prefix(8))"
             let model = CachePolicyRecord(id: testId, value: 200)
-            context.insert(model)
+            try context.insert(model)
             try await context.save()
 
             // Count with .cached policy
@@ -294,7 +294,7 @@ struct CachePolicyTests {
             // Insert test data
             let testId = "all-policies-\(UUID().uuidString.prefix(8))"
             let model = CachePolicyRecord(id: testId, value: 300)
-            context.insert(model)
+            try context.insert(model)
             try await context.save()
 
             // Test .server
@@ -337,7 +337,7 @@ struct CachePolicyTests {
             // Insert test data
             let testId = "model-default-\(UUID().uuidString.prefix(8))"
             let model = CachePolicyRecord(id: testId, value: 500)
-            context.insert(model)
+            try context.insert(model)
             try await context.save()
 
             // model(for:as:) with default should work
@@ -362,7 +362,7 @@ struct CachePolicyTests {
             // Insert test data
             let testId = "model-cached-\(UUID().uuidString.prefix(8))"
             let model = CachePolicyRecord(id: testId, value: 600)
-            context.insert(model)
+            try context.insert(model)
             try await context.save()
 
             // First fetch with .cached
@@ -403,7 +403,7 @@ struct CachePolicyTests {
             // Insert test data
             let testId = "model-stale-\(UUID().uuidString.prefix(8))"
             let model = CachePolicyRecord(id: testId, value: 700)
-            context.insert(model)
+            try context.insert(model)
             try await context.save()
 
             // Fetch with .stale(60) - should work within 60 second window

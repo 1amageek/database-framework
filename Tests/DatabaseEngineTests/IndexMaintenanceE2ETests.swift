@@ -164,7 +164,7 @@ struct IndexMaintenanceE2ETests {
         user.email = "test@example.com"
         user.city = "Tokyo"
 
-        context.insert(user)
+        try context.insert(user)
         try await context.save()
 
         // Verify the user was saved
@@ -217,9 +217,9 @@ struct IndexMaintenanceE2ETests {
         item3.category = "books"
         item3.value = 50
 
-        context.insert(item1)
-        context.insert(item2)
-        context.insert(item3)
+        try context.insert(item1)
+        try context.insert(item2)
+        try context.insert(item3)
         try await context.save()
 
         // Get the index subspace
@@ -262,7 +262,7 @@ struct IndexMaintenanceE2ETests {
         article.title = "Test Article"
         article.content = "Hello world this is a test article"
 
-        context.insert(article)
+        try context.insert(article)
         try await context.save()
 
         // Verify the article was saved
@@ -322,7 +322,7 @@ struct IndexMaintenanceE2ETests {
         edge.target = "Bob"
         edge.relation = "follows"
 
-        context.insert(edge)
+        try context.insert(edge)
         try await context.save()
 
         // Verify the edge was saved
@@ -380,7 +380,7 @@ struct IndexMaintenanceE2ETests {
         edge.target = "Bob"
         edge.relation = "follows"
 
-        context.insert(edge)
+        try context.insert(edge)
         try await context.save()
 
         // Get index count before delete
@@ -400,7 +400,7 @@ struct IndexMaintenanceE2ETests {
         }
 
         // Delete the edge
-        context.delete(edge)
+        try context.delete(edge)
         try await context.save()
 
         // Verify the edge was deleted
@@ -503,7 +503,7 @@ struct IndexMaintenanceE2ETests {
         contextEdge.target = "ContextBob"
         contextEdge.relation = "follows"
 
-        context.insert(contextEdge)
+        try context.insert(contextEdge)
         try await context.save()
 
         let contextSaveCount = try await countEntriesInSubspace(

@@ -53,13 +53,13 @@ struct RoundTripDemoTests {
             item.value = 42
             item.tags = ["swift", "fdb", "demo"]
 
-            try await tx.set(item)
+            try await tx.save(item)
             print("✅ CREATE: id=\(itemId), name=\(item.name), value=\(item.value)")
         }
 
         // 2. READ
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(DemoItem.self, id: itemId)
+            let fetched = try await tx.fetch(DemoItem.self, identifiedBy: itemId)
             #expect(fetched != nil)
             #expect(fetched?.name == "テストアイテム")
             #expect(fetched?.value == 42)
@@ -69,7 +69,7 @@ struct RoundTripDemoTests {
 
         // 3. UPDATE
         try await context.withTransaction { tx in
-            guard var updated = try await tx.get(DemoItem.self, id: itemId) else {
+            guard var updated = try await tx.fetch(DemoItem.self, identifiedBy: itemId) else {
                 Issue.record("Item not found for update")
                 return
             }
@@ -77,13 +77,13 @@ struct RoundTripDemoTests {
             updated.value = 100
             updated.tags.append("updated")
 
-            try await tx.set(updated)
+            try await tx.save(updated)
             print("✅ UPDATE: name=\(updated.name), value=\(updated.value)")
         }
 
         // 3.1 READ after UPDATE
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(DemoItem.self, id: itemId)
+            let fetched = try await tx.fetch(DemoItem.self, identifiedBy: itemId)
             #expect(fetched?.name == "更新されたアイテム")
             #expect(fetched?.value == 100)
             #expect(fetched?.tags.contains("updated") == true)
@@ -92,13 +92,13 @@ struct RoundTripDemoTests {
 
         // 4. DELETE
         try await context.withTransaction { tx in
-            try await tx.delete(DemoItem.self, id: itemId)
+            try await tx.delete(DemoItem.self, identifiedBy: itemId)
             print("✅ DELETE: id=\(itemId)")
         }
 
         // 4.1 READ after DELETE (should be nil)
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(DemoItem.self, id: itemId)
+            let fetched = try await tx.fetch(DemoItem.self, identifiedBy: itemId)
             #expect(fetched == nil)
             print("✅ READ after DELETE: nil (正常に削除されました)")
         }

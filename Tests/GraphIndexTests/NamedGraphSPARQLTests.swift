@@ -224,7 +224,7 @@ struct NamedGraphSPARQLTests {
             statement(carol, worksAt, acme, graph: nil),
         ]
         for quad in quads {
-            context.insert(quad)
+            try context.insert(quad)
         }
         try await context.save()
         return context

@@ -69,7 +69,7 @@ struct MinMaxBatchBenchmark {
 
         // Insert all sales
         for sale in sales {
-            ctx.insert(sale)
+            try ctx.insert(sale)
         }
         try await ctx.save()
 
@@ -164,7 +164,7 @@ struct MinMaxBatchBenchmark {
         let regions = (0..<50).map { "region_\($0)" }
         for region in regions {
             for _ in 0..<50 {
-                ctx.insert(Sale(region: region, amount: Double.random(in: 100...1000)))
+                try ctx.insert(Sale(region: region, amount: Double.random(in: 100...1000)))
             }
         }
         try await ctx.save()
@@ -220,7 +220,7 @@ struct MinMaxBatchBenchmark {
         }
 
         for sale in sales {
-            ctx.insert(sale)
+            try ctx.insert(sale)
         }
         try await ctx.save()
 

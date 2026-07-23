@@ -109,7 +109,7 @@ private struct UnreachableStatementMutationExecutor:
         preconditions: [MutationExecuteOperation.Precondition],
         graphPartitions: [DatabaseObjectField],
         context: DatabaseOperationContext,
-        transaction: any Transaction
+        transaction: DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result {
         throw UnreachableStatementMutationExecutorError.executeCalled
     }

@@ -58,7 +58,7 @@ struct SPARQLRuntimeDependencyInjectionTests {
             security: .disabled
         )
         let context = container.newContext()
-        context.insert(Statement())
+        try context.insert(Statement())
         try await context.save()
 
         let query = SelectQuery(

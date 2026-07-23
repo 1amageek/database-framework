@@ -235,7 +235,7 @@ struct LeaderboardIntegrationTests {
         )
         let scoreId = score.id
 
-        context.insert(score)
+        try context.insert(score)
         try await context.save()
 
         // Fetch back
@@ -260,7 +260,7 @@ struct LeaderboardIntegrationTests {
         ]
 
         for score in scores {
-            context.insert(score)
+            try context.insert(score)
         }
         try await context.save()
 
@@ -294,8 +294,8 @@ struct LeaderboardIntegrationTests {
         let asiaId = asiaScore.id
         let europeId = europeScore.id
 
-        context.insert(asiaScore)
-        context.insert(europeScore)
+        try context.insert(asiaScore)
+        try context.insert(europeScore)
         try await context.save()
 
         let fetchedAsia = try await context.fetch(LeaderboardFusionScore.self)
@@ -322,12 +322,12 @@ struct LeaderboardIntegrationTests {
         )
         let scoreId = score.id
 
-        context.insert(score)
+        try context.insert(score)
         try await context.save()
 
         // Update score
         score.score = 1500
-        context.insert(score)
+        try context.insert(score)
         try await context.save()
 
         let fetched = try await context.fetch(LeaderboardFusionScore.self)
@@ -349,7 +349,7 @@ struct LeaderboardIntegrationTests {
         )
         let scoreId = score.id
 
-        context.insert(score)
+        try context.insert(score)
         try await context.save()
 
         // Verify exists
@@ -359,7 +359,7 @@ struct LeaderboardIntegrationTests {
         #expect(beforeDelete != nil)
 
         // Delete
-        context.delete(score)
+        try context.delete(score)
         try await context.save()
 
         // Verify deleted

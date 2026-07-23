@@ -1,21 +1,7 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-// ContextDeleteInsertSameIDTests.swift
-// Regression tests for FDBContext `delete(old) + insert(new) + save()` pattern on the same ModelKey.
-//
-// Background: A bug was found where `context.delete(oldModel) + context.insert(newModel)`
-// with the SAME id, executed in a SINGLE save(), left the old indexed-field value in
-// the index subspace — making queries on the old value still return the record. The
-// root cause spans FDBContext state semantics (problem ①), the old-value source in
-// FDBDataStore (problem ②), and potential commit-visibility gaps (problem ③).
-//
-// These tests are deliberately spread across multiple index types (ScalarIndex,
-// FullTextIndex) to guard against future framework-wide regressions — a failure in
-// only one index type would prove the regression is not storage-level but lives in
-// the FDBContext/DataStore layer.
-//
-// DO NOT remove these tests when refactoring PendingMutation state; they are the
-// contract for the `delete + insert` merge semantics.
+// ContextMutationIntentTests.swift
+// Regression tests for explicit FDBContext mutation intent and index maintenance.
 
 import Testing
 import Foundation
@@ -59,8 +45,8 @@ struct DelInsArticle {
 
 // MARK: - Test Suite
 
-@Suite("Context delete+insert same-ID merge semantics", .serialized, .heartbeat)
-struct ContextDeleteInsertSameIDTests {
+@Suite("Context mutation intent semantics", .serialized, .heartbeat)
+struct ContextMutationIntentTests {
 
     init() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
@@ -108,12 +94,10 @@ struct ContextDeleteInsertSameIDTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    // MARK: - ScalarIndex: Single-transaction delete + insert (same ID)
+    // MARK: - Scalar index updates
 
-    /// The classic bug case: delete old + insert new with the same id, within one save().
-    /// The old indexed value must NOT remain reachable; the new indexed value MUST be reachable.
-    @Test("ScalarIndex: delete(old) + insert(new) same id → old value gone, new value visible")
-    func scalarDeleteInsertSameIDSingleTx() async throws {
+    @Test("ScalarIndex: update removes the old value and adds the new value")
+    func scalarUpdateMaintainsIndex() async throws {
         let container = try await makeUserContainer()
         try await cleanupUsers(container)
         let context = container.newContext()
@@ -124,7 +108,7 @@ struct ContextDeleteInsertSameIDTests {
 
         var user = DelInsUser(email: oldEmail, city: "Tokyo")
         user.id = userId
-        context.insert(user)
+        try context.insert(user)
         try await context.save()
 
         // Sanity: old value reachable before the update.
@@ -132,29 +116,24 @@ struct ContextDeleteInsertSameIDTests {
         try #require(seed.count == 1)
         try #require(seed.first?.id == userId)
 
-        // The bug case: delete + insert in SAME save()
         var updated = user
         updated.email = newEmail
-        context.delete(user)
-        context.insert(updated)
+        try context.update(updated)
         try await context.save()
 
         // Old indexed value must be gone.
         let old = try await context.fetch(DelInsUser.self).where(\.email == oldEmail).execute()
-        #expect(old.isEmpty, "Old index entry must be cleared after delete+insert (got \(old.count))")
+        #expect(old.isEmpty, "Old index entry must be cleared after update (got \(old.count))")
 
         // New indexed value must be visible.
         let new = try await context.fetch(DelInsUser.self).where(\.email == newEmail).execute()
-        #expect(new.count == 1, "New index entry must be present after delete+insert")
+        #expect(new.count == 1, "New index entry must be present after update")
         #expect(new.first?.id == userId)
         #expect(new.first?.email == newEmail)
     }
 
-    /// Same pattern but the delete is issued AFTER the insert in the same save().
-    /// The final intent is `replace(old, new)` regardless of call order — the old entry
-    /// must still be cleared and the new one must be present.
-    @Test("ScalarIndex: insert(new) + delete(old) same id (reverse order) → new still wins")
-    func scalarInsertThenDeleteSameIDSingleTx() async throws {
+    @Test("Strict insert followed by delete retracts the pending write")
+    func strictInsertThenDeleteRetractsPendingWrite() async throws {
         let container = try await makeUserContainer()
         try await cleanupUsers(container)
         let context = container.newContext()
@@ -165,35 +144,30 @@ struct ContextDeleteInsertSameIDTests {
 
         var user = DelInsUser(email: oldEmail, city: "Osaka")
         user.id = userId
-        context.insert(user)
+        try context.insert(user)
         try await context.save()
 
         var updated = user
         updated.email = newEmail
-        // Reverse the canonical order: insert first, then delete.
-        context.insert(updated)
-        context.delete(user)
+        try context.insert(updated)
+        try context.delete(user)
+        #expect(!context.hasChanges)
         try await context.save()
 
-        // KNOWN BUG (tracked by Phase 1 PendingMutation work): in the `insert → delete`
-        // reverse order, the two operations silently cancel each other in FDBContext's
-        // current merge logic — both the insert of the updated record and the delete of
-        // the old record are dropped, so the stored row still holds the old email.
-        // Once the merge semantics are replaced with `PendingMutation.replace`, this
-        // block should start passing and `withKnownIssue` should be removed.
-        await withKnownIssue("Silent drop of insert+delete reverse-order pair — fixed by Phase 1 PendingMutation") {
-            let old = try await context.fetch(DelInsUser.self).where(\.email == oldEmail).execute()
-            #expect(old.isEmpty, "Reverse-order delete must still clear the old index entry")
-
-            let new = try await context.fetch(DelInsUser.self).where(\.email == newEmail).execute()
-            #expect(new.count == 1, "Reverse-order insert must still populate the new index entry")
-            #expect(new.first?.id == userId)
-        }
+        let old = try await context.fetch(DelInsUser.self)
+            .where(\.email == oldEmail)
+            .execute()
+        let new = try await context.fetch(DelInsUser.self)
+            .where(\.email == newEmail)
+            .execute()
+        #expect(old.count == 1)
+        #expect(old.first?.id == userId)
+        #expect(new.isEmpty)
     }
 
     /// Multiple indexed fields change simultaneously: both stale index entries must be cleared.
-    @Test("ScalarIndex: delete+insert updating two indexed fields — both old entries cleared")
-    func scalarDeleteInsertMultiFieldUpdate() async throws {
+    @Test("ScalarIndex: update clears both old indexed fields")
+    func scalarMultiFieldUpdate() async throws {
         let container = try await makeUserContainer()
         try await cleanupUsers(container)
         let context = container.newContext()
@@ -206,14 +180,13 @@ struct ContextDeleteInsertSameIDTests {
 
         var user = DelInsUser(email: oldEmail, city: oldCity)
         user.id = userId
-        context.insert(user)
+        try context.insert(user)
         try await context.save()
 
         var updated = user
         updated.email = newEmail
         updated.city = newCity
-        context.delete(user)
-        context.insert(updated)
+        try context.update(updated)
         try await context.save()
 
         let oldEmailHit = try await context.fetch(DelInsUser.self).where(\.email == oldEmail).execute()
@@ -244,14 +217,14 @@ struct ContextDeleteInsertSameIDTests {
 
         var userA = DelInsUser(email: emailA, city: "X")
         userA.id = idA
-        context.insert(userA)
+        try context.insert(userA)
         try await context.save()
 
         var userB = DelInsUser(email: emailB, city: "Y")
         userB.id = idB
         // Different IDs, same tx: delete A, insert B.
-        context.delete(userA)
-        context.insert(userB)
+        try context.delete(userA)
+        try context.insert(userB)
         try await context.save()
 
         let aHit = try await context.fetch(DelInsUser.self).where(\.email == emailA).execute()
@@ -275,15 +248,15 @@ struct ContextDeleteInsertSameIDTests {
 
         var user = DelInsUser(email: oldEmail, city: "Z")
         user.id = userId
-        context.insert(user)
+        try context.insert(user)
         try await context.save()
 
-        context.delete(user)
+        try context.delete(user)
         try await context.save()
 
         var updated = user
         updated.email = newEmail
-        context.insert(updated)
+        try context.insert(updated)
         try await context.save()
 
         let old = try await context.fetch(DelInsUser.self).where(\.email == oldEmail).execute()
@@ -293,13 +266,13 @@ struct ContextDeleteInsertSameIDTests {
         #expect(new.first?.id == userId)
     }
 
-    // MARK: - FullTextIndex: Single-transaction delete + insert (same ID)
+    // MARK: - Full-text index updates
 
     /// Same contract as the scalar case but with a tokenized full-text field. Token-level
     /// inverted-index entries for the old content must be cleared; tokens of the new
     /// content must be reachable.
-    @Test("FullTextIndex: delete(old) + insert(new) same id → old tokens gone, new tokens visible")
-    func fullTextDeleteInsertSameIDSingleTx() async throws {
+    @Test("FullTextIndex: update removes old tokens and adds new tokens")
+    func fullTextUpdateMaintainsIndex() async throws {
         let container = try await makeArticleContainer()
         try await cleanupArticles(container)
         let context = container.newContext()
@@ -314,7 +287,7 @@ struct ContextDeleteInsertSameIDTests {
 
         var article = DelInsArticle(title: "T", content: "\(oldToken) \(sharedToken)")
         article.id = articleId
-        context.insert(article)
+        try context.insert(article)
         try await context.save()
 
         // Sanity: the old token is searchable.
@@ -325,31 +298,29 @@ struct ContextDeleteInsertSameIDTests {
         try #require(seed.count == 1)
         try #require(seed.first?.id == articleId)
 
-        // delete + insert in one save()
         var updated = article
         updated.content = "\(newToken) \(sharedToken)"
-        context.delete(article)
-        context.insert(updated)
+        try context.update(updated)
         try await context.save()
 
         let oldHits = try await context.search(DelInsArticle.self)
             .fullText(\.content)
             .terms([oldToken])
             .execute()
-        #expect(oldHits.isEmpty, "Old full-text token must be cleared after delete+insert")
+        #expect(oldHits.isEmpty, "Old full-text token must be cleared after update")
 
         let newHits = try await context.search(DelInsArticle.self)
             .fullText(\.content)
             .terms([newToken])
             .execute()
-        #expect(newHits.count == 1, "New full-text token must be indexed after delete+insert")
+        #expect(newHits.count == 1, "New full-text token must be indexed after update")
         #expect(newHits.first?.id == articleId)
 
         let sharedHits = try await context.search(DelInsArticle.self)
             .fullText(\.content)
             .terms([sharedToken])
             .execute()
-        #expect(sharedHits.count == 1, "Shared token must still match exactly once after replace")
+        #expect(sharedHits.count == 1, "Shared token must still match exactly once after update")
         #expect(sharedHits.first?.id == articleId)
     }
 

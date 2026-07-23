@@ -338,8 +338,8 @@ struct PolymorphicMigrationSQLiteTests {
         var report = SQLitePolymorphicMigrationReportV1(title: "Legacy Needle Report", pageCount: 8)
         report.id = "sqlite-polymorphic-migration-report"
 
-        initialContext.insert(article)
-        initialContext.insert(report)
+        try initialContext.insert(article)
+        try initialContext.insert(report)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -377,10 +377,8 @@ struct PolymorphicMigrationSQLiteTests {
             pageCount: report.pageCount
         )
         updatedReport.id = report.id
-        try await verificationContext.savePolymorphic(
-            updatedReport,
-            as: SQLitePolymorphicMigrationArticleV2.self
-        )
+        try verificationContext.upsert(updatedReport)
+        try await verificationContext.save()
 
         let afterUpdateNeedle = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV2.self)
@@ -418,14 +416,14 @@ struct PolymorphicMigrationSQLiteTests {
                 body: "Body \(offset)"
             )
             article.id = "sqlite-polymorphic-batch-article-\(offset)"
-            initialContext.insert(article)
+            try initialContext.insert(article)
         }
         var report = SQLitePolymorphicMigrationReportV1(
             title: "Batch Needle Report",
             pageCount: 3
         )
         report.id = "sqlite-polymorphic-batch-report"
-        initialContext.insert(report)
+        try initialContext.insert(report)
 
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
@@ -475,8 +473,9 @@ struct PolymorphicMigrationSQLiteTests {
         var report = SQLitePolymorphicMigrationReportV2(title: "Removal Needle Report", pageCount: 8)
         report.id = "sqlite-polymorphic-removal-report"
 
-        try await initialContext.savePolymorphic(article, as: SQLitePolymorphicMigrationArticleV2.self)
-        try await initialContext.savePolymorphic(report, as: SQLitePolymorphicMigrationArticleV2.self)
+        try initialContext.upsert(article)
+        try initialContext.upsert(report)
+        try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
         #expect(try await Self.countPolymorphicIndexEntries(
@@ -508,10 +507,8 @@ struct PolymorphicMigrationSQLiteTests {
             body: "Body"
         )
         postRemovalArticle.id = "sqlite-polymorphic-removal-after"
-        try await postRemovalContext.savePolymorphic(
-            postRemovalArticle,
-            as: SQLitePolymorphicMigrationArticleV3.self
-        )
+        try postRemovalContext.upsert(postRemovalArticle)
+        try await postRemovalContext.save()
 
         let fetched = try await postRemovalContext.fetchPolymorphic(
             SQLitePolymorphicMigrationArticleV3.self
@@ -539,8 +536,9 @@ struct PolymorphicMigrationSQLiteTests {
         var report = SQLitePolymorphicMigrationReportV2(title: "Rebuild Needle Report", pageCount: 5)
         report.id = "sqlite-polymorphic-rebuild-report"
 
-        try await initialContext.savePolymorphic(article, as: SQLitePolymorphicMigrationArticleV2.self)
-        try await initialContext.savePolymorphic(report, as: SQLitePolymorphicMigrationArticleV2.self)
+        try initialContext.upsert(article)
+        try initialContext.upsert(report)
+        try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
         try await Self.clearPolymorphicIndexEntries(

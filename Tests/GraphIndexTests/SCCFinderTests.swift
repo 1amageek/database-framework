@@ -55,7 +55,7 @@ struct SCCFinderTests {
 
     private func insertEdges(_ edges: [EdgeForSCC], context: FDBContext) async throws {
         for edge in edges {
-            context.insert(edge)
+            try context.insert(edge)
         }
         try await context.save()
     }
@@ -407,7 +407,7 @@ struct GraphEdgeScannerBatchTests {
 
     private func insertEdges(_ edges: [EdgeForSCC], context: FDBContext) async throws {
         for edge in edges {
-            context.insert(edge)
+            try context.insert(edge)
         }
         try await context.save()
     }

@@ -210,7 +210,7 @@ struct MigrationExecutionPostgreSQLTests {
 
             var user = PGStageBoundaryUserV1(name: "Alice", email: "alice@example.com")
             user.id = "pg-stage-boundary-user"
-            initialContext.insert(user)
+            try initialContext.insert(user)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -255,7 +255,7 @@ struct MigrationExecutionPostgreSQLTests {
 
             var user = PGStageFailureUserV1(name: "Alice", email: "alice@example.com")
             user.id = "pg-stage-failure-user"
-            initialContext.insert(user)
+            try initialContext.insert(user)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -336,7 +336,7 @@ struct MigrationExecutionPostgreSQLTests {
 
             var user = PGStageBoundaryUserV1(name: "Alice", email: "alice@example.com")
             user.id = "pg-reentrant-user"
-            initialContext.insert(user)
+            try initialContext.insert(user)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 

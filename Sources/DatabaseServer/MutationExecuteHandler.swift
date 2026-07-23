@@ -2,8 +2,6 @@ import Core
 import DatabaseEngine
 import DatabaseValue
 import DatabaseWire
-import RelationshipIndex
-import StorageKit
 
 public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
     public let identifier = DatabaseOperationIdentifier.mutationExecute
@@ -57,8 +55,6 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
                     "record mutations do not consume graph partitions"
                 )
             }
-            let persistence = context.container.newContext()
-                .makePersistenceHandler()
             return try await coordinator.executeStaged(
                 operation: .mutationExecute,
                 requestPayload: requestPayload,
@@ -82,8 +78,7 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
                             prepared.changes,
                             preconditions: request.preconditions,
                             workMeter: prepared.workMeter,
-                            transaction: transactionContext.rawTransaction,
-                            persistence: persistence
+                            transaction: transactionContext
                         )
                     )
                 },
@@ -126,7 +121,7 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
                         preconditions: request.preconditions,
                         graphPartitions: request.graphPartitions,
                         context: context,
-                        transaction: transactionContext.rawTransaction
+                        transaction: transactionContext
                     )
                 },
                 makeResponse: { result, commitVersion in

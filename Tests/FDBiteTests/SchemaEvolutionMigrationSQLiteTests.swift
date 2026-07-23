@@ -124,7 +124,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContext = initialContainer.newContext()
         var user = SQLiteSchemaEvolutionUserV1(name: "Alice", email: "alice@example.com")
         user.id = "sqlite-lightweight-user"
-        initialContext.insert(user)
+        try initialContext.insert(user)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -210,7 +210,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContext = initialContainer.newContext()
         var seededUser = SQLiteMigratedUserV1(name: "Charlie", email: "charlie@example.com")
         seededUser.id = seededID
-        initialContext.insert(seededUser)
+        try initialContext.insert(seededUser)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -261,11 +261,11 @@ struct SchemaEvolutionMigrationSQLiteTests {
 
         var firstUser = SQLiteMigratedUserV1(name: "Alice", email: "alice@example.com")
         firstUser.id = "sqlite-migrated-user-1"
-        initialContext.insert(firstUser)
+        try initialContext.insert(firstUser)
 
         var secondUser = SQLiteMigratedUserV1(name: "Bob", email: "bob@example.com")
         secondUser.id = "sqlite-migrated-user-2"
-        initialContext.insert(secondUser)
+        try initialContext.insert(secondUser)
 
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))

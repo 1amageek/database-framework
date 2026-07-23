@@ -99,8 +99,8 @@ struct GraphTableExecutorTests {
         let bob = uniqueID("bob")
         let carol = uniqueID("carol")
 
-        context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
-        context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2021, status: "inactive", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
+        try context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2021, status: "inactive", score: 0.5))
         try await context.save()
 
         // Create GRAPH_TABLE source
@@ -131,8 +131,8 @@ struct GraphTableExecutorTests {
         let bob = uniqueID("bob")
         let carol = uniqueID("carol")
 
-        context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
-        context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2021, status: "inactive", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
+        try context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2021, status: "inactive", score: 0.5))
         try await context.save()
 
         // GRAPH_TABLE with property filter
@@ -171,7 +171,7 @@ struct GraphTableExecutorTests {
         let alice = uniqueID("alice")
 
         for year in [2018, 2019, 2020, 2021, 2022] {
-            context.insert(makeEdge(from: alice, target: uniqueID("user-\(year)"), label: "KNOWS", since: year, status: "active", score: 0.5))
+            try context.insert(makeEdge(from: alice, target: uniqueID("user-\(year)"), label: "KNOWS", since: year, status: "active", score: 0.5))
         }
         try await context.save()
 
@@ -212,9 +212,9 @@ struct GraphTableExecutorTests {
         let carol = uniqueID("carol")
         let dave = uniqueID("dave")
 
-        context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
-        context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2020, status: "inactive", score: 0.5))
-        context.insert(makeEdge(from: alice, target: dave, label: "KNOWS", since: 2021, status: "active", score: 0.7))
+        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
+        try context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2020, status: "inactive", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: dave, label: "KNOWS", since: 2021, status: "active", score: 0.7))
         try await context.save()
 
         // Multiple filters (AND)
@@ -252,7 +252,7 @@ struct GraphTableExecutorTests {
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
 
-        context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "http://example.org/active", score: 0.9))
+        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "http://example.org/active", score: 0.9))
         try await context.save()
 
         // Property filter with IRI literal
@@ -284,7 +284,7 @@ struct GraphTableExecutorTests {
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
 
-        context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "premium", score: 0.9))
+        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "premium", score: 0.9))
         try await context.save()
 
         // Typed literal (xsd:string)
@@ -435,10 +435,10 @@ struct GraphTableExecutorTests {
         // Insert 100 edges with different years (1920-2019)
         for i in 0..<100 {
             let year = 1920 + i
-            context.insert(makeEdge(from: alice, target: uniqueID("user-\(i)"), label: "KNOWS", since: year, status: "active", score: 0.5))
+            try context.insert(makeEdge(from: alice, target: uniqueID("user-\(i)"), label: "KNOWS", since: year, status: "active", score: 0.5))
         }
         // Add one edge with year 2020
-        context.insert(makeEdge(from: alice, target: uniqueID("user-2020"), label: "KNOWS", since: 2020, status: "active", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: uniqueID("user-2020"), label: "KNOWS", since: 2020, status: "active", score: 0.5))
         try await context.save()
 
         // Filter to only 2020 (1 edge out of 101)

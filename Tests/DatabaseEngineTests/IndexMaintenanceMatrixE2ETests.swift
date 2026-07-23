@@ -452,7 +452,7 @@ struct IndexMaintenanceMatrixE2ETests {
             let context = container.newContext()
 
             let user = MatrixScalarUser(email: "matrix@example.com", city: "Tokyo")
-            context.insert(user)
+            try context.insert(user)
             try await context.save()
 
             try await assertMaintained(container: container, type: MatrixScalarUser.self, indexName: "matrix_scalar_email")
@@ -474,8 +474,8 @@ struct IndexMaintenanceMatrixE2ETests {
 
             let close = MatrixVectorDocument(title: "close", embedding: [1, 0, 0])
             let far = MatrixVectorDocument(title: "far", embedding: [0, 1, 0])
-            context.insert(close)
-            context.insert(far)
+            try context.insert(close)
+            try context.insert(far)
             try await context.save()
 
             try await assertMaintained(container: container, type: MatrixVectorDocument.self, indexName: "matrix_vector_embedding", minimumCount: 2)
@@ -497,7 +497,7 @@ struct IndexMaintenanceMatrixE2ETests {
             let context = container.newContext()
 
             let article = MatrixFullTextArticle(title: "Matrix", body: "swift database indexing matrix")
-            context.insert(article)
+            try context.insert(article)
             try await context.save()
 
             try await assertMaintained(container: container, type: MatrixFullTextArticle.self, indexName: "matrix_fulltext_body", minimumCount: 3)
@@ -519,7 +519,7 @@ struct IndexMaintenanceMatrixE2ETests {
             let context = container.newContext()
 
             let edge = MatrixGraphEdge(source: "alice", relation: "knows", target: "bob")
-            context.insert(edge)
+            try context.insert(edge)
             try await context.save()
 
             try await assertMaintained(container: container, type: MatrixGraphEdge.self, indexName: "matrix_graph_adjacency", minimumCount: 2)
@@ -546,8 +546,8 @@ struct IndexMaintenanceMatrixE2ETests {
                 longitude: 135.5023,
                 location: GeoPoint(34.6937, 135.5023)
             )
-            context.insert(station)
-            context.insert(far)
+            try context.insert(station)
+            try context.insert(far)
             try await context.save()
 
             try await assertMaintained(container: container, type: MatrixSpatialPlace.self, indexName: "matrix_spatial_lat_lon", minimumCount: 2)
@@ -562,8 +562,8 @@ struct IndexMaintenanceMatrixE2ETests {
             let container = try await setupContainer([MatrixRankPlayer.self])
             let context = container.newContext()
 
-            context.insert(MatrixRankPlayer(name: "Alice", score: 100))
-            context.insert(MatrixRankPlayer(name: "Bob", score: 50))
+            try context.insert(MatrixRankPlayer(name: "Alice", score: 100))
+            try context.insert(MatrixRankPlayer(name: "Bob", score: 50))
             try await context.save()
 
             try await assertMaintained(container: container, type: MatrixRankPlayer.self, indexName: "matrix_rank_score", minimumCount: 2)
@@ -578,9 +578,9 @@ struct IndexMaintenanceMatrixE2ETests {
             let container = try await setupContainer([MatrixAggregationOrder.self])
             let context = container.newContext()
 
-            context.insert(MatrixAggregationOrder(region: "apac", category: "software", amount: 100, latencyMs: 12.5, customerID: "c1", note: "paid"))
-            context.insert(MatrixAggregationOrder(region: "apac", category: "hardware", amount: 250, latencyMs: 40.0, customerID: "c2", note: nil))
-            context.insert(MatrixAggregationOrder(region: "emea", category: "software", amount: 75, latencyMs: 8.0, customerID: "c1", note: "paid"))
+            try context.insert(MatrixAggregationOrder(region: "apac", category: "software", amount: 100, latencyMs: 12.5, customerID: "c1", note: "paid"))
+            try context.insert(MatrixAggregationOrder(region: "apac", category: "hardware", amount: 250, latencyMs: 40.0, customerID: "c2", note: nil))
+            try context.insert(MatrixAggregationOrder(region: "emea", category: "software", amount: 75, latencyMs: 8.0, customerID: "c1", note: "paid"))
             try await context.save()
 
             for indexName in [
@@ -608,12 +608,12 @@ struct IndexMaintenanceMatrixE2ETests {
             let context = container.newContext()
 
             var document = MatrixVersionDocument(title: "draft", revision: 1)
-            context.insert(document)
+            try context.insert(document)
             try await context.save()
 
             document.title = "published"
             document.revision = 2
-            context.insert(document)
+            try context.insert(document)
             try await context.save()
 
             try await assertMaintained(container: container, type: MatrixVersionDocument.self, indexName: "matrix_version_id", minimumCount: 2)
@@ -633,8 +633,8 @@ struct IndexMaintenanceMatrixE2ETests {
             let container = try await setupContainer([MatrixBitmapItem.self])
             let context = container.newContext()
 
-            context.insert(MatrixBitmapItem(status: "active", category: "a"))
-            context.insert(MatrixBitmapItem(status: "inactive", category: "b"))
+            try context.insert(MatrixBitmapItem(status: "active", category: "a"))
+            try context.insert(MatrixBitmapItem(status: "inactive", category: "b"))
             try await context.save()
 
             try await assertMaintained(container: container, type: MatrixBitmapItem.self, indexName: "matrix_bitmap_status", minimumCount: 2)
@@ -651,8 +651,8 @@ struct IndexMaintenanceMatrixE2ETests {
 
             let high = MatrixLeaderboardScore(player: "Alice", region: "apac", score: 900)
             let low = MatrixLeaderboardScore(player: "Bob", region: "apac", score: 100)
-            context.insert(high)
-            context.insert(low)
+            try context.insert(high)
+            try context.insert(low)
             try await context.save()
 
             try await assertMaintained(container: container, type: MatrixLeaderboardScore.self, indexName: "matrix_leaderboard_region_score")
@@ -674,8 +674,8 @@ struct IndexMaintenanceMatrixE2ETests {
             let container = try await setupContainer([MatrixPermutedLocation.self])
             let context = container.newContext()
 
-            context.insert(MatrixPermutedLocation(country: "JP", city: "Tokyo", name: "Station"))
-            context.insert(MatrixPermutedLocation(country: "US", city: "New York", name: "Terminal"))
+            try context.insert(MatrixPermutedLocation(country: "JP", city: "Tokyo", name: "Station"))
+            try context.insert(MatrixPermutedLocation(country: "US", city: "New York", name: "Terminal"))
             try await context.save()
 
             try await assertMaintained(container: container, type: MatrixPermutedLocation.self, indexName: "matrix_permuted_city_country_name", minimumCount: 2)
@@ -694,14 +694,14 @@ struct IndexMaintenanceMatrixE2ETests {
             let context = container.newContext()
 
             let customer = MatrixRelationshipCustomer(name: "Alice", tier: "gold")
-            context.insert(customer)
+            try context.insert(customer)
             try await context.save()
 
             let order = MatrixRelationshipOrder(
                 customer: try context.reference(to: customer),
                 total: 42
             )
-            context.insert(order)
+            try context.insert(order)
             try await context.save()
 
             let related = try await context.related(order, \.customer)
@@ -715,7 +715,7 @@ struct IndexMaintenanceMatrixE2ETests {
             )
             #expect(inverse.records.map(\.id) == [order.id])
 
-            context.delete(customer)
+            try context.delete(customer)
             try await context.save()
             let reloadedOrder = try await context.fetch(MatrixRelationshipOrder.self)
                 .where(\.id == order.id)

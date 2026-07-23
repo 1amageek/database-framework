@@ -191,14 +191,18 @@ private struct CRUDBenchmarkContext: Sendable {
 
     func dataStoreRead(id: String) async throws -> CRUDBenchmarkRecord? {
         let store = try await container.store(for: CRUDBenchmarkRecord.self, path: path)
-        return try await store.withAutoCommit { transaction in
-            try await store.fetchByIDInTransaction(CRUDBenchmarkRecord.self, id: id, transaction: transaction)
+        return try await store.withTransaction(configuration: .readOnly) { transaction in
+            try await transaction.fetch(
+                CRUDBenchmarkRecord.self,
+                identifiedBy: id,
+                in: path
+            )
         }
     }
 
     func frameworkWrite(_ record: CRUDBenchmarkRecord) async throws {
         let context = FDBContext(container: container)
-        context.insert(record)
+        try context.insert(record)
         try await context.save()
     }
 

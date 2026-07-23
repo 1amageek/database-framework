@@ -65,7 +65,7 @@ import Logging
 ///
 /// // 3. Use context
 /// let context = container.newContext()
-/// context.insert(user)
+/// try context.insert(user)
 /// try await context.save()
 /// ```
 public final class DBContainer: Sendable {
@@ -300,8 +300,8 @@ public final class DBContainer: Sendable {
     /// **Example**:
     /// ```swift
     /// let context = container.newContext()
-    /// context.insert(user)
-    /// context.insert(order)
+    /// try context.insert(user)
+    /// try context.insert(order)
     /// try await context.save()
     /// ```
     ///
@@ -700,6 +700,39 @@ public final class DBContainer: Sendable {
         let group = try polymorphicGroup(identifier: identifier)
         let path = try group.resolvedDirectoryPath()
         return try await engine.createOrOpenDirectory(path: path)
+    }
+
+    /// Resolves a polymorphic projection directory in the caller-owned
+    /// transaction so namespace creation and projected writes commit atomically.
+    package func resolvePolymorphicDirectory(
+        for identifier: String,
+        transaction: any Transaction
+    ) async throws -> Subspace {
+        let group = try polymorphicGroup(identifier: identifier)
+        return try await engine.directoryService.createOrOpen(
+            path: group.resolvedDirectoryPath(),
+            transaction: transaction
+        )
+    }
+
+    /// Opens an existing polymorphic projection without mutating namespace
+    /// metadata. An absent directory represents an empty projection.
+    package func openPolymorphicDirectory(
+        for identifier: String,
+        transaction: any Transaction
+    ) async throws -> Subspace? {
+        let group = try polymorphicGroup(identifier: identifier)
+        let path = try group.resolvedDirectoryPath()
+        guard try await engine.directoryService.exists(
+            path: path,
+            transaction: transaction
+        ) else {
+            return nil
+        }
+        return try await engine.directoryService.open(
+            path: path,
+            transaction: transaction
+        )
     }
 
     // MARK: - Index Configuration Management

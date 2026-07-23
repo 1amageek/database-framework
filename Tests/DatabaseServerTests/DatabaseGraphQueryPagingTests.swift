@@ -376,7 +376,7 @@ struct DatabaseGraphQueryPagingTests {
         )
         let continuation = try #require(first.continuation)
         let context = container.newContext()
-        context.insert(
+        try context.insert(
             statement(
                 id: "source-3",
                 subject: "urn:source:3",
@@ -844,7 +844,7 @@ struct DatabaseGraphQueryPagingTests {
     ) async throws -> DBContainer {
         let container = try await makeEmptyContainer(engine: engine)
         let context = container.newContext()
-        context.insert(
+        try context.insert(
             statement(
                 id: "source-1",
                 subject: "urn:source:1",
@@ -852,7 +852,7 @@ struct DatabaseGraphQueryPagingTests {
                 object: "urn:object:1"
             )
         )
-        context.insert(
+        try context.insert(
             statement(
                 id: "named-1",
                 subject: "urn:named:shared",
@@ -861,7 +861,7 @@ struct DatabaseGraphQueryPagingTests {
                 graph: Self.namedGraphOne
             )
         )
-        context.insert(
+        try context.insert(
             statement(
                 id: "named-duplicate",
                 subject: "urn:named:shared",
@@ -870,7 +870,7 @@ struct DatabaseGraphQueryPagingTests {
                 graph: Self.namedGraphTwo
             )
         )
-        context.insert(
+        try context.insert(
             statement(
                 id: "named-unique",
                 subject: "urn:named:unique",
@@ -879,7 +879,7 @@ struct DatabaseGraphQueryPagingTests {
                 graph: Self.namedGraphTwo
             )
         )
-        context.insert(
+        try context.insert(
             statement(
                 id: "source-2",
                 subject: "urn:source:2",
@@ -887,7 +887,7 @@ struct DatabaseGraphQueryPagingTests {
                 object: "urn:object:2"
             )
         )
-        context.insert(
+        try context.insert(
             statement(
                 id: "object-detail-1",
                 subject: "urn:object:1",
@@ -895,7 +895,7 @@ struct DatabaseGraphQueryPagingTests {
                 object: "urn:detail:1"
             )
         )
-        context.insert(
+        try context.insert(
             statement(
                 id: "object-detail-2",
                 subject: "urn:object:2",
@@ -910,9 +910,9 @@ struct DatabaseGraphQueryPagingTests {
             object: "urn:blank-object"
         )
         blankNodeStatement.subject = .blankNode(Self.describedBlankNode)
-        context.insert(blankNodeStatement)
+        try context.insert(blankNodeStatement)
         for index in 1...3 {
-            context.insert(
+            try context.insert(
                 statement(
                     id: "describe-\(index)",
                     subject: Self.describedSubject,

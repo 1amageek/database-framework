@@ -57,7 +57,7 @@ struct SPARQLIntegrationTests {
 
     private func insertStatements(_ statements: [SPARQLQueryStatement], context: FDBContext) async throws {
         for statement in statements {
-            context.insert(statement)
+            try context.insert(statement)
         }
         try await context.save()
     }

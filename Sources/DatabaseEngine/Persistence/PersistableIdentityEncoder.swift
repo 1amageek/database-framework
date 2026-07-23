@@ -2,7 +2,7 @@ import Core
 import DatabaseValue
 
 /// Encodes a compiled model's complete storage identity into the canonical value model.
-public enum DatabaseRecordIdentityEncoder {
+public enum PersistableIdentityEncoder {
     public static func encode(
         _ model: any Persistable
     ) throws -> RecordIdentity {
@@ -14,32 +14,47 @@ public enum DatabaseRecordIdentityEncoder {
                 expectedType: modelType.recordIdentifierType
             )
         } catch {
-            throw DatabaseRecordIdentityEncodingError.identifierNotRepresentable(
+            throw PersistableIdentityEncodingError.identifierNotRepresentable(
                 entity: modelType.persistableType
             )
         }
-        let encodedFields = try DatabaseRecordEncoder.encode(model)
         var partitions: [DatabaseObjectField] = []
+        partitions.reserveCapacity(modelType.directoryFieldNames.count)
 
         for component in modelType.directoryPathComponents {
             guard case .dynamicField(let name) = component else { continue }
             guard let schema = modelType.fieldSchemas.first(where: { $0.name == name }),
                   schema.fieldNumber > 0,
                   let number = UInt32(exactly: schema.fieldNumber) else {
-                throw DatabaseRecordIdentityEncodingError.invalidCompiledSchema(
+                throw PersistableIdentityEncodingError.invalidCompiledSchema(
                     entity: modelType.persistableType,
                     reason: "dynamic partition field '\(name)' is missing from fieldSchemas"
                 )
             }
-            guard let field = encodedFields.first(where: {
-                $0.number == number && $0.name == name
-            }) else {
-                throw DatabaseRecordIdentityEncodingError.invalidCompiledSchema(
+            guard let value = model[dynamicMember: name] else {
+                throw PersistableIdentityEncodingError.invalidCompiledSchema(
                     entity: modelType.persistableType,
-                    reason: "dynamic partition field '\(name)' was not encoded"
+                    reason: "dynamic partition field '\(name)' has no value"
                 )
             }
-            partitions.append(field)
+            let encodedValue = try DatabaseRecordEncoder.encodeValue(
+                value,
+                schema: schema,
+                entity: modelType.persistableType
+            )
+            guard encodedValue != .null else {
+                throw PersistableIdentityEncodingError.invalidCompiledSchema(
+                    entity: modelType.persistableType,
+                    reason: "dynamic partition field '\(name)' cannot be null"
+                )
+            }
+            partitions.append(
+                DatabaseObjectField(
+                    number: number,
+                    name: name,
+                    value: encodedValue
+                )
+            )
         }
 
         return RecordIdentity(

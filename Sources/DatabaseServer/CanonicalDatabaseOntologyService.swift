@@ -154,7 +154,7 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
-                let transaction = transactionContext.rawTransaction
+                let transaction = transactionContext.storageTransaction
                 let revision = try await store.replace(
                     identifier: document.ontology,
                     auxiliaryIdentifiers: document.imports,
@@ -190,7 +190,7 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
-                let transaction = transactionContext.rawTransaction
+                let transaction = transactionContext.storageTransaction
                 let revision = try await store.delete(
                     identifier: ontology,
                     expectedRevision: expectedRevision,

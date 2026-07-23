@@ -1,7 +1,6 @@
 import DatabaseEngine
 import DatabaseValue
 import DatabaseWire
-import StorageKit
 
 public protocol DatabaseStatementMutationExecutor: Sendable {
     associatedtype PreparedStatementMutation: Sendable
@@ -17,6 +16,6 @@ public protocol DatabaseStatementMutationExecutor: Sendable {
         preconditions: [MutationExecuteOperation.Precondition],
         graphPartitions: [DatabaseObjectField],
         context: DatabaseOperationContext,
-        transaction: any Transaction
+        transaction: DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result
 }

@@ -197,8 +197,8 @@ final class ControlledCompactionStorageEngine: StorageEngine, Sendable {
             )
         }
 
-        func getVersionstamp() async throws -> Bytes? {
-            try await underlying.getVersionstamp()
+        func requestVersionstamp() -> any PendingTransactionVersionstamp {
+            underlying.requestVersionstamp()
         }
 
         func stageCompactionSlice(

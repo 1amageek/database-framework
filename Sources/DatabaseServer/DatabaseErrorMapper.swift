@@ -270,6 +270,18 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let mutationError = error as? DatabaseMutationError {
             return Self.map(mutationError)
         }
+        if let transactionError = error as? DatabaseTransactionError {
+            return Self.map(transactionError)
+        }
+        if let contextError = error as? FDBContextError {
+            return Self.map(contextError)
+        }
+        if let identityError = error as? PersistableIdentityEncodingError {
+            return Self.map(identityError)
+        }
+        if let projectionError = error as? PolymorphicProjectionError {
+            return Self.map(projectionError)
+        }
         if let jobError = error as? DatabaseJobRuntimeError {
             return Self.map(jobError)
         }
@@ -327,13 +339,11 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 retryability: .never
             )
         }
-        if error is RelationshipError || error is RelationshipReferenceError {
-            return DatabaseRemoteError(
-                category: .constraint,
-                code: "RELATIONSHIP_CONSTRAINT",
-                message: String(describing: error),
-                retryability: .never
-            )
+        if let relationshipError = error as? RelationshipError {
+            return Self.map(relationshipError)
+        }
+        if let referenceError = error as? RelationshipReferenceError {
+            return Self.map(referenceError)
         }
         if let storageError = error as? StorageError {
             let retryability: DatabaseRetryability
@@ -394,15 +404,6 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         }
         if let readError = error as? CanonicalReadError {
             return Self.map(readError)
-        }
-        if let contextError = error as? FDBContextError,
-           case .preconditionFailed = contextError {
-            return DatabaseRemoteError(
-                category: .conflict,
-                code: "PRECONDITION_FAILED",
-                message: String(describing: contextError),
-                retryability: .never
-            )
         }
         return DatabaseRemoteError(
             category: .internalFailure,
@@ -831,35 +832,283 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .emptyMutation:
             category = .invalidRequest
             code = "EMPTY_MUTATION"
+        case .mutationLimitExceeded, .preconditionLimitExceeded,
+             .idempotencyKeyTooLarge:
+            category = .resourceLimit
+            code = "MUTATION_LIMIT"
+        case .idempotencyKeyRequired:
+            category = .invalidRequest
+            code = "IDEMPOTENCY_KEY_REQUIRED"
+        case .idempotencyKeyConflict:
+            category = .conflict
+            code = "IDEMPOTENCY_KEY_CONFLICT"
+        case .idempotencyRecordCorrupted, .logicalVersionOverflow,
+             .stateStoreContainerMismatch:
+            category = .internalFailure
+            code = "MUTATION_RUNTIME_FAILURE"
+        case .unknownEntity:
+            category = .invalidRequest
+            code = "UNKNOWN_ENTITY"
+        case .entityHasNoPersistableType:
+            category = .invalidRequest
+            code = "ENTITY_NOT_PERSISTABLE"
+        case .invalidRecordIdentifier, .recordIdentifierNotRepresentable:
+            category = .invalidRequest
+            code = "INVALID_RECORD_IDENTIFIER"
+        case .invalidPartition:
+            category = .invalidRequest
+            code = "INVALID_PARTITION"
+        case .invalidGraphPartitions:
+            category = .invalidRequest
+            code = "INVALID_GRAPH_PARTITIONS"
+        case .recordTypeMismatch, .recordIdentityMismatch,
+             .recordFieldNotRepresentable:
+            category = .invalidRequest
+            code = "INVALID_RECORD"
+        case .duplicateChange, .duplicatePrecondition,
+             .incompatiblePreconditions:
+            category = .invalidRequest
+            code = "INVALID_MUTATION"
+        case .recordAlreadyExists, .recordVersionMismatch:
+            category = .conflict
+            code = "MUTATION_CONFLICT"
         case .recordNotFound:
             category = .notFound
             code = "RECORD_NOT_FOUND"
-        case .recordAlreadyExists, .recordVersionMismatch, .idempotencyKeyConflict:
-            category = .conflict
-            code = "MUTATION_CONFLICT"
-        case .mutationLimitExceeded, .preconditionLimitExceeded,
-             .idempotencyKeyTooLarge, .relationshipWorkLimitExceeded:
-            category = .resourceLimit
-            code = "MUTATION_LIMIT"
-        case .idempotencyRecordCorrupted, .logicalVersionOverflow,
-             .stateStoreContainerMismatch, .statementExecutorNotConfigured,
-             .relationshipCatalogCorrupted:
+        case .invalidCompiledSchema:
             category = .internalFailure
-            code = "MUTATION_RUNTIME_FAILURE"
-        case .relationshipMutationConflict:
-            category = .conflict
-            code = "MUTATION_CONFLICT"
-        case .relationshipTargetNotFound:
-            category = .constraint
-            code = "RELATIONSHIP_CONSTRAINT"
-        default:
+            code = "MUTATION_SCHEMA_INVALID"
+        case .unsupportedStatement:
             category = .invalidRequest
-            code = "INVALID_MUTATION"
+            code = "UNSUPPORTED_MUTATION_STATEMENT"
+        case .fieldsRequired, .fieldsMustBeEmptyForDelete:
+            category = .invalidRequest
+            code = "INVALID_MUTATION_FIELDS"
         }
         return DatabaseRemoteError(
             category: category,
             code: code,
             message: error.description,
+            retryability: .never
+        )
+    }
+
+    private static func map(
+        _ error: DatabaseTransactionError
+    ) -> DatabaseRemoteError {
+        let category: DatabaseErrorCategory
+        let code: String
+        switch error {
+        case .concurrentOperation:
+            category = .internalFailure
+            code = "DATABASE_TRANSACTION_CONCURRENT_OPERATION"
+        case .closed:
+            category = .internalFailure
+            code = "DATABASE_TRANSACTION_CLOSED"
+        case .invalidOperationContext:
+            category = .internalFailure
+            code = "DATABASE_TRANSACTION_CONTEXT_INVALID"
+        case .operationIdentifierExhausted:
+            category = .resourceLimit
+            code = "TRANSACTION_OPERATION_LIMIT"
+        case .invalidLimit:
+            category = .invalidRequest
+            code = "INVALID_TRANSACTION_LIMIT"
+        case .itemDisappearedDuringScan:
+            category = .internalFailure
+            code = "DATABASE_SCAN_INCONSISTENT"
+        case .unknownEntity:
+            category = .invalidRequest
+            code = "UNKNOWN_ENTITY"
+        case .entityHasNoPersistableType:
+            category = .internalFailure
+            code = "ENTITY_RUNTIME_NOT_COMPILED"
+        case .invalidIdentity:
+            category = .invalidRequest
+            code = "INVALID_RECORD_IDENTITY"
+        case .persistedModelNotFound:
+            category = .notFound
+            code = "PERSISTED_MODEL_NOT_FOUND"
+        case .duplicateMutation:
+            category = .invalidRequest
+            code = "DUPLICATE_MUTATION"
+        case .conflictingDerivedMutation:
+            category = .conflict
+            code = "DERIVED_MUTATION_CONFLICT"
+        }
+        return DatabaseRemoteError(
+            category: category,
+            code: code,
+            message: String(describing: error),
+            retryability: .never
+        )
+    }
+
+    private static func map(
+        _ error: FDBContextError
+    ) -> DatabaseRemoteError {
+        let category: DatabaseErrorCategory
+        let code: String
+        let retryability: DatabaseRetryability
+        switch error {
+        case .concurrentSaveNotAllowed:
+            category = .internalFailure
+            code = "CONCURRENT_CONTEXT_SAVE"
+            retryability = .never
+        case .rollbackDuringSaveNotAllowed:
+            category = .internalFailure
+            code = "CONTEXT_ROLLBACK_DURING_SAVE"
+            retryability = .never
+        case .commitOutcomeUnknown:
+            category = .unavailable
+            code = "COMMIT_OUTCOME_UNKNOWN"
+            retryability = .immediate
+        case .saveIdentifierExhausted:
+            category = .resourceLimit
+            code = "CONTEXT_SAVE_LIMIT"
+            retryability = .never
+        case .invalidSaveState:
+            category = .internalFailure
+            code = "CONTEXT_SAVE_STATE_INVALID"
+            retryability = .never
+        case .preconditionFailed:
+            category = .conflict
+            code = "PRECONDITION_FAILED"
+            retryability = .never
+        }
+        return DatabaseRemoteError(
+            category: category,
+            code: code,
+            message: error.description,
+            retryability: retryability
+        )
+    }
+
+    private static func map(
+        _ error: PersistableIdentityEncodingError
+    ) -> DatabaseRemoteError {
+        switch error {
+        case .invalidCompiledSchema:
+            return DatabaseRemoteError(
+                category: .internalFailure,
+                code: "PERSISTABLE_SCHEMA_INVALID",
+                message: String(describing: error),
+                retryability: .never
+            )
+        case .identifierNotRepresentable:
+            return DatabaseRemoteError(
+                category: .invalidRequest,
+                code: "INVALID_PERSISTED_IDENTITY",
+                message: String(describing: error),
+                retryability: .never
+            )
+        }
+    }
+
+    private static func map(
+        _ error: PolymorphicProjectionError
+    ) -> DatabaseRemoteError {
+        let code: String
+        switch error {
+        case .missingProjection:
+            code = "POLYMORPHIC_PROJECTION_MISSING"
+        case .unexpectedProjection:
+            code = "POLYMORPHIC_PROJECTION_UNEXPECTED"
+        }
+        return DatabaseRemoteError(
+            category: .internalFailure,
+            code: code,
+            message: String(describing: error),
+            retryability: .never
+        )
+    }
+
+    private static func map(
+        _ error: RelationshipError
+    ) -> DatabaseRemoteError {
+        let category: DatabaseErrorCategory
+        let code: String
+        switch error {
+        case .deleteRuleDenied:
+            category = .constraint
+            code = "RELATIONSHIP_DELETE_DENIED"
+        case .mutationLimitExceeded:
+            category = .resourceLimit
+            code = "RELATIONSHIP_MUTATION_LIMIT"
+        case .workLimitExceeded:
+            category = .resourceLimit
+            code = "RELATIONSHIP_WORK_LIMIT"
+        case .catalogOwnerMissing:
+            category = .internalFailure
+            code = "RELATIONSHIP_CATALOG_CORRUPTED"
+        }
+        return DatabaseRemoteError(
+            category: category,
+            code: code,
+            message: error.description,
+            retryability: .never
+        )
+    }
+
+    private static func map(
+        _ error: RelationshipReferenceError
+    ) -> DatabaseRemoteError {
+        let category: DatabaseErrorCategory
+        let code: String
+        switch error {
+        case .unknownRelatedEntity:
+            category = .invalidRequest
+            code = "UNKNOWN_RELATIONSHIP_ENTITY"
+        case .relatedEntityHasNoCompiledType:
+            category = .internalFailure
+            code = "RELATIONSHIP_ENTITY_NOT_COMPILED"
+        case .missingRelationshipField:
+            category = .internalFailure
+            code = "RELATIONSHIP_FIELD_MISSING"
+        case .invalidRelationshipValue:
+            category = .invalidRequest
+            code = "INVALID_RELATIONSHIP_VALUE"
+        case .invalidReferenceEntity:
+            category = .invalidRequest
+            code = "INVALID_RELATIONSHIP_TARGET_ENTITY"
+        case .invalidTargetPartition:
+            category = .invalidRequest
+            code = "INVALID_RELATIONSHIP_TARGET_PARTITION"
+        case .invalidTargetIdentifier:
+            category = .invalidRequest
+            code = "INVALID_RELATIONSHIP_TARGET_IDENTIFIER"
+        case .invalidOwnerIdentity:
+            category = .internalFailure
+            code = "RELATIONSHIP_OWNER_IDENTITY_INVALID"
+        case .missingDescriptor:
+            category = .internalFailure
+            code = "RELATIONSHIP_DESCRIPTOR_MISSING"
+        case .descriptorMismatch:
+            category = .internalFailure
+            code = "RELATIONSHIP_DESCRIPTOR_MISMATCH"
+        case .loadedTypeMismatch:
+            category = .internalFailure
+            code = "RELATIONSHIP_STORED_TYPE_MISMATCH"
+        case .targetRecordMissing:
+            category = .constraint
+            code = "RELATIONSHIP_TARGET_NOT_FOUND"
+        case .corruptedCatalogEntry:
+            category = .internalFailure
+            code = "RELATIONSHIP_CATALOG_CORRUPTED"
+        case .invalidScanLimit:
+            category = .invalidRequest
+            code = "INVALID_RELATIONSHIP_SCAN_LIMIT"
+        case .nullifyRequiresOptionalField:
+            category = .internalFailure
+            code = "RELATIONSHIP_NULLIFY_FIELD_INVALID"
+        case .recordDecodingFailed:
+            category = .internalFailure
+            code = "RELATIONSHIP_PROJECTION_DECODING_FAILED"
+        }
+        return DatabaseRemoteError(
+            category: category,
+            code: code,
+            message: String(describing: error),
             retryability: .never
         )
     }

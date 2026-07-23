@@ -44,7 +44,7 @@ public enum DatabaseFrameworkRuntime {
             sparqlSourceExecutor: SPARQLReadExecutors.sourceExecutor(
                 functionRegistry: sparqlFunctionRegistry
             ),
-            recordMutationMaintainers: [RelationshipReferenceMaintainer()]
+            persistableMutationMaintainers: [RelationshipReferenceMaintainer()]
         )
     }
 

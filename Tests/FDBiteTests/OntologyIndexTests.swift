@@ -205,7 +205,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         let context = container.newContext()
         let person = OntoPerson(name: "Alice", email: "alice@example.com")
 
-        context.insert(person)
+        try context.insert(person)
         try await context.save()
 
         let subject = try person.ontologySubject()
@@ -222,10 +222,10 @@ struct OWLClassRDFSQLiteIntegrationTests {
         let context = container.newContext()
         var person = OntoPerson(name: "Alice", email: "alice@example.com")
 
-        context.insert(person)
+        try context.insert(person)
         try await context.save()
         person.name = "Alice Smith"
-        context.insert(person)
+        try context.insert(person)
         try await context.save()
 
         let entries = try await findEntries(
@@ -251,7 +251,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         let person = OntoPerson(name: "Bob", email: "bob@example.com")
         let subject = try person.ontologySubject()
 
-        context.insert(person)
+        try context.insert(person)
         try await context.save()
         #expect(
             try await !findEntries(
@@ -260,7 +260,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
             ).isEmpty
         )
 
-        context.delete(person)
+        try context.delete(person)
         try await context.save()
 
         #expect(

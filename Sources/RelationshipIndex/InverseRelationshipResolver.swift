@@ -88,27 +88,20 @@ public struct InverseRelationshipResolver: Sendable {
             )
         }
 
-        let handler = container.newContext().makePersistenceHandler()
-        return try await container.engine.withTransaction { transaction in
+        let context = container.newContext()
+        return try await context.withTransaction { transaction in
             let page = try await RelationshipReferenceCatalog.referrerPage(
                 of: target.identity,
                 descriptor: descriptor,
                 continuation: continuation,
                 limit: limit,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
             var records: [Owner] = []
             records.reserveCapacity(page.identities.count)
             for identity in page.identities {
-                let resolved = try CanonicalRelationshipIdentity.resolve(
-                    identity,
-                    container: container
-                )
-                guard let model = try await handler.load(
-                    identity.entity,
-                    id: resolved.id,
-                    partition: resolved.partition,
-                    transaction: transaction
+                guard let model = try await transaction.fetchPersistedModel(
+                    identifiedBy: identity
                 ) else {
                     throw RelationshipError.catalogOwnerMissing(identity)
                 }

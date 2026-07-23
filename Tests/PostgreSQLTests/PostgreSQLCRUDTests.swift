@@ -49,12 +49,12 @@ struct PostgreSQLCRUDTests {
                 item.name = "PostgreSQL test item"
                 item.value = 42
                 item.tags = ["pg", "test"]
-                try await tx.set(item)
+                try await tx.save(item)
             }
 
             // 2. READ
             try await context.withTransaction { tx in
-                let fetched = try await tx.get(PGDemoItem.self, id: itemId)
+                let fetched = try await tx.fetch(PGDemoItem.self, identifiedBy: itemId)
                 #expect(fetched != nil)
                 #expect(fetched?.name == "PostgreSQL test item")
                 #expect(fetched?.value == 42)
@@ -63,19 +63,19 @@ struct PostgreSQLCRUDTests {
 
             // 3. UPDATE
             try await context.withTransaction { tx in
-                guard var updated = try await tx.get(PGDemoItem.self, id: itemId) else {
+                guard var updated = try await tx.fetch(PGDemoItem.self, identifiedBy: itemId) else {
                     Issue.record("Item not found for update")
                     return
                 }
                 updated.name = "Updated item"
                 updated.value = 100
                 updated.tags.append("updated")
-                try await tx.set(updated)
+                try await tx.save(updated)
             }
 
             // 3.1 READ after UPDATE
             try await context.withTransaction { tx in
-                let fetched = try await tx.get(PGDemoItem.self, id: itemId)
+                let fetched = try await tx.fetch(PGDemoItem.self, identifiedBy: itemId)
                 #expect(fetched?.name == "Updated item")
                 #expect(fetched?.value == 100)
                 #expect(fetched?.tags.contains("updated") == true)
@@ -83,12 +83,12 @@ struct PostgreSQLCRUDTests {
 
             // 4. DELETE
             try await context.withTransaction { tx in
-                try await tx.delete(PGDemoItem.self, id: itemId)
+                try await tx.delete(PGDemoItem.self, identifiedBy: itemId)
             }
 
             // 4.1 READ after DELETE (should be nil)
             try await context.withTransaction { tx in
-                let fetched = try await tx.get(PGDemoItem.self, id: itemId)
+                let fetched = try await tx.fetch(PGDemoItem.self, identifiedBy: itemId)
                 #expect(fetched == nil)
             }
         }
@@ -110,7 +110,7 @@ struct PostgreSQLCRUDTests {
                 item.id = id
                 item.name = "Item \(i)"
                 item.value = i * 10
-                context.insert(item)
+                try context.insert(item)
             }
 
             // Save all at once
@@ -138,7 +138,7 @@ struct PostgreSQLCRUDTests {
             item.id = itemId
             item.name = "To be deleted"
 
-            context.insert(item)
+            try context.insert(item)
             try await context.save()
 
             // Verify exists
@@ -149,7 +149,7 @@ struct PostgreSQLCRUDTests {
 
             // Delete via change tracking
             if let toDelete = before {
-                context.delete(toDelete)
+                try context.delete(toDelete)
                 try await context.save()
             }
 
@@ -177,9 +177,9 @@ struct PostgreSQLCRUDTests {
             var item2 = PGDemoItem(); item2.id = id2; item2.name = "Beta"; item2.value = 20
             var item3 = PGDemoItem(); item3.id = id3; item3.name = "Alpha"; item3.value = 30
 
-            context.insert(item1)
-            context.insert(item2)
-            context.insert(item3)
+            try context.insert(item1)
+            try context.insert(item2)
+            try context.insert(item3)
             try await context.save()
 
             // Filter by name
@@ -205,7 +205,7 @@ struct PostgreSQLCRUDTests {
                 item.id = uniqueID("lim\(i)")
                 item.name = "Limit test"
                 item.value = i
-                context.insert(item)
+                try context.insert(item)
             }
             try await context.save()
 
@@ -227,7 +227,7 @@ struct PostgreSQLCRUDTests {
             let context = container.newContext()
 
             try await context.withTransaction { tx in
-                let fetched = try await tx.get(PGDemoItem.self, id: "nonexistent-id")
+                let fetched = try await tx.fetch(PGDemoItem.self, identifiedBy: "nonexistent-id")
                 #expect(fetched == nil)
             }
         }
@@ -246,7 +246,7 @@ struct PostgreSQLCRUDTests {
             item1.id = itemId
             item1.name = "Original"
             item1.value = 1
-            context.insert(item1)
+            try context.insert(item1)
             try await context.save()
 
             // Second insert with same ID
@@ -254,7 +254,7 @@ struct PostgreSQLCRUDTests {
             item2.id = itemId
             item2.name = "Overwritten"
             item2.value = 2
-            context.insert(item2)
+            try context.insert(item2)
             try await context.save()
 
             // Should have the second value
@@ -279,7 +279,7 @@ struct PostgreSQLCRUDTests {
             item.name = "Empty tags"
             item.tags = []
 
-            context.insert(item)
+            try context.insert(item)
             try await context.save()
 
             let fetched = try await context.fetch(PGDemoItem.self)

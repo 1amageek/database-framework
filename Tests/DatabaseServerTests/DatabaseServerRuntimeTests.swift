@@ -38,7 +38,7 @@ struct DatabaseServerRuntimeTests {
     @Test("write commands are atomic and replay idempotently")
     func writeCommandUsesSharedTransactionalCoordinator() async throws {
         let container = try await makeContainer()
-        let command = CountingCommand(key: Bytes("command-count".utf8))
+        let command = CountingCommand(stateID: "command-count")
         let runtime = try await makeRuntime(
             container: container,
             writeCommands: [AnyDatabaseWriteCommand(command)]
@@ -78,11 +78,10 @@ struct DatabaseServerRuntimeTests {
             CountingCommandOperation.Response.self,
             from: secondPayload
         )
-        let storedCount = try await container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
-            try await transaction.getValue(for: command.key)
-        }
+        let storedCount = try await container.newContext().model(
+            for: command.stateID,
+            as: DatabaseEndpointRecord.self
+        )
 
         #expect(first.output == CountingCommandOutput(count: 1))
         #expect(first.commitVersion == 1)
@@ -91,13 +90,13 @@ struct DatabaseServerRuntimeTests {
         #expect(firstEnvelope.requestID == 2)
         #expect(secondEnvelope.requestID == 3)
         #expect(firstPayload == secondPayload)
-        #expect(storedCount == Bytes([1]))
+        #expect(storedCount?.priority == 1)
     }
 
     @Test("an idempotency key cannot be reused with a different payload")
     func idempotencyConflictIsTyped() async throws {
         let container = try await makeContainer()
-        let command = CountingCommand(key: Bytes("conflict-count".utf8))
+        let command = CountingCommand(stateID: "conflict-count")
         let runtime = try await makeRuntime(
             container: container,
             writeCommands: [AnyDatabaseWriteCommand(command)]
@@ -145,7 +144,7 @@ struct DatabaseServerRuntimeTests {
         )
         let container = try await makeContainer()
         let command = OversizedResponseCommand(
-            key: Bytes("oversized-response".utf8)
+            stateID: "oversized-response"
         )
         let runtime = try await makeRuntime(
             container: container,
@@ -178,11 +177,14 @@ struct DatabaseServerRuntimeTests {
         let stateStore = try await DatabaseMutationStateStore(
             container: container
         )
-        let state = try await container.engine.withTransaction(
+        let commandState = try await container.newContext().model(
+            for: command.stateID,
+            as: DatabaseEndpointRecord.self
+        )
+        let mutationState = try await container.engine.withTransaction(
             configuration: .readOnly
         ) { transaction in
             (
-                try await transaction.getValue(for: command.key),
                 try await stateStore.currentLogicalVersion(
                     transaction: transaction
                 ),
@@ -193,9 +195,9 @@ struct DatabaseServerRuntimeTests {
                 )
             )
         }
-        #expect(state.0 == nil)
-        #expect(state.1 == 0)
-        #expect(state.2 == nil)
+        #expect(commandState == nil)
+        #expect(mutationState.0 == 0)
+        #expect(mutationState.1 == nil)
     }
 
     private func makeContainer() async throws -> DBContainer {
@@ -339,21 +341,31 @@ struct DatabaseServerRuntimeTests {
     private struct CountingCommand: DatabaseWriteCommand {
         typealias Descriptor = CountingCommandDescriptor
 
-        let key: Bytes
+        let stateID: String
 
         func execute(
             input: CountingCommandInput,
             context: DatabaseWriteCommandContext
         ) async throws -> DatabaseCommandResult<CountingCommandOutput> {
-            let stored = try await context.transaction.getValue(for: key)
-            let current = stored?.first ?? 0
-            guard current < UInt8.max else {
+            let stored = try await context.transaction.fetch(
+                DatabaseEndpointRecord.self,
+                identifiedBy: stateID
+            )
+            let current = stored?.priority ?? 0
+            guard current < Int(UInt8.max) else {
                 throw CountingCommandError.overflow
             }
             let next = current + 1
-            try context.transaction.setValue(Bytes([next]), for: key)
+            var nextState = DatabaseEndpointRecord()
+            nextState.id = stateID
+            nextState.title = input.value
+            nextState.priority = next
+            try await context.transaction.save(
+                nextState,
+                precondition: stored == nil ? .notExists : .exists
+            )
             return DatabaseCommandResult(
-                output: CountingCommandOutput(count: next)
+                output: CountingCommandOutput(count: UInt8(next))
             )
         }
     }
@@ -398,14 +410,21 @@ struct DatabaseServerRuntimeTests {
     private struct OversizedResponseCommand: DatabaseWriteCommand {
         typealias Descriptor = OversizedResponseCommandDescriptor
 
-        let key: Bytes
+        let stateID: String
 
         func execute(
             input: DatabaseEmpty,
             context: DatabaseWriteCommandContext
         ) async throws -> DatabaseCommandResult<OversizedResponseOutput> {
             _ = input
-            try context.transaction.setValue([1], for: key)
+            var state = DatabaseEndpointRecord()
+            state.id = stateID
+            state.title = "must-roll-back"
+            state.priority = 1
+            try await context.transaction.save(
+                state,
+                precondition: .notExists
+            )
             return DatabaseCommandResult(
                 output: OversizedResponseOutput(
                     bytes: DatabaseBytes(

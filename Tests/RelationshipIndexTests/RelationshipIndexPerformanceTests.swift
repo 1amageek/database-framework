@@ -108,7 +108,7 @@ struct RelationshipIndexPerformanceTests {
         // Create customer first
         var customer = PerfCustomer(name: "Perf Customer")
         customer.id = customerId
-        context.insert(customer)
+        try context.insert(customer)
         try await context.save()
         let customerReference = try context.reference(to: customer)
 
@@ -120,7 +120,7 @@ struct RelationshipIndexPerformanceTests {
                 var order = PerfOrder(total: Double(i * 10))
                 order.id = uniqueID("O-perf-\(i)")
                 order.customer = customerReference
-                context.insert(order)
+                try context.insert(order)
             }
             try await context.save()
         }
@@ -148,7 +148,7 @@ struct RelationshipIndexPerformanceTests {
                 var order = PerfOrder(total: Double(j * 10))
                 order.id = orderId
                 references.append(try context.reference(to: order))
-                context.insert(order)
+                try context.insert(order)
             }
             orderReferences.append(references)
         }
@@ -160,7 +160,7 @@ struct RelationshipIndexPerformanceTests {
                 var customer = PerfCustomer(name: "Customer \(i)")
                 customer.id = uniqueID("C-many-\(i)")
                 customer.orders = orderReferences[i - 1]
-                context.insert(customer)
+                try context.insert(customer)
             }
             try await context.save()
         }
@@ -182,7 +182,7 @@ struct RelationshipIndexPerformanceTests {
         // Setup: Create customer and orders
         var customer = PerfCustomer(name: "Lookup Customer")
         customer.id = customerId
-        context.insert(customer)
+        try context.insert(customer)
         let customerReference = try context.reference(to: customer)
 
         var orderIds: [String] = []
@@ -192,7 +192,7 @@ struct RelationshipIndexPerformanceTests {
             var order = PerfOrder(total: Double(i * 10))
             order.id = orderId
             order.customer = customerReference
-            context.insert(order)
+            try context.insert(order)
         }
         try await context.save()
 
@@ -228,7 +228,7 @@ struct RelationshipIndexPerformanceTests {
                 var order = PerfOrder(total: Double(j * 10))
                 order.id = orderId
                 orderReferences.append(try context.reference(to: order))
-                context.insert(order)
+                try context.insert(order)
             }
 
             let customerId = uniqueID("C-tmany-\(i)")
@@ -236,7 +236,7 @@ struct RelationshipIndexPerformanceTests {
             var customer = PerfCustomer(name: "Customer \(i)")
             customer.id = customerId
             customer.orders = orderReferences
-            context.insert(customer)
+            try context.insert(customer)
         }
         try await context.save()
 
@@ -264,14 +264,14 @@ struct RelationshipIndexPerformanceTests {
         // Setup: Create customer and orders
         var customer = PerfCustomer(name: "Join Customer")
         customer.id = customerId
-        context.insert(customer)
+        try context.insert(customer)
         let customerReference = try context.reference(to: customer)
 
         for i in 1...orderCount {
             var order = PerfOrder(total: Double(i * 10))
             order.id = uniqueID("O-join-\(i)")
             order.customer = customerReference
-            context.insert(order)
+            try context.insert(order)
         }
         try await context.save()
 
@@ -312,7 +312,7 @@ struct RelationshipIndexPerformanceTests {
                 var order = PerfOrder(total: Double(j * 10))
                 order.id = orderId
                 orderReferences.append(try context.reference(to: order))
-                context.insert(order)
+                try context.insert(order)
             }
 
             let customerId = uniqueID("C-getj-\(i)")
@@ -320,7 +320,7 @@ struct RelationshipIndexPerformanceTests {
             customer.id = customerId
             customer.orders = orderReferences
             customerReferences.append(try context.reference(to: customer))
-            context.insert(customer)
+            try context.insert(customer)
         }
         try await context.save()
 
@@ -352,8 +352,8 @@ struct RelationshipIndexPerformanceTests {
         customer1.id = customer1Id
         var customer2 = PerfCustomer(name: "Customer 2")
         customer2.id = customer2Id
-        context.insert(customer1)
-        context.insert(customer2)
+        try context.insert(customer1)
+        try context.insert(customer2)
         let customer1Reference = try context.reference(to: customer1)
         let customer2Reference = try context.reference(to: customer2)
 
@@ -364,7 +364,7 @@ struct RelationshipIndexPerformanceTests {
             order.id = uniqueID("O-upd-\(i)")
             order.customer = customer1Reference
             orders.append(order)
-            context.insert(order)
+            try context.insert(order)
         }
         try await context.save()
 
@@ -372,7 +372,7 @@ struct RelationshipIndexPerformanceTests {
         let (_, result) = try await benchmark("Reference Update", count: orderCount) {
             for i in 0..<orderCount {
                 orders[i].customer = customer2Reference
-                context.insert(orders[i])
+                try context.insert(orders[i])
             }
             try await context.save()
         }
@@ -400,10 +400,10 @@ struct RelationshipIndexPerformanceTests {
             var order = PerfOrder(total: Double(i * 10))
             order.id = orderId
             orderReferences.append(try context.reference(to: order))
-            context.insert(order)
+            try context.insert(order)
         }
         customer.orders = orderReferences
-        context.insert(customer)
+        try context.insert(customer)
         try await context.save()
 
         let updateCount = 20
@@ -416,9 +416,9 @@ struct RelationshipIndexPerformanceTests {
                 let newOrderId = uniqueID("O-new-\(i)")
                 var newOrder = PerfOrder(total: Double((i + 1) * 100))
                 newOrder.id = newOrderId
-                context.insert(newOrder)
+                try context.insert(newOrder)
                 customer.orders.append(try context.reference(to: newOrder))
-                context.insert(customer)
+                try context.insert(customer)
                 try await context.save()
             }
         }
@@ -441,7 +441,7 @@ struct RelationshipIndexPerformanceTests {
         // Setup: Create customer and orders
         var customer = PerfCustomer(name: "Delete Customer")
         customer.id = customerId
-        context.insert(customer)
+        try context.insert(customer)
         let customerReference = try context.reference(to: customer)
 
         var orderIds: [String] = []
@@ -451,7 +451,7 @@ struct RelationshipIndexPerformanceTests {
             var order = PerfOrder(total: Double(i * 10))
             order.id = orderId
             order.customer = customerReference
-            context.insert(order)
+            try context.insert(order)
         }
         try await context.save()
 
@@ -459,7 +459,7 @@ struct RelationshipIndexPerformanceTests {
         let (_, result) = try await benchmark("Delete with catalog cleanup", count: orderCount) {
             for orderId in orderIds {
                 if let order = try await context.model(for: orderId, as: PerfOrder.self) {
-                    context.delete(order)
+                    try context.delete(order)
                 }
             }
             try await context.save()
@@ -487,7 +487,7 @@ struct RelationshipIndexPerformanceTests {
             var order = PerfOrder(total: Double(i))
             order.id = orderId
             orderReferences.append(try context.reference(to: order))
-            context.insert(order)
+            try context.insert(order)
         }
         try await context.save()
 
@@ -496,7 +496,7 @@ struct RelationshipIndexPerformanceTests {
             var customer = PerfCustomer(name: "Large Array Customer")
             customer.id = customerId
             customer.orders = orderReferences
-            context.insert(customer)
+            try context.insert(customer)
             try await context.save()
         }
 
@@ -537,10 +537,10 @@ struct RelationshipIndexPerformanceTests {
                 order.id = orderId
                 order.customer = customerReference
                 orderReferences.append(try context.reference(to: order))
-                context.insert(order)
+                try context.insert(order)
             }
             customer.orders = orderReferences
-            context.insert(customer)
+            try context.insert(customer)
         }
         try await context.save()
 

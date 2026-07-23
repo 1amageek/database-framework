@@ -25,8 +25,8 @@ enum DatabaseRecordProjection {
         for model: any Persistable
     ) throws -> RecordIdentity {
         do {
-            return try DatabaseRecordIdentityEncoder.encode(model)
-        } catch DatabaseRecordIdentityEncodingError.invalidCompiledSchema(
+            return try PersistableIdentityEncoder.encode(model)
+        } catch PersistableIdentityEncodingError.invalidCompiledSchema(
             let entity,
             let reason
         ) {
@@ -34,7 +34,7 @@ enum DatabaseRecordProjection {
                 entity: entity,
                 reason: reason
             )
-        } catch DatabaseRecordIdentityEncodingError.identifierNotRepresentable(
+        } catch PersistableIdentityEncodingError.identifierNotRepresentable(
             let entity
         ) {
             throw DatabaseMutationError.recordIdentifierNotRepresentable(entity)

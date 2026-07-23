@@ -144,7 +144,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
                 specification: preparedSpecification,
                 plan: plan,
                 state: state,
-                transaction: transactionContext.rawTransaction
+                transaction: transactionContext.storageTransaction
             )
             return DatabaseJobIdentity(
                 jobID: jobID,
@@ -254,7 +254,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
             context: context,
             timeoutMilliseconds: runtimeLimits.maximumTimeoutMilliseconds
         ) { transactionContext in
-            let transaction = transactionContext.rawTransaction
+            let transaction = transactionContext.storageTransaction
             guard let snapshot = try await store.load(
                 request.jobID,
                 transaction: transaction

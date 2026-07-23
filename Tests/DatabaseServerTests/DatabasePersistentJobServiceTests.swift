@@ -85,11 +85,11 @@ struct DatabasePersistentJobServiceTests {
         )
         #expect(compilationCounter.count == 1)
 
-        let storedStep = try await jobContext.container.engine.withTransaction {
-            transaction in
-            try await transaction.getValue(for: TwoSliceResumableOperation.stateKey)
-        }
-        #expect(storedStep == [2])
+        let storedStep = try await storedMarker(
+            identifiedBy: TwoSliceResumableOperation.stateMarkerID,
+            in: jobContext.container
+        )
+        #expect(storedStep == 2)
         #expect(await jobContext.scheduler.scheduledCount() >= 2)
     }
 
@@ -710,13 +710,10 @@ struct DatabasePersistentJobServiceTests {
             awaitingRetry.lastUnsuccessfulOutcomeCommitError?.code
                 == "JOB_UNSUCCESSFUL_OUTCOME_COMMIT_FAILED"
         )
-        let rolledBackMarker = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
-                try await transaction.getValue(
-                    for: RetryingUnsuccessfulOutcomeOperation.markerKey,
-                    snapshot: true
-                )
-            }
+        let rolledBackMarker = try await storedMarker(
+            identifiedBy: RetryingUnsuccessfulOutcomeOperation.markerID,
+            in: jobContext.container
+        )
         #expect(rolledBackMarker == nil)
 
         let scheduledRetryAt = DatabaseTimestamp(
@@ -751,14 +748,11 @@ struct DatabasePersistentJobServiceTests {
             return
         }
         #expect(failure.code == "SERVER_FAILURE")
-        let committedMarker = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
-                try await transaction.getValue(
-                    for: RetryingUnsuccessfulOutcomeOperation.markerKey,
-                    snapshot: true
-                )
-            }
-        #expect(committedMarker == [0xde])
+        let committedMarker = try await storedMarker(
+            identifiedBy: RetryingUnsuccessfulOutcomeOperation.markerID,
+            in: jobContext.container
+        )
+        #expect(committedMarker == 0xde)
         #expect(commitProbe.attemptCount == 2)
     }
 
@@ -811,13 +805,10 @@ struct DatabasePersistentJobServiceTests {
         #expect(awaitingRetry.state == .committingUnsuccessfulOutcome)
         #expect(awaitingRetry.executionCount == 0)
         #expect(awaitingRetry.unsuccessfulOutcomeCommitAttempt == 1)
-        let rolledBackMarker = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
-                try await transaction.getValue(
-                    for: RetryingUnsuccessfulOutcomeOperation.markerKey,
-                    snapshot: true
-                )
-            }
+        let rolledBackMarker = try await storedMarker(
+            identifiedBy: RetryingUnsuccessfulOutcomeOperation.markerID,
+            in: jobContext.container
+        )
         #expect(rolledBackMarker == nil)
 
         jobContext.clock.advance(milliseconds: 100)
@@ -839,14 +830,11 @@ struct DatabasePersistentJobServiceTests {
             Issue.record("Expected a cancelled persistent job result")
             return
         }
-        let committedMarker = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
-                try await transaction.getValue(
-                    for: RetryingUnsuccessfulOutcomeOperation.markerKey,
-                    snapshot: true
-                )
-            }
-        #expect(committedMarker == [0xca])
+        let committedMarker = try await storedMarker(
+            identifiedBy: RetryingUnsuccessfulOutcomeOperation.markerID,
+            in: jobContext.container
+        )
+        #expect(committedMarker == 0xca)
         #expect(commitProbe.attemptCount == 2)
     }
 
@@ -889,7 +877,7 @@ struct DatabasePersistentJobServiceTests {
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
-            let transaction = transactionContext.rawTransaction
+            let transaction = transactionContext.storageTransaction
             guard let snapshot = try await store.load(
                 job.jobID,
                 transaction: transaction
@@ -920,14 +908,11 @@ struct DatabasePersistentJobServiceTests {
         #expect(status.executionCount == 1)
         #expect(status.unsuccessfulOutcomeCommitAttempt == 2)
         #expect(commitProbe.attemptCount == 1)
-        let committedMarker = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
-                try await transaction.getValue(
-                    for: RetryingUnsuccessfulOutcomeOperation.markerKey,
-                    snapshot: true
-                )
-            }
-        #expect(committedMarker == [0xde])
+        let committedMarker = try await storedMarker(
+            identifiedBy: RetryingUnsuccessfulOutcomeOperation.markerID,
+            in: jobContext.container
+        )
+        #expect(committedMarker == 0xde)
     }
 
     @Test("Expired running lease resumes from persisted operation state")
@@ -953,7 +938,7 @@ struct DatabasePersistentJobServiceTests {
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
-            let transaction = transactionContext.rawTransaction
+            let transaction = transactionContext.storageTransaction
             guard let snapshot = try await store.load(
                 job.jobID,
                 transaction: transaction
@@ -982,14 +967,11 @@ struct DatabasePersistentJobServiceTests {
         #expect(resumed.state == .pending)
         #expect(resumed.completedWorkUnits == 1)
         #expect(resumed.executionCount == 2)
-        let committedSlice = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
-                try await transaction.getValue(
-                    for: TwoSliceResumableOperation.stateKey,
-                    snapshot: true
-                )
-            }
-        #expect(committedSlice == [1])
+        let committedSlice = try await storedMarker(
+            identifiedBy: TwoSliceResumableOperation.stateMarkerID,
+            in: jobContext.container
+        )
+        #expect(committedSlice == 1)
     }
 
     @Test("Concurrent runners commit each due revision once")
@@ -1019,14 +1001,11 @@ struct DatabasePersistentJobServiceTests {
         #expect(afterFirstRevision.state == .pending)
         #expect(afterFirstRevision.completedWorkUnits == 1)
         #expect(afterFirstRevision.executionCount == 1)
-        let firstMarker = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
-                try await transaction.getValue(
-                    for: TwoSliceResumableOperation.stateKey,
-                    snapshot: true
-                )
-            }
-        #expect(firstMarker == [1])
+        let firstMarker = try await storedMarker(
+            identifiedBy: TwoSliceResumableOperation.stateMarkerID,
+            in: jobContext.container
+        )
+        #expect(firstMarker == 1)
 
         async let firstCompletion: Void = firstService.runScheduledWork()
         async let secondCompletion: Void = secondService.runScheduledWork()
@@ -1039,14 +1018,11 @@ struct DatabasePersistentJobServiceTests {
         #expect(completed.state == .succeeded)
         #expect(completed.completedWorkUnits == 2)
         #expect(completed.executionCount == 2)
-        let finalMarker = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
-                try await transaction.getValue(
-                    for: TwoSliceResumableOperation.stateKey,
-                    snapshot: true
-                )
-            }
-        #expect(finalMarker == [2])
+        let finalMarker = try await storedMarker(
+            identifiedBy: TwoSliceResumableOperation.stateMarkerID,
+            in: jobContext.container
+        )
+        #expect(finalMarker == 2)
     }
 
     @Test("Oversized plans roll back compile-time mutations")
@@ -1077,14 +1053,10 @@ struct DatabasePersistentJobServiceTests {
         } catch {
             Issue.record("Unexpected oversized plan error: \(error)")
         }
-        let marker = try await jobContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
-            try await transaction.getValue(
-                for: OversizedPlanResumableOperation.markerKey,
-                snapshot: true
-            )
-        }
+        let marker = try await storedMarker(
+            identifiedBy: OversizedPlanResumableOperation.markerID,
+            in: jobContext.container
+        )
         #expect(marker == nil)
     }
 
@@ -1126,14 +1098,10 @@ struct DatabasePersistentJobServiceTests {
         }
         #expect(failure.category == .resourceLimit)
         #expect(failure.code == "JOB_RESOURCE_LIMIT")
-        let marker = try await jobContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
-            try await transaction.getValue(
-                for: OversizedStateResumableOperation.markerKey,
-                snapshot: true
-            )
-        }
+        let marker = try await storedMarker(
+            identifiedBy: OversizedStateResumableOperation.markerID,
+            in: jobContext.container
+        )
         #expect(marker == nil)
     }
 
@@ -1170,14 +1138,10 @@ struct DatabasePersistentJobServiceTests {
         }
         #expect(failure.category == .resourceLimit)
         #expect(failure.code == "JOB_RESOURCE_LIMIT")
-        let marker = try await jobContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
-            try await transaction.getValue(
-                for: OversizedResultResumableOperation.markerKey,
-                snapshot: true
-            )
-        }
+        let marker = try await storedMarker(
+            identifiedBy: OversizedResultResumableOperation.markerID,
+            in: jobContext.container
+        )
         #expect(marker == nil)
     }
 
@@ -1432,23 +1396,17 @@ struct DatabasePersistentJobServiceTests {
             return
         }
         #expect(job == started.job)
-        let rolledBackSliceMarker = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
-                try await transaction.getValue(
-                    for: TwoSliceResumableOperation.stateKey,
-                    snapshot: true
-                )
-            }
+        let rolledBackSliceMarker = try await storedMarker(
+            identifiedBy: TwoSliceResumableOperation.stateMarkerID,
+            in: jobContext.container
+        )
         #expect(rolledBackSliceMarker == nil)
-        let unsuccessfulOutcomeMarker = try await jobContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
-            try await transaction.getValue(
-                for: TwoSliceResumableOperation.unsuccessfulOutcomeKey,
-                snapshot: true
-            )
-        }
-        #expect(unsuccessfulOutcomeMarker == [0xca])
+        let unsuccessfulOutcomeMarker = try await storedMarker(
+            identifiedBy:
+                TwoSliceResumableOperation.unsuccessfulOutcomeMarkerID,
+            in: jobContext.container
+        )
+        #expect(unsuccessfulOutcomeMarker == 0xca)
     }
 
     @Test("Checkpointed cancellation preserves committed slice progress")
@@ -1525,14 +1483,13 @@ struct DatabasePersistentJobServiceTests {
             Issue.record("Expected checkpointed job cancellation")
             return
         }
-        let committedCancellationState = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
-                try await transaction.getValue(
-                    for: CheckpointedCancellationOperation.unsuccessfulOutcomeStateKey,
-                    snapshot: true
-                )
-            }
-        #expect(committedCancellationState == [1])
+        let committedCancellationState = try await storedMarker(
+            identifiedBy:
+                CheckpointedCancellationOperation
+                    .unsuccessfulOutcomeStateMarkerID,
+            in: jobContext.container
+        )
+        #expect(committedCancellationState == 1)
         #expect(executionCounter.count == 1)
     }
 
@@ -1591,7 +1548,7 @@ struct DatabasePersistentJobServiceTests {
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
-            let transaction = transactionContext.rawTransaction
+            let transaction = transactionContext.storageTransaction
             guard let snapshot = try await store.load(
                 started.jobID,
                 transaction: transaction
@@ -1631,13 +1588,11 @@ struct DatabasePersistentJobServiceTests {
         #expect(prepared.state == .committingUnsuccessfulOutcome)
         #expect(prepared.executionCount == 2)
         #expect(prepared.unsuccessfulOutcomeCommitAttempt == 0)
-        let absentMarker = try await jobContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
-            try await transaction.getValue(
-                for: TwoSliceResumableOperation.unsuccessfulOutcomeKey
-            )
-        }
+        let absentMarker = try await storedMarker(
+            identifiedBy:
+                TwoSliceResumableOperation.unsuccessfulOutcomeMarkerID,
+            in: jobContext.container
+        )
         #expect(absentMarker == nil)
 
         try await service.runScheduledWork()
@@ -1646,17 +1601,15 @@ struct DatabasePersistentJobServiceTests {
             JobStatusOperation.Request(job: started.job),
             context: context
         )
-        let unsuccessfulOutcomeMarker = try await jobContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
-            try await transaction.getValue(
-                for: TwoSliceResumableOperation.unsuccessfulOutcomeKey
-            )
-        }
+        let unsuccessfulOutcomeMarker = try await storedMarker(
+            identifiedBy:
+                TwoSliceResumableOperation.unsuccessfulOutcomeMarkerID,
+            in: jobContext.container
+        )
         #expect(status.state == .failed)
         #expect(status.executionCount == 2)
         #expect(status.unsuccessfulOutcomeCommitAttempt == 1)
-        #expect(unsuccessfulOutcomeMarker == [0xfa])
+        #expect(unsuccessfulOutcomeMarker == 0xfa)
     }
 
     @Test("Missing operation registration keeps outcome commit recoverable")
@@ -1691,7 +1644,7 @@ struct DatabasePersistentJobServiceTests {
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
-            let transaction = transactionContext.rawTransaction
+            let transaction = transactionContext.storageTransaction
             guard let snapshot = try await store.load(
                 started.jobID,
                 transaction: transaction
@@ -1779,15 +1732,12 @@ struct DatabasePersistentJobServiceTests {
         #expect(failure.code == "JOB_ATTEMPTS_EXHAUSTED")
         #expect(failure.category == .internalFailure)
         #expect(failure.retryability == .never)
-        let unsuccessfulOutcomeMarker = try await jobContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
-            try await transaction.getValue(
-                for: TwoSliceResumableOperation.unsuccessfulOutcomeKey,
-                snapshot: true
-            )
-        }
-        #expect(unsuccessfulOutcomeMarker == [0xfa])
+        let unsuccessfulOutcomeMarker = try await storedMarker(
+            identifiedBy:
+                TwoSliceResumableOperation.unsuccessfulOutcomeMarkerID,
+            in: jobContext.container
+        )
+        #expect(unsuccessfulOutcomeMarker == 0xfa)
     }
 
     @Test("Scheduler failure preserves the canonical JobStart response for retry")
@@ -1999,6 +1949,27 @@ struct DatabasePersistentJobServiceTests {
         try DatabaseEnvelopeCodec.encode(JobStepValue(value))
     }
 
+    private func storedMarker(
+        identifiedBy id: String,
+        in container: DBContainer
+    ) async throws -> UInt8? {
+        try await container.newContext().withTransaction(
+            configuration: .readOnly
+        ) { transaction in
+            guard let marker = try await transaction.fetch(
+                DatabaseEndpointRecord.self,
+                identifiedBy: id
+            ) else {
+                return nil
+            }
+            guard marker.title == PersistentJobMarker.title,
+                  let value = UInt8(exactly: marker.priority) else {
+                throw PersistentJobMarkerError.invalidStoredValue
+            }
+            return value
+        }
+    }
+
     private func persistentJobKey(
         container: DBContainer,
         component: String,
@@ -2153,6 +2124,26 @@ struct DatabasePersistentJobServiceTests {
         init(_ value: DatabaseBytes) {
             self.value = value
         }
+    }
+
+    private enum PersistentJobMarker {
+        static let title = "persistent-job-marker"
+
+        static func save(
+            _ value: UInt8,
+            identifiedBy id: String,
+            using transaction: any DatabaseTransactionWriting
+        ) async throws {
+            var marker = DatabaseEndpointRecord()
+            marker.id = id
+            marker.title = title
+            marker.priority = Int(value)
+            try await transaction.save(marker, precondition: .none)
+        }
+    }
+
+    private enum PersistentJobMarkerError: Error {
+        case invalidStoredValue
     }
 
     private struct TwoSliceJob: DatabaseJobDescriptor {
@@ -2349,8 +2340,9 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private struct TwoSliceResumableOperation: DatabaseResumableOperation {
-        static let stateKey = Bytes("job-test-state".utf8)
-        static let unsuccessfulOutcomeKey = Bytes("job-test-unsuccessful-outcome".utf8)
+        static let stateMarkerID = "job-test-state"
+        static let unsuccessfulOutcomeMarkerID =
+            "job-test-unsuccessful-outcome"
 
         typealias Job = TwoSliceJob
         typealias Plan = JobStepValue
@@ -2396,9 +2388,10 @@ struct DatabasePersistentJobServiceTests {
                 if let executionGate {
                     await executionGate.waitForRelease()
                 }
-                try context.transaction.rawTransaction.setValue(
-                    [1],
-                    for: Self.stateKey
+                try await PersistentJobMarker.save(
+                    1,
+                    identifiedBy: Self.stateMarkerID,
+                    using: context.transaction
                 )
                 return .incomplete(
                     completedWorkUnits: 1,
@@ -2406,9 +2399,10 @@ struct DatabasePersistentJobServiceTests {
                     state: JobStepValue(1)
                 )
             case 1:
-                try context.transaction.rawTransaction.setValue(
-                    [2],
-                    for: Self.stateKey
+                try await PersistentJobMarker.save(
+                    2,
+                    identifiedBy: Self.stateMarkerID,
+                    using: context.transaction
                 )
                 return .complete(
                     completedWorkUnits: 1,
@@ -2428,16 +2422,17 @@ struct DatabasePersistentJobServiceTests {
         ) async throws {
             _ = plan
             _ = state
-            let marker: Bytes
+            let marker: UInt8
             switch outcome {
             case .failed:
-                marker = [0xfa]
+                marker = 0xfa
             case .cancelled:
-                marker = [0xca]
+                marker = 0xca
             }
-            try context.transaction.rawTransaction.setValue(
+            try await PersistentJobMarker.save(
                 marker,
-                for: Self.unsuccessfulOutcomeKey
+                identifiedBy: Self.unsuccessfulOutcomeMarkerID,
+                using: context.transaction
             )
         }
     }
@@ -2445,7 +2440,8 @@ struct DatabasePersistentJobServiceTests {
     private struct CheckpointedCancellationOperation:
         DatabaseResumableOperation {
         static let checkpointKey = Bytes("job-checkpointed-progress".utf8)
-        static let unsuccessfulOutcomeStateKey = Bytes("job-checkpointed-unsuccessful-outcome".utf8)
+        static let unsuccessfulOutcomeStateMarkerID =
+            "job-checkpointed-unsuccessful-outcome"
 
         typealias Job = CheckpointedCancellationJob
         typealias Plan = JobStepValue
@@ -2524,9 +2520,10 @@ struct DatabasePersistentJobServiceTests {
                   outcome == .cancelled else {
                 throw PersistentJobScenarioError.invalidPayload
             }
-            try context.transaction.rawTransaction.setValue(
-                [state.value],
-                for: Self.unsuccessfulOutcomeStateKey
+            try await PersistentJobMarker.save(
+                state.value,
+                identifiedBy: Self.unsuccessfulOutcomeStateMarkerID,
+                using: context.transaction
             )
         }
     }
@@ -2625,7 +2622,7 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private struct RetryingUnsuccessfulOutcomeOperation: DatabaseResumableOperation {
-        static let markerKey = Bytes("job-unsuccessful-outcome-marker".utf8)
+        static let markerID = "job-unsuccessful-outcome-marker"
 
         typealias Job = RetryingUnsuccessfulOutcomeJob
         typealias Plan = JobStepValue
@@ -2670,16 +2667,17 @@ struct DatabasePersistentJobServiceTests {
         ) async throws {
             _ = plan
             _ = state
-            let marker: Bytes
+            let marker: UInt8
             switch outcome {
             case .failed:
-                marker = [0xde]
+                marker = 0xde
             case .cancelled:
-                marker = [0xca]
+                marker = 0xca
             }
-            try context.transaction.rawTransaction.setValue(
+            try await PersistentJobMarker.save(
                 marker,
-                for: Self.markerKey
+                identifiedBy: Self.markerID,
+                using: context.transaction
             )
             try commitProbe.recordAttempt()
         }
@@ -2687,7 +2685,7 @@ struct DatabasePersistentJobServiceTests {
 
     private struct OversizedPlanResumableOperation:
         DatabaseUnsuccessfulOutcomeIndependentOperation {
-        static let markerKey = Bytes("job-oversized-plan-marker".utf8)
+        static let markerID = "job-oversized-plan-marker"
 
         typealias Job = OversizedPlanJob
         typealias Plan = JobPayload
@@ -2700,9 +2698,10 @@ struct DatabasePersistentJobServiceTests {
             guard request == JobStepValue(9) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
-            try context.transaction.rawTransaction.setValue(
-                [0x09],
-                for: Self.markerKey
+            try await PersistentJobMarker.save(
+                0x09,
+                identifiedBy: Self.markerID,
+                using: context.transaction
             )
             return DatabasePreparedResumableJob(
                 plan: JobPayload(
@@ -2734,7 +2733,7 @@ struct DatabasePersistentJobServiceTests {
 
     private struct OversizedStateResumableOperation:
         DatabaseUnsuccessfulOutcomeIndependentOperation {
-        static let markerKey = Bytes("job-oversized-state-marker".utf8)
+        static let markerID = "job-oversized-state-marker"
 
         typealias Job = OversizedStateJob
         typealias Plan = JobStepValue
@@ -2766,9 +2765,10 @@ struct DatabasePersistentJobServiceTests {
                   maximumWorkUnits == 1 else {
                 throw PersistentJobScenarioError.invalidPayload
             }
-            try context.transaction.rawTransaction.setValue(
-                [0x0a],
-                for: Self.markerKey
+            try await PersistentJobMarker.save(
+                0x0a,
+                identifiedBy: Self.markerID,
+                using: context.transaction
             )
             return .incomplete(
                 completedWorkUnits: 1,
@@ -2787,7 +2787,7 @@ struct DatabasePersistentJobServiceTests {
 
     private struct OversizedResultResumableOperation:
         DatabaseUnsuccessfulOutcomeIndependentOperation {
-        static let markerKey = Bytes("job-oversized-result-marker".utf8)
+        static let markerID = "job-oversized-result-marker"
 
         typealias Job = OversizedResultJob
         typealias Plan = JobStepValue
@@ -2819,9 +2819,10 @@ struct DatabasePersistentJobServiceTests {
                   maximumWorkUnits == 1 else {
                 throw PersistentJobScenarioError.invalidPayload
             }
-            try context.transaction.rawTransaction.setValue(
-                [0x0b],
-                for: Self.markerKey
+            try await PersistentJobMarker.save(
+                0x0b,
+                identifiedBy: Self.markerID,
+                using: context.transaction
             )
             return .complete(
                 completedWorkUnits: 1,

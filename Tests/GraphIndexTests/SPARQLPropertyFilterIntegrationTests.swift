@@ -117,7 +117,7 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         // Insert 100 connections (only 1 with since = 2020)
         for year in 2010..<2020 {
-            context.insert(makeConnection(
+            try context.insert(makeConnection(
                 from: alice,
                 to: uniqueID("user-\(year)"),
                 relation: "knows",
@@ -125,7 +125,7 @@ struct SPARQLPropertyFilterIntegrationTests {
                 strength: 0.5
             ))
         }
-        context.insert(makeConnection(
+        try context.insert(makeConnection(
             from: alice,
             to: uniqueID("user-2020"),
             relation: "knows",
@@ -165,7 +165,7 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         // Insert connections from 2015-2024
         for year in 2015...2024 {
-            context.insert(makeConnection(
+            try context.insert(makeConnection(
                 from: alice,
                 to: uniqueID("user-\(year)"),
                 relation: "knows",
@@ -208,9 +208,9 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.5, status: "active-premium"))
-        context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2021, strength: 0.6, status: "disabled"))
-        context.insert(makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2022, strength: 0.7, status: "active"))
+        try context.insert(makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.5, status: "active-premium"))
+        try context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2021, strength: 0.6, status: "disabled"))
+        try context.insert(makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2022, strength: 0.7, status: "active"))
         try await context.save()
 
         // Filter: status CONTAINS "active"
@@ -242,9 +242,9 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.9, status: "active"))
-        context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2020, strength: 0.3, status: "inactive"))
-        context.insert(makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2021, strength: 0.9, status: "active"))
+        try context.insert(makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.9, status: "active"))
+        try context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2020, strength: 0.3, status: "inactive"))
+        try context.insert(makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2021, strength: 0.9, status: "active"))
         try await context.save()
 
         // Filter: since = 2020 AND strength >= 0.5
@@ -277,9 +277,9 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.9, status: "active"))
-        context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2020, strength: 0.5, status: "inactive"))
-        context.insert(makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2021, strength: 0.9, status: "active"))
+        try context.insert(makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.9, status: "active"))
+        try context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2020, strength: 0.5, status: "inactive"))
+        try context.insert(makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2021, strength: 0.9, status: "active"))
         try await context.save()
 
         // Filter: since = 2020 AND status =~ /^active/
@@ -343,7 +343,7 @@ struct SPARQLPropertyFilterIntegrationTests {
         let bob = uniqueID("bob")
 
         let edge = BasicEdge(from: alice, target: bob, label: "knows")
-        context.insert(edge)
+        try context.insert(edge)
         try await context.save()
 
         // This should use legacy path (no storedFieldNames)
@@ -376,7 +376,7 @@ struct SPARQLPropertyFilterIntegrationTests {
         // Insert 200 connections (only 2 with since = 2025)
         for i in 0..<198 {
             let year = 2010 + (i % 10)  // Years 2010-2019
-            context.insert(makeConnection(
+            try context.insert(makeConnection(
                 from: alice,
                 to: uniqueID("old-\(i)"),
                 relation: "knows",
@@ -385,8 +385,8 @@ struct SPARQLPropertyFilterIntegrationTests {
             ))
         }
         // Add 2 recent connections
-        context.insert(makeConnection(from: alice, to: uniqueID("recent-1"), relation: "knows", since: 2025, strength: 0.9))
-        context.insert(makeConnection(from: alice, to: uniqueID("recent-2"), relation: "knows", since: 2025, strength: 0.95))
+        try context.insert(makeConnection(from: alice, to: uniqueID("recent-1"), relation: "knows", since: 2025, strength: 0.9))
+        try context.insert(makeConnection(from: alice, to: uniqueID("recent-2"), relation: "knows", since: 2025, strength: 0.95))
         try await context.save()
 
         // Filter to only 2025 (1% selectivity)
@@ -420,7 +420,7 @@ struct SPARQLPropertyFilterIntegrationTests {
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
 
-        context.insert(makeConnection(from: alice, to: bob, relation: "knows", since: 2020, strength: 0.9, status: "active"))
+        try context.insert(makeConnection(from: alice, to: bob, relation: "knows", since: 2020, strength: 0.9, status: "active"))
         try await context.save()
 
         // Explicit projection: only ?target
@@ -457,7 +457,7 @@ struct SPARQLPropertyFilterIntegrationTests {
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
 
-        context.insert(makeConnection(from: alice, to: bob, relation: "knows", since: 2020, strength: 0.9, status: "active"))
+        try context.insert(makeConnection(from: alice, to: bob, relation: "knows", since: 2020, strength: 0.9, status: "active"))
         try await context.save()
 
         // No filter - just check property variables are bound

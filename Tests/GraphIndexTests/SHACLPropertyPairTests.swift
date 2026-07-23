@@ -117,7 +117,7 @@ struct SHACLPropertyPairTests {
                 )
             ),
         ] {
-            context.insert(statement)
+            try context.insert(statement)
         }
         try await context.save()
 

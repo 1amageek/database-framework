@@ -199,7 +199,10 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                     reason: reason
                 )
             }
-            let persistence = container.newContext().makePersistenceHandler()
+            let databaseTransaction = DatabaseTransaction(
+                transaction: transaction,
+                container: container
+            )
             var subjects = Set<DatabaseRDFTerm>()
             for identity in identities {
                 try workBudget.consume()
@@ -217,12 +220,12 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                     throw DatabaseSHACLDataSourceError
                         .recordPartitionMismatch(identity)
                 }
-                guard let record = try await persistence.load(
-                    data.entity,
+                guard let record = try await databaseTransaction
+                    .loadPersistedModel(
+                    entity: data.entity,
                     id: resolved.id,
-                    partition: resolved.partition,
-                    transaction: transaction
-                ) else {
+                    partition: resolved.partition
+                    ) else {
                     throw DatabaseSHACLDataSourceError.recordNotFound(identity)
                 }
                 let fields = try DatabaseRecordProjection.fields(for: record)

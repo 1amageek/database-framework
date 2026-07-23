@@ -1,7 +1,6 @@
 import DatabaseEngine
 import DatabaseValue
 import DatabaseWire
-import StorageKit
 
 /// A type-erased, immutable statement preparation reusable across transaction retries.
 public final class PreparedDatabaseStatementMutation: Sendable {
@@ -9,7 +8,7 @@ public final class PreparedDatabaseStatementMutation: Sendable {
         [MutationExecuteOperation.Precondition],
         [DatabaseObjectField],
         DatabaseOperationContext,
-        any Transaction
+        DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result
 
     init<Executor: DatabaseStatementMutationExecutor>(
@@ -35,7 +34,7 @@ public final class PreparedDatabaseStatementMutation: Sendable {
         preconditions: [MutationExecuteOperation.Precondition],
         graphPartitions: [DatabaseObjectField],
         context: DatabaseOperationContext,
-        transaction: any Transaction
+        transaction: DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result {
         try await executeMutation(
             preconditions,

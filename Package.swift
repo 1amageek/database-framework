@@ -64,7 +64,6 @@ let package = Package(
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
-        .package(path: "../../networking/swift-crypto"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/1amageek/swift-testing-heartbeat.git", from: "0.1.0"),
     ],
@@ -197,7 +196,6 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "Crypto", package: "swift-crypto"),
             ],
             exclude: ["README.md"]
         ),
@@ -397,6 +395,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 "DatabaseRuntime",
+                .product(name: "DatabaseDigest", package: "database-kit"),
                 .product(name: "DatabaseValue", package: "database-kit"),
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),

@@ -85,7 +85,7 @@ struct DirectoryMigrationPostgreSQLTests {
             let initialContext = initialContainer.newContext()
             var seededUser = PGDirectoryMigrationUserV1(name: "Alice", email: "alice@example.com")
             seededUser.id = seededID
-            initialContext.insert(seededUser)
+            try initialContext.insert(seededUser)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -124,7 +124,7 @@ struct DirectoryMigrationPostgreSQLTests {
             let initialContext = initialContainer.newContext()
             var seededUser = PGDirectoryMigrationUserV1(name: "Bob", email: "bob@example.com")
             seededUser.id = seededID
-            initialContext.insert(seededUser)
+            try initialContext.insert(seededUser)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 

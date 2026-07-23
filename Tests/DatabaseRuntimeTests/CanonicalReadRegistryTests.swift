@@ -63,7 +63,7 @@ struct CanonicalReadRegistryTests {
         #expect(maintainers.contains(kindIdentifier: "vector"))
         #expect(maintainers.contains(kindIdentifier: "graph"))
         #expect(maintainers.contains(kindIdentifier: "rdf_quad"))
-        #expect(configuration.recordMutationMaintainers.contains(where: {
+        #expect(configuration.persistableMutationMaintainers.contains(where: {
             $0.identifier == RelationshipReferenceMaintainer().identifier
         }))
 

@@ -452,8 +452,8 @@ struct PolymorphicFetchSQLiteTests {
         var report = SQLitePolymorphicReport(title: "Catalog Needle Report", pageCount: 3)
         report.id = "sqlite-polymorphic-reopen-report"
 
-        initialContext.insert(article)
-        initialContext.insert(report)
+        try initialContext.insert(article)
+        try initialContext.insert(report)
         try await initialContext.save()
 
         let registry = SchemaRegistry(database: engine)
@@ -484,16 +484,16 @@ struct PolymorphicFetchSQLiteTests {
         ) == 2)
     }
 
-    @Test("fetchPolymorphic returns SQLite items written via dual-write")
-    func fetchPolymorphicScanAfterDualWrite() async throws {
+    @Test("fetchPolymorphic returns SQLite transaction-maintained projections")
+    func fetchPolymorphicScansMaintainedProjections() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
         let article = SQLitePolymorphicArticle(title: "Hello", body: "World")
         let report = SQLitePolymorphicReport(title: "Quarterly", pageCount: 42)
 
-        context.insert(article)
-        context.insert(report)
+        try context.insert(article)
+        try context.insert(report)
         try await context.save()
 
         let items = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self)
@@ -511,8 +511,8 @@ struct PolymorphicFetchSQLiteTests {
         let article = SQLitePolymorphicArticle(title: "Headline", body: "Body text")
         let report = SQLitePolymorphicReport(title: "Audit", pageCount: 7)
 
-        context.insert(article)
-        context.insert(report)
+        try context.insert(article)
+        try context.insert(report)
         try await context.save()
 
         let fetchedArticle = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self, id: article.id)
@@ -533,9 +533,9 @@ struct PolymorphicFetchSQLiteTests {
         let alpha = SQLitePolymorphicReport(title: "Alpha", pageCount: 1)
         let beta = SQLitePolymorphicArticle(title: "Beta", body: "second")
 
-        context.insert(gamma)
-        context.insert(alpha)
-        context.insert(beta)
+        try context.insert(gamma)
+        try context.insert(alpha)
+        try context.insert(beta)
         try await context.save()
 
         let firstPage = try await context.findPolymorphic(SQLitePolymorphicArticle.self)
@@ -559,16 +559,16 @@ struct PolymorphicFetchSQLiteTests {
         #expect(secondPage.continuation == nil)
     }
 
-    @Test("dual-write maintains SQLite shared polymorphic scalar indexes")
-    func dualWriteMaintainsSharedPolymorphicScalarIndexes() async throws {
+    @Test("Projection maintenance updates SQLite shared polymorphic scalar indexes")
+    func projectionMaintenanceUpdatesSharedScalarIndexes() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
         let article = SQLitePolymorphicArticle(title: "Indexed Article", body: "Body")
         let report = SQLitePolymorphicReport(title: "Indexed Report", pageCount: 4)
 
-        context.insert(article)
-        context.insert(report)
+        try context.insert(article)
+        try context.insert(report)
         try await context.save()
 
         #expect(try await countPolymorphicIndexEntries(
@@ -591,13 +591,14 @@ struct PolymorphicFetchSQLiteTests {
         ) == 1)
     }
 
-    @Test("savePolymorphic update and delete maintain SQLite shared scalar indexes")
-    func savePolymorphicUpdateAndDeleteMaintainSharedScalarIndexes() async throws {
+    @Test("staged update and delete maintain SQLite shared scalar indexes")
+    func stagedUpdateAndDeleteMaintainSharedScalarIndexes() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
         var article = SQLitePolymorphicArticle(title: "Direct Indexed", body: "Saved directly")
-        try await context.savePolymorphic(article, as: SQLitePolymorphicArticle.self)
+        try context.upsert(article)
+        try await context.save()
 
         #expect(try await countPolymorphicIndexEntries(
             container: container,
@@ -610,7 +611,8 @@ struct PolymorphicFetchSQLiteTests {
         ) == 1)
 
         article.title = "Direct Indexed Updated"
-        try await context.savePolymorphic(article, as: SQLitePolymorphicArticle.self)
+        try context.upsert(article)
+        try await context.save()
 
         #expect(try await countPolymorphicIndexEntries(
             container: container,
@@ -627,11 +629,8 @@ struct PolymorphicFetchSQLiteTests {
             valuePrefix: "Direct Indexed Updated"
         ) == 1)
 
-        try await context.deletePolymorphic(
-            SQLitePolymorphicArticle.self,
-            id: article.id,
-            as: SQLitePolymorphicArticle.self
-        )
+        try context.delete(article)
+        try await context.save()
 
         #expect(try await countPolymorphicIndexEntries(
             container: container,
@@ -654,14 +653,14 @@ struct PolymorphicFetchSQLiteTests {
         original.id = "sqlite-polymorphic-stale-delete-article"
 
         let seedContext = container.newContext()
-        seedContext.insert(original)
+        try seedContext.insert(original)
         try await seedContext.save()
 
         var current = original
         current.title = "Shared Stale Current"
         current.body = "current body"
         let updateContext = container.newContext()
-        updateContext.replace(old: original, with: current)
+        try updateContext.update(current)
         try await updateContext.save()
 
         #expect(try await countPolymorphicIndexEntries(
@@ -676,7 +675,7 @@ struct PolymorphicFetchSQLiteTests {
         ) == 1)
 
         let deleteContext = container.newContext()
-        deleteContext.delete(original)
+        try deleteContext.delete(original)
         try await deleteContext.save()
 
         let afterDelete = try await container.newContext()
@@ -699,8 +698,8 @@ struct PolymorphicFetchSQLiteTests {
         ) == 0)
     }
 
-    @Test("clearAll removes only the target concrete type from SQLite shared polymorphic indexes")
-    func clearAllRemovesOnlyTargetConcreteTypeFromSharedPolymorphicIndexes() async throws {
+    @Test("deleteAll removes only the target concrete type from SQLite shared polymorphic indexes")
+    func deleteAllRemovesOnlyTargetConcreteTypeFromSharedPolymorphicIndexes() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
@@ -715,8 +714,8 @@ struct PolymorphicFetchSQLiteTests {
         )
         report.id = "sqlite-polymorphic-clear-survivor-report"
 
-        context.insert(article)
-        context.insert(report)
+        try context.insert(article)
+        try context.insert(report)
         try await context.save()
 
         #expect(try await countPolymorphicIndexEntries(
@@ -724,7 +723,8 @@ struct PolymorphicFetchSQLiteTests {
             indexName: "SQLitePolymorphicDocument_title"
         ) == 2)
 
-        try await context.clearAll(SQLitePolymorphicArticle.self)
+        try await context.deleteAll(SQLitePolymorphicArticle.self)
+        try await context.save()
 
         let remaining = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self)
         let remainingIDs = Set(remaining.compactMap { item -> String? in
@@ -754,8 +754,8 @@ struct PolymorphicFetchSQLiteTests {
         ) == 1)
     }
 
-    @Test("savePolymorphic and deletePolymorphic evaluate security against stored rows")
-    func saveAndDeletePolymorphicEvaluateSecurityAgainstStoredRows() async throws {
+    @Test("staged polymorphic writes evaluate security against stored rows")
+    func stagedPolymorphicWritesEvaluateSecurityAgainstStoredRows() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let schema = Schema(
             [SQLiteSecurePolymorphicArticle.self],
@@ -775,10 +775,9 @@ struct PolymorphicFetchSQLiteTests {
         )
         original.id = "sqlite-secure-polymorphic-article"
         try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "alice")) {
-            try await container.newContext().savePolymorphic(
-                original,
-                as: SQLiteSecurePolymorphicArticle.self
-            )
+            let context = container.newContext()
+            try context.insert(original)
+            try await context.save()
         }
 
         var transferred = original
@@ -786,10 +785,9 @@ struct PolymorphicFetchSQLiteTests {
         transferred.ownerID = "bob"
         transferred.body = "Transferred to Bob"
         try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "alice")) {
-            try await container.newContext().savePolymorphic(
-                transferred,
-                as: SQLiteSecurePolymorphicArticle.self
-            )
+            let context = container.newContext()
+            try context.upsert(transferred)
+            try await context.save()
         }
 
         var deniedUpdate = transferred
@@ -797,10 +795,9 @@ struct PolymorphicFetchSQLiteTests {
         deniedUpdate.body = "Alice should not be able to update after transfer"
         do {
             try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "alice")) {
-                try await container.newContext().savePolymorphic(
-                    deniedUpdate,
-                    as: SQLiteSecurePolymorphicArticle.self
-                )
+                let context = container.newContext()
+                try context.upsert(deniedUpdate)
+                try await context.save()
             }
             Issue.record("Expected transferred polymorphic update to be denied")
         } catch let error as SecurityError {
@@ -810,11 +807,9 @@ struct PolymorphicFetchSQLiteTests {
 
         do {
             try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "alice")) {
-                try await container.newContext().deletePolymorphic(
-                    SQLiteSecurePolymorphicArticle.self,
-                    id: original.id,
-                    as: SQLiteSecurePolymorphicArticle.self
-                )
+                let context = container.newContext()
+                try context.delete(transferred, precondition: .exists)
+                try await context.save()
             }
             Issue.record("Expected transferred polymorphic delete to be denied")
         } catch let error as SecurityError {
@@ -846,11 +841,9 @@ struct PolymorphicFetchSQLiteTests {
         #expect((fetchedAsBob as? SQLiteSecurePolymorphicArticle)?.ownerID == "bob")
 
         try await AuthContextKey.$current.withValue(SQLitePolymorphicAuthorizationContext(userID: "bob")) {
-            try await container.newContext().deletePolymorphic(
-                SQLiteSecurePolymorphicArticle.self,
-                id: original.id,
-                as: SQLiteSecurePolymorphicArticle.self
-            )
+            let context = container.newContext()
+            try context.delete(transferred, precondition: .exists)
+            try await context.save()
         }
 
         #expect(try await countSecurePolymorphicIndexEntries(container: container) == 0)
@@ -865,9 +858,9 @@ struct PolymorphicFetchSQLiteTests {
         var report = SQLitePolymorphicReport(title: "Needle Report", pageCount: 4)
         let unrelated = SQLitePolymorphicReport(title: "Haystack", pageCount: 8)
 
-        context.insert(article)
-        context.insert(report)
-        context.insert(unrelated)
+        try context.insert(article)
+        try context.insert(report)
+        try context.insert(unrelated)
         try await context.save()
 
         let initial = try await context.findPolymorphic(SQLitePolymorphicArticle.self)
@@ -879,7 +872,8 @@ struct PolymorphicFetchSQLiteTests {
         #expect(initialIDs == Set([article.id, report.id]))
 
         report.title = "Beacon Report"
-        try await context.savePolymorphic(report, as: SQLitePolymorphicReport.self)
+        try context.upsert(report)
+        try await context.save()
 
         let afterUpdateNeedle = try await context.findPolymorphic(SQLitePolymorphicArticle.self)
             .fullText(\.title)
@@ -895,11 +889,8 @@ struct PolymorphicFetchSQLiteTests {
         #expect(afterUpdateBeacon.count == 1)
         #expect(afterUpdateBeacon.first?.item(as: SQLitePolymorphicReport.self)?.id == report.id)
 
-        try await context.deletePolymorphic(
-            SQLitePolymorphicArticle.self,
-            id: article.id,
-            as: SQLitePolymorphicArticle.self
-        )
+        try context.delete(article)
+        try await context.save()
 
         let afterDeleteNeedle = try await context.findPolymorphic(SQLitePolymorphicArticle.self)
             .fullText(\.title)
@@ -909,13 +900,14 @@ struct PolymorphicFetchSQLiteTests {
         #expect(afterDeleteNeedle.isEmpty)
     }
 
-    @Test("savePolymorphic writes SQLite items visible to fetchPolymorphic")
-    func savePolymorphicIsVisibleToFetchPolymorphic() async throws {
+    @Test("staged writes are visible to polymorphic fetches on SQLite")
+    func stagedWriteIsVisibleToPolymorphicFetches() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
-        let article = SQLitePolymorphicArticle(title: "Direct", body: "Saved via savePolymorphic")
-        try await context.savePolymorphic(article, as: SQLitePolymorphicArticle.self)
+        let article = SQLitePolymorphicArticle(title: "Direct", body: "Saved via staged upsert")
+        try context.upsert(article)
+        try await context.save()
 
         let scanned = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self)
         let fetchedByID = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self, id: article.id)
@@ -925,22 +917,20 @@ struct PolymorphicFetchSQLiteTests {
         #expect((fetchedByID as? SQLitePolymorphicArticle)?.id == article.id)
     }
 
-    @Test("deletePolymorphic removes SQLite item from shared directory")
-    func deletePolymorphicRemovesItem() async throws {
+    @Test("staged delete removes a SQLite item from the shared directory")
+    func stagedDeleteRemovesItem() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
         let article = SQLitePolymorphicArticle(title: "Doomed", body: "Delete me")
-        try await context.savePolymorphic(article, as: SQLitePolymorphicArticle.self)
+        try context.upsert(article)
+        try await context.save()
 
         let beforeDelete = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self, id: article.id)
         #expect(beforeDelete != nil)
 
-        try await context.deletePolymorphic(
-            SQLitePolymorphicArticle.self,
-            id: article.id,
-            as: SQLitePolymorphicArticle.self
-        )
+        try context.delete(article)
+        try await context.save()
 
         let afterDelete = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self, id: article.id)
         let remaining = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self)
@@ -1019,8 +1009,8 @@ struct PolymorphicFetchSQLiteTests {
             pageCount: 3
         )
 
-        context.insert(article)
-        context.insert(report)
+        try context.insert(article)
+        try context.insert(report)
         try await context.save()
 
         #expect(try await countPolymorphicOptionalVectorIndexEntries(container: container) == 2)
@@ -1063,9 +1053,9 @@ struct PolymorphicFetchSQLiteTests {
             pageCount: 9
         )
 
-        context.insert(article)
-        context.insert(report)
-        context.insert(farReport)
+        try context.insert(article)
+        try context.insert(report)
+        try context.insert(farReport)
         try await context.save()
 
         #expect(try await countPolymorphicVectorIndexEntries(container: container) == 3)
@@ -1090,7 +1080,8 @@ struct PolymorphicFetchSQLiteTests {
         #expect(reportStartedIDs == Set([article.id, report.id]))
 
         report.embedding = [1.0, 0.0, 0.0]
-        try await context.savePolymorphic(report, as: SQLitePolymorphicVectorReport.self)
+        try context.upsert(report)
+        try await context.save()
 
         #expect(try await countPolymorphicVectorIndexEntries(container: container) == 3)
 
@@ -1103,11 +1094,8 @@ struct PolymorphicFetchSQLiteTests {
 
         #expect(updatedIDs == Set([article.id, report.id]))
 
-        try await context.deletePolymorphic(
-            SQLitePolymorphicVectorArticle.self,
-            id: article.id,
-            as: SQLitePolymorphicVectorArticle.self
-        )
+        try context.delete(article)
+        try await context.save()
 
         #expect(try await countPolymorphicVectorIndexEntries(container: container) == 2)
 

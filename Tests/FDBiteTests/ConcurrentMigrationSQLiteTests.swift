@@ -105,7 +105,7 @@ struct ConcurrentMigrationSQLiteTests {
         let initialContext = initialContainer.newContext()
         var user = SQLiteConcurrentMigrationUserV1(name: "Alice", email: "alice@example.com")
         user.id = "sqlite-reentrant-user"
-        initialContext.insert(user)
+        try initialContext.insert(user)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -148,7 +148,7 @@ struct ConcurrentMigrationSQLiteTests {
                 email: "user\(i)@example.com"
             )
             user.id = "sqlite-concurrent-user-\(i)"
-            initialContext.insert(user)
+            try initialContext.insert(user)
         }
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))

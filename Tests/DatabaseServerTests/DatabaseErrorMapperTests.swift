@@ -7,6 +7,7 @@ import Graph
 import GraphIndex
 import OntologyIndex
 import QueryIR
+import RelationshipIndex
 import StorageKit
 import Testing
 @testable import DatabaseServer
@@ -249,6 +250,377 @@ struct DatabaseErrorMapperTests {
             invalidBinding,
             category: .invalidRequest,
             code: "INVALID_QUERY"
+        )
+    }
+
+    @Test("Mutation errors distinguish input, conflict, and schema failures")
+    func mutationFailures() async throws {
+        let context = try await makeContext()
+        let identity = RecordIdentity(
+            entity: "Event",
+            id: .string("event-1")
+        )
+        expectMappings(
+            [
+                (
+                    DatabaseMutationError.idempotencyKeyRequired,
+                    .invalidRequest,
+                    "IDEMPOTENCY_KEY_REQUIRED"
+                ),
+                (
+                    DatabaseMutationError.recordAlreadyExists(identity),
+                    .conflict,
+                    "MUTATION_CONFLICT"
+                ),
+                (
+                    DatabaseMutationError.recordNotFound(identity),
+                    .notFound,
+                    "RECORD_NOT_FOUND"
+                ),
+                (
+                    DatabaseMutationError.invalidCompiledSchema(
+                        entity: "Event",
+                        reason: "missing field"
+                    ),
+                    .internalFailure,
+                    "MUTATION_SCHEMA_INVALID"
+                ),
+            ],
+            context: context
+        )
+    }
+
+    @Test("Database transaction errors preserve their lifecycle contract")
+    func databaseTransactionFailures() async throws {
+        let context = try await makeContext()
+        let identity = RecordIdentity(
+            entity: "Event",
+            id: .string("event-1")
+        )
+        expectMappings(
+            [
+                (
+                    DatabaseTransactionError.concurrentOperation,
+                    .internalFailure,
+                    "DATABASE_TRANSACTION_CONCURRENT_OPERATION"
+                ),
+                (
+                    DatabaseTransactionError.closed,
+                    .internalFailure,
+                    "DATABASE_TRANSACTION_CLOSED"
+                ),
+                (
+                    DatabaseTransactionError.invalidOperationContext,
+                    .internalFailure,
+                    "DATABASE_TRANSACTION_CONTEXT_INVALID"
+                ),
+                (
+                    DatabaseTransactionError.operationIdentifierExhausted,
+                    .resourceLimit,
+                    "TRANSACTION_OPERATION_LIMIT"
+                ),
+                (
+                    DatabaseTransactionError.invalidLimit(0),
+                    .invalidRequest,
+                    "INVALID_TRANSACTION_LIMIT"
+                ),
+                (
+                    DatabaseTransactionError.itemDisappearedDuringScan,
+                    .internalFailure,
+                    "DATABASE_SCAN_INCONSISTENT"
+                ),
+                (
+                    DatabaseTransactionError.unknownEntity("Event"),
+                    .invalidRequest,
+                    "UNKNOWN_ENTITY"
+                ),
+                (
+                    DatabaseTransactionError.entityHasNoPersistableType("Event"),
+                    .internalFailure,
+                    "ENTITY_RUNTIME_NOT_COMPILED"
+                ),
+                (
+                    DatabaseTransactionError.invalidIdentity(
+                        entity: "Event",
+                        reason: "invalid identifier"
+                    ),
+                    .invalidRequest,
+                    "INVALID_RECORD_IDENTITY"
+                ),
+                (
+                    DatabaseTransactionError.persistedModelNotFound(identity),
+                    .notFound,
+                    "PERSISTED_MODEL_NOT_FOUND"
+                ),
+                (
+                    DatabaseTransactionError.duplicateMutation(identity),
+                    .invalidRequest,
+                    "DUPLICATE_MUTATION"
+                ),
+                (
+                    DatabaseTransactionError.conflictingDerivedMutation(identity),
+                    .conflict,
+                    "DERIVED_MUTATION_CONFLICT"
+                ),
+            ],
+            context: context
+        )
+    }
+
+    @Test("Context errors distinguish lifecycle, conflict, and size failures")
+    func contextFailures() async throws {
+        let context = try await makeContext()
+        expectMappings(
+            [
+                (
+                    FDBContextError.concurrentSaveNotAllowed,
+                    .internalFailure,
+                    "CONCURRENT_CONTEXT_SAVE"
+                ),
+                (
+                    FDBContextError.rollbackDuringSaveNotAllowed,
+                    .internalFailure,
+                    "CONTEXT_ROLLBACK_DURING_SAVE"
+                ),
+                (
+                    FDBContextError.saveIdentifierExhausted,
+                    .resourceLimit,
+                    "CONTEXT_SAVE_LIMIT"
+                ),
+                (
+                    FDBContextError.invalidSaveState,
+                    .internalFailure,
+                    "CONTEXT_SAVE_STATE_INVALID"
+                ),
+                (
+                    FDBContextError.preconditionFailed(
+                        typeName: "Event",
+                        idDescription: "event-1",
+                        precondition: .exists,
+                        reason: "row not found"
+                    ),
+                    .conflict,
+                    "PRECONDITION_FAILED"
+                ),
+            ],
+            context: context
+        )
+
+        let unknownCommit = CanonicalDatabaseErrorMapper().remoteError(
+            for: FDBContextError.commitOutcomeUnknown,
+            context: context
+        )
+        #expect(unknownCommit.category == .unavailable)
+        #expect(unknownCommit.code == "COMMIT_OUTCOME_UNKNOWN")
+        #expect(unknownCommit.retryability == .immediate)
+    }
+
+    @Test("Identity and projection errors retain schema and corruption semantics")
+    func persistenceInvariantFailures() async throws {
+        let context = try await makeContext()
+        expectMappings(
+            [
+                (
+                    PersistableIdentityEncodingError.invalidCompiledSchema(
+                        entity: "Event",
+                        reason: "missing partition field"
+                    ),
+                    .internalFailure,
+                    "PERSISTABLE_SCHEMA_INVALID"
+                ),
+                (
+                    PersistableIdentityEncodingError.identifierNotRepresentable(
+                        entity: "Event"
+                    ),
+                    .invalidRequest,
+                    "INVALID_PERSISTED_IDENTITY"
+                ),
+                (
+                    PolymorphicProjectionError.missingProjection(
+                        entity: "Event",
+                        group: "TimelineItem"
+                    ),
+                    .internalFailure,
+                    "POLYMORPHIC_PROJECTION_MISSING"
+                ),
+                (
+                    PolymorphicProjectionError.unexpectedProjection(
+                        entity: "Event",
+                        group: "TimelineItem"
+                    ),
+                    .internalFailure,
+                    "POLYMORPHIC_PROJECTION_UNEXPECTED"
+                ),
+            ],
+            context: context
+        )
+    }
+
+    @Test("Relationship errors distinguish constraints, limits, and corruption")
+    func relationshipFailures() async throws {
+        let context = try await makeContext()
+        let identity = RecordIdentity(
+            entity: "Event",
+            id: .string("event-1")
+        )
+        expectMappings(
+            [
+                (
+                    RelationshipError.deleteRuleDenied(
+                        itemType: "Calendar",
+                        relationshipType: "Event",
+                        propertyName: "calendar",
+                        count: 1
+                    ),
+                    .constraint,
+                    "RELATIONSHIP_DELETE_DENIED"
+                ),
+                (
+                    RelationshipError.mutationLimitExceeded(
+                        actual: 101,
+                        maximum: 100
+                    ),
+                    .resourceLimit,
+                    "RELATIONSHIP_MUTATION_LIMIT"
+                ),
+                (
+                    RelationshipError.workLimitExceeded(maximum: 100),
+                    .resourceLimit,
+                    "RELATIONSHIP_WORK_LIMIT"
+                ),
+                (
+                    RelationshipError.catalogOwnerMissing(identity),
+                    .internalFailure,
+                    "RELATIONSHIP_CATALOG_CORRUPTED"
+                ),
+            ],
+            context: context
+        )
+    }
+
+    @Test("Relationship reference errors preserve each boundary failure")
+    func relationshipReferenceFailures() async throws {
+        let context = try await makeContext()
+        let identity = RecordIdentity(
+            entity: "Event",
+            id: .string("event-1")
+        )
+        expectMappings(
+            [
+                (
+                    RelationshipReferenceError.unknownRelatedEntity("Event"),
+                    .invalidRequest,
+                    "UNKNOWN_RELATIONSHIP_ENTITY"
+                ),
+                (
+                    RelationshipReferenceError.relatedEntityHasNoCompiledType("Event"),
+                    .internalFailure,
+                    "RELATIONSHIP_ENTITY_NOT_COMPILED"
+                ),
+                (
+                    RelationshipReferenceError.missingRelationshipField(
+                        entity: "Event",
+                        field: "calendar"
+                    ),
+                    .internalFailure,
+                    "RELATIONSHIP_FIELD_MISSING"
+                ),
+                (
+                    RelationshipReferenceError.invalidRelationshipValue(
+                        entity: "Event",
+                        field: "calendar"
+                    ),
+                    .invalidRequest,
+                    "INVALID_RELATIONSHIP_VALUE"
+                ),
+                (
+                    RelationshipReferenceError.invalidReferenceEntity(
+                        expected: "Calendar",
+                        actual: "Event"
+                    ),
+                    .invalidRequest,
+                    "INVALID_RELATIONSHIP_TARGET_ENTITY"
+                ),
+                (
+                    RelationshipReferenceError.invalidTargetPartition(
+                        entity: "Calendar",
+                        reason: "tenant is missing"
+                    ),
+                    .invalidRequest,
+                    "INVALID_RELATIONSHIP_TARGET_PARTITION"
+                ),
+                (
+                    RelationshipReferenceError.invalidTargetIdentifier(
+                        entity: "Calendar",
+                        reason: .typeMismatch(expected: .string)
+                    ),
+                    .invalidRequest,
+                    "INVALID_RELATIONSHIP_TARGET_IDENTIFIER"
+                ),
+                (
+                    RelationshipReferenceError.invalidOwnerIdentity(
+                        entity: "Event"
+                    ),
+                    .internalFailure,
+                    "RELATIONSHIP_OWNER_IDENTITY_INVALID"
+                ),
+                (
+                    RelationshipReferenceError.missingDescriptor(
+                        owner: "Event",
+                        field: "calendar"
+                    ),
+                    .internalFailure,
+                    "RELATIONSHIP_DESCRIPTOR_MISSING"
+                ),
+                (
+                    RelationshipReferenceError.descriptorMismatch(
+                        owner: "Event",
+                        field: "calendar"
+                    ),
+                    .internalFailure,
+                    "RELATIONSHIP_DESCRIPTOR_MISMATCH"
+                ),
+                (
+                    RelationshipReferenceError.loadedTypeMismatch(
+                        expected: "Event",
+                        actual: "Calendar"
+                    ),
+                    .internalFailure,
+                    "RELATIONSHIP_STORED_TYPE_MISMATCH"
+                ),
+                (
+                    RelationshipReferenceError.targetRecordMissing(identity),
+                    .constraint,
+                    "RELATIONSHIP_TARGET_NOT_FOUND"
+                ),
+                (
+                    RelationshipReferenceError.corruptedCatalogEntry,
+                    .internalFailure,
+                    "RELATIONSHIP_CATALOG_CORRUPTED"
+                ),
+                (
+                    RelationshipReferenceError.invalidScanLimit(0),
+                    .invalidRequest,
+                    "INVALID_RELATIONSHIP_SCAN_LIMIT"
+                ),
+                (
+                    RelationshipReferenceError.nullifyRequiresOptionalField(
+                        entity: "Event",
+                        field: "calendar"
+                    ),
+                    .internalFailure,
+                    "RELATIONSHIP_NULLIFY_FIELD_INVALID"
+                ),
+                (
+                    RelationshipReferenceError.recordDecodingFailed(
+                        entity: "Event",
+                        reason: "invalid projection"
+                    ),
+                    .internalFailure,
+                    "RELATIONSHIP_PROJECTION_DECODING_FAILED"
+                ),
+            ],
+            context: context
         )
     }
 
@@ -767,6 +1139,30 @@ struct DatabaseErrorMapperTests {
                 value: .object(error.details)
             ),
         ]
+    }
+
+    private func expectMappings(
+        _ mappings: [
+            (
+                error: any Error,
+                category: DatabaseErrorCategory,
+                code: String
+            )
+        ],
+        context: DatabaseOperationContext
+    ) {
+        let mapper = CanonicalDatabaseErrorMapper()
+        for mapping in mappings {
+            let remote = mapper.remoteError(
+                for: mapping.error,
+                context: context
+            )
+            expect(
+                remote,
+                category: mapping.category,
+                code: mapping.code
+            )
+        }
     }
 
     private func expect(

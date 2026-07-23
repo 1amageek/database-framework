@@ -64,7 +64,7 @@ struct RangeTreeBenchmark {
 
         // Insert all players
         for player in players {
-            context.insert(player)
+            try context.insert(player)
         }
         try await context.save()
 
@@ -121,7 +121,7 @@ struct RangeTreeBenchmark {
         // Setup: Create fixed dataset for query scaling.
         let playerCount = 1000
         for i in 0..<playerCount {
-            context.insert(BenchmarkPlayer(
+            try context.insert(BenchmarkPlayer(
                 name: "Scalability Player \(i)",
                 score: Int64.random(in: 0...100000)
             ))
@@ -179,7 +179,7 @@ struct RangeTreeBenchmark {
         }
 
         for player in players {
-            context.insert(player)
+            try context.insert(player)
         }
         try await context.save()
 

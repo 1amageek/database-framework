@@ -18,25 +18,33 @@ extension FDBContext {
         _ reference: DatabaseReference<Owner>,
         joining keyPath: KeyPath<Owner, DatabaseReference<Related>?>
     ) async throws -> Snapshot<Owner>? {
-        let handler = makePersistenceHandler()
-        return try await container.engine.withTransaction { transaction in
-            guard let owner = try await load(
+        let fieldName = Owner.fieldName(for: keyPath)
+        let loaded: (owner: Owner, related: Related?)? =
+            try await withTransaction { transaction in
+            guard let owner = try await self.load(
                 reference,
-                transaction: transaction,
-                handler: handler
+                transaction: transaction
             ) else {
                 return nil
             }
-            guard let relatedReference = owner[keyPath: keyPath] else {
-                return Snapshot(item: owner)
+            guard let relatedReference = owner[
+                dynamicMember: fieldName
+            ] as? DatabaseReference<Related> else {
+                return (owner, nil)
             }
-            let related = try await load(
+            let related = try await self.load(
                 relatedReference,
-                transaction: transaction,
-                handler: handler
+                transaction: transaction
             )
-            return Snapshot(item: owner).with(keyPath, loadedAs: related)
+            return (owner, related)
         }
+        guard let loaded else {
+            return nil
+        }
+        return Snapshot(item: loaded.owner).with(
+            keyPath,
+            loadedAs: loaded.related
+        )
     }
 
     /// Loads an owner and a required to-one relationship at one read version.
@@ -44,22 +52,36 @@ extension FDBContext {
         _ reference: DatabaseReference<Owner>,
         joining keyPath: KeyPath<Owner, DatabaseReference<Related>>
     ) async throws -> Snapshot<Owner>? {
-        let handler = makePersistenceHandler()
-        return try await container.engine.withTransaction { transaction in
-            guard let owner = try await load(
+        let fieldName = Owner.fieldName(for: keyPath)
+        let loaded: (owner: Owner, related: Related?)? =
+            try await withTransaction { transaction in
+            guard let owner = try await self.load(
                 reference,
-                transaction: transaction,
-                handler: handler
+                transaction: transaction
             ) else {
                 return nil
             }
-            let related = try await load(
-                owner[keyPath: keyPath],
-                transaction: transaction,
-                handler: handler
+            guard let relatedReference = owner[
+                dynamicMember: fieldName
+            ] as? DatabaseReference<Related> else {
+                throw RelationshipReferenceError.invalidRelationshipValue(
+                    entity: Owner.persistableType,
+                    field: fieldName
+                )
+            }
+            let related = try await self.load(
+                relatedReference,
+                transaction: transaction
             )
-            return Snapshot(item: owner).with(keyPath, loadedAs: related)
+            return (owner, related)
         }
+        guard let loaded else {
+            return nil
+        }
+        return Snapshot(item: loaded.owner).with(
+            keyPath,
+            loadedAs: loaded.related
+        )
     }
 
     /// Loads an owner and a to-many relationship at one read version.
@@ -67,27 +89,41 @@ extension FDBContext {
         _ reference: DatabaseReference<Owner>,
         joining keyPath: KeyPath<Owner, [DatabaseReference<Related>]>
     ) async throws -> Snapshot<Owner>? {
-        let handler = makePersistenceHandler()
-        return try await container.engine.withTransaction { transaction in
-            guard let owner = try await load(
+        let fieldName = Owner.fieldName(for: keyPath)
+        let loaded: (owner: Owner, related: [Related])? =
+            try await withTransaction { transaction in
+            guard let owner = try await self.load(
                 reference,
-                transaction: transaction,
-                handler: handler
+                transaction: transaction
             ) else {
                 return nil
             }
+            guard let references = owner[
+                dynamicMember: fieldName
+            ] as? [DatabaseReference<Related>] else {
+                throw RelationshipReferenceError.invalidRelationshipValue(
+                    entity: Owner.persistableType,
+                    field: fieldName
+                )
+            }
             var related: [Related] = []
-            for relatedReference in owner[keyPath: keyPath] {
-                if let model = try await load(
+            for relatedReference in references {
+                if let model = try await self.load(
                     relatedReference,
-                    transaction: transaction,
-                    handler: handler
+                    transaction: transaction
                 ) {
                     related.append(model)
                 }
             }
-            return Snapshot(item: owner).with(keyPath, loadedAs: related)
+            return (owner, related)
         }
+        guard let loaded else {
+            return nil
+        }
+        return Snapshot(item: loaded.owner).with(
+            keyPath,
+            loadedAs: loaded.related
+        )
     }
 
     public func related<Owner: Persistable, Related: Persistable>(
@@ -111,14 +147,13 @@ extension FDBContext {
         _ owner: Owner,
         _ keyPath: KeyPath<Owner, [DatabaseReference<Related>]>
     ) async throws -> [Related] {
-        let handler = makePersistenceHandler()
-        return try await container.engine.withTransaction { transaction in
+        let references = owner[keyPath: keyPath]
+        return try await withTransaction { transaction in
             var models: [Related] = []
-            for reference in owner[keyPath: keyPath] {
-                if let model = try await load(
+            for reference in references {
+                if let model = try await self.load(
                     reference,
-                    transaction: transaction,
-                    handler: handler
+                    transaction: transaction
                 ) {
                     models.append(model)
                 }

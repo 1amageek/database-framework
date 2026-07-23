@@ -1,5 +1,5 @@
 #if !os(WASI)
-import Crypto
+import DatabaseDigest
 import DatabaseValue
 import DatabaseWire
 import QueryIR
@@ -26,13 +26,13 @@ struct CanonicalPaginationFingerprintTests {
         let actualQueryFingerprint = try reader.readBytes()
 
         let encodedQuery = try QueryIRWireCodec.encode(.select(query))
-        var hasher = SHA256()
+        var hasher = SHA256Accumulator()
         update(UInt32(0x0151_4244), hasher: &hasher)
         updateLength(encodedQuery.count, hasher: &hasher)
-        encodedQuery.withUnsafeBytes { hasher.update(bufferPointer: $0) }
+        hasher.update(encodedQuery)
         updateLength(scope.count, hasher: &hasher)
-        scope.withUnsafeBytes { hasher.update(bufferPointer: $0) }
-        let expectedQueryFingerprint = DatabaseBytes(Array(hasher.finalize()))
+        hasher.update(scope)
+        let expectedQueryFingerprint = hasher.finalize()
 
         #expect(actualQueryFingerprint == expectedQueryFingerprint)
     }
@@ -168,21 +168,21 @@ struct CanonicalPaginationFingerprintTests {
 
     private func update(
         _ domain: UInt32,
-        hasher: inout SHA256
+        hasher: inout SHA256Accumulator
     ) {
         var littleEndian = domain.littleEndian
         withUnsafeBytes(of: &littleEndian) {
-            hasher.update(bufferPointer: $0)
+            hasher.update($0)
         }
     }
 
     private func updateLength(
         _ byteCount: Int,
-        hasher: inout SHA256
+        hasher: inout SHA256Accumulator
     ) {
         var littleEndian = UInt64(byteCount).littleEndian
         withUnsafeBytes(of: &littleEndian) {
-            hasher.update(bufferPointer: $0)
+            hasher.update($0)
         }
     }
 }

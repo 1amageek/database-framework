@@ -203,7 +203,7 @@ struct NamedGraphStoreSQLiteTests {
         )
         let context = container.newContext()
         for statement in try statements() {
-            context.insert(statement)
+            try context.insert(statement)
         }
         try await context.save()
         return context

@@ -332,7 +332,7 @@ struct MigrationTests {
                 email: "alice@example.com"
             )
             user.id = userID
-            initialContext.insert(user)
+            try initialContext.insert(user)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -420,7 +420,7 @@ struct MigrationTests {
                 email: "charlie@example.com"
             )
             seededUser.id = seededID
-            initialContext.insert(seededUser)
+            try initialContext.insert(seededUser)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -483,14 +483,14 @@ struct MigrationTests {
                 email: "alice@example.com"
             )
             firstUser.id = firstID
-            initialContext.insert(firstUser)
+            try initialContext.insert(firstUser)
 
             var secondUser = SchemaRegistryMigratedUserV1(
                 name: "Bob",
                 email: "bob@example.com"
             )
             secondUser.id = secondID
-            initialContext.insert(secondUser)
+            try initialContext.insert(secondUser)
 
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))

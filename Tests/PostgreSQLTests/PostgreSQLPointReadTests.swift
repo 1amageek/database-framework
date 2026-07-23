@@ -97,7 +97,7 @@ struct PostgreSQLPointReadTests {
             item.id = itemID
             item.name = "stored"
             item.value = 42
-            context.insert(item)
+            try context.insert(item)
             try await context.save()
 
             let store = try await container.store(for: PGPointReadItem.self)
@@ -154,7 +154,7 @@ struct PostgreSQLPointReadTests {
             let orderID = uniqueID("order")
             var order = TenantOrder(tenantID: tenantID, status: "pending", total: 55.0)
             order.id = orderID
-            context.insert(order)
+            try context.insert(order)
             try await context.save()
 
             var path = DirectoryPath<TenantOrder>()
@@ -185,7 +185,7 @@ struct PostgreSQLPointReadTests {
                 item.id = itemID
                 item.ownerID = "owner"
                 item.name = "secret"
-                context.insert(item)
+                try context.insert(item)
                 try await context.save()
             }
 

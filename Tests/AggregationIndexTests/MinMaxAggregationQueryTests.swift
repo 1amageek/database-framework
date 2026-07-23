@@ -101,7 +101,7 @@ struct MinMaxAggregationQueryTests {
         ]
 
         for order in orders {
-            context.insert(order)
+            try context.insert(order)
         }
         try await context.save()
 
@@ -148,7 +148,7 @@ struct MinMaxAggregationQueryTests {
         ]
 
         for order in orders {
-            context.insert(order)
+            try context.insert(order)
         }
         try await context.save()
 
@@ -195,7 +195,7 @@ struct MinMaxAggregationQueryTests {
         ]
 
         for order in orders {
-            context.insert(order)
+            try context.insert(order)
         }
         try await context.save()
 
@@ -269,7 +269,7 @@ struct MinMaxAggregationQueryTests {
         ]
 
         for order in orders {
-            context.insert(order)
+            try context.insert(order)
         }
         try await context.save()
 

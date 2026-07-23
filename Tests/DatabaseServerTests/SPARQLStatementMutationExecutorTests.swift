@@ -1310,7 +1310,7 @@ struct SPARQLStatementMutationExecutorTests {
                 preconditions: [],
                 graphPartitions: [],
                 context: context,
-                transaction: transaction.rawTransaction
+                transaction: transaction
             )
         }
         guard case .rdf(let effect) = result else {

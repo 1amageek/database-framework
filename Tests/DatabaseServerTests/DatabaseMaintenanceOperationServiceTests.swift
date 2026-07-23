@@ -830,8 +830,8 @@ struct DatabaseMaintenanceOperationServiceTests {
         second.id = "second"
         second.tenantID = "tenant-a"
         second.value = "beta"
-        context.insert(first)
-        context.insert(second)
+        try context.insert(first)
+        try context.insert(second)
         try await context.save()
     }
 
@@ -846,7 +846,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         record.id = id
         record.tenantID = tenant
         record.value = value
-        context.insert(record)
+        try context.insert(record)
         try await context.save()
     }
 

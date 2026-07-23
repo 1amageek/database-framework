@@ -60,7 +60,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
         let context = container.newContext()
         var user = SQLiteFacadeUserV1(name: "Alice")
         user.id = "sqlite-facade-user"
-        context.insert(user)
+        try context.insert(user)
         try await context.save()
 
         let fetched = try await context.fetch(SQLiteFacadeUserV1.self).execute()
@@ -85,7 +85,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
         let initialContext = initialContainer.newContext()
         var user = SQLiteFacadeUserV1(name: "Bob")
         user.id = "sqlite-facade-migration"
-        initialContext.insert(user)
+        try initialContext.insert(user)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: SQLiteFacadeSchemaV1.versionIdentifier)
 

@@ -69,7 +69,7 @@ struct IndexMaintenanceEfficiencyTests {
         var product = IndexMaintenanceProduct(sku: sku1, name: "Widget", price: price1)
         product.id = productId
 
-        context.insert(product)
+        try context.insert(product)
         try await context.save()
 
         // Verify initial index entry exists
@@ -82,7 +82,7 @@ struct IndexMaintenanceEfficiencyTests {
         // Update the product (change indexed field)
         product.sku = sku2
         product.price = price2
-        context.insert(product)
+        try context.insert(product)
         try await context.save()
 
         // Verify old index entry is removed
@@ -124,7 +124,7 @@ struct IndexMaintenanceEfficiencyTests {
         var product = IndexMaintenanceProduct(sku: sku, name: "ToDelete", price: price)
         product.id = productId
 
-        context.insert(product)
+        try context.insert(product)
         try await context.save()
 
         // Verify index entry exists
@@ -134,7 +134,7 @@ struct IndexMaintenanceEfficiencyTests {
         #expect(beforeDelete.count == 1)
 
         // Delete the product
-        context.delete(product)
+        try context.delete(product)
         try await context.save()
 
         // Verify index entry is removed
@@ -158,7 +158,7 @@ struct IndexMaintenanceEfficiencyTests {
         var product = IndexMaintenanceProduct(sku: sku, name: "NewProduct", price: price)
         product.id = productId
 
-        context.insert(product)
+        try context.insert(product)
         try await context.save()
 
         // Verify index entry was created
@@ -182,22 +182,22 @@ struct IndexMaintenanceEfficiencyTests {
         product.id = productId
 
         // Insert
-        context.insert(product)
+        try context.insert(product)
         try await context.save()
 
         // Update 1
         product.sku = "\(testPrefix)-V2"
-        context.insert(product)
+        try context.insert(product)
         try await context.save()
 
         // Update 2
         product.sku = "\(testPrefix)-V3"
-        context.insert(product)
+        try context.insert(product)
         try await context.save()
 
         // Update 3 (back to original-ish)
         product.sku = "\(testPrefix)-V4"
-        context.insert(product)
+        try context.insert(product)
         try await context.save()
 
         // Verify only the latest index entry exists
@@ -238,7 +238,7 @@ struct IndexMaintenanceEfficiencyTests {
             )
             product.id = productId
             productIds.append(productId)
-            context.insert(product)
+            try context.insert(product)
         }
         try await context.save()
 
@@ -254,7 +254,7 @@ struct IndexMaintenanceEfficiencyTests {
         targetProduct.id = targetId
 
         let startTime = ContinuousClock.now
-        context.insert(targetProduct)
+        try context.insert(targetProduct)
         try await context.save()
         let elapsed = ContinuousClock.now - startTime
 
@@ -295,7 +295,7 @@ struct IndexMaintenanceEfficiencyTests {
             )
             product.id = productId
             products.append(product)
-            context.insert(product)
+            try context.insert(product)
         }
         try await context.save()
 
@@ -310,7 +310,7 @@ struct IndexMaintenanceEfficiencyTests {
 
         // Delete half of them
         for i in 0..<5 {
-            context.delete(products[i])
+            try context.delete(products[i])
         }
         try await context.save()
 

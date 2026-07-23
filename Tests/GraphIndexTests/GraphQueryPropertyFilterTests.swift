@@ -76,8 +76,8 @@ struct GraphQueryPropertyFilterTests {
         let bob = uniqueID("bob")
         let carol = uniqueID("carol")
 
-        context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
-        context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2021, status: "inactive", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
+        try context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2021, status: "inactive", score: 0.5))
         try await context.save()
 
         // Query with property filter
@@ -100,7 +100,7 @@ struct GraphQueryPropertyFilterTests {
         let alice = uniqueID("alice")
 
         for year in [2018, 2019, 2020, 2021, 2022] {
-            context.insert(makeEdge(from: alice, target: uniqueID("user-\(year)"), label: "KNOWS", since: year, status: "active", score: 0.5))
+            try context.insert(makeEdge(from: alice, target: uniqueID("user-\(year)"), label: "KNOWS", since: year, status: "active", score: 0.5))
         }
         try await context.save()
 
@@ -125,9 +125,9 @@ struct GraphQueryPropertyFilterTests {
         let carol = uniqueID("carol")
         let dave = uniqueID("dave")
 
-        context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
-        context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2020, status: "inactive", score: 0.5))
-        context.insert(makeEdge(from: alice, target: dave, label: "KNOWS", since: 2021, status: "active", score: 0.7))
+        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
+        try context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2020, status: "inactive", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: dave, label: "KNOWS", since: 2021, status: "active", score: 0.7))
         try await context.save()
 
         // Query with multiple filters (AND)
@@ -152,8 +152,8 @@ struct GraphQueryPropertyFilterTests {
         let bob = uniqueID("bob")
         let carol = uniqueID("carol")
 
-        context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
-        context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2019, status: "inactive", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
+        try context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2019, status: "inactive", score: 0.5))
         try await context.save()
 
         // Query with type-erased filter
@@ -179,9 +179,9 @@ struct GraphQueryPropertyFilterTests {
         let dave = uniqueID("dave")
 
         // Create edges with nil, empty string, and non-empty status
-        context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: nil, score: 0.9))
-        context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2020, status: "", score: 0.5))
-        context.insert(makeEdge(from: alice, target: dave, label: "KNOWS", since: 2020, status: "active", score: 0.7))
+        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: nil, score: 0.9))
+        try context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2020, status: "", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: dave, label: "KNOWS", since: 2020, status: "active", score: 0.7))
         try await context.save()
 
         // Filter by non-nil status
@@ -204,8 +204,8 @@ struct GraphQueryPropertyFilterTests {
         let bob = uniqueID("bob")
         let carol = uniqueID("carol")
 
-        context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
-        context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2021, status: "inactive", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9))
+        try context.insert(makeEdge(from: alice, target: carol, label: "KNOWS", since: 2021, status: "inactive", score: 0.5))
         try await context.save()
 
         // Query without property filters (should work as before)

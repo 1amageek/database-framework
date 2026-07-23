@@ -29,17 +29,16 @@ struct SPARQLUpdateExecutor: Sendable {
         _ request: PreparedSPARQLUpdateRequest,
         preconditions: [MutationExecuteOperation.Precondition],
         context: DatabaseOperationContext,
-        transaction: any Transaction,
-        persistence: any ModelPersistenceHandler,
+        transaction: DatabaseTransaction,
         records: DatabaseRecordMutationExecutor,
         workMeter: DatabaseWorkMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
         try await records.validate(
             preconditions,
             transaction: transaction,
-            persistence: persistence,
             workMeter: workMeter
         )
+        let storageTransaction = transaction.storageTransaction
         let mutationMeter = SPARQLMutationMeter(
             maximum: runtimeLimits.maximumMutations,
             workMeter: workMeter
@@ -50,7 +49,7 @@ struct SPARQLUpdateExecutor: Sendable {
                 request.operation(at: index),
                 operationOrdinal: UInt64(index),
                 context: context,
-                transaction: transaction,
+                transaction: storageTransaction,
                 workMeter: workMeter,
                 mutationMeter: mutationMeter
             )

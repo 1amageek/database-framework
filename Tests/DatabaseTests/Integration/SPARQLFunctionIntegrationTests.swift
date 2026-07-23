@@ -123,14 +123,14 @@ struct SPARQLFunctionIntegrationTests {
         bob.id = uniqueID("user")
         carol.id = uniqueID("user")
 
-        context.insert(alice)
-        context.insert(bob)
-        context.insert(carol)
+        try context.insert(alice)
+        try context.insert(bob)
+        try context.insert(carol)
         try await context.save()
 
         // Setup: Create RDF triples (Alice and Bob know each other)
-        context.insert(SPARQLFunctionTriple(subject: alice.id, predicate: "knows", object: bob.id))
-        context.insert(SPARQLFunctionTriple(subject: bob.id, predicate: "knows", object: alice.id))
+        try context.insert(SPARQLFunctionTriple(subject: alice.id, predicate: "knows", object: bob.id))
+        try context.insert(SPARQLFunctionTriple(subject: bob.id, predicate: "knows", object: alice.id))
         try await context.save()
 
         // Execute: SQL with SPARQL() function
@@ -163,15 +163,15 @@ struct SPARQLFunctionIntegrationTests {
         user2.id = uniqueID("user")
         user3.id = uniqueID("user")
 
-        context.insert(user1)
-        context.insert(user2)
-        context.insert(user3)
+        try context.insert(user1)
+        try context.insert(user2)
+        try context.insert(user3)
         try await context.save()
 
         // Setup: Create RDF triples
-        context.insert(SPARQLFunctionTriple(subject: user1.id, predicate: "role", object: "admin"))
-        context.insert(SPARQLFunctionTriple(subject: user2.id, predicate: "role", object: "admin"))
-        context.insert(SPARQLFunctionTriple(subject: user3.id, predicate: "role", object: "user"))
+        try context.insert(SPARQLFunctionTriple(subject: user1.id, predicate: "role", object: "admin"))
+        try context.insert(SPARQLFunctionTriple(subject: user2.id, predicate: "role", object: "admin"))
+        try context.insert(SPARQLFunctionTriple(subject: user3.id, predicate: "role", object: "user"))
         try await context.save()
 
         // Execute: SQL with SPARQL() + age filter
@@ -207,18 +207,18 @@ struct SPARQLFunctionIntegrationTests {
         both.id = uniqueID("user")
         none.id = uniqueID("user")
 
-        context.insert(admin)
-        context.insert(developer)
-        context.insert(both)
-        context.insert(none)
+        try context.insert(admin)
+        try context.insert(developer)
+        try context.insert(both)
+        try context.insert(none)
         try await context.save()
 
         // Setup: Create RDF triples
-        context.insert(SPARQLFunctionTriple(subject: admin.id, predicate: "role", object: "admin"))
-        context.insert(SPARQLFunctionTriple(subject: both.id, predicate: "role", object: "admin"))
+        try context.insert(SPARQLFunctionTriple(subject: admin.id, predicate: "role", object: "admin"))
+        try context.insert(SPARQLFunctionTriple(subject: both.id, predicate: "role", object: "admin"))
 
-        context.insert(SPARQLFunctionTriple(subject: developer.id, predicate: "skill", object: "swift"))
-        context.insert(SPARQLFunctionTriple(subject: both.id, predicate: "skill", object: "swift"))
+        try context.insert(SPARQLFunctionTriple(subject: developer.id, predicate: "skill", object: "swift"))
+        try context.insert(SPARQLFunctionTriple(subject: both.id, predicate: "skill", object: "swift"))
         try await context.save()
 
         // Execute: Find users who are admins AND have swift skill
@@ -282,8 +282,8 @@ struct SPARQLFunctionIntegrationTests {
         var user = SPARQLFunctionUser(name: "Test", age: 25)
         user.id = uniqueID("user")
 
-        context.insert(user)
-        context.insert(SPARQLFunctionTriple(subject: user.id, predicate: "knows", object: "someone"))
+        try context.insert(user)
+        try context.insert(SPARQLFunctionTriple(subject: user.id, predicate: "knows", object: "someone"))
         try await context.save()
 
         // Execute: Query returns multiple variables (?s and ?o)
@@ -311,11 +311,11 @@ struct SPARQLFunctionIntegrationTests {
         person1.id = uniqueID("person")
         person2.id = uniqueID("person")
 
-        context.insert(person1)
-        context.insert(person2)
+        try context.insert(person1)
+        try context.insert(person2)
         try await context.save()
 
-        context.insert(SPARQLFunctionTriple(subject: person1.id, predicate: "knows", object: person2.id))
+        try context.insert(SPARQLFunctionTriple(subject: person1.id, predicate: "knows", object: person2.id))
         try await context.save()
 
         // Execute: Query returns ?s and ?o, but we explicitly select ?s
@@ -342,7 +342,7 @@ struct SPARQLFunctionIntegrationTests {
         var user = SPARQLFunctionUser(name: "Test", age: 25)
         user.id = uniqueID("user")
 
-        context.insert(user)
+        try context.insert(user)
         try await context.save()
 
         // Execute: SPARQL returns no results
@@ -370,13 +370,13 @@ struct SPARQLFunctionIntegrationTests {
             var user = SPARQLFunctionUser(name: "User\(i)", age: 20 + (i % 50))
             user.id = uniqueID("user-\(i)")
             users.append(user)
-            context.insert(user)
+            try context.insert(user)
         }
         try await context.save()
 
         // Create triples for all users
         for user in users {
-            context.insert(SPARQLFunctionTriple(subject: user.id, predicate: "status", object: "active"))
+            try context.insert(SPARQLFunctionTriple(subject: user.id, predicate: "status", object: "active"))
         }
         try await context.save()
 
@@ -450,14 +450,14 @@ struct SPARQLFunctionIntegrationTests {
         user2.id = uniqueID("user")
         user3.id = uniqueID("user")
 
-        context.insert(user1)
-        context.insert(user2)
-        context.insert(user3)
+        try context.insert(user1)
+        try context.insert(user2)
+        try context.insert(user3)
         try await context.save()
 
-        context.insert(SPARQLFunctionTriple(subject: user1.id, predicate: "verified", object: "true"))
-        context.insert(SPARQLFunctionTriple(subject: user2.id, predicate: "verified", object: "true"))
-        context.insert(SPARQLFunctionTriple(subject: user3.id, predicate: "verified", object: "true"))
+        try context.insert(SPARQLFunctionTriple(subject: user1.id, predicate: "verified", object: "true"))
+        try context.insert(SPARQLFunctionTriple(subject: user2.id, predicate: "verified", object: "true"))
+        try context.insert(SPARQLFunctionTriple(subject: user3.id, predicate: "verified", object: "true"))
         try await context.save()
 
         // Execute: SPARQL + ORDER BY + LIMIT

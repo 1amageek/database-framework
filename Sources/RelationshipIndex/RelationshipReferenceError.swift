@@ -6,11 +6,6 @@ public enum RelationshipReferenceError: Error, Sendable, Equatable {
     case missingRelationshipField(entity: String, field: String)
     case invalidRelationshipValue(entity: String, field: String)
     case invalidReferenceEntity(expected: String, actual: String)
-    case missingTargetPartition(
-        ownerEntity: String,
-        targetEntity: String,
-        field: String
-    )
     case invalidTargetPartition(entity: String, reason: String)
     case invalidTargetIdentifier(
         entity: String,

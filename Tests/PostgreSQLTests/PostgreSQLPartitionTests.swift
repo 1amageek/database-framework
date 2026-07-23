@@ -81,7 +81,7 @@ struct PostgreSQLPartitionTests {
             var order = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
             order.id = orderID
 
-            context.insert(order)
+            try context.insert(order)
             try await context.save()
 
             // Fetch using partition
@@ -113,8 +113,8 @@ struct PostgreSQLPartitionTests {
             var order2 = TenantOrder(tenantID: tenant2, status: "pending", total: 75.0)
             order2.id = order2ID
 
-            context.insert(order1)
-            context.insert(order2)
+            try context.insert(order1)
+            try context.insert(order2)
             try await context.save()
 
             // Fetch tenant1 orders — should not contain tenant2's order
@@ -165,8 +165,8 @@ struct PostgreSQLPartitionTests {
             var order2 = TenantOrder(tenantID: tenantID, status: "completed", total: 150.0)
             order2.id = order2ID
 
-            context.insert(order1)
-            context.insert(order2)
+            try context.insert(order1)
+            try context.insert(order2)
             try await context.save()
 
             // Filter by status within partition
@@ -193,7 +193,7 @@ struct PostgreSQLPartitionTests {
 
             var order = TenantOrder(tenantID: tenantID, status: "pending", total: 50.0)
             order.id = orderID
-            context.insert(order)
+            try context.insert(order)
             try await context.save()
 
             // Verify exists
@@ -205,7 +205,7 @@ struct PostgreSQLPartitionTests {
 
             // Delete
             if let toDelete = before {
-                context.delete(toDelete)
+                try context.delete(toDelete)
                 try await context.save()
             }
 
@@ -249,8 +249,8 @@ struct PostgreSQLPartitionTests {
             var order2 = TenantOrder(tenantID: tenant2, status: "pending", total: 200.0)
             order2.id = order2ID
 
-            context.insert(order1)
-            context.insert(order2)
+            try context.insert(order1)
+            try context.insert(order2)
             try await context.save()
 
             // Delete all from tenant1
@@ -296,7 +296,7 @@ struct PostgreSQLPartitionTests {
 
             var order = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
             order.id = orderID
-            context.insert(order)
+            try context.insert(order)
             try await context.save()
 
             var found = false
@@ -321,7 +321,7 @@ struct PostgreSQLPartitionTests {
             var player = Player(name: "Test Player", score: 100, level: 5)
             player.id = playerID
 
-            context.insert(player)
+            try context.insert(player)
             try await context.save()
 
             let fetched = try await context.fetch(Player.self)
@@ -333,26 +333,31 @@ struct PostgreSQLPartitionTests {
         }
     }
 
-    // MARK: - TransactionContext Partition Tests
+    // MARK: - DatabaseTransaction Partition Tests
 
-    @Test("TransactionContext set/get works for dynamic directory types on PostgreSQL")
-    func transactionContextSetGetDynamicDirectory() async throws {
+    @Test("DatabaseTransaction saves and fetches dynamic directory types on PostgreSQL")
+    func transactionSavesAndFetchesDynamicDirectoryModel() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            try await container.engine.withTransaction { transaction in
-                let txContext = TransactionContext(transaction: transaction, container: container)
-
+            try await container.newContext().withTransaction { transaction in
                 var order = TenantOrder(tenantID: tenantID, status: "tx-test", total: 500.0)
                 order.id = orderID
 
-                try await txContext.set(order)
+                try await transaction.save(
+                    order,
+                    precondition: .notExists
+                )
 
                 var binding = DirectoryPath<TenantOrder>()
                 binding.set(\.tenantID, to: tenantID)
-                let fetched = try await txContext.get(TenantOrder.self, id: orderID, partition: binding)
+                let fetched = try await transaction.fetch(
+                    TenantOrder.self,
+                    identifiedBy: orderID,
+                    in: binding
+                )
 
                 #expect(fetched != nil)
                 #expect(fetched?.status == "tx-test")
@@ -360,15 +365,17 @@ struct PostgreSQLPartitionTests {
         }
     }
 
-    @Test("TransactionContext get throws without partition for dynamic types")
-    func transactionContextGetThrowsWithoutPartition() async throws {
+    @Test("DatabaseTransaction fetch rejects a missing PostgreSQL partition")
+    func transactionFetchRejectsMissingDynamicPartition() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
 
             await #expect(throws: DirectoryPathError.self) {
-                try await container.engine.withTransaction { transaction in
-                    let txContext = TransactionContext(transaction: transaction, container: container)
-                    _ = try await txContext.get(TenantOrder.self, id: "any-id")
+                try await container.newContext().withTransaction { transaction in
+                    _ = try await transaction.fetch(
+                        TenantOrder.self,
+                        identifiedBy: "any-id"
+                    )
                 }
             }
         }

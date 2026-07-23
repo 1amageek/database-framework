@@ -1,22 +1,20 @@
 #if !os(WASI)
 #if FOUNDATION_DB
 // WritePreconditionTests.swift
-// Regression tests for Phase 2: the explicit operation APIs on FDBContext
-// (`create` / `upsert` / `replace(old:with:)` / `delete`) and the
-// `WritePrecondition` enum that controls their commit-time assertions.
+// Regression tests for explicit FDBContext mutation intent and the
+// `WritePrecondition` values that control commit-time assertions.
 //
-// Contract under test (per plan):
-//   - `create` defaults to `.notExists` — a duplicate key throws
+// Contract under test:
+//   - `insert` defaults to `.notExists` — a duplicate key throws
 //     `FDBContextError.preconditionFailed` rather than silently upserting.
-//   - `replace(old:with:)` defaults to `.exists` — a missing row throws
+//   - `update` defaults to `.exists` — a missing row throws
 //     `FDBContextError.preconditionFailed` rather than silently inserting.
 //   - `delete` with `.exists` — a missing row throws
 //     `FDBContextError.preconditionFailed` rather than being a no-op.
 //   - `upsert` — blind write; succeeds whether the row exists or not.
 //
-// These guard the CLAUDE.md rule: silent fallback is forbidden. Operations
-// that carry an explicit intent must surface mismatches through typed errors
-// so callers can branch on them.
+// Operations that carry an explicit intent must surface mismatches through
+// typed errors so callers can branch on them.
 
 import Testing
 import Foundation
@@ -74,17 +72,17 @@ struct WritePreconditionTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    // MARK: - create
+    // MARK: - Insert
 
-    @Test("create on empty key succeeds")
-    func createOnEmptyKeySucceeds() async throws {
+    @Test("Insert on empty key succeeds")
+    func insertOnEmptyKeySucceeds() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
         let context = container.newContext()
 
         var user = WPUser(email: uniq("e") + "@example.com")
         user.id = uniq("U")
-        context.create(user)
+        try context.insert(user)
         try await context.save()
 
         let hits = try await context.fetch(WPUser.self).where(\.id == user.id).execute()
@@ -92,8 +90,8 @@ struct WritePreconditionTests {
         #expect(hits.first?.email == user.email)
     }
 
-    @Test("create on existing key throws preconditionFailed")
-    func createOnExistingKeyThrowsPreconditionFailed() async throws {
+    @Test("Insert on existing key throws preconditionFailed")
+    func insertOnExistingKeyThrowsPreconditionFailed() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
         let context = container.newContext()
@@ -101,13 +99,13 @@ struct WritePreconditionTests {
         var user = WPUser(email: uniq("orig") + "@example.com")
         user.id = uniq("U")
         // Seed the row via upsert to avoid mixing create paths in setup.
-        context.upsert(user)
+        try context.upsert(user)
         try await context.save()
 
         // Attempt to create the same id again — must fail with preconditionFailed(.notExists).
         var duplicate = user
         duplicate.email = uniq("dup") + "@example.com"
-        context.create(duplicate)
+        try context.insert(duplicate)
 
         await #expect(throws: FDBContextError.self) {
             try await context.save()
@@ -119,10 +117,10 @@ struct WritePreconditionTests {
         #expect(hits.first?.email == user.email, "Failed create must not mutate the stored row")
     }
 
-    // MARK: - replace
+    // MARK: - Update
 
-    @Test("replace on existing key succeeds and clears old index entry")
-    func replaceOnExistingKeySucceeds() async throws {
+    @Test("Update on existing key succeeds and clears old index entry")
+    func updateOnExistingKeySucceeds() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
         let context = container.newContext()
@@ -131,23 +129,23 @@ struct WritePreconditionTests {
         let newEmail = uniq("new") + "@example.com"
         var user = WPUser(email: oldEmail)
         user.id = uniq("U")
-        context.upsert(user)
+        try context.upsert(user)
         try await context.save()
 
         var updated = user
         updated.email = newEmail
-        context.replace(old: user, with: updated)
+        try context.update(updated)
         try await context.save()
 
         let byOld = try await context.fetch(WPUser.self).where(\.email == oldEmail).execute()
         let byNew = try await context.fetch(WPUser.self).where(\.email == newEmail).execute()
-        #expect(byOld.isEmpty, "Old scalar index entry must be cleared after replace")
+        #expect(byOld.isEmpty, "Old scalar index entry must be cleared after update")
         #expect(byNew.count == 1)
         #expect(byNew.first?.id == user.id)
     }
 
-    @Test("replace with matching stored version succeeds and stale version fails")
-    func replaceWithMatchingStoredVersionSucceedsAndStaleVersionFails() async throws {
+    @Test("Update with matching stored version succeeds and stale version fails")
+    func updateWithMatchingStoredVersionSucceedsAndStaleVersionFails() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
         let context = container.newContext()
@@ -155,7 +153,7 @@ struct WritePreconditionTests {
         let oldEmail = uniq("old") + "@example.com"
         var user = WPUser(email: oldEmail)
         user.id = uniq("U")
-        context.upsert(user)
+        try context.upsert(user)
         try await context.save()
 
         let version = try RecordVersionTokenCodec.digest(
@@ -164,18 +162,16 @@ struct WritePreconditionTests {
 
         var firstUpdate = user
         firstUpdate.email = uniq("first") + "@example.com"
-        context.replace(
-            old: user,
-            with: firstUpdate,
+        try context.update(
+            firstUpdate,
             precondition: .matchesStored(version: version)
         )
         try await context.save()
 
         var staleUpdate = firstUpdate
         staleUpdate.email = uniq("stale") + "@example.com"
-        context.replace(
-            old: firstUpdate,
-            with: staleUpdate,
+        try context.update(
+            staleUpdate,
             precondition: .matchesStored(version: version)
         )
 
@@ -187,8 +183,8 @@ struct WritePreconditionTests {
         #expect(stored.first?.email == firstUpdate.email)
     }
 
-    @Test("replace on missing key throws preconditionFailed")
-    func replaceOnMissingKeyThrowsPreconditionFailed() async throws {
+    @Test("Update on missing key throws preconditionFailed")
+    func updateOnMissingKeyThrowsPreconditionFailed() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
         let context = container.newContext()
@@ -198,15 +194,15 @@ struct WritePreconditionTests {
         var ghostNew = ghostOld
         ghostNew.email = uniq("g-new") + "@example.com"
 
-        // The row was never written — replace must refuse with preconditionFailed(.exists).
-        context.replace(old: ghostOld, with: ghostNew)
+        // The row was never written, so update must reject `.exists`.
+        try context.update(ghostNew)
 
         await #expect(throws: FDBContextError.self) {
             try await context.save()
         }
 
         let hits = try await context.fetch(WPUser.self).where(\.id == ghostOld.id).execute()
-        #expect(hits.isEmpty, "Failed replace must not leak the new value into storage")
+        #expect(hits.isEmpty, "Failed update must not leak the new value into storage")
     }
 
     // MARK: - delete
@@ -220,7 +216,7 @@ struct WritePreconditionTests {
         var ghost = WPUser(email: uniq("ghost") + "@example.com")
         ghost.id = uniq("U")
 
-        context.delete(ghost, precondition: .exists)
+        try context.delete(ghost, precondition: .exists)
 
         await #expect(throws: FDBContextError.self) {
             try await context.save()
@@ -239,7 +235,7 @@ struct WritePreconditionTests {
         // Legacy/source-compat behavior: default precondition is .none, so a missing-row
         // delete must not throw. This is the compatibility contract for the existing
         // `delete(_:)` call sites throughout the codebase.
-        context.delete(ghost)
+        try context.delete(ghost)
         try await context.save()
     }
 
@@ -252,10 +248,10 @@ struct WritePreconditionTests {
         let email = uniq("e") + "@example.com"
         var user = WPUser(email: email)
         user.id = uniq("U")
-        context.upsert(user)
+        try context.upsert(user)
         try await context.save()
 
-        context.delete(user, precondition: .exists)
+        try context.delete(user, precondition: .exists)
         try await context.save()
 
         let byEmail = try await context.fetch(WPUser.self).where(\.email == email).execute()
@@ -276,7 +272,7 @@ struct WritePreconditionTests {
         user.id = uniq("U")
 
         // First upsert → row does not exist, must succeed (blind write).
-        context.upsert(user)
+        try context.upsert(user)
         try await context.save()
         let hits1 = try await context.fetch(WPUser.self).where(\.id == user.id).execute()
         #expect(hits1.first?.email == email1)
@@ -284,7 +280,7 @@ struct WritePreconditionTests {
         // Second upsert → row exists, must still succeed and replace the value.
         var updated = user
         updated.email = email2
-        context.upsert(updated)
+        try context.upsert(updated)
         try await context.save()
 
         let byOld = try await context.fetch(WPUser.self).where(\.email == email1).execute()

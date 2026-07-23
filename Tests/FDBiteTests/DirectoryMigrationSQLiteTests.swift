@@ -82,7 +82,7 @@ struct DirectoryMigrationSQLiteTests {
         let initialContext = initialContainer.newContext()
         var seededUser = SQLiteDirectoryMigrationUserV1(name: "Alice", email: "alice@example.com")
         seededUser.id = seededID
-        initialContext.insert(seededUser)
+        try initialContext.insert(seededUser)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 

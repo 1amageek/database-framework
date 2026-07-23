@@ -22,7 +22,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
         statement.object = .iri("urn:object")
         statement.graph = .iri("urn:data")
         let context = resolutionContext.container.newContext()
-        context.insert(statement)
+        try context.insert(statement)
         try await context.save()
 
         let identity = RecordIdentity(

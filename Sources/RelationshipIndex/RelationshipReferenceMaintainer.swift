@@ -2,10 +2,9 @@ import Core
 import DatabaseEngine
 import DatabaseValue
 import Relationship
-import StorageKit
 
 /// Maintains the canonical inverse-reference catalog for every relationship field.
-public struct RelationshipReferenceMaintainer: RecordMutationMaintainer {
+public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
     public let identifier = "relationship.reference"
 
     public init() {}
@@ -102,8 +101,7 @@ public struct RelationshipReferenceMaintainer: RecordMutationMaintainer {
     public func update(
         oldModel: (any Persistable)?,
         newModel: (any Persistable)?,
-        container: DBContainer,
-        transaction: any Transaction
+        context: borrowing PersistableMutationContext
     ) async throws {
         if let oldModel, let newModel {
             guard type(of: oldModel).persistableType == type(of: newModel).persistableType else {
@@ -114,20 +112,17 @@ public struct RelationshipReferenceMaintainer: RecordMutationMaintainer {
         }
 
         if let oldModel, newModel == nil {
-            let handler = container.newContext().makePersistenceHandler()
             try await RelationshipMaintainer(
-                container: container,
-                schema: container.schema
+                schema: context.schema
             ).enforceDeleteRules(
                 for: oldModel,
-                transaction: transaction,
-                handler: handler
+                context: context
             )
         }
 
-        let resolver = RelationshipReferenceResolver(schema: container.schema)
+        let resolver = RelationshipReferenceResolver(schema: context.schema)
         if let oldModel {
-            let owner = try DatabaseRecordIdentityEncoder.encode(oldModel)
+            let owner = try PersistableIdentityEncoder.encode(oldModel)
             for descriptor in type(of: oldModel).relationshipDescriptors {
                 for target in try resolver.references(
                     from: oldModel,
@@ -137,14 +132,14 @@ public struct RelationshipReferenceMaintainer: RecordMutationMaintainer {
                         target: target,
                         owner: owner,
                         descriptor: descriptor,
-                        transaction: transaction
+                        transaction: context.storageTransaction
                     )
                 }
             }
         }
 
         if let newModel {
-            let owner = try DatabaseRecordIdentityEncoder.encode(newModel)
+            let owner = try PersistableIdentityEncoder.encode(newModel)
             for descriptor in type(of: newModel).relationshipDescriptors {
                 for target in try resolver.references(
                     from: newModel,
@@ -154,7 +149,7 @@ public struct RelationshipReferenceMaintainer: RecordMutationMaintainer {
                         target: target,
                         owner: owner,
                         descriptor: descriptor,
-                        transaction: transaction
+                        transaction: context.storageTransaction
                     )
                 }
             }
@@ -163,11 +158,9 @@ public struct RelationshipReferenceMaintainer: RecordMutationMaintainer {
 
     public func validateFinalState(
         of models: [any Persistable],
-        container: DBContainer,
-        transaction: any Transaction
+        context: borrowing PersistableValidationContext
     ) async throws {
-        let resolver = RelationshipReferenceResolver(schema: container.schema)
-        let handler = container.newContext().makePersistenceHandler()
+        let resolver = RelationshipReferenceResolver(schema: context.schema)
         var validated = Set<RecordIdentity>()
 
         for model in models {
@@ -176,16 +169,7 @@ public struct RelationshipReferenceMaintainer: RecordMutationMaintainer {
                     from: model,
                     descriptor: descriptor
                 ) where validated.insert(target).inserted {
-                    let resolved = try CanonicalRelationshipIdentity.resolve(
-                        target,
-                        container: container
-                    )
-                    guard try await handler.load(
-                        target.entity,
-                        id: resolved.id,
-                        partition: resolved.partition,
-                        transaction: transaction
-                    ) != nil else {
+                    guard try await context.fetch(target) != nil else {
                         throw RelationshipReferenceError.targetRecordMissing(target)
                     }
                 }

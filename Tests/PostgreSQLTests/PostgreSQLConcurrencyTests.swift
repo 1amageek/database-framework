@@ -67,7 +67,7 @@ struct PostgreSQLConcurrencyTests {
                     var item = PGCounter()
                     item.id = id1
                     item.value = 100
-                    ctx.insert(item)
+                    try ctx.insert(item)
                     try await ctx.save()
                 }
                 group.addTask {
@@ -75,7 +75,7 @@ struct PostgreSQLConcurrencyTests {
                     var item = PGCounter()
                     item.id = id2
                     item.value = 200
-                    ctx.insert(item)
+                    try ctx.insert(item)
                     try await ctx.save()
                 }
                 try await group.waitForAll()
@@ -110,19 +110,19 @@ struct PostgreSQLConcurrencyTests {
             var item = PGCounter()
             item.id = itemId
             item.value = 0
-            context.insert(item)
+            try context.insert(item)
             try await context.save()
 
             // Sequential increments (each in its own transaction)
             for _ in 0..<5 {
                 let ctx = container.newContext()
                 try await ctx.withTransaction { tx in
-                    guard var existing = try await tx.get(PGCounter.self, id: itemId) else {
+                    guard var existing = try await tx.fetch(PGCounter.self, identifiedBy: itemId) else {
                         Issue.record("Item not found")
                         return
                     }
                     existing.value += 1
-                    try await tx.set(existing)
+                    try await tx.save(existing)
                 }
             }
 
@@ -285,11 +285,17 @@ struct PostgreSQLConcurrencyTests {
                 var item = PGCounter()
                 item.id = itemId
                 item.value = 42
-                try await outerTx.set(item)
+                try await outerTx.save(
+                    item,
+                    precondition: .notExists
+                )
 
                 // The inner operations via context should reuse
                 // the ActiveTransactionScope connection
-                let fetched = try await outerTx.get(PGCounter.self, id: itemId)
+                let fetched = try await outerTx.fetch(
+                    PGCounter.self,
+                    identifiedBy: itemId
+                )
                 #expect(fetched?.value == 42)
             }
 

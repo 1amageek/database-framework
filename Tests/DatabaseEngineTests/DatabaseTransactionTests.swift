@@ -10,23 +10,23 @@ import TestSupport
 import DatabaseRuntime
 @testable import Core
 
-/// Tests for TransactionContext and the new transaction API
+/// Tests for DatabaseTransaction and the new transaction API
 ///
 /// **Coverage**:
 /// - TransactionConfiguration presets
-/// - TransactionContext CRUD operations
+/// - DatabaseTransaction CRUD operations
 /// - FDBContext.withTransaction API
 /// - Snapshot vs transactional read semantics
 /// - Index updates within transactions
-@Suite("TransactionContext Tests", .serialized, .heartbeat)
-struct TransactionContextTests {
+@Suite("DatabaseTransaction Tests", .serialized, .heartbeat)
+struct DatabaseTransactionTests {
 
     // MARK: - Helper Types
 
     /// Test model for transaction tests
     @Persistable
     struct TransactionUser {
-        #Directory<TransactionUser>("transaction_context_test_users")
+        #Directory<TransactionUser>("database_transaction_test_users")
         var id: String = ULID().ulidString
         var name: String
         var balance: Int
@@ -35,7 +35,7 @@ struct TransactionContextTests {
     /// Test model for products
     @Persistable
     struct TransactionProduct {
-        #Directory<TransactionProduct>("transaction_context_test_products")
+        #Directory<TransactionProduct>("database_transaction_test_products")
         var id: String = ULID().ulidString
         var name: String
         var price: Double
@@ -61,11 +61,11 @@ struct TransactionContextTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.directoryExists(path: ["transaction_context_test_users"]) {
-            try await container.engine.removeDirectory(path: ["transaction_context_test_users"])
+        if try await container.engine.directoryExists(path: ["database_transaction_test_users"]) {
+            try await container.engine.removeDirectory(path: ["database_transaction_test_users"])
         }
-        if try await container.engine.directoryExists(path: ["transaction_context_test_products"]) {
-            try await container.engine.removeDirectory(path: ["transaction_context_test_products"])
+        if try await container.engine.directoryExists(path: ["database_transaction_test_products"]) {
+            try await container.engine.removeDirectory(path: ["database_transaction_test_products"])
         }
     }
 
@@ -133,10 +133,10 @@ struct TransactionContextTests {
         #expect(config.disableReadCache == true)
     }
 
-    // MARK: - TransactionContext Basic Operations
+    // MARK: - DatabaseTransaction Basic Operations
 
-    @Test("TransactionContext set and get")
-    func transactionContextSetAndGet() async throws {
+    @Test("DatabaseTransaction saves and fetches a model")
+    func savesAndFetchesModel() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
         let context = container.newContext()
@@ -145,8 +145,8 @@ struct TransactionContextTests {
 
         // Write and read within transaction
         try await context.withTransaction { tx in
-            try await tx.set(user)
-            let fetched = try await tx.get(TransactionUser.self, id: user.id)
+            try await tx.save(user)
+            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
             #expect(fetched != nil)
             #expect(fetched?.name == "Alice")
             #expect(fetched?.balance == 100)
@@ -154,14 +154,14 @@ struct TransactionContextTests {
 
         // Verify persisted after transaction commits
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionUser.self, id: user.id)
+            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
             #expect(fetched != nil)
             #expect(fetched?.name == "Alice")
         }
     }
 
-    @Test("TransactionContext delete")
-    func transactionContextDelete() async throws {
+    @Test("DatabaseTransaction delete")
+    func deletesModel() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
         let context = container.newContext()
@@ -170,29 +170,29 @@ struct TransactionContextTests {
 
         // Insert
         try await context.withTransaction { tx in
-            try await tx.set(user)
+            try await tx.save(user)
         }
 
         // Verify exists
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionUser.self, id: user.id)
+            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
             #expect(fetched != nil)
         }
 
         // Delete
         try await context.withTransaction { tx in
-            try await tx.delete(TransactionUser.self, id: user.id)
+            try await tx.delete(TransactionUser.self, identifiedBy: user.id)
         }
 
         // Verify deleted
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionUser.self, id: user.id)
+            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
             #expect(fetched == nil)
         }
     }
 
-    @Test("TransactionContext getMany")
-    func transactionContextGetMany() async throws {
+    @Test("DatabaseTransaction fetches multiple identities")
+    func fetchesMultipleIdentities() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
         let context = container.newContext()
@@ -203,25 +203,25 @@ struct TransactionContextTests {
 
         // Insert
         try await context.withTransaction { tx in
-            try await tx.set(user1)
-            try await tx.set(user2)
-            try await tx.set(user3)
+            try await tx.save(user1)
+            try await tx.save(user2)
+            try await tx.save(user3)
         }
 
-        // GetMany
+        // Batch fetch
         try await context.withTransaction { tx in
-            let users = try await tx.getMany(
+            let users = try await tx.fetch(
                 TransactionUser.self,
-                ids: [user1.id, user2.id, user3.id]
+                identifiedBy: [user1.id, user2.id, user3.id]
             )
             #expect(users.count == 3)
         }
 
-        // GetMany with missing ID
+        // Batch fetch with a missing ID
         try await context.withTransaction { tx in
-            let users = try await tx.getMany(
+            let users = try await tx.fetch(
                 TransactionUser.self,
-                ids: [user1.id, "nonexistent", user3.id]
+                identifiedBy: [user1.id, "nonexistent", user3.id]
             )
             #expect(users.count == 2)
         }
@@ -239,24 +239,24 @@ struct TransactionContextTests {
 
         // Insert
         try await context.withTransaction { tx in
-            try await tx.set(user)
+            try await tx.save(user)
         }
 
         // Snapshot read should work
         try await context.withTransaction { tx in
             // Transactional read (default)
-            let transactionalRead = try await tx.get(
+            let transactionalRead = try await tx.fetch(
                 TransactionUser.self,
-                id: user.id,
-                snapshot: false
+                identifiedBy: user.id,
+                consistency: .serializable
             )
             #expect(transactionalRead != nil)
 
             // Snapshot read
-            let snapshotRead = try await tx.get(
+            let snapshotRead = try await tx.fetch(
                 TransactionUser.self,
-                id: user.id,
-                snapshot: true
+                identifiedBy: user.id,
+                consistency: .snapshot
             )
             #expect(snapshotRead != nil)
 
@@ -277,21 +277,21 @@ struct TransactionContextTests {
 
         // Insert initial value
         try await context.withTransaction { tx in
-            try await tx.set(user)
+            try await tx.save(user)
         }
 
         // Read-modify-write
         try await context.withTransaction { tx in
-            guard var fetched = try await tx.get(TransactionUser.self, id: user.id) else {
-                throw TransactionContextFailure.userNotFound
+            guard var fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id) else {
+                throw DatabaseTransactionTestFailure.userNotFound
             }
             fetched.balance -= 100
-            try await tx.set(fetched)
+            try await tx.save(fetched)
         }
 
         // Verify modification
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionUser.self, id: user.id)
+            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
             #expect(fetched?.balance == 900)
         }
     }
@@ -308,12 +308,12 @@ struct TransactionContextTests {
 
         // Use batch configuration
         try await context.withTransaction(configuration: .batch) { tx in
-            try await tx.set(user)
+            try await tx.save(user)
         }
 
         // Verify
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionUser.self, id: user.id)
+            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
             #expect(fetched != nil)
         }
     }
@@ -328,12 +328,12 @@ struct TransactionContextTests {
 
         // Use interactive configuration
         try await context.withTransaction(configuration: .interactive) { tx in
-            try await tx.set(user)
+            try await tx.save(user)
         }
 
         // Verify
         try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionUser.self, id: user.id)
+            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
             #expect(fetched != nil)
         }
     }
@@ -349,12 +349,12 @@ struct TransactionContextTests {
         let user = TransactionUser(name: "ReturnTest", balance: 777)
 
         try await context.withTransaction { tx in
-            try await tx.set(user)
+            try await tx.save(user)
         }
 
         // Transaction returns a value
         let balance: Int = try await context.withTransaction { tx in
-            let fetched = try await tx.get(TransactionUser.self, id: user.id)
+            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
             return fetched?.balance ?? 0
         }
 
@@ -406,7 +406,7 @@ struct TransactionContextTests {
 
     // MARK: - Error Types
 
-    enum TransactionContextFailure: Error {
+    enum DatabaseTransactionTestFailure: Error {
         case userNotFound
     }
 }

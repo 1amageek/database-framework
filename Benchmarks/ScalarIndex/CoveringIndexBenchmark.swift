@@ -71,7 +71,7 @@ struct CoveringIndexBenchmark {
 
         // Insert all users
         for user in users {
-            ctx.insert(user)
+            try ctx.insert(user)
         }
         try await ctx.save()
 
@@ -123,7 +123,7 @@ struct CoveringIndexBenchmark {
                 name: "Scan User \(i)",
                 age: 20 + (i % 50)
             )
-            ctx.insert(user)
+            try ctx.insert(user)
         }
         try await ctx.save()
 
@@ -166,7 +166,7 @@ struct CoveringIndexBenchmark {
                 name: "Batch User \(i)",
                 age: 25 + (i % 40)
             )
-            ctx.insert(user)
+            try ctx.insert(user)
         }
         try await ctx.save()
 

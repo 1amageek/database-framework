@@ -55,7 +55,7 @@ struct QueryCursorTests {
                 age: 20 + (i % 50),
                 score: Double(i) * 1.5
             )
-            context.insert(user)
+            try context.insert(user)
             users.append(user)
         }
         try await context.save()

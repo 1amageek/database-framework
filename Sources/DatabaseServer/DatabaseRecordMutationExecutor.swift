@@ -2,8 +2,6 @@ import Core
 import DatabaseEngine
 import DatabaseValue
 import DatabaseWire
-import RelationshipIndex
-import StorageKit
 
 struct DatabaseRecordMutationExecutor: Sendable {
     private let container: DBContainer
@@ -93,8 +91,7 @@ struct DatabaseRecordMutationExecutor: Sendable {
         _ changes: [MutationExecuteOperation.Change],
         preconditions: [MutationExecuteOperation.Precondition] = [],
         workMeter: DatabaseWorkMeter,
-        transaction: any Transaction,
-        persistence: any ModelPersistenceHandler
+        transaction: DatabaseTransaction
     ) async throws -> [MutationExecuteOperation.RecordEffect] {
         try await execute(
             prepare(
@@ -104,8 +101,7 @@ struct DatabaseRecordMutationExecutor: Sendable {
             ),
             preconditions: preconditions,
             workMeter: workMeter,
-            transaction: transaction,
-            persistence: persistence
+            transaction: transaction
         )
     }
 
@@ -113,15 +109,13 @@ struct DatabaseRecordMutationExecutor: Sendable {
         _ changes: [PreparedChange],
         preconditions: [MutationExecuteOperation.Precondition],
         workMeter: DatabaseWorkMeter,
-        transaction: any Transaction,
-        persistence: any ModelPersistenceHandler
+        transaction: DatabaseTransaction
     ) async throws -> [MutationExecuteOperation.RecordEffect] {
         var states: [DatabaseResolvedRecordIdentity.Key: DatabaseRecordState] = [:]
 
         for prepared in changes {
             states[prepared.key] = try await load(
                 prepared.resolved,
-                persistence: persistence,
                 transaction: transaction,
                 workMeter: workMeter
             )
@@ -136,7 +130,6 @@ struct DatabaseRecordMutationExecutor: Sendable {
                 )
                 states[key] = try await load(
                     resolved,
-                    persistence: persistence,
                     transaction: transaction,
                     workMeter: workMeter
                 )
@@ -167,88 +160,88 @@ struct DatabaseRecordMutationExecutor: Sendable {
             }
         }
 
-        let planned = try await DatabaseRelationshipMutationPlanner(
-            container: container,
-            maximumMutations: runtimeLimits.maximumMutations
-        ).plan(
-            changes,
-            states: states,
-            workMeter: workMeter,
-            transaction: transaction,
-            persistence: persistence
-        )
-
-        var markedDeletes: [RecordIdentity] = []
-        var seenDeletes = Set<RecordIdentity>()
-        for mutation in planned where mutation.newModel == nil {
-            guard seenDeletes.insert(mutation.identity).inserted else { continue }
-            try RelationshipDeleteMarker.mark(
-                mutation.identity,
-                transaction: transaction
-            )
-            markedDeletes.append(mutation.identity)
-        }
-
-        do {
-            var effects: [MutationExecuteOperation.RecordEffect] = []
-            effects.reserveCapacity(planned.count)
-            for mutation in planned {
-                try workMeter.consume(at: .mutationPlanning)
-                if let model = mutation.newModel {
-                    try await persistence.save(
-                        model,
-                        precondition: writePrecondition(for: mutation),
-                        transaction: transaction
-                    )
-                    effects.append(
-                        MutationExecuteOperation.RecordEffect(
-                            kind: mutation.effectKind,
-                            identity: mutation.identity,
-                            version: try recordVersion(model)
-                        )
-                    )
-                } else {
-                    guard let oldModel = mutation.oldModel else {
-                        continue
-                    }
-                    try await persistence.delete(
-                        oldModel,
-                        precondition: .exists,
-                        transaction: transaction
-                    )
-                    effects.append(
-                        MutationExecuteOperation.RecordEffect(
-                            kind: .delete,
-                            identity: mutation.identity,
-                            version: nil
-                        )
+        var mutations: [PersistableMutation] = []
+        mutations.reserveCapacity(changes.count)
+        for prepared in changes {
+            try workMeter.consume(at: .mutationPlanning)
+            switch prepared.change.kind {
+            case .insert, .update, .upsert:
+                guard let model = prepared.model else {
+                    throw DatabaseMutationError.fieldsRequired(
+                        prepared.change.identity
                     )
                 }
-            }
-            try await persistence.validateFinalState(
-                of: planned.compactMap(\.newModel),
-                transaction: transaction
-            )
-            try workMeter.consume(
-                UInt64(planned.count),
-                at: .validation
-            )
-            for identity in markedDeletes.reversed() {
-                try RelationshipDeleteMarker.clear(
-                    identity,
-                    transaction: transaction
+                mutations.append(
+                    .save(
+                        model: model,
+                        precondition: writePrecondition(
+                            for: prepared.change,
+                            preconditions: preconditions
+                        )
+                    )
+                )
+            case .delete:
+                guard case .present(let model) = states[prepared.key] else {
+                    throw DatabaseMutationError.recordNotFound(
+                        prepared.change.identity
+                    )
+                }
+                mutations.append(
+                    .delete(
+                        model: model,
+                        precondition: writePrecondition(
+                            for: prepared.change,
+                            preconditions: preconditions
+                        )
+                    )
                 )
             }
-            return effects
-        } catch {
-            throw error
+        }
+        try await transaction.apply(mutations)
+
+        let persistedEffects = try await transaction
+            .persistedMutationEffects()
+        guard persistedEffects.count <= runtimeLimits.maximumMutations else {
+            throw DatabaseMutationError.mutationLimitExceeded(
+                actual: persistedEffects.count,
+                maximum: runtimeLimits.maximumMutations
+            )
+        }
+        try workMeter.consume(
+            UInt64(persistedEffects.count),
+            at: .validation
+        )
+        return try persistedEffects.map { effect in
+            MutationExecuteOperation.RecordEffect(
+                kind: mutationKind(effect.kind),
+                identity: effect.identity,
+                version: try effect.model.map(recordVersion)
+            )
         }
     }
 
     private func writePrecondition(
-        for mutation: DatabaseRelationshipMutationPlanner.PlannedMutation
+        for change: MutationExecuteOperation.Change,
+        preconditions: [MutationExecuteOperation.Precondition]
     ) -> WritePrecondition {
-        switch mutation.explicitKind {
+        for precondition in preconditions {
+            guard case .expectedVersion(let identity, let version) = precondition,
+                  identity == change.identity else {
+                continue
+            }
+            return .matchesStored(version: version)
+        }
+        if preconditions.contains(
+            .mustNotExist(change.identity)
+        ) {
+            return .notExists
+        }
+        if preconditions.contains(
+            .mustExist(change.identity)
+        ) {
+            return .exists
+        }
+        switch change.kind {
         case .insert:
             return .notExists
         case .update:
@@ -257,15 +250,12 @@ struct DatabaseRecordMutationExecutor: Sendable {
             return .none
         case .delete:
             return .exists
-        case nil:
-            return mutation.oldModel == nil ? .notExists : .exists
         }
     }
 
     func validate(
         _ preconditions: [MutationExecuteOperation.Precondition],
-        transaction: any Transaction,
-        persistence: any ModelPersistenceHandler,
+        transaction: DatabaseTransaction,
         workMeter: DatabaseWorkMeter
     ) async throws {
         guard preconditions.count <= runtimeLimits.maximumPreconditions else {
@@ -283,11 +273,23 @@ struct DatabaseRecordMutationExecutor: Sendable {
             )
             let state = try await load(
                 resolved,
-                persistence: persistence,
                 transaction: transaction,
                 workMeter: workMeter
             )
             try validate(precondition, state: state)
+        }
+    }
+
+    private func mutationKind(
+        _ kind: PersistableMutationKind
+    ) -> MutationExecuteOperation.Kind {
+        switch kind {
+        case .insert:
+            return .insert
+        case .update:
+            return .update
+        case .delete:
+            return .delete
         }
     }
 
@@ -329,16 +331,14 @@ struct DatabaseRecordMutationExecutor: Sendable {
 
     private func load(
         _ resolved: DatabaseResolvedRecordIdentity,
-        persistence: any ModelPersistenceHandler,
-        transaction: any Transaction,
+        transaction: DatabaseTransaction,
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRecordState {
         try workMeter.consume(at: .storageRow)
-        if let model = try await persistence.load(
-            resolved.identity.entity,
+        if let model = try await transaction.loadPersistedModel(
+            entity: resolved.identity.entity,
             id: resolved.id,
-            partition: resolved.partition,
-            transaction: transaction
+            partition: resolved.partition
         ) {
             return .present(model)
         }

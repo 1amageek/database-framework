@@ -276,7 +276,7 @@ struct MigrationExecutionSQLiteTests {
 
         var user = SQLiteStageBoundaryUserV1(name: "Alice", email: "alice@example.com")
         user.id = "sqlite-stage-boundary-user"
-        initialContext.insert(user)
+        try initialContext.insert(user)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -334,7 +334,7 @@ struct MigrationExecutionSQLiteTests {
             age: 42
         )
         user.id = "sqlite-index-lifecycle-user"
-        initialContext.insert(user)
+        try initialContext.insert(user)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
@@ -396,7 +396,7 @@ struct MigrationExecutionSQLiteTests {
 
         var user = SQLiteStageFailureUserV1(name: "Alice", email: "alice@example.com")
         user.id = "sqlite-stage-failure-user"
-        initialContext.insert(user)
+        try initialContext.insert(user)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 

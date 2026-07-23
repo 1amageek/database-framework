@@ -32,8 +32,8 @@ import Logging
 /// let context = container.newContext()
 ///
 /// // Insert models (type-independent)
-/// context.insert(user)      // User: Persistable
-/// context.insert(product)   // Product: Persistable
+/// try context.insert(user)      // User: Persistable
+/// try context.insert(product)   // Product: Persistable
 ///
 /// // Save all changes atomically
 /// try await context.save()
@@ -47,7 +47,7 @@ import Logging
 ///
 /// // Explicit transaction
 /// try await context.withTransaction(configuration: .default) { tx in
-///     let user = try await tx.get(User.self, id: userId)
+///     let user = try await tx.fetch(User.self, identifiedBy: userId)
 ///     // ...
 /// }
 ///
@@ -57,7 +57,7 @@ import Logging
 /// }
 ///
 /// // Delete
-/// context.delete(user)
+/// try context.delete(user)
 /// try await context.save()
 /// ```
 public final class FDBContext: Sendable {
@@ -145,65 +145,69 @@ public final class FDBContext: Sendable {
 
     // MARK: - State
 
-    /// Pending mutation for a ModelKey prior to `save()`.
-    ///
-    /// Introduced in Phase 1 (PendingMutation redesign) to replace the dual
-    /// `insertedModels` / `deletedModels` maps, which silently dropped the old
-    /// value when `delete(old) + insert(new)` collided on the same ID.
-    ///
-    /// Phase 2 attaches a `WritePrecondition` to every variant so the save path
-    /// can enforce explicit existence / version checks instead of silent
-    /// fallbacks. Producers:
-    /// - `create(_:)`        → `.insert(new, .notExists)` (strict insert)
-    /// - `upsert(_:)` / legacy `insert(_:)` → `.upsert(new, .none)` (blind write)
-    /// - `replace(old:with:)` → `.replace(old, new, .exists)`
-    /// - `delete(_:)`        → `.delete(old, .none)` by default (legacy idempotent)
-    ///                         or `.exists` when the caller opts in
+    /// Net mutation staged for one persisted identity before `save()`.
     internal enum PendingMutation: Sendable {
-        case insert(new: any Persistable, precondition: WritePrecondition)
-        case upsert(new: any Persistable, precondition: WritePrecondition)
-        case delete(old: any Persistable, precondition: WritePrecondition)
-        case replace(old: any Persistable, new: any Persistable, precondition: WritePrecondition)
+        case save(
+            model: any Persistable,
+            precondition: WritePrecondition
+        )
+        case delete(
+            model: any Persistable,
+            precondition: WritePrecondition
+        )
 
         var precondition: WritePrecondition {
             switch self {
-            case .insert(_, let p), .upsert(_, let p), .delete(_, let p), .replace(_, _, let p):
-                return p
+            case .save(_, let precondition),
+                 .delete(_, let precondition):
+                return precondition
             }
         }
     }
 
-    /// Snapshot of a single staged insert/upsert as captured from the pending map
-    /// at `save()` time. Preserves strictness (create vs upsert) and precondition
-    /// so the storage layer can enforce the user's intent and so an error rollback
-    /// can restore the exact same pending state.
-    internal struct StagedInsert: Sendable {
-        let model: any Persistable
-        let strict: Bool
-        let precondition: WritePrecondition
+    private enum StagedMutationIntent: Sendable {
+        case save(
+            model: any Persistable,
+            precondition: WritePrecondition
+        )
+        case delete(
+            model: any Persistable,
+            precondition: WritePrecondition
+        )
+
+        var model: any Persistable {
+            switch self {
+            case .save(let model, _), .delete(let model, _):
+                return model
+            }
+        }
     }
 
-    /// Snapshot of a single staged replace (explicit old → new pair).
-    internal struct StagedReplace: Sendable {
-        let old: any Persistable
-        let new: any Persistable
-        let precondition: WritePrecondition
+    private struct StagedMutation: Sendable {
+        let identity: RecordIdentity
+        let intent: StagedMutationIntent
     }
 
-    /// Snapshot of a single staged delete.
-    internal struct StagedDelete: Sendable {
-        let model: any Persistable
-        let precondition: WritePrecondition
+    private struct ActiveSave: Sendable {
+        let identifier: UInt64
+        let capturedMutations: [RecordIdentity: PendingMutation]
+        var followupMutations: [StagedMutation]
+
+        init(
+            identifier: UInt64,
+            capturedMutations: [RecordIdentity: PendingMutation]
+        ) {
+            self.identifier = identifier
+            self.capturedMutations = capturedMutations
+            self.followupMutations = []
+        }
     }
 
     private struct ContextState: Sendable {
-        /// Mutations keyed by ModelKey. Merge rules are applied on every
-        /// `insert()` / `delete()` call so the map always holds the fused
-        /// final intent for each key.
-        var pending: [ModelKey: PendingMutation] = [:]
-
-        /// Whether a save operation is currently in progress
-        var isSaving: Bool = false
+        var pending: [RecordIdentity: PendingMutation] = [:]
+        var activeSave: ActiveSave?
+        var nextSaveIdentifier: UInt64 = 1
+        var commitOutcomeUnknown = false
 
         /// Whether to automatically save after insert/delete operations
         var autosaveEnabled: Bool
@@ -216,7 +220,7 @@ public final class FDBContext: Sendable {
 
         /// Whether the context has unsaved changes
         var hasChanges: Bool {
-            return !pending.isEmpty
+            !pending.isEmpty || activeSave != nil
         }
 
         init(autosaveEnabled: Bool = false) {
@@ -272,55 +276,51 @@ public final class FDBContext: Sendable {
         try await container.fdbStore(for: type, path: path)
     }
 
-    /// Single-model write/delete fast paths do not benefit from per-context store caching.
-    ///
-    /// One-shot contexts used by insert/update/delete benchmarks would otherwise pay local
-    /// cache mutex and dictionary overhead even though DBContainer already shares stores.
-    private func singleOperationStore(
-        for type: any Persistable.Type
-    ) async throws -> FDBDataStore {
-        try await container.fdbStore(for: type)
+    private func ensureUsable() throws {
+        try stateLock.withLock { state in
+            guard !state.commitOutcomeUnknown else {
+                throw FDBContextError.commitOutcomeUnknown
+            }
+        }
     }
 
     private func pendingModelLookup<T: Persistable>(
         for id: T.ID,
         as type: T.Type,
-        partitionPath: [String]
+        partitions: [DatabaseObjectField]
     ) -> (inserted: T?, isDeleted: Bool) {
         pendingModelLookup(
             for: id.recordIdentifierValue,
             as: type,
-            partitionPath: partitionPath
+            partitions: partitions
         )
     }
 
     private func pendingModelLookup<T: Persistable>(
         for identifier: RecordIdentifierValue,
         as type: T.Type,
-        partitionPath: [String]
+        partitions: [DatabaseObjectField]
     ) -> (inserted: T?, isDeleted: Bool) {
         stateLock.withLock { state in
             guard state.hasChanges else {
                 return (nil, false)
             }
 
-            let key = ModelKey(
-                persistableType: T.persistableType,
-                identifier: identifier,
-                partitionPath: partitionPath
+            let identity = RecordIdentity(
+                entity: T.persistableType,
+                id: identifier,
+                partitions: partitions
             )
-            guard let mutation = state.pending[key] else {
+            let mutation =
+                state.pending[identity]
+                ?? state.activeSave?.capturedMutations[identity]
+            guard let mutation else {
                 return (nil, false)
             }
 
             switch mutation {
-            case .insert(let new, _), .upsert(let new, _):
-                if let typed = new as? T {
-                    return (typed, false)
-                }
-                return (nil, false)
-            case .replace(_, let new, _):
-                if let typed = new as? T {
+            case .save(let model, _):
+                if let typed = model as? T {
                     return (typed, false)
                 }
                 return (nil, false)
@@ -328,55 +328,6 @@ public final class FDBContext: Sendable {
                 return (nil, true)
             }
         }
-    }
-
-    /// Key for tracking models
-    private struct ModelKey: Hashable, Sendable {
-        let persistableType: String
-        let identifier: RecordIdentifierValue
-        let partitionPath: [String]
-
-        init(_ model: any Persistable) {
-            let modelType = type(of: model)
-            self.persistableType = modelType.persistableType
-            self.identifier = model.recordIdentifierValue
-            self.partitionPath = Self.partitionPath(for: model)
-        }
-
-        init(
-            persistableType: String,
-            identifier: RecordIdentifierValue,
-            partitionPath: [String]
-        ) {
-            self.persistableType = persistableType
-            self.identifier = identifier
-            self.partitionPath = partitionPath
-        }
-
-        private static func partitionPath(
-            for model: any Persistable
-        ) -> [String] {
-            let modelType = type(of: model)
-            var path: [String] = []
-            for component in modelType.directoryPathComponents {
-                switch component {
-                case .staticPath(let value):
-                    path.append(value)
-                case .dynamicField(let fieldName):
-                    if let value = model[dynamicMember: fieldName] {
-                        path.append(Self.stagingPartitionComponent(from: value))
-                    }
-                }
-            }
-            return path
-        }
-
-        private static func stagingPartitionComponent(
-            from value: any Sendable
-        ) -> String {
-            "\(String(reflecting: type(of: value))):\(String(reflecting: value))"
-        }
-
     }
 
     // MARK: - Public Properties
@@ -402,207 +353,107 @@ public final class FDBContext: Sendable {
         }
     }
 
-    // MARK: - Write Operations (Phase 2 explicit API)
+    // MARK: - Write Operations
 
-    /// Stage a strict insert. Fails at `save()` if a row with the same id already
-    /// exists in storage (unless the caller overrides the precondition).
-    ///
-    /// Default precondition: `.notExists`.
-    ///
-    /// - Parameters:
-    ///   - model: The model to insert.
-    ///   - precondition: Assertion checked against stored state at commit time.
-    public func create<T: Persistable>(
+    /// Stage a strict insert.
+    public func insert<T: Persistable>(
         _ model: T,
         precondition: WritePrecondition = .notExists
-    ) {
-        mergeInsert(model: model, strict: true, precondition: precondition)
+    ) throws {
+        try stage(.save(model: model, precondition: precondition))
     }
 
-    /// Stage a blind upsert. Writes the new value without existence checks.
-    ///
-    /// Default precondition: `.none`. Matches the legacy `insert()` behavior.
-    ///
-    /// - Parameters:
-    ///   - model: The model to write.
-    ///   - precondition: Assertion checked against stored state at commit time.
+    /// Stage a write that may create or replace the persisted value.
     public func upsert<T: Persistable>(
         _ model: T,
         precondition: WritePrecondition = .none
-    ) {
-        mergeInsert(model: model, strict: false, precondition: precondition)
+    ) throws {
+        try stage(.save(model: model, precondition: precondition))
     }
 
-    /// Stage an explicit old→new replacement. The supplied `old` is trusted for
-    /// index maintenance — the framework does NOT re-read the pre-image from
-    /// storage. Use this when the caller already holds the pre-image (e.g. read
-    /// earlier in the same context) to avoid an extra storage round-trip.
-    ///
-    /// Default precondition: `.exists` — if the row is missing at commit time,
-    /// `preconditionFailed` is thrown rather than silently downgrading to an
-    /// insert.
-    ///
-    /// - Parameters:
-    ///   - old: The pre-image (trusted; used for index maintenance).
-    ///   - new: The post-image to write.
-    ///   - precondition: Assertion checked against stored state at commit time.
-    public func replace<T: Persistable>(
-        old: T,
-        with new: T,
+    /// Stage an update that requires a persisted value.
+    public func update<T: Persistable>(
+        _ model: T,
         precondition: WritePrecondition = .exists
-    ) {
-        let key = ModelKey(new)
-
-        let shouldScheduleAutosave = stateLock.withLock { state -> Bool in
-            let merged: PendingMutation
-            switch state.pending[key] {
-            case .none:
-                merged = .replace(old: old, new: new, precondition: precondition)
-            case .some(.insert):
-                // A prior strict insert has not yet hit storage. Replacing its
-                // new value in-place preserves the strict-insert intent.
-                merged = .insert(new: new, precondition: precondition)
-            case .some(.upsert):
-                merged = .replace(old: old, new: new, precondition: precondition)
-            case .some(.delete(let origOld, _)):
-                merged = .replace(old: origOld, new: new, precondition: precondition)
-            case .some(.replace(let origOld, _, _)):
-                // Keep the original pre-image (the one before any staged mutation)
-                // so index maintenance can accurately remove the on-disk entries.
-                merged = .replace(old: origOld, new: new, precondition: precondition)
-            }
-            state.pending[key] = merged
-
-            if state.autosaveEnabled && !state.autosaveScheduled {
-                state.autosaveScheduled = true
-                return true
-            }
-            return false
-        }
-
-        if shouldScheduleAutosave {
-            scheduleAutosave()
-        }
+    ) throws {
+        try stage(.save(model: model, precondition: precondition))
     }
 
-    // MARK: - Insert (legacy alias)
-
-    /// Register a model for persistence. Legacy entry point equivalent to
-    /// `upsert(_:)` — retained for source compatibility.
-    ///
-    /// Merge rules against an existing pending mutation on the same ModelKey:
-    /// - none               → `.upsert(new)`
-    /// - `.upsert(_)`       → `.upsert(new)` (last write wins)
-    /// - `.insert(_)`       → `.insert(new)` (preserve strict-insert intent)
-    /// - `.delete(old)`     → `.replace(old, new)`  (Phase 1 bug fix)
-    /// - `.replace(old, _)` → `.replace(old, new)`
-    ///
-    /// - Parameter model: The model to insert
-    public func insert<T: Persistable>(_ model: T) {
-        upsert(model)
-    }
-
-    /// Merge a new insert/upsert/create into the pending map.
-    ///
-    /// - Parameters:
-    ///   - model: The model to stage.
-    ///   - strict: `true` for `create(_:)` (produces `.insert`); `false` for
-    ///             `upsert(_:)` / legacy `insert(_:)` (produces `.upsert`).
-    ///   - precondition: Precondition for the staged operation (stored as-is
-    ///                   unless a prior `.delete` / `.replace` is present, in
-    ///                   which case `.replace` takes precedence).
-    private func mergeInsert<T: Persistable>(
-        model: T,
-        strict: Bool,
-        precondition: WritePrecondition
-    ) {
-        let key = ModelKey(model)
-
-        let shouldScheduleAutosave = stateLock.withLock { state -> Bool in
-            let merged: PendingMutation
-            switch state.pending[key] {
-            case .none:
-                merged = strict
-                    ? .insert(new: model, precondition: precondition)
-                    : .upsert(new: model, precondition: precondition)
-            case .some(.upsert):
-                // Upsert + create / upsert → keep the new variant's strictness.
-                merged = strict
-                    ? .insert(new: model, precondition: precondition)
-                    : .upsert(new: model, precondition: precondition)
-            case .some(.insert):
-                // A prior strict insert upgrades any follow-up to strict too,
-                // preserving the notExists intent.
-                merged = .insert(new: model, precondition: precondition)
-            case .some(.delete(let old, _)):
-                merged = .replace(old: old, new: model, precondition: precondition)
-            case .some(.replace(let old, _, _)):
-                merged = .replace(old: old, new: model, precondition: precondition)
-            }
-            state.pending[key] = merged
-
-            if state.autosaveEnabled && !state.autosaveScheduled {
-                state.autosaveScheduled = true
-                return true
-            }
-            return false
-        }
-
-        if shouldScheduleAutosave {
-            scheduleAutosave()
-        }
-    }
-
-    // MARK: - Delete
-
-    /// Mark a model for deletion.
-    ///
-    /// Merge rules against an existing pending mutation on the same ModelKey:
-    /// - none               → `.delete(old)`
-    /// - `.insert(_)`       → erase entry (cancel the uncommitted insert; warn if
-    ///                         the key may refer to an existing stored row).
-    /// - `.upsert(_)`       → `.delete(old)` (last write wins; the upsert is dropped)
-    /// - `.delete(_)`       → `.delete(old)` (last write wins)
-    /// - `.replace(origOld, _)` → `.delete(origOld)` (keep the pre-replace old)
-    ///
-    /// - Parameters:
-    ///   - model: The model to delete.
-    ///   - precondition: Assertion checked against stored state at commit time.
-    ///                   Defaults to `.none` for source-compatibility with the
-    ///                   pre-Phase-2 idempotent behavior. Pass `.exists` to
-    ///                   detect deletes that target a missing row.
+    /// Stage a delete that requires a persisted value.
     public func delete<T: Persistable>(
         _ model: T,
-        precondition: WritePrecondition = .none
-    ) {
-        let key = ModelKey(model)
+        precondition: WritePrecondition = .exists
+    ) throws {
+        try stage(.delete(model: model, precondition: precondition))
+    }
 
-        let shouldScheduleAutosave = stateLock.withLock { state -> Bool in
-            switch state.pending[key] {
-            case .none:
-                state.pending[key] = .delete(old: model, precondition: precondition)
-            case .some(.insert):
-                state.pending.removeValue(forKey: key)
-                self.logger.warning(
-                    "delete() cancelled a pending insert for \(T.persistableType). If a stored row exists for this id, its delete intent has been dropped."
-                )
-            case .some(.upsert):
-                state.pending[key] = .delete(old: model, precondition: precondition)
-            case .some(.delete):
-                state.pending[key] = .delete(old: model, precondition: precondition)
-            case .some(.replace(let origOld, _, _)):
-                state.pending[key] = .delete(old: origOld, precondition: precondition)
+    private func stage(_ intent: StagedMutationIntent) throws {
+        let stagedMutation = StagedMutation(
+            identity: try PersistableIdentityEncoder.encode(intent.model),
+            intent: intent
+        )
+        let shouldScheduleAutosave = try stateLock.withLock {
+            state -> Bool in
+            guard !state.commitOutcomeUnknown else {
+                throw FDBContextError.commitOutcomeUnknown
             }
-
-            if state.autosaveEnabled && !state.autosaveScheduled && state.hasChanges {
-                state.autosaveScheduled = true
-                return true
+            Self.apply(stagedMutation, to: &state.pending)
+            if var activeSave = state.activeSave {
+                activeSave.followupMutations.append(stagedMutation)
+                state.activeSave = activeSave
+                return false
             }
-            return false
+            guard state.autosaveEnabled,
+                  !state.autosaveScheduled,
+                  !state.pending.isEmpty else {
+                return false
+            }
+            state.autosaveScheduled = true
+            return true
         }
 
         if shouldScheduleAutosave {
             scheduleAutosave()
+        }
+    }
+
+    private static func apply(
+        _ stagedMutation: StagedMutation,
+        to mutations: inout [RecordIdentity: PendingMutation]
+    ) {
+        let identity = stagedMutation.identity
+        switch stagedMutation.intent {
+        case .save(let model, let precondition):
+            let initialPrecondition =
+                mutations[identity]?.precondition ?? precondition
+            mutations[identity] = .save(
+                model: model,
+                precondition: initialPrecondition
+            )
+        case .delete(let model, let precondition):
+            guard let current = mutations[identity] else {
+                mutations[identity] = .delete(
+                    model: model,
+                    precondition: precondition
+                )
+                return
+            }
+            switch current {
+            case .save(_, let initialPrecondition):
+                if initialPrecondition == .notExists {
+                    mutations.removeValue(forKey: identity)
+                } else {
+                    mutations[identity] = .delete(
+                        model: model,
+                        precondition: initialPrecondition
+                    )
+                }
+            case .delete(_, let initialPrecondition):
+                mutations[identity] = .delete(
+                    model: model,
+                    precondition: initialPrecondition
+                )
+            }
         }
     }
 
@@ -614,7 +465,7 @@ public final class FDBContext: Sendable {
         let query = Query<T>().where(predicate)
         let models = try await fetch(query)
         for model in models {
-            delete(model)
+            try delete(model)
         }
     }
 
@@ -633,7 +484,7 @@ public final class FDBContext: Sendable {
         }
         let models = try await fetch(Query<T>())
         for model in models {
-            delete(model)
+            try delete(model)
         }
     }
 
@@ -653,101 +504,8 @@ public final class FDBContext: Sendable {
     ) async throws {
         let models = try await fetch(Query<T>().partition(keyPath, equals: value))
         for model in models {
-            delete(model)
+            try delete(model)
         }
-    }
-
-    /// Clear all data for a type without decoding (useful for tests and schema migrations)
-    ///
-    /// Unlike `deleteAll`, this method directly clears the subspace range without
-    /// loading/decoding any data. Use this when:
-    /// - Schema has changed and old data cannot be decoded
-    /// - You need efficient bulk deletion without per-record operations
-    ///
-    /// **Security**: Admin-only operation. Requires admin role in auth context.
-    ///
-    /// **Note**: This does NOT track deletions in the context. Changes are applied immediately.
-    /// **Note**: Also clears polymorphic directory data if type conforms to Polymorphable.
-    /// **Note**: For types with dynamic directories, use `clearAll(_:partition:equals:)` instead.
-    ///
-    /// - Parameter type: The Persistable type to clear
-    /// - Throws: SecurityError if not admin, DirectoryPathError if type has dynamic directory
-    public func clearAll<T: Persistable>(_ type: T.Type) async throws {
-        // Validate: dynamic directory types require partition
-        if T.hasDynamicDirectory {
-            throw DirectoryPathError.dynamicFieldsRequired(
-                typeName: T.persistableType,
-                fields: T.directoryFieldNames
-            )
-        }
-
-        // Use DataStore.clearAll() which evaluates admin security
-        let store = try await cachedStore(for: type)
-        try await store.clearAll(type)
-
-        // Also clear polymorphic directory data if applicable
-        if let polymorphicType = T.self as? any Polymorphable.Type {
-            let typeDirectory = T.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
-            let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
-
-            if typeDirectory != polyDirectory {
-                // Different directory - need to clear polymorphic data and shared indexes too.
-                let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
-                let typeCode = polymorphicType.typeCode(for: T.persistableType)
-                let itemSubspace = polySubspace.subspace(SubspaceKey.items)
-                let polyItemSubspace = itemSubspace.subspace(typeCode)
-                let blobsSubspace = polySubspace.subspace(SubspaceKey.blobs)
-                let group = try container.polymorphicGroup(identifier: polymorphicType.polymorphableType)
-                let descriptors = container.schema.polymorphicIndexDescriptors(
-                    identifier: group.identifier,
-                    memberType: T.self
-                )
-                let maintenanceService = makePolymorphicIndexMaintenanceService(
-                    group: group,
-                    subspace: polySubspace
-                )
-
-                try await self.withRawTransaction(configuration: .batch) { transaction in
-                    let storage = self.container.itemStorageFactory.make(
-                        transaction: transaction,
-                        blobsSubspace: blobsSubspace
-                    )
-                    let (polyBegin, polyEnd) = polyItemSubspace.range()
-                    for try await (key, data) in storage.scan(begin: polyBegin, end: polyEnd, snapshot: false) {
-                        let item = try DataAccess.deserializeAny(data, as: T.self)
-                        let compositeID = try itemSubspace.unpack(key)
-                        try await maintenanceService.updateIndexesUntyped(
-                            oldModel: item,
-                            newModel: nil as (any Persistable)?,
-                            id: compositeID,
-                            descriptors: descriptors,
-                            logicalTypeName: group.identifier,
-                            transaction: transaction
-                        )
-                    }
-                    try transaction.clearRange(beginKey: polyBegin, endKey: polyEnd)
-                }
-            }
-        }
-    }
-
-    /// Clear all data for a type within a partition without decoding
-    ///
-    /// For types with dynamic directories, use this method to specify the partition.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// try await context.clearAll(Order.self, partition: \.tenantID, equals: "tenant_123")
-    /// ```
-    public func clearAll<T: Persistable, V: Sendable & Equatable & FieldValueConvertible>(
-        _ type: T.Type,
-        partition keyPath: KeyPath<T, V>,
-        equals value: V
-    ) async throws {
-        var binding = DirectoryPath<T>()
-        binding.set(keyPath, to: value)
-        let store = try await cachedStore(for: type, path: binding)
-        try await store.clearAll(type)
     }
 
     // MARK: - Fetch
@@ -815,7 +573,7 @@ public final class FDBContext: Sendable {
         _ query: Query<T>,
         _ operation: @Sendable @escaping (
             [T],
-            any Transaction
+            DatabaseTransaction
         ) async throws -> Result
     ) async throws -> Result {
         // Check if type requires partition and validate
@@ -841,10 +599,10 @@ public final class FDBContext: Sendable {
         let config = TransactionConfiguration(cachePolicy: query.cachePolicy)
 
         // Execute fetch within transaction (uses ReadVersionCache)
-        return try await self.withRawTransaction(configuration: config) { transaction in
+        return try await self.withTransaction(configuration: config) { transaction in
             let models = try await store.fetchInTransaction(
                 query,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
             return try await operation(models, transaction)
         }
@@ -923,6 +681,8 @@ public final class FDBContext: Sendable {
         as type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
+        try ensureUsable()
+
         // A dynamic type has no unambiguous in-memory identity without its partition.
         if T.hasDynamicDirectory {
             throw DirectoryPathError.dynamicFieldsRequired(
@@ -934,7 +694,7 @@ public final class FDBContext: Sendable {
         let pendingResult = pendingModelLookup(
             for: id,
             as: type,
-            partitionPath: []
+            partitions: []
         )
 
         if let inserted = pendingResult.inserted {
@@ -951,7 +711,7 @@ public final class FDBContext: Sendable {
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type)
-            return try await store.withAutoCommit { transaction in
+            return try await container.engine.withAutoCommit { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
@@ -974,6 +734,8 @@ public final class FDBContext: Sendable {
         as type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
+        try ensureUsable()
+
         if T.hasDynamicDirectory {
             throw DirectoryPathError.dynamicFieldsRequired(
                 typeName: T.persistableType,
@@ -988,7 +750,7 @@ public final class FDBContext: Sendable {
         let pendingResult = pendingModelLookup(
             for: identifier,
             as: type,
-            partitionPath: []
+            partitions: []
         )
 
         if let inserted = pendingResult.inserted {
@@ -1001,7 +763,7 @@ public final class FDBContext: Sendable {
 
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type)
-            return try await store.withAutoCommit { transaction in
+            return try await container.engine.withAutoCommit { transaction in
                 try await store.fetchByIdentifierTupleInTransaction(
                     type,
                     identifier: identifierTuple,
@@ -1048,10 +810,12 @@ public final class FDBContext: Sendable {
         partition path: DirectoryPath<T>,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
+        try ensureUsable()
+
         let pendingResult = pendingModelLookup(
             for: id,
             as: type,
-            partitionPath: try AnyDirectoryPath(path).resolve()
+            partitions: try path.canonicalPartitions()
         )
 
         if let inserted = pendingResult.inserted {
@@ -1068,7 +832,7 @@ public final class FDBContext: Sendable {
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type, path: path)
-            return try await store.withAutoCommit { transaction in
+            return try await container.engine.withAutoCommit { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
@@ -1087,15 +851,17 @@ public final class FDBContext: Sendable {
         partition path: DirectoryPath<T>,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
+        try ensureUsable()
+
         let identifier = try RecordIdentifierKeyCodec.value(
             from: identifierTuple,
             expectedType: T.recordIdentifierType
         )
-        let partitionPath = try AnyDirectoryPath(path).resolve()
+        let partitions = try path.canonicalPartitions()
         let pendingResult = pendingModelLookup(
             for: identifier,
             as: type,
-            partitionPath: partitionPath
+            partitions: partitions
         )
 
         if let inserted = pendingResult.inserted {
@@ -1108,7 +874,7 @@ public final class FDBContext: Sendable {
 
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type, path: path)
-            return try await store.withAutoCommit { transaction in
+            return try await container.engine.withAutoCommit { transaction in
                 try await store.fetchByIdentifierTupleInTransaction(
                     type,
                     identifier: identifierTuple,
@@ -1138,73 +904,42 @@ public final class FDBContext: Sendable {
         enum SaveCheckResult {
             case noChanges
             case alreadySaving
-            case singleInsert(StagedInsert)
-            case singleDelete(StagedDelete)
-            case proceed(
-                inserts: [StagedInsert],
-                replaces: [StagedReplace],
-                deletes: [StagedDelete]
+            case commitOutcomeUnknown
+            case identifierExhausted
+            case start(
+                identifier: UInt64,
+                mutations: [RecordIdentity: PendingMutation]
             )
         }
 
         let checkResult = stateLock.withLock { state -> SaveCheckResult in
-            guard !state.isSaving else {
+            guard state.activeSave == nil else {
                 return .alreadySaving
             }
-
-            guard state.hasChanges else {
+            guard !state.commitOutcomeUnknown else {
+                return .commitOutcomeUnknown
+            }
+            guard !state.pending.isEmpty else {
                 state.autosaveScheduled = false
                 return .noChanges
             }
-
-            // Fast path: exactly one mutation in the pending map, and that mutation
-            // is a pure upsert or pure delete WITH `.none` precondition. `.replace`
-            // always needs the general path so the user-provided old value reaches
-            // IndexMaintenanceService; non-`.none` preconditions need the general
-            // path so precondition evaluation happens against storage.
-            if state.pending.count == 1, let (_, only) = state.pending.first {
-                switch only {
-                case .upsert(let model, let p) where p == .none:
-                    state.pending.removeAll()
-                    state.isSaving = true
-                    state.autosaveScheduled = false
-                    return .singleInsert(StagedInsert(model: model, strict: false, precondition: p))
-                case .insert, .upsert:
-                    break  // fall through to general path (precondition enforcement)
-                case .delete(let model, let p) where p == .none:
-                    state.pending.removeAll()
-                    state.isSaving = true
-                    state.autosaveScheduled = false
-                    return .singleDelete(StagedDelete(model: model, precondition: p))
-                case .delete:
-                    break  // fall through to general path (precondition enforcement)
-                case .replace:
-                    break  // fall through to general path
-                }
+            guard state.nextSaveIdentifier < UInt64.max else {
+                return .identifierExhausted
             }
 
-            var inserts: [StagedInsert] = []
-            var replaces: [StagedReplace] = []
-            var deletes: [StagedDelete] = []
-
-            for (_, mutation) in state.pending {
-                switch mutation {
-                case .insert(let new, let p):
-                    inserts.append(StagedInsert(model: new, strict: true, precondition: p))
-                case .upsert(let new, let p):
-                    inserts.append(StagedInsert(model: new, strict: false, precondition: p))
-                case .delete(let old, let p):
-                    deletes.append(StagedDelete(model: old, precondition: p))
-                case .replace(let old, let new, let p):
-                    replaces.append(StagedReplace(old: old, new: new, precondition: p))
-                }
-            }
-
+            let identifier = state.nextSaveIdentifier
+            state.nextSaveIdentifier += 1
+            let capturedMutations = state.pending
             state.pending.removeAll()
-            state.isSaving = true
+            state.activeSave = ActiveSave(
+                identifier: identifier,
+                capturedMutations: capturedMutations
+            )
             state.autosaveScheduled = false
-
-            return .proceed(inserts: inserts, replaces: replaces, deletes: deletes)
+            return .start(
+                identifier: identifier,
+                mutations: capturedMutations
+            )
         }
 
         switch checkResult {
@@ -1212,578 +947,110 @@ public final class FDBContext: Sendable {
             return
         case .alreadySaving:
             throw FDBContextError.concurrentSaveNotAllowed
-        case .singleInsert(let staged):
-            do {
-                if let fastResult = try await saveSingleOperationFastPathIfEligible(
-                    staged.model,
-                    isDelete: false
-                ) {
-                    _ = fastResult
-                } else {
-                    try await saveGeneralPath(
-                        insertsSnapshot: [staged],
-                        replacesSnapshot: [],
-                        deletesSnapshot: []
-                    )
-                }
-
-                stateLock.withLock { state in
-                    state.isSaving = false
-                }
-            } catch {
-                restoreSingleInsert(staged)
-                throw error
-            }
-            return
-        case .singleDelete(let staged):
-            do {
-                if let fastResult = try await saveSingleOperationFastPathIfEligible(
-                    staged.model,
-                    isDelete: true
-                ) {
-                    _ = fastResult
-                } else {
-                    try await saveGeneralPath(
-                        insertsSnapshot: [],
-                        replacesSnapshot: [],
-                        deletesSnapshot: [staged]
-                    )
-                }
-
-                stateLock.withLock { state in
-                    state.isSaving = false
-                }
-            } catch {
-                restoreSingleDelete(staged)
-                throw error
-            }
-            return
-        case .proceed(let inserts, let replaces, let deletes):
-            guard !inserts.isEmpty || !replaces.isEmpty || !deletes.isEmpty else {
-                stateLock.withLock { state in
-                    state.isSaving = false
-                }
-                return
-            }
-
+        case .commitOutcomeUnknown:
+            throw FDBContextError.commitOutcomeUnknown
+        case .identifierExhausted:
+            throw FDBContextError.saveIdentifierExhausted
+        case .start(let identifier, let mutations):
             do {
                 try await saveGeneralPath(
-                    insertsSnapshot: inserts,
-                    replacesSnapshot: replaces,
-                    deletesSnapshot: deletes
+                    mutations: Self.persistableMutations(from: mutations)
                 )
-
-                stateLock.withLock { state in
-                    state.isSaving = false
+                let shouldScheduleAutosave = try stateLock.withLock {
+                    state -> Bool in
+                    guard state.activeSave?.identifier == identifier else {
+                        throw FDBContextError.invalidSaveState
+                    }
+                    state.activeSave = nil
+                    guard state.autosaveEnabled,
+                          !state.autosaveScheduled,
+                          !state.pending.isEmpty else {
+                        return false
+                    }
+                    state.autosaveScheduled = true
+                    return true
+                }
+                if shouldScheduleAutosave {
+                    scheduleAutosave()
                 }
             } catch {
-                stateLock.withLock { state in
-                    for staged in inserts {
-                        let key = ModelKey(staged.model)
-                        state.pending[key] = staged.strict
-                            ? .insert(new: staged.model, precondition: staged.precondition)
-                            : .upsert(new: staged.model, precondition: staged.precondition)
+                try stateLock.withLock { state in
+                    guard let activeSave = state.activeSave,
+                          activeSave.identifier == identifier else {
+                        throw FDBContextError.invalidSaveState
                     }
-                    for staged in replaces {
-                        let key = ModelKey(staged.new)
-                        state.pending[key] = .replace(
-                            old: staged.old,
-                            new: staged.new,
-                            precondition: staged.precondition
-                        )
+                    if Self.isCommitOutcomeUnknown(error) {
+                        state.commitOutcomeUnknown = true
+                    } else {
+                        var restored = activeSave.capturedMutations
+                        for mutation in activeSave.followupMutations {
+                            Self.apply(mutation, to: &restored)
+                        }
+                        state.pending = restored
                     }
-                    for staged in deletes {
-                        let key = ModelKey(staged.model)
-                        state.pending[key] = .delete(
-                            old: staged.model,
-                            precondition: staged.precondition
-                        )
-                    }
-                    state.isSaving = false
+                    state.activeSave = nil
                 }
                 throw error
             }
         }
     }
 
-    // MARK: - Save Fast Path
-
-    /// Attempt fast path for single-model save with static directory.
-    ///
-    /// Returns `true` if the fast path was taken, `nil` if not eligible.
-    /// Eligible when: exactly 1 insert + 0 deletes (or vice versa),
-    /// static directory (no dynamic partition), and not Polymorphable.
-    private func saveSingleOperationFastPathIfEligible(
-        _ model: any Persistable,
-        isDelete: Bool
-    ) async throws -> Bool? {
-        let modelType = type(of: model)
-
-        // Not eligible if dynamic directory (needs partition path resolution)
-        guard !hasDynamicDirectory(modelType) else { return nil }
-
-        // Not eligible if Polymorphable (needs dual-write processing)
-        guard !(modelType is any Polymorphable.Type) else { return nil }
-
-        // Not eligible if model has indexes (index updates need atomicity with data write)
-        guard modelType.indexDescriptors.isEmpty else { return nil }
-
-        // Runtime-maintained descriptors require commit-time final-state validation.
-        guard !modelType.descriptors.contains(where: {
-            $0 is any RuntimeMaintainedDescriptor
-        }) else { return nil }
-
-        // Not eligible if security is enabled (CREATE/UPDATE evaluation needs existing record check)
-        guard container.securityDelegate == nil else { return nil }
-
-        // Reuse the container-wide store cache directly for single-operation contexts.
-        let store = try await singleOperationStore(for: modelType)
-
-        // Execute through TransactionRunner even for single-operation fast paths.
-        // The fast path skips unnecessary reads/index work, but it must not bypass
-        // retry/backoff semantics.
-        _ = try await self.withRawTransaction { transaction in
-            if !isDelete {
-                try await store.executeBatchInTransaction(
-                    inserts: [model],
-                    deletes: [],
-                    transaction: transaction,
-                    skipExistingCheck: true
+    private static func persistableMutations(
+        from mutations: [RecordIdentity: PendingMutation]
+    ) -> [PersistableMutation] {
+        var result: [PersistableMutation] = []
+        result.reserveCapacity(mutations.count)
+        for mutation in mutations.values {
+            switch mutation {
+            case .save(let model, let precondition):
+                result.append(
+                    .save(
+                        model: model,
+                        precondition: precondition
+                    )
                 )
-            } else {
-                try await store.executeBatchInTransaction(
-                    inserts: [],
-                    deletes: [model],
-                    transaction: transaction,
-                    skipExistingCheck: true
+            case .delete(let model, let precondition):
+                result.append(
+                    .delete(
+                        model: model,
+                        precondition: precondition
+                    )
                 )
             }
         }
-
-        return true
+        return result
     }
 
-    private func restoreSingleInsert(_ staged: StagedInsert) {
-        stateLock.withLock { state in
-            let key = ModelKey(staged.model)
-            state.pending[key] = staged.strict
-                ? .insert(new: staged.model, precondition: staged.precondition)
-                : .upsert(new: staged.model, precondition: staged.precondition)
-            state.isSaving = false
-        }
-    }
-
-    private func restoreSingleDelete(_ staged: StagedDelete) {
-        stateLock.withLock { state in
-            let key = ModelKey(staged.model)
-            state.pending[key] = .delete(old: staged.model, precondition: staged.precondition)
-            state.isSaving = false
-        }
-    }
-
-    /// General path for multi-model or dynamic-directory save operations.
+    /// Applies the captured unit-of-work through the canonical logical
+    /// transaction. Every primary mutation, derived index, relationship rule,
+    /// and final-state check therefore shares one owner and one commit.
     private func saveGeneralPath(
-        insertsSnapshot: [StagedInsert],
-        replacesSnapshot: [StagedReplace],
-        deletesSnapshot: [StagedDelete]
+        mutations: [PersistableMutation]
     ) async throws {
-        // Group models by (type, partition) for partition-aware batching
-        var insertsByStore: [ContextDataStoreIdentity: [StagedInsert]] = [:]
-        var replacesByStore: [ContextDataStoreIdentity: [StagedReplace]] = [:]
-        var deletesByStore: [ContextDataStoreIdentity: [StagedDelete]] = [:]
-
-        for staged in insertsSnapshot {
-            let modelType = type(of: staged.model)
-            let typeName = modelType.persistableType
-            let resolvedPath = try resolvePartitionPath(for: staged.model)
-            let key = ContextDataStoreIdentity(typeName: typeName, resolvedPath: resolvedPath)
-            insertsByStore[key, default: []].append(staged)
-        }
-
-        for staged in replacesSnapshot {
-            // Replace keys are derived from `new` (the post-state); `old` and `new`
-            // share the same ModelKey by construction (merge rule invariant).
-            let modelType = type(of: staged.new)
-            let typeName = modelType.persistableType
-            let oldResolvedPath = try resolvePartitionPath(for: staged.old)
-            let newResolvedPath = try resolvePartitionPath(for: staged.new)
-
-            if hasDynamicDirectory(modelType), oldResolvedPath != newResolvedPath {
-                let oldKey = ContextDataStoreIdentity(
-                    typeName: typeName,
-                    resolvedPath: oldResolvedPath
-                )
-                let newKey = ContextDataStoreIdentity(
-                    typeName: typeName,
-                    resolvedPath: newResolvedPath
-                )
-                deletesByStore[oldKey, default: []].append(
-                    StagedDelete(model: staged.old, precondition: staged.precondition)
-                )
-                insertsByStore[newKey, default: []].append(
-                    StagedInsert(model: staged.new, strict: false, precondition: .none)
-                )
-            } else {
-                let key = ContextDataStoreIdentity(
-                    typeName: typeName,
-                    resolvedPath: newResolvedPath
-                )
-                replacesByStore[key, default: []].append(staged)
-            }
-        }
-
-        for staged in deletesSnapshot {
-            let modelType = type(of: staged.model)
-            let typeName = modelType.persistableType
-            let resolvedPath = try resolvePartitionPath(for: staged.model)
-            let key = ContextDataStoreIdentity(typeName: typeName, resolvedPath: resolvedPath)
-            deletesByStore[key, default: []].append(staged)
-        }
-
-        let allStoreKeys = Set(insertsByStore.keys)
-            .union(replacesByStore.keys)
-            .union(deletesByStore.keys)
-
-        // Resolve stores with caching (avoids FDBDataStore re-creation across save() calls)
-        var resolvedStores: [ContextDataStoreIdentity: FDBDataStore] = [:]
-        for storeKey in allStoreKeys {
-            // Check cache first
-            if let cached = storeRegistry.withLock({ $0.stores[storeKey] }) {
-                resolvedStores[storeKey] = cached
-                continue
-            }
-
-            let sampleModel: (any Persistable)? =
-                insertsByStore[storeKey]?.first?.model
-                ?? replacesByStore[storeKey]?.first?.new
-                ?? deletesByStore[storeKey]?.first?.model
-            guard let model = sampleModel else { continue }
-
-            let modelType = type(of: model)
-            let store: FDBDataStore
-
-            if hasDynamicDirectory(modelType) {
-                let binding = try buildAnyDirectoryPath(from: model)
-                store = try await container.fdbStore(for: modelType, path: binding)
-            } else {
-                store = try await container.fdbStore(for: modelType)
-            }
-            resolvedStores[storeKey] = store
-            storeRegistry.withLock { $0.stores[storeKey] = store }
-        }
-        let storesByKey = resolvedStores
-
-        // Make immutable copies for Sendable closure
-        let insertsForTransaction = insertsByStore
-        let replacesForTransaction = replacesByStore
-        let deletesForTransaction = deletesByStore
-        let finalModelsForTransaction: [any Persistable] =
-            insertsSnapshot.map(\.model) + replacesSnapshot.map(\.new)
-        let persistenceHandler = makePersistenceHandler()
-
-        // Get any store to provide the transaction (all stores share the same database)
-        guard storesByKey.values.first != nil else {
-            return
-        }
-
-        // Route through the context's own raw transaction so the commit updates
-        // the ReadVersionCache. Using FDBDataStore.withRawTransaction here would
-        // bypass the cache and leave subsequent `.cached` reads observing the
-        // pre-commit version (visible as: delete+insert RMW appearing to "lose"
-        // the update until a fresh read version is acquired).
-        try await self.withRawTransaction { transaction in
-            var allSerializedModels: [SerializedModel] = []
-
-            // Batch process inserts per (type, partition)
-            // skipExistingCheck: inserts from FDBContext are known new records,
-            // so we can skip the storage.read() + clearAllBlobs() overhead. The
-            // storage layer is responsible for evaluating `staged.precondition`
-            // (Phase 2) and throwing `FDBContextError.preconditionFailed` on
-            // violations.
-            for (storeKey, stagedItems) in insertsForTransaction {
-                guard let store = storesByKey[storeKey] else { continue }
-                let models = stagedItems.map { $0.model }
-                let preconditions = stagedItems.map { $0.precondition }
-                let serialized = try await store.executeBatchInTransactionWithPreconditions(
-                    inserts: models,
-                    deletes: [],
-                    transaction: transaction,
-                    skipExistingCheck: true,
-                    insertPreconditions: preconditions,
-                    deletePreconditions: []
-                )
-                allSerializedModels.append(contentsOf: serialized)
-            }
-
-            // Batch process replaces per (type, partition) — old is user-provided,
-            // so index maintenance skips the storage re-read. skipExistingCheck is
-            // false because replace semantically expects the row to exist and we
-            // want the storage layer to detect the mismatch via ItemStorage write.
-            for (storeKey, stagedItems) in replacesForTransaction {
-                guard let store = storesByKey[storeKey] else { continue }
-                let pairs = stagedItems.map { (old: $0.old, new: $0.new) }
-                let preconditions = stagedItems.map { $0.precondition }
-                let serialized = try await store.executeReplaceInTransaction(
-                    pairs: pairs,
-                    transaction: transaction,
-                    preconditions: preconditions
-                )
-                allSerializedModels.append(contentsOf: serialized)
-            }
-
-            // Batch process deletes per (type, partition)
-            // skipExistingCheck: enables blob cleanup skip for no-index, no-security types
-            for (storeKey, stagedItems) in deletesForTransaction {
-                guard let store = storesByKey[storeKey] else { continue }
-                let models = stagedItems.map { $0.model }
-                let preconditions = stagedItems.map { $0.precondition }
-                try await store.executeBatchInTransactionWithPreconditions(
-                    inserts: [],
-                    deletes: models,
-                    transaction: transaction,
-                    skipExistingCheck: true,
-                    insertPreconditions: [],
-                    deletePreconditions: preconditions
-                )
-            }
-
-            // Batch handle Polymorphable dual-write (reusing serialized data)
-            try await self.processDualWrites(
-                serializedInserts: allSerializedModels,
-                deletes: deletesSnapshot.map { $0.model },
-                transaction: transaction
-            )
-            try await persistenceHandler.validateFinalState(
-                of: finalModelsForTransaction,
-                transaction: transaction
-            )
+        try await withTransaction { transaction in
+            try await transaction.apply(mutations)
         }
     }
 
-    // MARK: - Partition Helpers
-
-    /// Check if a type has dynamic directory components.
-    private func hasDynamicDirectory(_ type: any Persistable.Type) -> Bool {
-        type.hasDynamicDirectory
-    }
-
-    /// Resolve the complete, collision-free partition path for a model.
-    private func resolvePartitionPath(for model: any Persistable) throws -> [String] {
-        let modelType = type(of: model)
-        guard hasDynamicDirectory(modelType) else {
-            return []
+    private static func isCommitOutcomeUnknown(_ error: Error) -> Bool {
+        guard let storageError = error as? StorageError else {
+            return false
         }
-        return try buildAnyDirectoryPath(from: model).resolve()
-    }
-
-    /// Build a type-erased partition binding from a model instance.
-    private func buildAnyDirectoryPath(from model: any Persistable) throws -> AnyDirectoryPath {
-        let modelType = type(of: model)
-        var bindings: [(name: String, value: any Sendable)] = []
-
-        for component in modelType.directoryPathComponents {
-            guard case .dynamicField(let fieldName) = component else { continue }
-            if let value = model[dynamicMember: fieldName] {
-                bindings.append((fieldName, value))
-            }
-        }
-
-        return try AnyDirectoryPath(fieldValues: bindings, type: modelType)
-    }
-
-    // MARK: - Polymorphable Dual-Write Support
-
-    /// Process dual-writes for Polymorphable types
-    ///
-    /// Optimized batch processing:
-    /// - Groups models by polymorphic protocol
-    /// - Resolves directories once per protocol
-    /// - Reuses pre-serialized data (no re-serialization)
-    ///
-    /// - Parameters:
-    ///   - serializedInserts: Pre-serialized insert models from DataStore
-    ///   - deletes: Models to delete
-    ///   - transaction: The transaction to use
-    internal func processDualWrites(
-        serializedInserts: [SerializedModel],
-        deletes: [any Persistable],
-        transaction: any Transaction
-    ) async throws {
-        // Group by polymorphic protocol type for efficient directory resolution
-        var insertsByPolyType: [ObjectIdentifier: [(SerializedModel, any Polymorphable.Type)]] = [:]
-        var deletesByPolyType: [ObjectIdentifier: [(any Persistable, Tuple, any Polymorphable.Type)]] = [:]
-
-        // Categorize inserts
-        for serialized in serializedInserts {
-            let modelType = type(of: serialized.model)
-            guard let polymorphicType = modelType as? any Polymorphable.Type else { continue }
-
-            // Check if dual-write is needed (different directories)
-            let typeDirectory = modelType.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
-            let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
-            guard typeDirectory != polyDirectory else { continue }
-
-            let key = ObjectIdentifier(polymorphicType)
-            insertsByPolyType[key, default: []].append((serialized, polymorphicType))
-        }
-
-        // Categorize deletes
-        for model in deletes {
-            let modelType = type(of: model)
-            guard let polymorphicType = modelType as? any Polymorphable.Type else { continue }
-
-            // Check if dual-write is needed
-            let typeDirectory = modelType.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
-            let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
-            guard typeDirectory != polyDirectory else { continue }
-
-            let idTuple = try model.recordIdentifierTuple()
-
-            let key = ObjectIdentifier(polymorphicType)
-            deletesByPolyType[key, default: []].append((model, idTuple, polymorphicType))
-        }
-
-        // Process inserts by protocol (resolve directory once per protocol)
-        for (_, items) in insertsByPolyType {
-            guard let (_, polymorphicType) = items.first else { continue }
-
-            let group = try container.polymorphicGroup(identifier: polymorphicType.polymorphableType)
-            let polySubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-            let itemSubspace = polySubspace.subspace(SubspaceKey.items)
-            let blobsSubspace = polySubspace.subspace(SubspaceKey.blobs)
-            let maintenanceService = makePolymorphicIndexMaintenanceService(
-                group: group,
-                subspace: polySubspace
-            )
-
-            // Use ItemStorage for large value handling (stores chunks in blobs subspace)
-            let storage = self.container.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace
-            )
-
-            for (serialized, _) in items {
-                let modelType = type(of: serialized.model)
-                let typeCode = polymorphicType.typeCode(for: modelType.persistableType)
-                let compositeID = makePolymorphicCompositeID(
-                    typeCode: typeCode,
-                    idTuple: serialized.idTuple
-                )
-                let polyKey = itemSubspace.pack(compositeID)
-
-                let oldModel: (any Persistable)?
-                if let existingData = try await storage.read(for: polyKey) {
-                    oldModel = try DataAccess.deserializeAny(existingData, as: modelType)
-                } else {
-                    oldModel = nil
-                }
-
-                // Write using pre-serialized data (handles compression + external storage for >90KB)
-                try await storage.write(serialized.data, for: polyKey)
-                let descriptors = container.schema.polymorphicIndexDescriptors(
-                    identifier: group.identifier,
-                    memberType: modelType
-                )
-                try await maintenanceService.updateIndexesUntyped(
-                    oldModel: oldModel,
-                    newModel: serialized.model,
-                    id: compositeID,
-                    descriptors: descriptors,
-                    logicalTypeName: group.identifier,
-                    transaction: transaction
-                )
-            }
-        }
-
-        // Process deletes by protocol
-        for (_, items) in deletesByPolyType {
-            guard let (_, _, polymorphicType) = items.first else { continue }
-
-            let group = try container.polymorphicGroup(identifier: polymorphicType.polymorphableType)
-            let polySubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-            let itemSubspace = polySubspace.subspace(SubspaceKey.items)
-            let blobsSubspace = polySubspace.subspace(SubspaceKey.blobs)
-            let maintenanceService = makePolymorphicIndexMaintenanceService(
-                group: group,
-                subspace: polySubspace
-            )
-
-            // Use ItemStorage for large value handling
-            let storage = self.container.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace
-            )
-
-            for (model, idTuple, _) in items {
-                let modelType = type(of: model)
-                let typeCode = polymorphicType.typeCode(for: modelType.persistableType)
-                let compositeID = makePolymorphicCompositeID(typeCode: typeCode, idTuple: idTuple)
-                let polyKey = itemSubspace.pack(compositeID)
-
-                let oldModel: (any Persistable)
-                if let existingData = try await storage.read(for: polyKey) {
-                    oldModel = try DataAccess.deserializeAny(existingData, as: modelType)
-                } else {
-                    oldModel = model
-                }
-
-                // Delete (handles external blob chunks)
-                let descriptors = container.schema.polymorphicIndexDescriptors(
-                    identifier: group.identifier,
-                    memberType: modelType
-                )
-                try await maintenanceService.updateIndexesUntyped(
-                    oldModel: oldModel,
-                    newModel: nil as (any Persistable)?,
-                    id: compositeID,
-                    descriptors: descriptors,
-                    logicalTypeName: group.identifier,
-                    transaction: transaction
-                )
-                try await storage.delete(for: polyKey)
-            }
-        }
-    }
-
-    private func makePolymorphicCompositeID(
-        typeCode: Int64,
-        idTuple: Tuple
-    ) -> Tuple {
-        var elements: [any TupleElement] = [typeCode]
-        for index in 0..<idTuple.count {
-            if let element = idTuple[index] {
-                elements.append(element)
-            }
-        }
-        return Tuple(elements)
-    }
-
-    private func makePolymorphicIndexMaintenanceService(
-        group: PolymorphicGroup,
-        subspace: Subspace
-    ) -> IndexMaintenanceService {
-        let groupConfigurations = group.indexes.flatMap { index in
-            container.indexConfigurations[index.name] ?? []
-        }
-        return IndexMaintenanceService(
-            indexLifecycleStore: IndexLifecycleStore(container: container, subspace: subspace),
-            violationTracker: UniquenessViolationTracker(
-                container: container,
-                metadataSubspace: subspace.subspace(SubspaceKey.metadata)
-            ),
-            indexSubspace: subspace.subspace(SubspaceKey.indexes),
-            maintainerProviders: container.runtimeConfiguration.indexMaintainerProviders,
-            configurations: groupConfigurations
-        )
+        return storageError.code == .commitUnknownResult
     }
 
     // MARK: - Rollback
 
-    /// Discard all pending changes
-    public func rollback() {
-        stateLock.withLock { state in
+    /// Discard pending changes when no save outcome is in flight or ambiguous.
+    public func rollback() throws {
+        try stateLock.withLock { state in
+            guard state.activeSave == nil else {
+                throw FDBContextError.rollbackDuringSaveNotAllowed
+            }
+            guard !state.commitOutcomeUnknown else {
+                throw FDBContextError.commitOutcomeUnknown
+            }
             state.pending.removeAll()
-            state.isSaving = false
             state.autosaveScheduled = false
         }
     }
@@ -1859,6 +1126,8 @@ public final class FDBContext: Sendable {
         _ type: T.Type,
         block: (T) throws -> Void
     ) async throws {
+        try ensureUsable()
+
         // Validate: dynamic directory types require partition
         if T.hasDynamicDirectory {
             throw DirectoryPathError.dynamicFieldsRequired(
@@ -1889,6 +1158,8 @@ public final class FDBContext: Sendable {
         equals value: V,
         block: (T) throws -> Void
     ) async throws {
+        try ensureUsable()
+
         var binding = DirectoryPath<T>()
         binding.set(keyPath, to: value)
         let store = try await cachedStore(for: type, path: binding)
@@ -1901,10 +1172,12 @@ public final class FDBContext: Sendable {
 
 // MARK: - Errors
 
-public enum FDBContextError: Error, CustomStringConvertible {
+public enum FDBContextError: Error, Sendable, Equatable, CustomStringConvertible {
     case concurrentSaveNotAllowed
-    case modelNotFound(String)
-    case transactionTooLarge(currentSize: Int, limit: Int, hint: String)
+    case rollbackDuringSaveNotAllowed
+    case commitOutcomeUnknown
+    case saveIdentifierExhausted
+    case invalidSaveState
 
     /// A `WritePrecondition` was violated at commit time.
     ///
@@ -1925,10 +1198,14 @@ public enum FDBContextError: Error, CustomStringConvertible {
         switch self {
         case .concurrentSaveNotAllowed:
             return "FDBContextError: Cannot save while another save operation is in progress"
-        case .modelNotFound(let type):
-            return "FDBContextError: Model of type '\(type)' not found"
-        case .transactionTooLarge(let currentSize, let limit, let hint):
-            return "FDBContextError: Transaction size (\(currentSize) bytes) approaching limit (\(limit) bytes). \(hint)"
+        case .rollbackDuringSaveNotAllowed:
+            return "FDBContextError: Cannot roll back staged changes while a save operation is in progress"
+        case .commitOutcomeUnknown:
+            return "FDBContextError: The previous commit outcome is unknown; this context cannot be reused"
+        case .saveIdentifierExhausted:
+            return "FDBContextError: Save operation identifier space is exhausted"
+        case .invalidSaveState:
+            return "FDBContextError: Save lifecycle state is inconsistent"
         case .preconditionFailed(let typeName, let idDescription, let precondition, let reason):
             return "FDBContextError: Precondition \(precondition) failed for \(typeName) id=\(idDescription): \(reason)"
         }
@@ -1944,10 +1221,10 @@ extension FDBContext {
     /// The closure may be retried on conflict - avoid side effects inside the closure.
     ///
     /// **Read Modes**:
-    /// - `tx.get(snapshot: false)` (default): Transactional read that adds read conflict.
+    /// - `tx.fetch(consistency: .serializable)` (default): Transactional read that adds read conflict.
     ///   If another transaction writes to this data before commit, this transaction
     ///   will conflict and retry.
-    /// - `tx.get(snapshot: true)`: Snapshot read with no conflict tracking.
+    /// - `tx.fetch(consistency: .snapshot)`: Snapshot read with no conflict tracking.
     ///   May return stale data, but won't cause conflicts. Use for non-critical reads.
     ///
     /// **ReadVersionCache**:
@@ -1960,23 +1237,23 @@ extension FDBContext {
     /// ```swift
     /// // Read-modify-write with conflict detection
     /// try await context.withTransaction { tx in
-    ///     guard let user = try await tx.get(User.self, id: userId) else { throw ... }
+    ///     guard let user = try await tx.fetch(User.self, identifiedBy: userId) else { throw ... }
     ///     var updated = user
     ///     updated.balance -= amount
-    ///     try await tx.set(updated)
+    ///     try await tx.save(updated)
     /// }
     ///
     /// // Mixed reads
     /// try await context.withTransaction { tx in
-    ///     let user = try await tx.get(User.self, id: userId)           // Transactional
-    ///     let stats = try await tx.get(Stats.self, id: id, snapshot: true) // Snapshot
-    ///     try await tx.set(updated)
+    ///     let user = try await tx.fetch(User.self, identifiedBy: userId)           // Transactional
+    ///     let stats = try await tx.fetch(Stats.self, identifiedBy: id, consistency: .snapshot) // Snapshot
+    ///     try await tx.save(updated)
     /// }
     ///
     /// // Batch configuration
     /// try await context.withTransaction(configuration: .batch) { tx in
     ///     for item in items {
-    ///         try await tx.set(item)
+    ///         try await tx.save(item)
     ///     }
     /// }
     /// ```
@@ -1991,8 +1268,12 @@ extension FDBContext {
     public func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration = .default,
         executionDeadline: TransactionExecutionDeadline? = nil,
-        _ operation: @Sendable @escaping (TransactionContext) async throws -> T
+        _ operation: @Sendable @escaping (
+            DatabaseTransaction
+        ) async throws -> T
     ) async throws -> T {
+        try ensureUsable()
+
         // Use TransactionRunner with context's own ReadVersionCache
         let runner = TransactionRunner(database: container.engine)
         return try await runner.run(
@@ -2001,13 +1282,18 @@ extension FDBContext {
             readVersionCache: readVersionCache,
             operationDescription: "FDBContext.withTransaction"
         ) { transaction in
-            let context = TransactionContext(
+            let transaction = DatabaseTransaction(
                 transaction: transaction,
                 container: self.container
             )
-            let result = try await operation(context)
-            try await context.finalize()
-            return result
+            do {
+                let result = try await operation(transaction)
+                try await transaction.prepareForCommit()
+                return result
+            } catch {
+                await transaction.invalidate()
+                throw error
+            }
         }
     }
 
@@ -2020,7 +1306,7 @@ extension FDBContext {
     /// Uses the context's ReadVersionCache for weak read semantics optimization.
     ///
     /// **For public API users**:
-    /// - Use `withTransaction(_:)` for high-level TransactionContext API
+    /// - Use `withTransaction(_:)` for high-level DatabaseTransaction API
     /// - Use `container.engine.withTransaction(_:)` if raw access is truly needed (no cache)
     ///
     /// - Parameters:
@@ -2033,6 +1319,8 @@ extension FDBContext {
         executionDeadline: TransactionExecutionDeadline? = nil,
         _ operation: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T {
+        try ensureUsable()
+
         let runner = TransactionRunner(database: container.engine)
         return try await runner.run(
             configuration: configuration,
@@ -2067,25 +1355,31 @@ extension FDBContext {
 
 extension FDBContext: CustomStringConvertible {
     public var description: String {
-        let (insertCount, deleteCount, replaceCount) = stateLock.withLock { state in
-            var inserts = 0
+        let stateDescription = stateLock.withLock { state in
+            var saves = 0
             var deletes = 0
-            var replaces = 0
             for mutation in state.pending.values {
                 switch mutation {
-                case .insert, .upsert: inserts += 1
-                case .delete: deletes += 1
-                case .replace: replaces += 1
+                case .save:
+                    saves += 1
+                case .delete:
+                    deletes += 1
                 }
             }
-            return (inserts, deletes, replaces)
+            return (
+                saves: saves,
+                deletes: deletes,
+                saveInProgress: state.activeSave != nil,
+                commitOutcomeUnknown: state.commitOutcomeUnknown
+            )
         }
 
         return """
         FDBContext(
-            inserts: \(insertCount),
-            deletes: \(deleteCount),
-            replaces: \(replaceCount),
+            pendingSaves: \(stateDescription.saves),
+            pendingDeletes: \(stateDescription.deletes),
+            saveInProgress: \(stateDescription.saveInProgress),
+            commitOutcomeUnknown: \(stateDescription.commitOutcomeUnknown),
             hasChanges: \(hasChanges)
         )
         """
@@ -2156,12 +1450,16 @@ extension FDBContext {
             )
         }
 
-        // Resolve polymorphic directory
-        let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
-        let itemSubspace = subspace.subspace(SubspaceKey.items)
-        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-
         let results: [any Persistable] = try await self.withRawTransaction(configuration: .default) { transaction in
+            guard let subspace = try await self.container
+                .openPolymorphicDirectory(
+                    for: P.polymorphableType,
+                    transaction: transaction
+                ) else {
+                return []
+            }
+            let itemSubspace = subspace.subspace(SubspaceKey.items)
+            let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
             // Use ItemStorage.scan to properly handle external (large) values
             let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
@@ -2220,13 +1518,19 @@ extension FDBContext {
             return nil
         }
 
-        let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
-        let itemSubspace = subspace.subspace(SubspaceKey.items)
-        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let idTuple = Tuple([id])
 
         // Search all type subspaces for this ID
         let result: (any Persistable)? = try await self.withRawTransaction(configuration: .default) { transaction in
+            guard let subspace = try await self.container
+                .openPolymorphicDirectory(
+                    for: P.polymorphableType,
+                    transaction: transaction
+                ) else {
+                return nil
+            }
+            let itemSubspace = subspace.subspace(SubspaceKey.items)
+            let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
             // Use ItemStorage for proper handling of large values
             let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
@@ -2271,189 +1575,4 @@ extension FDBContext {
         try DataAccess.deserializeAny(bytes, as: type)
     }
 
-    // MARK: - Polymorphic Save/Delete
-
-    /// Save a polymorphic item to the shared directory
-    ///
-    /// Saves the item to the polymorphic protocol's directory with the correct type code prefix.
-    /// The type must be included in the Schema and conform to the Polymorphable protocol.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let article = Article(title: "Hello", content: "World")
-    /// try await context.savePolymorphic(article, as: Document.self)
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - item: The item to save
-    ///   - protocolType: The Polymorphable protocol it conforms to
-    /// - Throws: Error if type is not in Schema or save fails
-    public func savePolymorphic<T: Persistable & Codable, P: Polymorphable>(
-        _ item: T,
-        as protocolType: P.Type
-    ) async throws {
-        let typeName = T.persistableType
-
-        // Verify type is in Schema
-        guard container.schema.entity(for: T.self) != nil else {
-            throw FDBRuntimeError.internalError(
-                "Type '\(typeName)' is not found in Schema. " +
-                "Ensure '\(typeName)' is included in Schema initialization."
-            )
-        }
-
-        // Get typeCode from the type directly
-        guard let polyType = T.self as? any Polymorphable.Type else {
-            throw FDBRuntimeError.internalError(
-                "Type '\(typeName)' does not conform to Polymorphable. " +
-                "Ensure '\(typeName)' conforms to '\(P.polymorphableType)'."
-            )
-        }
-        let typeCode = polyType.typeCode(for: typeName)
-
-        let group = try container.polymorphicGroup(identifier: P.polymorphableType)
-        let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
-        let itemSubspace = subspace.subspace(SubspaceKey.items)
-        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-
-        let idTuple = try item.recordIdentifierTuple()
-        let compositeID = makePolymorphicCompositeID(typeCode: typeCode, idTuple: idTuple)
-        let key = itemSubspace.pack(compositeID)
-
-        let data = try DataAccess.serialize(item)
-
-        // Security: Check if this is CREATE or UPDATE
-        let oldData: Bytes? = try await self.withRawTransaction(configuration: .default) { transaction in
-            let storage = self.container.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace
-            )
-            return try await storage.read(for: key)
-        }
-        let oldItem: T?
-        if let oldBytes = oldData {
-            let decodedOldItem: T = try DataAccess.deserialize(oldBytes)
-            try container.securityDelegate?.evaluateUpdate(decodedOldItem, newResource: item)
-            oldItem = decodedOldItem
-        } else {
-            try container.securityDelegate?.evaluateCreate(item)
-            oldItem = nil
-        }
-
-        try await self.withRawTransaction(configuration: .default) { transaction in
-            let storage = self.container.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace
-            )
-            // Save (handles compression + external storage for >90KB)
-            try await storage.write(data, for: key)
-
-            let descriptors = self.container.schema.polymorphicIndexDescriptors(
-                identifier: group.identifier,
-                memberType: T.self
-            )
-            let maintenanceService = self.makePolymorphicIndexMaintenanceService(
-                group: group,
-                subspace: subspace
-            )
-            try await maintenanceService.updateIndexesUntyped(
-                oldModel: oldItem,
-                newModel: item,
-                id: compositeID,
-                descriptors: descriptors,
-                logicalTypeName: group.identifier,
-                transaction: transaction
-            )
-        }
-    }
-
-    /// Delete a polymorphic item from the shared directory
-    ///
-    /// Deletes the item from the polymorphic protocol's directory.
-    /// The type must be included in the Schema and conform to the Polymorphable protocol.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// try await context.deletePolymorphic(Article.self, id: articleId, as: Document.self)
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - type: The concrete type of the item
-    ///   - id: The ID of the item to delete
-    ///   - protocolType: The Polymorphable protocol it conforms to
-    /// - Throws: Error if type is not in Schema or delete fails
-    public func deletePolymorphic<T: Persistable, P: Polymorphable>(
-        _ type: T.Type,
-        id: String,
-        as protocolType: P.Type
-    ) async throws {
-        let typeName = T.persistableType
-
-        // Verify type is in Schema
-        guard container.schema.entity(for: T.self) != nil else {
-            throw FDBRuntimeError.internalError(
-                "Type '\(typeName)' is not found in Schema."
-            )
-        }
-
-        // Get typeCode from the type directly
-        guard let polyType = T.self as? any Polymorphable.Type else {
-            throw FDBRuntimeError.internalError(
-                "Type '\(typeName)' does not conform to Polymorphable."
-            )
-        }
-        let typeCode = polyType.typeCode(for: typeName)
-
-        let group = try container.polymorphicGroup(identifier: P.polymorphableType)
-        let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
-        let itemSubspace = subspace.subspace(SubspaceKey.items)
-        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-
-        let idTuple = Tuple([id])
-        let compositeID = makePolymorphicCompositeID(typeCode: typeCode, idTuple: idTuple)
-        let key = itemSubspace.pack(compositeID)
-
-        // Security: Fetch existing item to evaluate DELETE permission
-        let oldItem: T?
-        if let oldData: Bytes = try await self.withRawTransaction(configuration: .default, { transaction in
-            let storage = self.container.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace
-            )
-            return try await storage.read(for: key)
-        }) {
-            let decodedOldItem: T = try DataAccess.deserialize(oldData)
-            try container.securityDelegate?.evaluateDelete(decodedOldItem)
-            oldItem = decodedOldItem
-        } else {
-            oldItem = nil
-        }
-
-        try await self.withRawTransaction(configuration: .default) { transaction in
-            let storage = self.container.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace
-            )
-            if let oldItem {
-                let descriptors = self.container.schema.polymorphicIndexDescriptors(
-                    identifier: group.identifier,
-                    memberType: T.self
-                )
-                let maintenanceService = self.makePolymorphicIndexMaintenanceService(
-                    group: group,
-                    subspace: subspace
-                )
-                try await maintenanceService.updateIndexesUntyped(
-                    oldModel: oldItem,
-                    newModel: nil as (any Persistable)?,
-                    id: compositeID,
-                    descriptors: descriptors,
-                    logicalTypeName: group.identifier,
-                    transaction: transaction
-                )
-            }
-            // Delete (handles external blob chunks)
-            try await storage.delete(for: key)
-        }
-    }
 }

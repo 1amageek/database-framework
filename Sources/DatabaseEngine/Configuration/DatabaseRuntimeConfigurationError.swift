@@ -5,7 +5,7 @@ public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
     case duplicateIndexReadExecutor(String)
     case duplicatePolymorphicIndexReadExecutor(String)
     case duplicateFusionReadExecutor(String)
-    case duplicateRecordMutationMaintainer(identifier: String)
+    case duplicatePersistableMutationMaintainer(identifier: String)
     case missingCompiledEntityType(entityName: String)
     case invalidRecordIdentifierType(
         entityName: String,
@@ -32,12 +32,12 @@ public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
     )
     case missingGraphTableSourceExecutor
     case missingSPARQLSourceExecutor
-    case missingRecordMutationMaintainer(
+    case missingPersistableMutationMaintainer(
         entityName: String,
         descriptorName: String,
         identifier: String
     )
-    case invalidRecordMutationMaintainerSchema(
+    case invalidPersistableMutationMaintainerSchema(
         identifier: String,
         reason: String
     )

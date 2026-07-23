@@ -129,7 +129,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 requestID: 1,
                 prepare: { 1 },
                 body: { value, context in
-                    try context.rawTransaction.setValue(
+                    try context.storageTransaction.setValue(
                         Bytes(repeating: 0, count: 64),
                         for: key
                     )
@@ -178,7 +178,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 prepare: { 1 },
                 body: { value, context in
                     try await ContinuousClock().sleep(for: .milliseconds(100))
-                    try context.rawTransaction.setValue(
+                    try context.storageTransaction.setValue(
                         [UInt8(value)],
                         for: [0xF1]
                     )
@@ -342,7 +342,7 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
             prepare: @Sendable @escaping () async throws -> Preparation,
             body: @Sendable @escaping (
                 Preparation,
-                TransactionContext
+                DatabaseTransaction
             ) async throws -> Int
         ) async throws -> DatabaseCoordinatedOperationResponse {
             try await coordinator.executeStaged(

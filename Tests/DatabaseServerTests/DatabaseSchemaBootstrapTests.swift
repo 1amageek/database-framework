@@ -42,7 +42,7 @@ struct DatabaseSchemaBootstrapTests {
         var record = BootstrapIndexedRecord()
         record.id = "orphan"
         record.value = "value"
-        context.insert(record)
+        try context.insert(record)
         try await context.save()
 
         let versioned = try await makeVersionedContainer(engine: engine)

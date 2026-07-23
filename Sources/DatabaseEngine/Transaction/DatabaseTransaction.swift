@@ -1,0 +1,1067 @@
+import Core
+import DatabaseValue
+import StorageKit
+
+/// Owns every persisted-model operation performed by one physical transaction
+/// attempt.
+///
+/// Public operations reject overlapping entry. Derived mutation maintainers
+/// receive an operation-scoped capability that permits recursive persistence
+/// while preserving this owner, the physical transaction, and final validation.
+public actor DatabaseTransaction: DatabaseTransactionWriting {
+    private enum State: Sendable, Equatable {
+        case open
+        case executing(UInt64)
+        case preparingCommit(UInt64)
+        case closed
+    }
+
+    private enum MutationSource: Sendable, Equatable {
+        case requested
+        case derived
+    }
+
+    nonisolated package let storageTransaction: any Transaction
+
+    private let container: DBContainer
+    private let mutationMaintenanceService: PersistableMutationMaintenanceService
+    private let transactionScope = DatabaseTransactionScope()
+    private var validationScope: DatabaseTransactionScope?
+    private var state: State = .open
+    private var nextOperationID: UInt64 = 1
+    private var subspaceCache: [DatabaseStoreCacheKey: ResolvedSubspaces] = [:]
+    private var scheduledDeletions = Set<RecordIdentity>()
+    private var scheduledWrites = Set<RecordIdentity>()
+    private var activeMutationIdentities = Set<RecordIdentity>()
+    private var mutationOrder: [RecordIdentity] = []
+    private var orderedMutationIdentities = Set<RecordIdentity>()
+    private var mutationJournal: [RecordIdentity: MutationJournalEntry] = [:]
+
+    private struct ResolvedSubspaces {
+        let items: Subspace
+        let blobs: Subspace
+        let partitionPath: [String]
+    }
+
+    private struct MutationJournalEntry: Sendable {
+        let originalModel: (any Persistable)?
+        var currentModel: (any Persistable)?
+    }
+
+    package init(
+        transaction: any Transaction,
+        container: DBContainer
+    ) {
+        self.storageTransaction = transaction
+        self.container = container
+        self.mutationMaintenanceService =
+            PersistableMutationMaintenanceService(
+                maintainers: container.runtimeConfiguration
+                    .persistableMutationMaintainers
+            )
+    }
+
+    // MARK: - Typed reads
+
+    public func fetch<Model: Persistable>(
+        _ type: Model.Type,
+        identifiedBy id: Model.ID,
+        consistency: DatabaseReadConsistency
+    ) async throws -> Model? {
+        try await performOperation { _ in
+            guard let subspaces = try await openSubspaces(for: type) else {
+                return nil
+            }
+            return try await fetchModel(
+                of: type,
+                identifiedBy: id,
+                from: subspaces,
+                consistency: consistency
+            )
+        }
+    }
+
+    public func fetch<Model: Persistable>(
+        _ type: Model.Type,
+        identifiedBy id: Model.ID,
+        in partition: DirectoryPath<Model>,
+        consistency: DatabaseReadConsistency
+    ) async throws -> Model? {
+        try await performOperation { _ in
+            guard let subspaces = try await openSubspaces(
+                for: type,
+                in: partition
+            ) else {
+                return nil
+            }
+            return try await fetchModel(
+                of: type,
+                identifiedBy: id,
+                from: subspaces,
+                consistency: consistency
+            )
+        }
+    }
+
+    public func fetch<Model: Persistable>(
+        _ type: Model.Type,
+        identifiedBy ids: [Model.ID],
+        consistency: DatabaseReadConsistency = .serializable
+    ) async throws -> [Model] {
+        try await performOperation { _ in
+            guard let subspaces = try await openSubspaces(for: type) else {
+                return []
+            }
+            var models: [Model] = []
+            models.reserveCapacity(ids.count)
+            for id in ids {
+                if let model = try await fetchModel(
+                    of: type,
+                    identifiedBy: id,
+                    from: subspaces,
+                    consistency: consistency
+                ) {
+                    models.append(model)
+                }
+            }
+            return models
+        }
+    }
+
+    public func scan<Model: Persistable>(
+        _ type: Model.Type,
+        in partition: DirectoryPath<Model>,
+        after continuation: DatabaseScanContinuation?,
+        limit: Int,
+        consistency: DatabaseReadConsistency
+    ) async throws -> DatabaseScanPage<Model> {
+        try await performOperation { _ in
+            guard limit > 0, limit < Int.max else {
+                throw DatabaseTransactionError.invalidLimit(limit)
+            }
+            try container.securityDelegate?.evaluateList(
+                type: type,
+                limit: limit,
+                offset: nil,
+                orderBy: nil
+            )
+            guard let subspaces = try await openSubspaces(
+                for: type,
+                in: partition
+            ) else {
+                return DatabaseScanPage(items: [], continuation: nil)
+            }
+            try validate(
+                continuation,
+                entity: Model.persistableType,
+                partitionPath: subspaces.partitionPath
+            )
+
+            let typeSubspace = subspaces.items.subspace(
+                Model.persistableType
+            )
+            let (begin, end) = typeSubspace.range()
+            let beginSelector: KeySelector
+            if let continuation {
+                guard !continuation.storageKey.lexicographicallyPrecedes(begin),
+                      continuation.storageKey.lexicographicallyPrecedes(end) else {
+                    throw DatabaseScanContinuationError.keyOutsideEntityRange
+                }
+                beginSelector = .firstGreaterThan(continuation.storageKey)
+            } else {
+                beginSelector = .firstGreaterOrEqual(begin)
+            }
+
+            var entries = try await storageTransaction.collectRange(
+                from: beginSelector,
+                to: .firstGreaterOrEqual(end),
+                limit: limit + 1,
+                reverse: false,
+                snapshot: consistency == .snapshot,
+                streamingMode: .iterator
+            )
+            let hasMore = entries.count > limit
+            if hasMore {
+                entries.removeLast(entries.count - limit)
+            }
+
+            let storage = container.itemStorageFactory.make(
+                transaction: storageTransaction,
+                blobsSubspace: subspaces.blobs
+            )
+            var models: [Model] = []
+            models.reserveCapacity(entries.count)
+            for entry in entries {
+                guard let bytes = try await storage.read(
+                    for: entry.0,
+                    snapshot: consistency == .snapshot
+                ) else {
+                    throw DatabaseTransactionError.itemDisappearedDuringScan
+                }
+                let model: Model = try DataAccess.deserialize(bytes)
+                try container.securityDelegate?.evaluateGet(model)
+                models.append(model)
+            }
+
+            let next = try hasMore ? entries.last.map {
+                try DatabaseScanContinuation(
+                    entity: Model.persistableType,
+                    partitionPath: subspaces.partitionPath,
+                    storageKey: $0.0
+                )
+            } : nil
+            return DatabaseScanPage(
+                items: models,
+                continuation: next
+            )
+        }
+    }
+
+    // MARK: - Typed mutations
+
+    public func save<Model: Persistable>(
+        _ model: Model,
+        precondition: WritePrecondition
+    ) async throws {
+        try await performOperation { operationID in
+            try await persist(
+                model,
+                precondition: precondition,
+                operationID: operationID,
+                source: .requested
+            )
+        }
+    }
+
+    public func delete<Model: Persistable>(
+        _ model: Model,
+        precondition: WritePrecondition
+    ) async throws {
+        try await performOperation { operationID in
+            try await remove(
+                model,
+                precondition: precondition,
+                operationID: operationID,
+                source: .requested
+            )
+        }
+    }
+
+    public func delete<Model: Persistable>(
+        _ type: Model.Type,
+        identifiedBy id: Model.ID
+    ) async throws {
+        try await performOperation { operationID in
+            let identity = RecordIdentity(
+                entity: Model.persistableType,
+                id: id.recordIdentifierValue
+            )
+            guard let subspaces = try await openSubspaces(for: type),
+                  let model = try await fetchModel(
+                    of: type,
+                    identifiedBy: id,
+                    from: subspaces,
+                    consistency: .serializable
+                  ) else {
+                throw DatabaseTransactionError.persistedModelNotFound(
+                    identity
+                )
+            }
+            try await remove(
+                model,
+                precondition: .exists,
+                operationID: operationID,
+                source: .requested
+            )
+        }
+    }
+
+    public func delete<Model: Persistable>(
+        _ type: Model.Type,
+        identifiedBy id: Model.ID,
+        in partition: DirectoryPath<Model>
+    ) async throws {
+        try await performOperation { operationID in
+            let identity = RecordIdentity(
+                entity: Model.persistableType,
+                id: id.recordIdentifierValue,
+                partitions: try AnyDirectoryPath(partition)
+                    .canonicalPartitions()
+            )
+            guard let subspaces = try await openSubspaces(
+                for: type,
+                in: partition
+            ), let model = try await fetchModel(
+                of: type,
+                identifiedBy: id,
+                from: subspaces,
+                consistency: .serializable
+            ) else {
+                throw DatabaseTransactionError.persistedModelNotFound(
+                    identity
+                )
+            }
+            try await remove(
+                model,
+                precondition: .exists,
+                operationID: operationID,
+                source: .requested
+            )
+        }
+    }
+
+    // MARK: - Package persistence operations
+
+    package func loadPersistedModel(
+        entity: String,
+        id: Tuple,
+        partition: AnyDirectoryPath?
+    ) async throws -> (any Persistable)? {
+        try await performOperation { _ in
+            try await loadPersistedModelUnchecked(
+                entity: entity,
+                id: id,
+                partition: partition
+            )
+        }
+    }
+
+    package func fetchPersistedModel(
+        identifiedBy identity: RecordIdentity
+    ) async throws -> (any Persistable)? {
+        try await performOperation { _ in
+            let resolved = try resolve(identity)
+            return try await loadPersistedModelUnchecked(
+                entity: identity.entity,
+                id: resolved.id,
+                partition: resolved.partition
+            )
+        }
+    }
+
+    package func scanPersistedModels(
+        entity: String,
+        partition: AnyDirectoryPath?,
+        limit: Int
+    ) async throws -> [any Persistable] {
+        try await performOperation { _ in
+            try await scanPersistedModelsUnchecked(
+                entity: entity,
+                partition: partition,
+                limit: limit
+            )
+        }
+    }
+
+    package func savePersistedModel(
+        _ model: any Persistable,
+        precondition: WritePrecondition
+    ) async throws {
+        try await performOperation { operationID in
+            try await persist(
+                model,
+                precondition: precondition,
+                operationID: operationID,
+                source: .requested
+            )
+        }
+    }
+
+    package func deletePersistedModel(
+        _ model: any Persistable,
+        precondition: WritePrecondition
+    ) async throws {
+        try await performOperation { operationID in
+            try await remove(
+                model,
+                precondition: precondition,
+                operationID: operationID,
+                source: .requested
+            )
+        }
+    }
+
+    package func apply(
+        _ mutations: [PersistableMutation]
+    ) async throws {
+        try await performOperation { operationID in
+            try await apply(
+                mutations,
+                operationID: operationID
+            )
+        }
+    }
+
+    package func persistedMutationEffects() throws
+        -> [PersistableMutationEffect] {
+        guard state == .open else {
+            throw lifecycleError(for: state)
+        }
+        return mutationOrder.compactMap { identity in
+            guard let entry = mutationJournal[identity] else {
+                return nil
+            }
+            switch (entry.originalModel, entry.currentModel) {
+            case (nil, .some(let model)):
+                return PersistableMutationEffect(
+                    kind: .insert,
+                    identity: identity,
+                    model: model
+                )
+            case (.some, .some(let model)):
+                return PersistableMutationEffect(
+                    kind: .update,
+                    identity: identity,
+                    model: model
+                )
+            case (.some, nil):
+                return PersistableMutationEffect(
+                    kind: .delete,
+                    identity: identity,
+                    model: nil
+                )
+            case (nil, nil):
+                return nil
+            }
+        }
+    }
+
+    package func fetchPersistedModel(
+        identifiedBy identity: RecordIdentity,
+        within operationID: UInt64
+    ) async throws -> (any Persistable)? {
+        do {
+            try ensureActive(operationID, permitsMutation: false)
+            let resolved = try resolve(identity)
+            return try await loadPersistedModelUnchecked(
+                entity: identity.entity,
+                id: resolved.id,
+                partition: resolved.partition
+            )
+        } catch {
+            state = .closed
+            throw error
+        }
+    }
+
+    package func savePersistedModel(
+        _ model: any Persistable,
+        precondition: WritePrecondition,
+        within operationID: UInt64
+    ) async throws {
+        do {
+            try ensureActive(operationID, permitsMutation: true)
+            try await persist(
+                model,
+                precondition: precondition,
+                operationID: operationID,
+                source: .derived
+            )
+        } catch {
+            state = .closed
+            throw error
+        }
+    }
+
+    package func deletePersistedModel(
+        _ model: any Persistable,
+        precondition: WritePrecondition,
+        within operationID: UInt64
+    ) async throws {
+        do {
+            try ensureActive(operationID, permitsMutation: true)
+            try await remove(
+                model,
+                precondition: precondition,
+                operationID: operationID,
+                source: .derived
+            )
+        } catch {
+            state = .closed
+            throw error
+        }
+    }
+
+    package func isDeletionScheduled(
+        for identity: RecordIdentity,
+        within operationID: UInt64
+    ) throws -> Bool {
+        try ensureActive(operationID, permitsMutation: false)
+        return scheduledDeletions.contains(identity)
+    }
+
+    package func prepareForCommit() async throws {
+        await transactionScope.closeAndWait()
+        guard state == .open else {
+            throw lifecycleError(for: state)
+        }
+        let operationID = try issueOperationID()
+        state = .preparingCommit(operationID)
+        let validationScope = DatabaseTransactionScope()
+        self.validationScope = validationScope
+        let context = PersistableValidationContext(
+            schema: container.schema,
+            transaction: self,
+            operationID: operationID,
+            scope: validationScope
+        )
+        do {
+            try await mutationMaintenanceService.validateFinalState(
+                of: mutationOrder.compactMap {
+                    mutationJournal[$0]?.currentModel
+                },
+                context: context
+            )
+            await context.closeAndWait()
+            guard state == .preparingCommit(operationID) else {
+                throw lifecycleError(for: state)
+            }
+            self.validationScope = nil
+            state = .closed
+        } catch {
+            await context.closeAndWait()
+            self.validationScope = nil
+            state = .closed
+            throw error
+        }
+    }
+
+    package func invalidate() async {
+        state = .closed
+        await transactionScope.closeAndWait()
+        await validationScope?.closeAndWait()
+    }
+
+    // MARK: - Persistence pipeline
+
+    private func apply(
+        _ mutations: [PersistableMutation],
+        operationID: UInt64
+    ) async throws {
+        var identities = Set<RecordIdentity>()
+        identities.reserveCapacity(mutations.count)
+
+        for mutation in mutations {
+            let identity = try PersistableIdentityEncoder.encode(
+                mutation.model
+            )
+            guard identities.insert(identity).inserted else {
+                throw DatabaseTransactionError.duplicateMutation(identity)
+            }
+            switch mutation {
+            case .save:
+                scheduledWrites.insert(identity)
+            case .delete:
+                scheduledDeletions.insert(identity)
+            }
+        }
+
+        // Apply every proposed final value before delete rules inspect the
+        // inverse-reference catalog. This gives delete enforcement the complete
+        // batch overlay without a second relationship planner.
+        for mutation in mutations {
+            guard case .save(let model, let precondition) = mutation else {
+                continue
+            }
+            try await persist(
+                model,
+                precondition: precondition,
+                operationID: operationID,
+                source: .requested
+            )
+        }
+        for mutation in mutations {
+            guard case .delete(let model, let precondition) = mutation else {
+                continue
+            }
+            try await remove(
+                model,
+                precondition: precondition,
+                operationID: operationID,
+                source: .requested
+            )
+        }
+    }
+
+    private func persist(
+        _ model: any Persistable,
+        precondition: WritePrecondition,
+        operationID: UInt64,
+        source: MutationSource
+    ) async throws {
+        let identity = try PersistableIdentityEncoder.encode(model)
+        if source == .derived,
+           scheduledDeletions.contains(identity) {
+            throw DatabaseTransactionError.conflictingDerivedMutation(identity)
+        }
+        if source == .requested {
+            scheduledWrites.insert(identity)
+        }
+        guard activeMutationIdentities.insert(identity).inserted else {
+            throw DatabaseTransactionError.conflictingDerivedMutation(identity)
+        }
+        defer {
+            activeMutationIdentities.remove(identity)
+        }
+        reserveMutationIdentity(identity)
+
+        let modelType = type(of: model)
+        let partition = try partition(for: model)
+        let store = try await container.fdbStore(
+            for: modelType,
+            path: partition,
+            transaction: storageTransaction
+        )
+        let write = try await store.save(
+            model,
+            precondition: precondition,
+            transaction: storageTransaction
+        )
+        try await PolymorphicProjectionMaintainer(
+            container: container
+        ).update(
+            write,
+            transaction: storageTransaction
+        )
+        let mutationContext = makeMutationContext(operationID: operationID)
+        do {
+            try await mutationMaintenanceService.update(
+                oldModel: write.previousModel,
+                newModel: model,
+                context: mutationContext
+            )
+            await mutationContext.closeAndWait()
+        } catch {
+            await mutationContext.closeAndWait()
+            throw error
+        }
+        try ensureActive(operationID, permitsMutation: true)
+        recordMutation(
+            identity: identity,
+            previousModel: write.previousModel,
+            currentModel: model
+        )
+    }
+
+    private func remove(
+        _ model: any Persistable,
+        precondition: WritePrecondition,
+        operationID: UInt64,
+        source: MutationSource
+    ) async throws {
+        let identity = try PersistableIdentityEncoder.encode(model)
+        if source == .derived,
+           scheduledWrites.contains(identity),
+           !scheduledDeletions.contains(identity) {
+            throw DatabaseTransactionError.conflictingDerivedMutation(identity)
+        }
+        if source == .requested {
+            scheduledDeletions.insert(identity)
+        }
+        guard activeMutationIdentities.insert(identity).inserted else {
+            throw DatabaseTransactionError.conflictingDerivedMutation(identity)
+        }
+        defer {
+            activeMutationIdentities.remove(identity)
+        }
+        reserveMutationIdentity(identity)
+
+        let modelType = type(of: model)
+        let partition = try partition(for: model)
+        let store = try await container.fdbStore(
+            for: modelType,
+            path: partition,
+            transaction: storageTransaction
+        )
+        guard let persistedModel = try await store.delete(
+            model,
+            precondition: precondition,
+            transaction: storageTransaction
+        ) else {
+            return
+        }
+        try await PolymorphicProjectionMaintainer(
+            container: container
+        ).remove(
+            persistedModel,
+            transaction: storageTransaction
+        )
+        let mutationContext = makeMutationContext(operationID: operationID)
+        do {
+            try await mutationMaintenanceService.update(
+                oldModel: persistedModel,
+                newModel: nil,
+                context: mutationContext
+            )
+            await mutationContext.closeAndWait()
+        } catch {
+            await mutationContext.closeAndWait()
+            throw error
+        }
+        try ensureActive(operationID, permitsMutation: true)
+        recordMutation(
+            identity: identity,
+            previousModel: persistedModel,
+            currentModel: nil
+        )
+    }
+
+    private func reserveMutationIdentity(
+        _ identity: RecordIdentity
+    ) {
+        guard orderedMutationIdentities.insert(identity).inserted else {
+            return
+        }
+        mutationOrder.append(identity)
+    }
+
+    private func recordMutation(
+        identity: RecordIdentity,
+        previousModel: (any Persistable)?,
+        currentModel: (any Persistable)?
+    ) {
+        if var entry = mutationJournal[identity] {
+            entry.currentModel = currentModel
+            mutationJournal[identity] = entry
+        } else {
+            mutationJournal[identity] = MutationJournalEntry(
+                originalModel: previousModel,
+                currentModel: currentModel
+            )
+        }
+    }
+
+    private func loadPersistedModelUnchecked(
+        entity: String,
+        id: Tuple,
+        partition: AnyDirectoryPath?
+    ) async throws -> (any Persistable)? {
+        let type = try persistableType(named: entity)
+        if type.hasDynamicDirectory, partition == nil {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: entity,
+                fields: type.directoryFieldNames
+            )
+        }
+        guard let subspaces = try await openSubspaces(
+            for: type,
+            partition: partition
+        ) else {
+            return nil
+        }
+        let key = subspaces.items.subspace(entity).pack(id)
+        let storage = container.itemStorageFactory.make(
+            transaction: storageTransaction,
+            blobsSubspace: subspaces.blobs
+        )
+        guard let data = try await storage.read(for: key) else {
+            return nil
+        }
+        let model = try DataAccess.deserializeAny(data, as: type)
+        try container.securityDelegate?.evaluateGet(model)
+        return model
+    }
+
+    private func scanPersistedModelsUnchecked(
+        entity: String,
+        partition: AnyDirectoryPath?,
+        limit: Int
+    ) async throws -> [any Persistable] {
+        guard limit > 0 else {
+            throw DatabaseTransactionError.invalidLimit(limit)
+        }
+        let type = try persistableType(named: entity)
+        if type.hasDynamicDirectory, partition == nil {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: entity,
+                fields: type.directoryFieldNames
+            )
+        }
+        try container.securityDelegate?.evaluateList(
+            type: type,
+            limit: limit,
+            offset: nil,
+            orderBy: nil
+        )
+        guard let subspaces = try await openSubspaces(
+            for: type,
+            partition: partition
+        ) else {
+            return []
+        }
+        let (begin, end) = subspaces.items.subspace(entity).range()
+        let storage = container.itemStorageFactory.make(
+            transaction: storageTransaction,
+            blobsSubspace: subspaces.blobs
+        )
+        var models: [any Persistable] = []
+        models.reserveCapacity(limit)
+        for try await (_, data) in storage.scan(
+            begin: begin,
+            end: end,
+            snapshot: false,
+            limit: limit
+        ) {
+            let model = try DataAccess.deserializeAny(data, as: type)
+            try container.securityDelegate?.evaluateGet(model)
+            models.append(model)
+        }
+        return models
+    }
+
+    // MARK: - Operation lifecycle
+
+    private func performOperation<Value: Sendable>(
+        _ operation: (UInt64) async throws -> Value
+    ) async throws -> Value {
+        try await transactionScope.enter()
+        var operationID: UInt64?
+        do {
+            try Task.checkCancellation()
+            guard state == .open else {
+                throw lifecycleError(for: state)
+            }
+            let issuedOperationID = try issueOperationID()
+            operationID = issuedOperationID
+            state = .executing(issuedOperationID)
+            defer {
+                scheduledDeletions.removeAll(keepingCapacity: true)
+                scheduledWrites.removeAll(keepingCapacity: true)
+            }
+            let value = try await operation(issuedOperationID)
+            guard state == .executing(issuedOperationID) else {
+                throw lifecycleError(for: state)
+            }
+            state = .open
+            await transactionScope.leave()
+            return value
+        } catch {
+            if let operationID, state == .executing(operationID) {
+                state = .closed
+            }
+            await transactionScope.leave()
+            throw error
+        }
+    }
+
+    private func issueOperationID() throws -> UInt64 {
+        guard nextOperationID < UInt64.max else {
+            state = .closed
+            throw DatabaseTransactionError.operationIdentifierExhausted
+        }
+        let operationID = nextOperationID
+        nextOperationID += 1
+        return operationID
+    }
+
+    private func ensureActive(
+        _ operationID: UInt64,
+        permitsMutation: Bool
+    ) throws {
+        switch state {
+        case .executing(operationID):
+            return
+        case .preparingCommit(operationID) where !permitsMutation:
+            return
+        case .executing, .preparingCommit:
+            throw DatabaseTransactionError.invalidOperationContext
+        case .open, .closed:
+            throw DatabaseTransactionError.closed
+        }
+    }
+
+    private func lifecycleError(
+        for state: State
+    ) -> DatabaseTransactionError {
+        switch state {
+        case .executing:
+            return .concurrentOperation
+        case .open:
+            preconditionFailure("An open transaction has no lifecycle error")
+        case .preparingCommit, .closed:
+            return .closed
+        }
+    }
+
+    private func makeMutationContext(
+        operationID: UInt64
+    ) -> PersistableMutationContext {
+        PersistableMutationContext(
+            schema: container.schema,
+            transaction: self,
+            operationID: operationID,
+            storageTransaction: storageTransaction
+        )
+    }
+
+    // MARK: - Storage mapping
+
+    private func openSubspaces<Model: Persistable>(
+        for type: Model.Type
+    ) async throws -> ResolvedSubspaces? {
+        guard !Model.hasDynamicDirectory else {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: Model.persistableType,
+                fields: Model.directoryFieldNames
+            )
+        }
+        return try await openSubspaces(
+            for: type,
+            in: DirectoryPath<Model>()
+        )
+    }
+
+    private func openSubspaces<Model: Persistable>(
+        for type: Model.Type,
+        in partition: DirectoryPath<Model>
+    ) async throws -> ResolvedSubspaces? {
+        try await openSubspaces(
+            for: type,
+            partition: try AnyDirectoryPath(partition)
+        )
+    }
+
+    private func openSubspaces(
+        for type: any Persistable.Type,
+        partition: AnyDirectoryPath?
+    ) async throws -> ResolvedSubspaces? {
+        let path = try partition ?? AnyDirectoryPath(for: type)
+        try path.validate()
+        let partitionPath = path.resolve()
+        let cacheKey = DatabaseStoreCacheKey(
+            entity: type.persistableType,
+            components: partitionPath
+        )
+        if let cached = subspaceCache[cacheKey] {
+            return cached
+        }
+        guard try await container.engine.directoryService.exists(
+            path: partitionPath,
+            transaction: storageTransaction
+        ) else {
+            return nil
+        }
+        let root = try await container.openDirectory(
+            for: type,
+            path: path,
+            transaction: storageTransaction
+        )
+        let resolved = ResolvedSubspaces(
+            items: root.subspace(SubspaceKey.items),
+            blobs: root.subspace(SubspaceKey.blobs),
+            partitionPath: partitionPath
+        )
+        subspaceCache[cacheKey] = resolved
+        return resolved
+    }
+
+    private func fetchModel<Model: Persistable>(
+        of type: Model.Type,
+        identifiedBy id: Model.ID,
+        from subspaces: ResolvedSubspaces,
+        consistency: DatabaseReadConsistency
+    ) async throws -> Model? {
+        let key = subspaces.items
+            .subspace(Model.persistableType)
+            .pack(try RecordIdentifierKeyCodec.tuple(for: id))
+        let storage = container.itemStorageFactory.make(
+            transaction: storageTransaction,
+            blobsSubspace: subspaces.blobs
+        )
+        guard let bytes = try await storage.read(
+            for: key,
+            snapshot: consistency == .snapshot
+        ) else {
+            return nil
+        }
+        let model: Model = try DataAccess.deserialize(bytes)
+        try container.securityDelegate?.evaluateGet(model)
+        return model
+    }
+
+    private func persistableType(
+        named entity: String
+    ) throws -> any Persistable.Type {
+        guard let schemaEntity = container.schema.entity(named: entity) else {
+            throw DatabaseTransactionError.unknownEntity(entity)
+        }
+        guard let type = schemaEntity.persistableType else {
+            throw DatabaseTransactionError.entityHasNoPersistableType(entity)
+        }
+        return type
+    }
+
+    private func resolve(
+        _ identity: RecordIdentity
+    ) throws -> (id: Tuple, partition: AnyDirectoryPath?) {
+        let type = try persistableType(named: identity.entity)
+        do {
+            let id = try RecordIdentifierKeyCodec.tuple(
+                for: identity,
+                expectedType: type.recordIdentifierType
+            )
+            let partition = try CanonicalPartitionBinding.makeAnyBinding(
+                for: type,
+                partitions: identity.partitions
+            )
+            return (id, partition)
+        } catch {
+            throw DatabaseTransactionError.invalidIdentity(
+                entity: identity.entity,
+                reason: String(describing: error)
+            )
+        }
+    }
+
+    private func partition(
+        for model: any Persistable
+    ) throws -> AnyDirectoryPath? {
+        let type = type(of: model)
+        guard type.hasDynamicDirectory else {
+            return nil
+        }
+        var bindings: [(name: String, value: any Sendable)] = []
+        for component in type.directoryPathComponents {
+            guard case .dynamicField(let fieldName) = component,
+                  let value = model[dynamicMember: fieldName] else {
+                continue
+            }
+            bindings.append((fieldName, value))
+        }
+        return try AnyDirectoryPath(fieldValues: bindings, type: type)
+    }
+
+    private func validate(
+        _ continuation: DatabaseScanContinuation?,
+        entity: String,
+        partitionPath: [String]
+    ) throws {
+        guard let continuation else {
+            return
+        }
+        guard continuation.entity == entity else {
+            throw DatabaseScanContinuationError.mismatchedEntity(
+                expected: entity,
+                actual: continuation.entity
+            )
+        }
+        guard continuation.partitionPath == partitionPath else {
+            throw DatabaseScanContinuationError.mismatchedPartition
+        }
+    }
+}
+
+public enum DatabaseTransactionError: Error, Sendable, Equatable {
+    case concurrentOperation
+    case closed
+    case invalidOperationContext
+    case operationIdentifierExhausted
+    case invalidLimit(Int)
+    case itemDisappearedDuringScan
+    case unknownEntity(String)
+    case entityHasNoPersistableType(String)
+    case invalidIdentity(entity: String, reason: String)
+    case persistedModelNotFound(RecordIdentity)
+    case duplicateMutation(RecordIdentity)
+    case conflictingDerivedMutation(RecordIdentity)
+}

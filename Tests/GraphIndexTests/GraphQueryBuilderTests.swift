@@ -81,7 +81,7 @@ struct GraphQueryBuilderTests {
             let alice = uniqueID("Alice")
             let edge1 = makeEdge(source: alice, predicate: "knows", target: uniqueID("Bob"))
 
-            context.insert(edge1)
+            try context.insert(edge1)
             try await context.save()
 
             // Test: executeItems() should throw
@@ -123,9 +123,9 @@ struct GraphQueryBuilderTests {
             let edge2 = makeEdge(source: alice, predicate: "knows", target: carol)
             let edge3 = makeEdge(source: bob, predicate: "knows", target: carol)
 
-            context.insert(edge1)
-            context.insert(edge2)
-            context.insert(edge3)
+            try context.insert(edge1)
+            try context.insert(edge2)
+            try context.insert(edge3)
             try await context.save()
 
             // Test: Query edges from Alice
@@ -155,8 +155,8 @@ struct GraphQueryBuilderTests {
             let edge1 = makeEdge(source: alice, predicate: "knows", target: bob)
             let edge2 = makeEdge(source: alice, predicate: "likes", target: carol)
 
-            context.insert(edge1)
-            context.insert(edge2)
+            try context.insert(edge1)
+            try context.insert(edge2)
             try await context.save()
 
             // Test: Query edges from Alice with "knows" predicate
@@ -189,8 +189,8 @@ struct GraphQueryBuilderTests {
             let edge1 = makeEdge(source: alice, predicate: "knows", target: carol)
             let edge2 = makeEdge(source: bob, predicate: "likes", target: carol)
 
-            context.insert(edge1)
-            context.insert(edge2)
+            try context.insert(edge1)
+            try context.insert(edge2)
             try await context.save()
 
             // Test: Query edges to Carol
@@ -218,7 +218,7 @@ struct GraphQueryBuilderTests {
 
             let edge = makeEdge(source: alice, predicate: "knows", target: uniqueID("Bob"))
 
-            context.insert(edge)
+            try context.insert(edge)
             try await context.save()
 
             // Test: Query with non-existent source
@@ -245,7 +245,7 @@ struct GraphQueryBuilderTests {
             // Setup: Save many edges
             for i in 1...10 {
                 let edge = makeEdge(source: alice, predicate: "knows", target: uniqueID("Person\(i)"))
-                context.insert(edge)
+                try context.insert(edge)
             }
             try await context.save()
 

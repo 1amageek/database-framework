@@ -338,7 +338,7 @@ struct DirectoryMigrationTests {
             let initialContext = initialContainer.newContext()
             var seededUser = DirectoryMigrationUserV1(name: "Alice", email: "alice@example.com")
             seededUser.id = seededID
-            initialContext.insert(seededUser)
+            try initialContext.insert(seededUser)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -435,7 +435,7 @@ struct DirectoryMigrationTests {
             let initialContext = initialContainer.newContext()
             var seededUser = DirectoryMigrationUserV1(name: "Bob", email: "bob@example.com")
             seededUser.id = seededID
-            initialContext.insert(seededUser)
+            try initialContext.insert(seededUser)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -491,7 +491,7 @@ struct DirectoryMigrationTests {
             let initialContext = initialContainer.newContext()
             var seededUser = DirectoryIndexedUserV1(name: "Alice", email: "alice@example.com")
             seededUser.id = seededID
-            initialContext.insert(seededUser)
+            try initialContext.insert(seededUser)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -578,7 +578,7 @@ struct DirectoryMigrationTests {
             let initialContext = initialContainer.newContext()
             var seededUser = DirectoryAddIdxUserV1(name: "Alice", score: 42)
             seededUser.id = seededID
-            initialContext.insert(seededUser)
+            try initialContext.insert(seededUser)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -638,7 +638,7 @@ struct DirectoryMigrationTests {
             let initialContext = initialContainer.newContext()
             var seededUser = DirectoryRemIdxUserV1(name: "Alice", tag: "hot")
             seededUser.id = seededID
-            initialContext.insert(seededUser)
+            try initialContext.insert(seededUser)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 

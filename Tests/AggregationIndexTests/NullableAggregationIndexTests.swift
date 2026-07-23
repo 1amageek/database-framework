@@ -18,17 +18,17 @@ struct NullableAggregationIndexTests {
             security: .disabled
         )
         let context = container.newContext()
-        context.insert(NullableUnsignedAggregationRecord(
+        try context.insert(NullableUnsignedAggregationRecord(
             group: nil,
             value: 1,
             optionalValue: nil
         ))
-        context.insert(NullableUnsignedAggregationRecord(
+        try context.insert(NullableUnsignedAggregationRecord(
             group: nil,
             value: 2,
             optionalValue: "present"
         ))
-        context.insert(NullableUnsignedAggregationRecord(
+        try context.insert(NullableUnsignedAggregationRecord(
             group: 7,
             value: 4,
             optionalValue: "present"

@@ -202,7 +202,7 @@ public actor DatabasePersistentJobRunner {
             configuration: .batch
         ) { transactionContext in
             let observedNow = clock.now()
-            let transaction = transactionContext.rawTransaction
+            let transaction = transactionContext.storageTransaction
             guard let snapshot = try await store.load(
                 dueJob.jobID,
                 transaction: transaction
@@ -305,7 +305,7 @@ public actor DatabasePersistentJobRunner {
         try await container.newContext().withTransaction(
             configuration: transactionConfiguration
         ) { transactionContext in
-            let transaction = transactionContext.rawTransaction
+            let transaction = transactionContext.storageTransaction
             let currentState = try await store.loadState(
                 snapshot.specification.jobID,
                 specificationDigest: snapshot.specificationDigest,
@@ -439,7 +439,7 @@ public actor DatabasePersistentJobRunner {
                     .sliceTimeoutMilliseconds
             )
         ) { transactionContext in
-            let transaction = transactionContext.rawTransaction
+            let transaction = transactionContext.storageTransaction
             let currentState = try await store.loadState(
                 snapshot.specification.jobID,
                 specificationDigest: snapshot.specificationDigest,
@@ -537,7 +537,7 @@ public actor DatabasePersistentJobRunner {
                     .sliceTimeoutMilliseconds
             )
         ) { transactionContext in
-            let transaction = transactionContext.rawTransaction
+            let transaction = transactionContext.storageTransaction
             let currentState = try await store.loadState(
                 snapshot.specification.jobID,
                 specificationDigest: snapshot.specificationDigest,
@@ -616,7 +616,7 @@ public actor DatabasePersistentJobRunner {
                         .sliceTimeoutMilliseconds
                 )
             ) { transactionContext in
-                let transaction = transactionContext.rawTransaction
+                let transaction = transactionContext.storageTransaction
                 let currentState = try await store.loadState(
                     snapshot.specification.jobID,
                     specificationDigest: snapshot.specificationDigest,
@@ -689,7 +689,7 @@ public actor DatabasePersistentJobRunner {
                     .sliceTimeoutMilliseconds
             )
         ) { transactionContext in
-            let transaction = transactionContext.rawTransaction
+            let transaction = transactionContext.storageTransaction
             let currentState = try await store.loadState(
                 snapshot.specification.jobID,
                 specificationDigest: snapshot.specificationDigest,

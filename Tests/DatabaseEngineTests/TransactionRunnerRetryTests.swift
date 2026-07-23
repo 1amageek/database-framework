@@ -862,8 +862,8 @@ private final class RecordingTransaction: Transaction, Sendable {
         try underlying.getCommittedVersion()
     }
 
-    func getVersionstamp() async throws -> Bytes? {
-        try await underlying.getVersionstamp()
+    func requestVersionstamp() -> any PendingTransactionVersionstamp {
+        underlying.requestVersionstamp()
     }
 
     func commit() async throws {

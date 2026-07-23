@@ -6,7 +6,6 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Crypto
 import DatabaseDigest
 import QueryIR
 import Core
@@ -669,7 +668,12 @@ public struct ExpressionEvaluator: Sendable {
             guard string.kind == .string else {
                 throw typeError("\(name) requires an xsd:string argument")
             }
-            guard let digest = hashFunction(name, string.lexicalForm) else {
+            guard
+                let digest = digestHexadecimalString(
+                    named: name,
+                    for: string.lexicalForm
+                )
+            else {
                 throw SPARQLExpressionEvaluationError.runtimeInvariant(
                     "registered hash function was not implemented: \(name)"
                 )
@@ -1400,66 +1404,60 @@ public struct ExpressionEvaluator: Sendable {
         }
     }
 
-    private static func hashFunction(_ name: String, _ input: String) -> String? {
+    private static func digestHexadecimalString(
+        named name: String,
+        for input: String
+    ) -> String? {
         switch name {
         case "MD5":
-            return hash(input, using: Insecure.MD5.self)
+            var accumulator = MD5Accumulator()
+            accumulator.update(utf8: input)
+            return accumulator.withUnsafeDigestBytes(
+                lowercaseHexadecimalString
+            )
         case "SHA1":
-            return hash(input, using: Insecure.SHA1.self)
+            var accumulator = SHA1Accumulator()
+            accumulator.update(utf8: input)
+            return accumulator.withUnsafeDigestBytes(
+                lowercaseHexadecimalString
+            )
         case "SHA256":
-            return sha256(input)
+            var accumulator = SHA256Accumulator()
+            accumulator.update(utf8: input)
+            return accumulator.withUnsafeDigestBytes(
+                lowercaseHexadecimalString
+            )
         case "SHA384":
-            return hash(input, using: SHA384.self)
+            var accumulator = SHA384Accumulator()
+            accumulator.update(utf8: input)
+            return accumulator.withUnsafeDigestBytes(
+                lowercaseHexadecimalString
+            )
         case "SHA512":
-            return hash(input, using: SHA512.self)
+            var accumulator = SHA512Accumulator()
+            accumulator.update(utf8: input)
+            return accumulator.withUnsafeDigestBytes(
+                lowercaseHexadecimalString
+            )
         default:
             return nil
         }
     }
 
-    private static func sha256(_ input: String) -> String {
-        var accumulator = SHA256Accumulator()
-        accumulator.update(utf8: input)
-        return accumulator.withUnsafeDigestBytes(lowercaseHex)
-    }
-
-    private static func hash<Hasher: HashFunction>(
-        _ input: String,
-        using hasherType: Hasher.Type
+    private static func lowercaseHexadecimalString(
+        from source: UnsafeRawBufferPointer
     ) -> String {
-        var hasher = hasherType.init()
-        let usedContiguousStorage = input.utf8.withContiguousStorageIfAvailable {
-            bytes -> Bool in
-            hasher.update(bufferPointer: UnsafeRawBufferPointer(bytes))
-            return true
-        } ?? false
-
-        if !usedContiguousStorage {
-            for byte in input.utf8 {
-                withUnsafeBytes(of: byte) {
-                    hasher.update(bufferPointer: $0)
-                }
-            }
-        }
-
-        return lowercaseHex(hasher.finalize())
-    }
-
-    private static func lowercaseHex<DigestBytes: ContiguousBytes>(
-        _ digest: DigestBytes
-    ) -> String {
-        digest.withUnsafeBytes { source in
-            // Hex text is the output boundary, so allocate its final UTF-8 storage once.
-            var result = [UInt8](repeating: 0, count: source.count * 2)
+        // Hex text is the output boundary, so initialize the String storage directly.
+        String(unsafeUninitializedCapacity: source.count * 2) { destination in
             var destinationIndex = 0
-
             for byte in source {
-                result[destinationIndex] = lowercaseHexDigit(byte >> 4)
-                result[destinationIndex + 1] = lowercaseHexDigit(byte & 0x0F)
+                destination[destinationIndex] = lowercaseHexDigit(byte >> 4)
+                destination[destinationIndex + 1] = lowercaseHexDigit(
+                    byte & 0x0F
+                )
                 destinationIndex += 2
             }
-
-            return String(decoding: result, as: UTF8.self)
+            return destinationIndex
         }
     }
 

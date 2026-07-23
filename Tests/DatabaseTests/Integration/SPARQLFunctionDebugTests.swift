@@ -76,7 +76,7 @@ struct SPARQLFunctionDebugTests {
         var alice = SPARQLDebugUser(name: "Alice")
         alice.id = "alice-001"
 
-        context.insert(alice)
+        try context.insert(alice)
         try await context.save()
 
         // Insert triple
@@ -86,7 +86,7 @@ struct SPARQLFunctionDebugTests {
             object: "urn:user:bob-001"
         )
         triple.id = "triple-001"
-        context.insert(triple)
+        try context.insert(triple)
         try await context.save()
 
         // Verify triple was saved
@@ -132,7 +132,7 @@ struct SPARQLFunctionDebugTests {
             object: "urn:user:bob-002"
         )
         triple.id = "triple-002"
-        context.insert(triple)
+        try context.insert(triple)
         try await context.save()
 
         // Verify triple was saved

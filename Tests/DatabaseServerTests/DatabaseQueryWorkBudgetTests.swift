@@ -297,7 +297,7 @@ struct DatabaseQueryWorkBudgetTests {
             record.id = "record-\(index)"
             record.title = "Title \(index)"
             record.priority = index
-            context.insert(record)
+            try context.insert(record)
         }
         try await context.save()
         return container

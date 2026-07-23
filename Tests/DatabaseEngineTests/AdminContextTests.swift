@@ -104,7 +104,7 @@ struct AdminContextTests {
             // Insert test data
             for i in 0..<10 {
                 let entity = AdminIndexedEntity(value: "value-\(i)")
-                context.insert(entity)
+                try context.insert(entity)
             }
             try await context.save()
 
@@ -137,7 +137,7 @@ struct AdminContextTests {
             // Insert test data
             for i in 0..<5 {
                 let entity = AdminIndexedEntity(value: "value-\(i)")
-                context.insert(entity)
+                try context.insert(entity)
             }
             try await context.save()
 
@@ -161,7 +161,7 @@ struct AdminContextTests {
             // Insert test data
             for i in 0..<3 {
                 let entity = AdminIndexedEntity(value: "value-\(i)")
-                context.insert(entity)
+                try context.insert(entity)
             }
             try await context.save()
 
@@ -210,7 +210,7 @@ struct AdminContextTests {
             // Insert data and verify it's accessible
             let context = container.newContext()
             let entity = AdminIndexedEntity(value: "consistency-test")
-            context.insert(entity)
+            try context.insert(entity)
             try await context.save()
 
             // AdminContext operations should work on the same data

@@ -28,12 +28,7 @@ public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
     case unsupportedStatement(String)
     case fieldsRequired(RecordIdentity)
     case fieldsMustBeEmptyForDelete(RecordIdentity)
-    case statementExecutorNotConfigured
     case stateStoreContainerMismatch
-    case relationshipWorkLimitExceeded(maximum: UInt64)
-    case relationshipMutationConflict(RecordIdentity)
-    case relationshipTargetNotFound(owner: RecordIdentity, target: RecordIdentity)
-    case relationshipCatalogCorrupted(RecordIdentity)
 
     public var description: String {
         switch self {
@@ -91,18 +86,8 @@ public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
             return "Mutation fields are required for '\(identity)'"
         case .fieldsMustBeEmptyForDelete(let identity):
             return "Delete mutation fields must be empty for '\(identity)'"
-        case .statementExecutorNotConfigured:
-            return "A statement mutation executor is not configured"
         case .stateStoreContainerMismatch:
             return "Mutation state store and operation context use different containers"
-        case .relationshipWorkLimitExceeded(let maximum):
-            return "Relationship planning exceeded the work limit of \(maximum)"
-        case .relationshipMutationConflict(let identity):
-            return "Explicit mutation for '\(identity)' conflicts with a cascade delete"
-        case .relationshipTargetNotFound(let owner, let target):
-            return "Record '\(owner)' references missing record '\(target)'"
-        case .relationshipCatalogCorrupted(let identity):
-            return "Relationship catalog references missing owner '\(identity)'"
         }
     }
 }

@@ -96,7 +96,7 @@ struct LargeValueStorageTests {
         model.id = modelId
 
         // Save
-        context.insert(model)
+        try context.insert(model)
         try await context.save()
 
         // Retrieve
@@ -121,7 +121,7 @@ struct LargeValueStorageTests {
         var model = LargeDataModel(name: "Initially Large", data: largeData)
         model.id = modelId
 
-        context.insert(model)
+        try context.insert(model)
         try await context.save()
 
         // Verify large data was saved
@@ -133,7 +133,7 @@ struct LargeValueStorageTests {
         model.name = "Now Small"
         model.data = smallData
 
-        context.insert(model)
+        try context.insert(model)
         try await context.save()
 
         // Step 3: Verify small data is correctly retrieved
@@ -157,7 +157,7 @@ struct LargeValueStorageTests {
         var model = LargeDataModel(name: "Initially Small", data: smallData)
         model.id = modelId
 
-        context.insert(model)
+        try context.insert(model)
         try await context.save()
 
         // Step 2: Update to large data (95KB)
@@ -165,7 +165,7 @@ struct LargeValueStorageTests {
         model.name = "Now Large"
         model.data = largeData
 
-        context.insert(model)
+        try context.insert(model)
         try await context.save()
 
         // Step 3: Verify large data is correctly retrieved
@@ -189,7 +189,7 @@ struct LargeValueStorageTests {
         var model = LargeDataModel(name: "To Delete", data: largeData)
         model.id = modelId
 
-        context.insert(model)
+        try context.insert(model)
         try await context.save()
 
         // Verify it exists
@@ -197,7 +197,7 @@ struct LargeValueStorageTests {
         #expect(beforeDelete != nil)
 
         // Delete
-        context.delete(model)
+        try context.delete(model)
         try await context.save()
 
         // Verify it's gone
@@ -218,7 +218,7 @@ struct LargeValueStorageTests {
             var model = LargeDataModel(name: "Model \(i)", data: data)
             model.id = modelId
             models.append(model)
-            context.insert(model)
+            try context.insert(model)
         }
         try await context.save()
 
@@ -231,8 +231,8 @@ struct LargeValueStorageTests {
         }
     }
 
-    @Test("TransactionContext handles large values")
-    func testTransactionContextLargeValue() async throws {
+    @Test("DatabaseTransaction handles large values")
+    func databaseTransactionHandlesLargeValue() async throws {
         let container = try await createContainer()
         let context = container.newContext()
 
@@ -246,12 +246,12 @@ struct LargeValueStorageTests {
 
         // Use withTransaction API
         try await context.withTransaction { tx in
-            try await tx.set(modelToSave)
+            try await tx.save(modelToSave)
         }
 
         // Verify
         try await context.withTransaction { tx in
-            let fetched: LargeDataModel? = try await tx.get(LargeDataModel.self, id: modelId)
+            let fetched: LargeDataModel? = try await tx.fetch(LargeDataModel.self, identifiedBy: modelId)
             #expect(fetched != nil)
             #expect(fetched?.data.count == 95_000)
         }
@@ -268,7 +268,7 @@ struct LargeValueStorageTests {
         var model = LargeDataModel(name: "Boundary", data: boundaryData)
         model.id = modelId
 
-        context.insert(model)
+        try context.insert(model)
         try await context.save()
 
         let fetched = try await context.model(for: modelId, as: LargeDataModel.self)
@@ -288,7 +288,7 @@ struct LargeValueStorageTests {
         var model = LargeDataModel(name: "Over Boundary", data: overBoundaryData)
         model.id = modelId
 
-        context.insert(model)
+        try context.insert(model)
         try await context.save()
 
         let fetched = try await context.model(for: modelId, as: LargeDataModel.self)

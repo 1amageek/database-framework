@@ -46,7 +46,7 @@ public struct CommandWriteHandler: DatabaseOperationEndpointHandler {
                 input: request.input,
                 context: DatabaseWriteCommandContext(
                     operation: context,
-                    transaction: transactionContext.rawTransaction,
+                    transaction: transactionContext,
                     budget: request.budget
                 ),
                 limits: wireLimits

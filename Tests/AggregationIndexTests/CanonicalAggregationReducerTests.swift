@@ -56,7 +56,7 @@ struct CanonicalAggregationReducerTests {
             security: .disabled
         )
         let context = container.newContext()
-        context.insert(EmptyGlobalAggregationRecord(value: 4))
+        try context.insert(EmptyGlobalAggregationRecord(value: 4))
         try await context.save()
 
         let query = context
@@ -106,9 +106,9 @@ struct CanonicalAggregationReducerTests {
     @Test("non-empty global sketch indexes are read outside subspace ranges")
     func nonEmptyGlobalSketchIndexesAreReadDirectly() async throws {
         let context = try await makeGlobalSketchQueryContext()
-        context.insert(IndexedGlobalSketchRecord(value: 10))
-        context.insert(IndexedGlobalSketchRecord(value: 20))
-        context.insert(IndexedGlobalSketchRecord(value: 20))
+        try context.insert(IndexedGlobalSketchRecord(value: 10))
+        try context.insert(IndexedGlobalSketchRecord(value: 20))
+        try context.insert(IndexedGlobalSketchRecord(value: 20))
         try await context.save()
 
         let query = context

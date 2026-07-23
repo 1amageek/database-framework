@@ -146,7 +146,7 @@ struct IndexRebuildConsistencyTests {
             var u1 = RebuildScalarUser(); u1.email = "a@test.com"
             var u2 = RebuildScalarUser(); u2.email = "b@test.com"
             var u3 = RebuildScalarUser(); u3.email = "c@test.com"
-            context.insert(u1); context.insert(u2); context.insert(u3)
+            try context.insert(u1); try context.insert(u2); try context.insert(u3)
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildScalarUser.self, container: container)
@@ -174,7 +174,7 @@ struct IndexRebuildConsistencyTests {
             let context = container.newContext()
             var s1 = RebuildTripleStatement(); s1.subject = "A"; s1.predicate = "p"; s1.object = "B"
             var s2 = RebuildTripleStatement(); s2.subject = "C"; s2.predicate = "q"; s2.object = "D"
-            context.insert(s1); context.insert(s2)
+            try context.insert(s1); try context.insert(s2)
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildTripleStatement.self, container: container)
@@ -202,7 +202,7 @@ struct IndexRebuildConsistencyTests {
             let context = container.newContext()
             var e1 = RebuildEdge(); e1.source = "Alice"; e1.relation = "knows"; e1.target = "Bob"
             var e2 = RebuildEdge(); e2.source = "Bob"; e2.relation = "knows"; e2.target = "Carol"
-            context.insert(e1); context.insert(e2)
+            try context.insert(e1); try context.insert(e2)
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildEdge.self, container: container)
@@ -230,7 +230,7 @@ struct IndexRebuildConsistencyTests {
             let context = container.newContext()
             var a1 = RebuildArticle(); a1.title = "T1"; a1.content = "hello world"
             var a2 = RebuildArticle(); a2.title = "T2"; a2.content = "hello swift"
-            context.insert(a1); context.insert(a2)
+            try context.insert(a1); try context.insert(a2)
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildArticle.self, container: container)
@@ -259,7 +259,7 @@ struct IndexRebuildConsistencyTests {
             var c1 = RebuildCountItem(); c1.category = "electronics"; c1.value = 100
             var c2 = RebuildCountItem(); c2.category = "electronics"; c2.value = 200
             var c3 = RebuildCountItem(); c3.category = "books"; c3.value = 50
-            context.insert(c1); context.insert(c2); context.insert(c3)
+            try context.insert(c1); try context.insert(c2); try context.insert(c3)
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildCountItem.self, container: container)
@@ -288,7 +288,7 @@ struct IndexRebuildConsistencyTests {
 
             let context = container.newContext()
             var u1 = RebuildScalarUser(); u1.email = "alice@test.com"; u1.city = "Tokyo"
-            context.insert(u1)
+            try context.insert(u1)
             try await context.save()
 
             let admin = container.newAdminContext()
@@ -316,7 +316,7 @@ struct IndexRebuildConsistencyTests {
             s2.subject = "Alice"; s2.predicate = "knows"; s2.object = "Carol"
             var s3 = RebuildTripleStatement()
             s3.subject = "Bob"; s3.predicate = "knows"; s3.object = "Dave"
-            context.insert(s1); context.insert(s2); context.insert(s3)
+            try context.insert(s1); try context.insert(s2); try context.insert(s3)
             try await context.save()
 
             let admin = container.newAdminContext()
@@ -358,7 +358,7 @@ struct IndexRebuildConsistencyTests {
             let context = container.newContext()
             var e1 = RebuildEdge(); e1.source = "Alice"; e1.relation = "follows"; e1.target = "Bob"
             var e2 = RebuildEdge(); e2.source = "Alice"; e2.relation = "follows"; e2.target = "Carol"
-            context.insert(e1); context.insert(e2)
+            try context.insert(e1); try context.insert(e2)
             try await context.save()
 
             let admin = container.newAdminContext()
@@ -389,7 +389,7 @@ struct IndexRebuildConsistencyTests {
             let context = container.newContext()
             var a1 = RebuildArticle(); a1.title = "Swift Guide"; a1.content = "swift programming language"
             var a2 = RebuildArticle(); a2.title = "Rust Guide"; a2.content = "rust programming language"
-            context.insert(a1); context.insert(a2)
+            try context.insert(a1); try context.insert(a2)
             try await context.save()
 
             let admin = container.newAdminContext()
@@ -426,7 +426,7 @@ struct IndexRebuildConsistencyTests {
             var c1 = RebuildCountItem(); c1.category = "electronics"; c1.value = 100
             var c2 = RebuildCountItem(); c2.category = "electronics"; c2.value = 200
             var c3 = RebuildCountItem(); c3.category = "books"; c3.value = 50
-            context.insert(c1); context.insert(c2); context.insert(c3)
+            try context.insert(c1); try context.insert(c2); try context.insert(c3)
             try await context.save()
 
             let admin = container.newAdminContext()
@@ -451,7 +451,7 @@ struct IndexRebuildConsistencyTests {
 
             let context = container.newContext()
             var u1 = RebuildScalarUser(); u1.email = "test@test.com"
-            context.insert(u1)
+            try context.insert(u1)
             try await context.save()
 
             let admin = container.newAdminContext()
@@ -481,7 +481,7 @@ struct IndexRebuildConsistencyTests {
             let context = container.newContext()
             var s1 = RebuildTripleStatement()
             s1.subject = "Alice"; s1.predicate = "knows"; s1.object = "Bob"
-            context.insert(s1)
+            try context.insert(s1)
             try await context.save()
 
             // Rebuild
@@ -491,7 +491,7 @@ struct IndexRebuildConsistencyTests {
             // Insert AFTER rebuild
             var s2 = RebuildTripleStatement()
             s2.subject = "Alice"; s2.predicate = "knows"; s2.object = "Carol"
-            context.insert(s2)
+            try context.insert(s2)
             try await context.save()
 
             // Query should find BOTH pre- and post-rebuild data

@@ -63,7 +63,7 @@ struct SPARQLAdvancedAggregationTests {
 
     private func insertEdges(_ edges: [AggregationEdge], context: FDBContext) async throws {
         for edge in edges {
-            context.insert(edge)
+            try context.insert(edge)
         }
         try await context.save()
     }

@@ -317,7 +317,7 @@ struct MigrationExecutionFDBTests {
 
             var user = FDBStageBoundaryUserV1(name: "Alice", email: "alice@example.com")
             user.id = "fdb-stage-boundary-user"
-            initialContext.insert(user)
+            try initialContext.insert(user)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -374,7 +374,7 @@ struct MigrationExecutionFDBTests {
             let initialContext = initialContainer.newContext()
             var user = FDBIndexLifecycleUserV2(name: "Alice", email: "alice@example.com", age: 42)
             user.id = "fdb-index-lifecycle-user"
-            initialContext.insert(user)
+            try initialContext.insert(user)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
@@ -440,7 +440,7 @@ struct MigrationExecutionFDBTests {
 
             var user = FDBStageFailureUserV1(name: "Alice", email: "alice@example.com")
             user.id = "fdb-stage-failure-user"
-            initialContext.insert(user)
+            try initialContext.insert(user)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 

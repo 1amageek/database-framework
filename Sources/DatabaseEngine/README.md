@@ -39,8 +39,8 @@ Transaction manager and user-facing API. Owns ReadVersionCache.
 let context = container.newContext()
 
 // Queue changes
-context.insert(model)
-context.delete(model)
+try context.insert(model)
+try context.delete(model)
 
 // Persist all queued changes atomically
 try await context.save()
@@ -104,18 +104,22 @@ Low-level data operations within transactions. Receives transaction as parameter
 ```swift
 // User-facing save operation
 let context = container.newContext()
-context.insert(user)
+try context.insert(user)
 try await context.save()
 
 // Explicit transaction with configuration
 try await context.withTransaction(configuration: .default) { tx in
-    let user = try await tx.get(User.self, id: userID)
-    try await tx.set(updatedUser)
+    let user = try await tx.fetch(User.self, identifiedBy: userID)
+    try await tx.save(updatedUser)
 }
 
 // Dashboard query (stale data OK)
 try await context.withTransaction(configuration: .readOnly) { tx in
-    try await tx.getValue(for: dashboardKey, snapshot: true)
+    try await tx.fetch(
+        Dashboard.self,
+        identifiedBy: dashboardID,
+        consistency: .snapshot
+    )
 }
 
 // Custom configuration

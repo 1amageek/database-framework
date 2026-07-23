@@ -765,8 +765,8 @@ struct GraphPhysicalReadBudgetTests {
             )
         }
 
-        func getVersionstamp() async throws -> Bytes? {
-            try await underlying.getVersionstamp()
+        func requestVersionstamp() -> any PendingTransactionVersionstamp {
+            underlying.requestVersionstamp()
         }
     }
 }

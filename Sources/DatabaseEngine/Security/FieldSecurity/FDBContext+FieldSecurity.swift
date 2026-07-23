@@ -171,7 +171,7 @@ extension FDBContext {
     ///     // Validate before inserting
     ///     try context.validateFieldWrite(original: existingEmployee, updated: employee)
     ///
-    ///     context.insert(employee)
+    ///     try context.insert(employee)
     ///     try await context.save()
     /// }
     /// ```

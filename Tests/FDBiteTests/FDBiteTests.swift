@@ -65,7 +65,7 @@ struct FDBiteTests {
         item.id = "file-test"
         item.name = "Persisted"
         item.age = 40
-        context.insert(item)
+        try context.insert(item)
         try await context.save()
 
         let results = try await context.fetch(FDBiteItem.self).execute()
@@ -99,13 +99,13 @@ struct FDBiteTests {
         item.id = "item-1"
         item.name = "Alice"
         item.age = 30
-        context.insert(item)
+        try context.insert(item)
 
         var note = FDBiteNote()
         note.id = "note-1"
         note.title = "Hello"
         note.body = "World"
-        context.insert(note)
+        try context.insert(note)
 
         try await context.save()
 
@@ -135,7 +135,7 @@ struct FDBiteTests {
         item.name = "Alice"
         item.age = 30
 
-        context.insert(item)
+        try context.insert(item)
         try await context.save()
 
         let results = try await context.fetch(FDBiteItem.self).execute()
@@ -163,7 +163,7 @@ struct FDBiteTests {
         item.id = itemId
         item.name = "Before"
         item.age = 20
-        context.insert(item)
+        try context.insert(item)
         try await context.save()
 
         // Update via re-insert with same ID
@@ -171,7 +171,7 @@ struct FDBiteTests {
         updated.id = itemId
         updated.name = "After"
         updated.age = 30
-        context.insert(updated)
+        try context.insert(updated)
         try await context.save()
 
         // Verify: should have 1 item with updated values
@@ -196,7 +196,7 @@ struct FDBiteTests {
             item.id = "batch-\(i)-\(UUID().uuidString.prefix(8))"
             item.name = "User\(i)"
             item.age = 20 + i
-            context.insert(item)
+            try context.insert(item)
         }
         try await context.save()
 
@@ -218,13 +218,13 @@ struct FDBiteTests {
         item.id = "del-\(UUID().uuidString.prefix(8))"
         item.name = "ToDelete"
         item.age = 25
-        context.insert(item)
+        try context.insert(item)
         try await context.save()
 
         let beforeDelete = try await context.fetch(FDBiteItem.self).execute()
         #expect(beforeDelete.count == 1)
 
-        context.delete(item)
+        try context.delete(item)
         try await context.save()
 
         let afterDelete = try await context.fetch(FDBiteItem.self).execute()
@@ -244,7 +244,7 @@ struct FDBiteTests {
         item.name = "Pending"
         item.age = 42
 
-        writer.insert(item)
+        try writer.insert(item)
 
         let staged = try await writer.model(for: itemID, as: FDBiteItem.self)
         let isolatedBeforeSave = try await container.newContext().model(
@@ -276,14 +276,14 @@ struct FDBiteTests {
         item.age = 31
 
         let seedContext = container.newContext()
-        seedContext.insert(item)
+        try seedContext.insert(item)
         try await seedContext.save()
 
         let deletingContext = container.newContext()
         let stored = try #require(
             try await deletingContext.model(for: itemID, as: FDBiteItem.self)
         )
-        deletingContext.delete(stored)
+        try deletingContext.delete(stored)
 
         let hiddenInDeletingContext = try await deletingContext.model(
             for: itemID,
@@ -317,8 +317,8 @@ struct FDBiteTests {
         item.name = "Transient"
         item.age = 19
 
-        context.insert(item)
-        context.delete(item)
+        try context.insert(item)
+        try context.delete(item)
 
         let stagedView = try await context.model(for: itemID, as: FDBiteItem.self)
         #expect(stagedView == nil)
@@ -345,25 +345,25 @@ struct FDBiteTests {
         storedItem.age = 28
 
         let seedContext = container.newContext()
-        seedContext.insert(storedItem)
+        try seedContext.insert(storedItem)
         try await seedContext.save()
 
         let context = container.newContext()
         let stored = try #require(
             try await context.model(for: storedItem.id, as: FDBiteItem.self)
         )
-        context.delete(stored)
+        try context.delete(stored)
 
         var newItem = FDBiteItem()
         newItem.id = "rollback-new-\(UUID().uuidString.prefix(8))"
         newItem.name = "New"
         newItem.age = 35
-        context.insert(newItem)
+        try context.insert(newItem)
 
         #expect(try await context.model(for: storedItem.id, as: FDBiteItem.self) == nil)
         #expect(try await context.model(for: newItem.id, as: FDBiteItem.self)?.name == "New")
 
-        context.rollback()
+        try context.rollback()
 
         #expect(try await context.model(for: storedItem.id, as: FDBiteItem.self)?.name == "Stored")
         #expect(try await context.model(for: newItem.id, as: FDBiteItem.self) == nil)
@@ -395,7 +395,7 @@ struct FDBiteTests {
             item.id = "where-\(i)-\(UUID().uuidString.prefix(8))"
             item.name = name
             item.age = 20 + i * 10  // 20, 30, 40
-            context.insert(item)
+            try context.insert(item)
         }
         try await context.save()
 
@@ -425,7 +425,7 @@ struct FDBiteTests {
             item.id = "order-\(i)-\(UUID().uuidString.prefix(8))"
             item.name = name
             item.age = [30, 10, 20][i]
-            context.insert(item)
+            try context.insert(item)
         }
         try await context.save()
 
@@ -453,7 +453,7 @@ struct FDBiteTests {
             item.id = "limit-\(i)-\(UUID().uuidString.prefix(8))"
             item.name = "User\(i)"
             item.age = 20 + i
-            context.insert(item)
+            try context.insert(item)
         }
         try await context.save()
 

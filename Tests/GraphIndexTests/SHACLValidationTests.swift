@@ -71,7 +71,7 @@ struct SHACLValidationTests {
 
     private func insertStatements(_ statements: [SHACLValidationStatement], context: FDBContext) async throws {
         for statement in statements {
-            context.insert(statement)
+            try context.insert(statement)
         }
         try await context.save()
     }

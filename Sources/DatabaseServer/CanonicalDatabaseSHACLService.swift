@@ -148,7 +148,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
-                let transaction = transactionContext.rawTransaction
+                let transaction = transactionContext.storageTransaction
                 let revision = try await store.replace(
                     identifier: graph,
                     auxiliaryIdentifiers: [],
@@ -187,7 +187,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
-                let transaction = transactionContext.rawTransaction
+                let transaction = transactionContext.storageTransaction
                 let revision = try await store.delete(
                     identifier: graph,
                     expectedRevision: expectedRevision,

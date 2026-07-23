@@ -1,16 +1,14 @@
 import DatabaseEngine
 import DatabaseWire
-import StorageKit
 
 public struct DatabaseWriteCommandContext: Sendable {
     public let request: DatabaseCommandRequestContext
-    public let transaction: any Transaction
-    public let records: DatabaseTransactionRecords
+    public let transaction: any DatabaseTransactionWriting
     public let budget: DatabaseExecutionBudget
 
     init(
         operation: DatabaseOperationContext,
-        transaction: any Transaction,
+        transaction: DatabaseTransaction,
         budget: DatabaseExecutionBudget
     ) {
         self.request = DatabaseCommandRequestContext(
@@ -18,10 +16,6 @@ public struct DatabaseWriteCommandContext: Sendable {
             metadata: operation.metadata
         )
         self.transaction = transaction
-        self.records = DatabaseTransactionRecords(
-            container: operation.container,
-            transaction: transaction
-        )
         self.budget = budget
     }
 }

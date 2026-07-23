@@ -107,7 +107,7 @@ struct DatabaseQueryContinuationEndpointTests {
         inserted.id = "record-added"
         inserted.title = "Added after the first page"
         inserted.priority = 100
-        context.insert(inserted)
+        try context.insert(inserted)
         try await context.save()
 
         let error = try await remoteFailure(
@@ -178,7 +178,7 @@ struct DatabaseQueryContinuationEndpointTests {
             record.id = "record-\(index)"
             record.title = "Title \(index)"
             record.priority = index
-            context.insert(record)
+            try context.insert(record)
         }
         try await context.save()
         return container

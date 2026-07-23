@@ -84,7 +84,7 @@ struct Order {
 // Create order with relationship
 var order = Order(total: 99.99)
 order.customerID = customer.id
-context.insert(order)
+try context.insert(order)
 try await context.save()
 
 // Load related customer
@@ -113,7 +113,7 @@ struct Customer {
 // Create customer with multiple orders
 var customer = Customer(name: "Alice")
 customer.orderIDs = [order1.id, order2.id, order3.id]
-context.insert(customer)
+try context.insert(customer)
 try await context.save()
 
 // Load related orders
@@ -371,7 +371,7 @@ Relationship indexes allow FKs to reference non-existent items:
 // FK pointing to non-existent customer (allowed)
 var order = Order(total: 99.99)
 order.customerID = "nonexistent-customer"
-context.insert(order)
+try context.insert(order)
 try await context.save()  // Success
 
 // related() returns nil for non-existent FK target
@@ -379,7 +379,7 @@ let customer = try await context.related(order, \.customerID, as: Customer.self)
 // customer == nil
 
 // Delete of referenced item leaves orphan FK
-context.delete(customer)
+try context.delete(customer)
 try await context.save()
 // order.customerID still contains the deleted customer ID
 // related() now returns nil

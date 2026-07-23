@@ -374,8 +374,8 @@ struct PolymorphicVectorIndexE2ETests {
             pageCount: 3
         )
 
-        context.insert(article)
-        context.insert(report)
+        try context.insert(article)
+        try context.insert(report)
         try await context.save()
 
         #expect(try await countOptionalVectorIndexEntries(container: container) == 2)
@@ -418,9 +418,9 @@ struct PolymorphicVectorIndexE2ETests {
             pageCount: 9
         )
 
-        context.insert(article)
-        context.insert(report)
-        context.insert(farReport)
+        try context.insert(article)
+        try context.insert(report)
+        try context.insert(farReport)
         try await context.save()
 
         #expect(try await countVectorIndexEntries(container: container) == 3)
@@ -445,7 +445,8 @@ struct PolymorphicVectorIndexE2ETests {
         #expect(reportStartedIDs == Set([article.id, report.id]))
 
         report.embedding = [1.0, 0.0, 0.0]
-        try await context.savePolymorphic(report, as: PolymorphicVectorReport.self)
+        try context.upsert(report)
+        try await context.save()
 
         #expect(try await countVectorIndexEntries(container: container) == 3)
 
@@ -458,11 +459,8 @@ struct PolymorphicVectorIndexE2ETests {
 
         #expect(updatedIDs == Set([article.id, report.id]))
 
-        try await context.deletePolymorphic(
-            PolymorphicVectorArticle.self,
-            id: article.id,
-            as: PolymorphicVectorArticle.self
-        )
+        try context.delete(article)
+        try await context.save()
 
         #expect(try await countVectorIndexEntries(container: container) == 2)
 

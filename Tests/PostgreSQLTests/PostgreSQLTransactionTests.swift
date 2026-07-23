@@ -45,12 +45,12 @@ struct PostgreSQLTransactionTests {
                 var item = PGTxItem()
                 item.id = itemId
                 item.counter = 42
-                try await tx.set(item)
+                try await tx.save(item)
             }
 
             // Read in separate transaction
             try await context.withTransaction { tx in
-                let fetched = try await tx.get(PGTxItem.self, id: itemId)
+                let fetched = try await tx.fetch(PGTxItem.self, identifiedBy: itemId)
                 #expect(fetched != nil)
                 #expect(fetched?.counter == 42)
             }
@@ -71,14 +71,14 @@ struct PostgreSQLTransactionTests {
                     var item = PGTxItem()
                     item.id = id
                     item.counter = i * 10
-                    try await tx.set(item)
+                    try await tx.save(item)
                 }
             }
 
             // All items should be readable
             try await context.withTransaction { tx in
                 for (i, id) in ids.enumerated() {
-                    let fetched = try await tx.get(PGTxItem.self, id: id)
+                    let fetched = try await tx.fetch(PGTxItem.self, identifiedBy: id)
                     #expect(fetched != nil, "Item \(i) should exist")
                     #expect(fetched?.counter == i * 10)
                 }
@@ -101,10 +101,10 @@ struct PostgreSQLTransactionTests {
                 var item = PGTxItem()
                 item.id = itemId
                 item.counter = 99
-                try await tx.set(item)
+                try await tx.save(item)
 
                 // Read in same transaction should see the write
-                let fetched = try await tx.get(PGTxItem.self, id: itemId)
+                let fetched = try await tx.fetch(PGTxItem.self, identifiedBy: itemId)
                 #expect(fetched != nil)
                 #expect(fetched?.counter == 99)
             }
@@ -124,19 +124,19 @@ struct PostgreSQLTransactionTests {
                 var item = PGTxItem()
                 item.id = itemId
                 item.counter = 1
-                try await tx.set(item)
+                try await tx.save(item)
             }
 
             // Update and read in same transaction
             try await context.withTransaction { tx in
-                guard var existing = try await tx.get(PGTxItem.self, id: itemId) else {
+                guard var existing = try await tx.fetch(PGTxItem.self, identifiedBy: itemId) else {
                     Issue.record("Item not found")
                     return
                 }
                 existing.counter = 100
-                try await tx.set(existing)
+                try await tx.save(existing)
 
-                let fetched = try await tx.get(PGTxItem.self, id: itemId)
+                let fetched = try await tx.fetch(PGTxItem.self, identifiedBy: itemId)
                 #expect(fetched?.counter == 100)
             }
         }
@@ -157,14 +157,14 @@ struct PostgreSQLTransactionTests {
                 var item = PGTxItem()
                 item.id = itemId
                 item.counter = 5
-                try await tx.set(item)
+                try await tx.save(item)
             }
 
             // Delete and verify in same transaction
             try await context.withTransaction { tx in
-                try await tx.delete(PGTxItem.self, id: itemId)
+                try await tx.delete(PGTxItem.self, identifiedBy: itemId)
 
-                let fetched = try await tx.get(PGTxItem.self, id: itemId)
+                let fetched = try await tx.fetch(PGTxItem.self, identifiedBy: itemId)
                 #expect(fetched == nil)
             }
         }
@@ -185,13 +185,13 @@ struct PostgreSQLTransactionTests {
                 var item = PGTxItem()
                 item.id = itemId
                 item.counter = 77
-                try await tx.set(item)
+                try await tx.save(item)
             }
 
             // Context 2: should see committed data
             let ctx2 = container.newContext()
             try await ctx2.withTransaction { tx in
-                let fetched = try await tx.get(PGTxItem.self, id: itemId)
+                let fetched = try await tx.fetch(PGTxItem.self, identifiedBy: itemId)
                 #expect(fetched != nil)
                 #expect(fetched?.counter == 77)
             }
@@ -212,7 +212,7 @@ struct PostgreSQLTransactionTests {
                 var item = PGTxItem()
                 item.id = id
                 item.counter = i
-                context.insert(item)
+                try context.insert(item)
             }
             #expect(context.hasChanges == true)
 
@@ -239,10 +239,10 @@ struct PostgreSQLTransactionTests {
             item.id = uniqueID("rollback")
             item.counter = 999
 
-            context.insert(item)
+            try context.insert(item)
             #expect(context.hasChanges == true)
 
-            context.rollback()
+            try context.rollback()
             #expect(context.hasChanges == false)
         }
     }

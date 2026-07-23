@@ -138,7 +138,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
 
             var user = PGSchemaEvolutionUserV1(name: "Alice", email: "alice@example.com")
             user.id = "pg-lightweight-user"
-            initialContext.insert(user)
+            try initialContext.insert(user)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -229,7 +229,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let initialContext = initialContainer.newContext()
             var seededUser = PGMigratedUserV1(name: "Charlie", email: "charlie@example.com")
             seededUser.id = seededID
-            initialContext.insert(seededUser)
+            try initialContext.insert(seededUser)
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
@@ -277,11 +277,11 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
 
             var firstUser = PGMigratedUserV1(name: "Alice", email: "alice@example.com")
             firstUser.id = "pg-migrated-user-1"
-            initialContext.insert(firstUser)
+            try initialContext.insert(firstUser)
 
             var secondUser = PGMigratedUserV1(name: "Bob", email: "bob@example.com")
             secondUser.id = "pg-migrated-user-2"
-            initialContext.insert(secondUser)
+            try initialContext.insert(secondUser)
 
             try await initialContext.save()
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))

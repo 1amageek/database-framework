@@ -27,8 +27,8 @@ struct RelationshipReferenceE2ETests {
             )
             owner.id = uniqueID("owner")
 
-            context.insert(owner)
-            context.insert(target)
+            try context.insert(owner)
+            try context.insert(target)
             try await context.save()
 
             let loaded = try await context.related(owner, \.target)
@@ -56,8 +56,8 @@ struct RelationshipReferenceE2ETests {
             var second = RelationshipCycleNode(peer: firstReference)
             second.id = secondID
 
-            context.insert(first)
-            context.insert(second)
+            try context.insert(first)
+            try context.insert(second)
             try await context.save()
 
             #expect(try await context.related(first, \.peer)?.id == secondID)
@@ -79,7 +79,7 @@ struct RelationshipReferenceE2ETests {
                 )
             )
             owner.id = ownerID
-            context.insert(owner)
+            try context.insert(owner)
 
             await #expect(throws: RelationshipReferenceError.self) {
                 try await context.save()
@@ -111,9 +111,9 @@ struct RelationshipReferenceE2ETests {
                 owner.id = uniqueID("paged-owner-\(offset)")
                 return owner
             }
-            context.insert(target)
+            try context.insert(target)
             for owner in owners {
-                context.insert(owner)
+                try context.insert(owner)
             }
             try await context.save()
 
@@ -184,13 +184,13 @@ struct RelationshipReferenceE2ETests {
                 ]
             )
             arrayOwner.id = uniqueID("array")
-            context.insert(retained)
-            context.insert(removed)
-            context.insert(optionalOwner)
-            context.insert(arrayOwner)
+            try context.insert(retained)
+            try context.insert(removed)
+            try context.insert(optionalOwner)
+            try context.insert(arrayOwner)
             try await context.save()
 
-            context.delete(removed)
+            try context.delete(removed)
             try await context.save()
 
             let loadedOptional = try await context.model(
@@ -219,11 +219,11 @@ struct RelationshipReferenceE2ETests {
                 target: try context.reference(to: target)
             )
             owner.id = uniqueID("deny-owner")
-            context.insert(target)
-            context.insert(owner)
+            try context.insert(target)
+            try context.insert(owner)
             try await context.save()
 
-            context.delete(target)
+            try context.delete(target)
             await #expect(throws: RelationshipError.self) {
                 try await context.save()
             }
@@ -244,6 +244,41 @@ struct RelationshipReferenceE2ETests {
         }
     }
 
+    @Test("Deny permits an owner and target deleted in the same batch")
+    func denyPermitsExplicitCoDeletion() async throws {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let container = try await makeContainer()
+            let context = container.newContext()
+            var target = RelationshipTarget(name: "Co-deleted")
+            target.id = uniqueID("co-delete-target")
+            var owner = RelationshipDenyOwner(
+                target: try context.reference(to: target)
+            )
+            owner.id = uniqueID("co-delete-owner")
+            try context.insert(target)
+            try context.insert(owner)
+            try await context.save()
+
+            try context.delete(owner, precondition: .exists)
+            try context.delete(target, precondition: .exists)
+            try await context.save()
+
+            let verification = container.newContext()
+            #expect(
+                try await verification.model(
+                    for: owner.id,
+                    as: RelationshipDenyOwner.self
+                ) == nil
+            )
+            #expect(
+                try await verification.model(
+                    for: target.id,
+                    as: RelationshipTarget.self
+                ) == nil
+            )
+        }
+    }
+
     @Test("Cascade deletes incoming owners in the same transaction")
     func cascadeDeleteRule() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
@@ -255,11 +290,11 @@ struct RelationshipReferenceE2ETests {
                 target: try context.reference(to: target)
             )
             owner.id = uniqueID("cascade-owner")
-            context.insert(target)
-            context.insert(owner)
+            try context.insert(target)
+            try context.insert(owner)
             try await context.save()
 
-            context.delete(target)
+            try context.delete(target)
             try await context.save()
 
             let verification = container.newContext()
@@ -298,9 +333,9 @@ struct RelationshipReferenceE2ETests {
                 target: try context.reference(to: second)
             )
             owner.id = uniqueID("partitioned-owner")
-            context.insert(first)
-            context.insert(second)
-            context.insert(owner)
+            try context.insert(first)
+            try context.insert(second)
+            try context.insert(owner)
             try await context.save()
 
             let loaded = try await context.related(owner, \.target)

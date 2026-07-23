@@ -88,7 +88,7 @@ struct AuditedRecord {
 }
 
 // Older versions are automatically cleaned up on each update
-context.insert(updatedRecord)
+try context.insert(updatedRecord)
 try await context.save()
 
 // Only the 10 most recent versions remain

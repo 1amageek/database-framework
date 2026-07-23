@@ -281,7 +281,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
         var anchor = SQLitePolymorphicVectorPersonV1(name: "Alice", embedding: [1, 0, 0])
         anchor.id = "sqlite-memory-vector-person-anchor"
-        initialContext.insert(anchor)
+        try initialContext.insert(anchor)
 
         for offset in 0..<105 {
             var person = SQLitePolymorphicVectorPersonV1(
@@ -289,7 +289,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
                 embedding: [0, 1, 0]
             )
             person.id = "sqlite-memory-vector-person-\(offset)"
-            initialContext.insert(person)
+            try initialContext.insert(person)
         }
 
         var organization = SQLitePolymorphicVectorOrganizationV1(
@@ -298,7 +298,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
             embedding: [0.95, 0.05, 0]
         )
         organization.id = "sqlite-memory-vector-organization"
-        initialContext.insert(organization)
+        try initialContext.insert(organization)
 
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
@@ -355,8 +355,9 @@ struct PolymorphicVectorMigrationSQLiteTests {
         )
         organization.id = "sqlite-memory-vector-rebuild-organization"
 
-        try await context.savePolymorphic(person, as: SQLitePolymorphicVectorPersonV2.self)
-        try await context.savePolymorphic(organization, as: SQLitePolymorphicVectorPersonV2.self)
+        try context.upsert(person)
+        try context.upsert(organization)
+        try await context.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
         try await Self.clearEntityVectorIndexEntries(container: initialContainer)
         #expect(try await Self.countEntityVectorIndexEntries(container: initialContainer) == 0)

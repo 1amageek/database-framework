@@ -96,8 +96,8 @@ struct GraphPropertyScannerTests {
 
         let edge1 = makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9)
         let edge2 = makeEdge(from: alice, target: carol, label: "KNOWS", since: 2021, status: "inactive", score: 0.5)
-        context.insert(edge1)
-        context.insert(edge2)
+        try context.insert(edge1)
+        try context.insert(edge2)
         try await context.save()
 
         try await container.engine.withTransaction { transaction in
@@ -141,9 +141,9 @@ struct GraphPropertyScannerTests {
 
         let alice = uniqueID("alice")
 
-        context.insert(makeEdge(from: alice, target: uniqueID("bob"), label: "KNOWS", since: 2020, status: "active", score: 0.9))
-        context.insert(makeEdge(from: alice, target: uniqueID("carol"), label: "KNOWS", since: 2020, status: "inactive", score: 0.5))
-        context.insert(makeEdge(from: alice, target: uniqueID("dave"), label: "KNOWS", since: 2021, status: "active", score: 0.7))
+        try context.insert(makeEdge(from: alice, target: uniqueID("bob"), label: "KNOWS", since: 2020, status: "active", score: 0.9))
+        try context.insert(makeEdge(from: alice, target: uniqueID("carol"), label: "KNOWS", since: 2020, status: "inactive", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: uniqueID("dave"), label: "KNOWS", since: 2021, status: "active", score: 0.7))
         try await context.save()
 
         try await container.engine.withTransaction { transaction in
@@ -177,7 +177,7 @@ struct GraphPropertyScannerTests {
         let alice = uniqueID("alice")
 
         for year in [2018, 2019, 2020, 2021, 2022] {
-            context.insert(makeEdge(from: alice, target: uniqueID("user-\(year)"), label: "KNOWS", since: year, status: "active", score: 0.5))
+            try context.insert(makeEdge(from: alice, target: uniqueID("user-\(year)"), label: "KNOWS", since: year, status: "active", score: 0.5))
         }
         try await context.save()
 
@@ -219,9 +219,9 @@ struct GraphPropertyScannerTests {
         let alice = uniqueID("alice")
 
         // Create edges with nil, empty string, and non-empty string status
-        context.insert(makeEdge(from: alice, target: uniqueID("bob"), label: "KNOWS", since: 2020, status: nil, score: 0.9))
-        context.insert(makeEdge(from: alice, target: uniqueID("carol"), label: "KNOWS", since: 2020, status: "", score: 0.5))
-        context.insert(makeEdge(from: alice, target: uniqueID("dave"), label: "KNOWS", since: 2020, status: "active", score: 0.7))
+        try context.insert(makeEdge(from: alice, target: uniqueID("bob"), label: "KNOWS", since: 2020, status: nil, score: 0.9))
+        try context.insert(makeEdge(from: alice, target: uniqueID("carol"), label: "KNOWS", since: 2020, status: "", score: 0.5))
+        try context.insert(makeEdge(from: alice, target: uniqueID("dave"), label: "KNOWS", since: 2020, status: "active", score: 0.7))
         try await context.save()
 
         try await container.engine.withTransaction { transaction in
@@ -279,8 +279,8 @@ struct GraphPropertyScannerTests {
         let edge1 = makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "active", score: 0.9, graphId: "graph-social")
         let edge2 = makeEdge(from: alice, target: carol, label: "KNOWS", since: 2021, status: "inactive", score: 0.5, graphId: "graph-work")
 
-        context.insert(edge1)
-        context.insert(edge2)
+        try context.insert(edge1)
+        try context.insert(edge2)
         try await context.save()
 
         try await container.engine.withTransaction { transaction in

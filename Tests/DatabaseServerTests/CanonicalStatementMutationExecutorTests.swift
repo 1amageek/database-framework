@@ -263,7 +263,7 @@ struct CanonicalStatementMutationExecutorTests {
                 preconditions: preconditions,
                 graphPartitions: [],
                 context: context,
-                transaction: transaction.rawTransaction
+                transaction: transaction
             )
         }
         guard case .records(let effects) = result else {
@@ -280,10 +280,10 @@ struct CanonicalStatementMutationExecutorTests {
     ) async throws -> DatabaseEndpointRecord? {
         let database = container.newContext()
         return try await database.withTransaction { transaction in
-            try await database.makePersistenceHandler().load(
-                DatabaseEndpointRecord.persistableType,
+            try await transaction.loadPersistedModel(
+                entity: DatabaseEndpointRecord.persistableType,
                 id: Tuple(id),
-                transaction: transaction.rawTransaction
+                partition: nil
             ) as? DatabaseEndpointRecord
         }
     }

@@ -44,7 +44,7 @@ public struct CommandReadHandler: DatabaseOperationEndpointHandler {
                     input: request.input,
                     context: DatabaseReadCommandContext(
                         operation: context,
-                        transaction: transactionContext.rawTransaction,
+                        transaction: transactionContext,
                         budget: request.budget
                     ),
                     limits: wireLimits

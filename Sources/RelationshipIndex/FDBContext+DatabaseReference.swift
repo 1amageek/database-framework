@@ -1,7 +1,6 @@
 import Core
 import DatabaseEngine
 import Relationship
-import StorageKit
 
 extension FDBContext {
     /// Creates a typed reference containing the model's complete persisted identity.
@@ -9,7 +8,7 @@ extension FDBContext {
         to target: Target
     ) throws -> DatabaseReference<Target> {
         try DatabaseReference(
-            identity: DatabaseRecordIdentityEncoder.encode(target)
+            identity: PersistableIdentityEncoder.encode(target)
         )
     }
 
@@ -17,30 +16,17 @@ extension FDBContext {
     public func model<Target: Persistable>(
         for reference: DatabaseReference<Target>
     ) async throws -> Target? {
-        let handler = makePersistenceHandler()
-        return try await container.engine.withTransaction { transaction in
-            try await load(
-                reference,
-                transaction: transaction,
-                handler: handler
-            )
+        try await withTransaction { transaction in
+            try await self.load(reference, transaction: transaction)
         }
     }
 
     package func load<Target: Persistable>(
         _ reference: DatabaseReference<Target>,
-        transaction: any Transaction,
-        handler: ModelPersistenceHandler
+        transaction: DatabaseTransaction
     ) async throws -> Target? {
-        let resolved = try CanonicalRelationshipIdentity.resolve(
-            reference.identity,
-            container: container
-        )
-        guard let model = try await handler.load(
-            reference.identity.entity,
-            id: resolved.id,
-            partition: resolved.partition,
-            transaction: transaction
+        guard let model = try await transaction.fetchPersistedModel(
+            identifiedBy: reference.identity
         ) else {
             return nil
         }

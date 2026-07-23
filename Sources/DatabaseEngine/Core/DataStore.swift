@@ -8,7 +8,6 @@
 // Security: DataStore uses DataStoreSecurityDelegate for access control.
 // Auth context is obtained via TaskLocal (AuthContextKey.current).
 
-import StorageKit
 import Core
 
 /// Protocol for storage backend abstraction
@@ -129,22 +128,12 @@ public protocol DataStore: AnyObject, Sendable {
         deletes: [any Persistable]
     ) async throws
 
-    /// Clear all records of a type
-    ///
-    /// Security: Admin-only operation (evaluated via securityDelegate.requireAdmin).
-    ///
-    /// **Warning**: This operation is destructive and cannot be undone.
-    ///
-    /// - Parameter type: The model type to clear
-    /// - Throws: SecurityError if not admin, or other errors on failure
-    func clearAll<T: Persistable>(_ type: T.Type) async throws
-
     // MARK: - Transaction Operations
 
     /// Execute operations within a transaction
     ///
     /// Security: Each operation within the transaction is evaluated separately
-    /// via the TransactionContextProtocol methods.
+    /// through the transaction's typed database operations.
     ///
     /// - Parameters:
     ///   - configuration: Transaction configuration (priority, timeout, retry)
@@ -153,139 +142,11 @@ public protocol DataStore: AnyObject, Sendable {
     /// - Throws: SecurityError or other errors from the operation
     func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration,
-        _ operation: @Sendable @escaping (any TransactionContextProtocol) async throws -> T
+        _ operation: @Sendable @escaping (
+            DatabaseTransaction
+        ) async throws -> T
     ) async throws -> T
 
-    // MARK: - Transaction-Scoped Operations
-
-    /// Fetch a single model by ID within an externally-provided transaction
-    ///
-    /// Security: GET operation is evaluated via securityDelegate after fetch.
-    ///
-    /// This method performs a direct key lookup (O(1)) rather than a query scan.
-    /// Use this when you know the exact ID of the item you want to fetch.
-    ///
-    /// - Parameters:
-    ///   - type: The model type
-    ///   - id: The model's identifier
-    ///   - transaction: The transaction to use
-    /// - Returns: The model if found and access is allowed, nil if not found
-    /// - Throws: SecurityError if GET not allowed, or other errors on failure
-    func fetchByIDInTransaction<T: Persistable>(
-        _ type: T.Type,
-        id: T.ID,
-        transaction: any Transaction
-    ) async throws -> T?
-
-    /// Execute batch operations within an externally-provided transaction
-    ///
-    /// Security (evaluated via securityDelegate):
-    /// - CREATE operation for new records
-    /// - UPDATE operation for existing records
-    /// - DELETE operation for deletions
-    ///
-    /// Use this for coordinating multiple DataStore operations in a single transaction.
-    /// More efficient than per-model methods as it can batch reads and writes.
-    ///
-    /// - Parameters:
-    ///   - inserts: Models to insert or update
-    ///   - deletes: Models to delete
-    ///   - transaction: The transaction to use
-    ///   - skipExistingCheck: When true, skips reading existing records for inserts.
-    ///     Safe when security is disabled and inserts are known new records.
-    /// - Returns: Serialized data for inserted models (for dual-write optimization)
-    /// - Throws: SecurityError if operation not allowed, or other errors on failure
-    @discardableResult
-    func executeBatchInTransaction(
-        inserts: [any Persistable],
-        deletes: [any Persistable],
-        transaction: any Transaction,
-        skipExistingCheck: Bool
-    ) async throws -> [SerializedModel]
-
-    /// Execute operations within a raw transaction
-    ///
-    /// Use this for coordinating operations across multiple DataStores
-    /// in a single atomic transaction.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let userStore = try await container.store(for: User.self)
-    /// let orderStore = try await container.store(for: Order.self)
-    ///
-    /// try await userStore.withRawTransaction { transaction in
-    ///     try await userStore.executeBatchInTransaction(
-    ///         inserts: [user], deletes: [], transaction: transaction
-    ///     )
-    ///     try await orderStore.executeBatchInTransaction(
-    ///         inserts: [order], deletes: [], transaction: transaction
-    ///     )
-    /// }
-    /// ```
-    ///
-    /// - Parameter body: The closure to execute within the transaction
-    /// - Returns: Result of the closure
-    func withRawTransaction<T: Sendable>(
-        _ body: @Sendable @escaping (any Transaction) async throws -> T
-    ) async throws -> T
-
-    /// Execute a low-level single-read optimization in auto-commit mode.
-    ///
-    /// Write paths must use `withRawTransaction(_:)` so retry policy,
-    /// backoff, and instrumentation stay centralized in `TransactionRunner`.
-    ///
-    /// - Parameter body: The closure to execute
-    /// - Returns: Result of the closure
-    func withAutoCommit<T: Sendable>(
-        _ body: @Sendable @escaping (any Transaction) async throws -> T
-    ) async throws -> T
-}
-
-// MARK: - DataStore Default Implementations
-
-extension DataStore {
-    /// Convenience overload without skipExistingCheck (defaults to false)
-    @discardableResult
-    public func executeBatchInTransaction(
-        inserts: [any Persistable],
-        deletes: [any Persistable],
-        transaction: any Transaction
-    ) async throws -> [SerializedModel] {
-        try await executeBatchInTransaction(
-            inserts: inserts,
-            deletes: deletes,
-            transaction: transaction,
-            skipExistingCheck: false
-        )
-    }
-
-    /// Default: falls back to `withRawTransaction()`.
-    public func withAutoCommit<T: Sendable>(
-        _ body: @Sendable @escaping (any Transaction) async throws -> T
-    ) async throws -> T {
-        try await withRawTransaction(body)
-    }
-}
-
-// MARK: - SerializedModel
-
-/// Serialized model data for dual-write optimization
-///
-/// Returned by `executeBatchInTransaction` to avoid re-serialization
-/// when writing to polymorphic directories.
-public struct SerializedModel: Sendable {
-    /// The original model
-    public let model: any Persistable
-    /// Serialized canonical compiled-record data
-    public let data: Bytes
-    /// ID as Tuple
-    public let idTuple: Tuple
-
-    public init(model: any Persistable, data: Bytes, idTuple: Tuple) {
-        self.model = model
-        self.data = data
-        self.idTuple = idTuple
-    }
 }
 
 // MARK: - DataStoreConfiguration

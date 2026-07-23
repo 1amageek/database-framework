@@ -68,7 +68,7 @@ struct PostgreSQLScalarIndexTests {
             user.name = "Alice"
             user.age = 30
 
-            context.insert(user)
+            try context.insert(user)
             try await context.save()
 
             // Fetch by email
@@ -97,12 +97,12 @@ struct PostgreSQLScalarIndexTests {
             user.age = 25
             let userId = user.id
 
-            context.insert(user)
+            try context.insert(user)
             try await context.save()
 
             // Update email
             user.email = updatedEmail
-            context.insert(user) // upsert
+            try context.insert(user) // upsert
 
             try await context.save()
 
@@ -134,7 +134,7 @@ struct PostgreSQLScalarIndexTests {
             user.name = "Charlie"
             user.age = 35
 
-            context.insert(user)
+            try context.insert(user)
             try await context.save()
 
             // Verify exists
@@ -144,7 +144,7 @@ struct PostgreSQLScalarIndexTests {
             #expect(before != nil)
 
             // Delete
-            context.delete(user)
+            try context.delete(user)
             try await context.save()
 
             // Should not be found
@@ -170,7 +170,7 @@ struct PostgreSQLScalarIndexTests {
             user1.email = email
             user1.name = "First"
             user1.age = 20
-            context.insert(user1)
+            try context.insert(user1)
             try await context.save()
 
             // Second insert with same email should fail
@@ -178,7 +178,7 @@ struct PostgreSQLScalarIndexTests {
             user2.email = email
             user2.name = "Second"
             user2.age = 25
-            context.insert(user2)
+            try context.insert(user2)
 
             await #expect(throws: Error.self) {
                 try await context.save()
@@ -202,7 +202,7 @@ struct PostgreSQLScalarIndexTests {
                 user.email = "\(prefix)-age\(age)@test.com"
                 user.name = "User\(age)"
                 user.age = age
-                context.insert(user)
+                try context.insert(user)
             }
             try await context.save()
 
@@ -231,9 +231,9 @@ struct PostgreSQLScalarIndexTests {
             var p2 = PGProduct(); p2.category = category; p2.price = 199.99; p2.name = "Gadget"
             var p3 = PGProduct(); p3.category = "books"; p3.price = 29.99; p3.name = "Novel"
 
-            context.insert(p1)
-            context.insert(p2)
-            context.insert(p3)
+            try context.insert(p1)
+            try context.insert(p2)
+            try context.insert(p3)
             try await context.save()
 
             // Verify data exists by reading back individual items
@@ -268,7 +268,7 @@ struct PostgreSQLScalarIndexTests {
                 user.email = "\(prefix)-multi\(i)@test.com"
                 user.name = "User \(i)"
                 user.age = age
-                context.insert(user)
+                try context.insert(user)
             }
             try await context.save()
 

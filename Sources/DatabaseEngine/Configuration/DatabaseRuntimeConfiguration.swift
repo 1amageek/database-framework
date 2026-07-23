@@ -6,7 +6,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
     public let indexMaintainerProviders: IndexMaintainerProviderRegistry
     public let readExecutors: ReadExecutorRegistry
     public let logicalSourceExecutors: LogicalSourceExecutorRegistry
-    public let recordMutationMaintainers: [any RecordMutationMaintainer]
+    public let persistableMutationMaintainers: [any PersistableMutationMaintainer]
 
     public init(
         indexMaintainerProviders: [any IndexMaintainerProvider] = [],
@@ -15,7 +15,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         fusionReadExecutors: [any FusionReadExecutor] = [],
         graphTableSourceExecutor: (any GraphTableSourceExecutor)? = nil,
         sparqlSourceExecutor: (any SPARQLSourceExecutor)? = nil,
-        recordMutationMaintainers: [any RecordMutationMaintainer] = []
+        persistableMutationMaintainers: [any PersistableMutationMaintainer] = []
     ) throws(DatabaseRuntimeConfigurationError) {
         self.indexMaintainerProviders = try IndexMaintainerProviderRegistry(
             providers: indexMaintainerProviders
@@ -30,14 +30,14 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             sparqlExecutor: sparqlSourceExecutor
         )
         var maintainerIdentifiers = Set<String>()
-        for maintainer in recordMutationMaintainers {
+        for maintainer in persistableMutationMaintainers {
             guard maintainerIdentifiers.insert(maintainer.identifier).inserted else {
-                throw .duplicateRecordMutationMaintainer(
+                throw .duplicatePersistableMutationMaintainer(
                     identifier: maintainer.identifier
                 )
             }
         }
-        self.recordMutationMaintainers = recordMutationMaintainers
+        self.persistableMutationMaintainers = persistableMutationMaintainers
     }
 
     public func validate(
@@ -65,10 +65,10 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 guard let maintained = descriptor as? any RuntimeMaintainedDescriptor else {
                     continue
                 }
-                guard recordMutationMaintainers.contains(where: {
+                guard persistableMutationMaintainers.contains(where: {
                     $0.identifier == maintained.runtimeMaintainerIdentifier
                 }) else {
-                    throw .missingRecordMutationMaintainer(
+                    throw .missingPersistableMutationMaintainer(
                         entityName: entity.name,
                         descriptorName: descriptor.name,
                         identifier: maintained.runtimeMaintainerIdentifier
@@ -99,11 +99,11 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 descriptors: group.indexes
             )
         }
-        for maintainer in recordMutationMaintainers {
+        for maintainer in persistableMutationMaintainers {
             do {
                 try maintainer.validate(schema: schema)
             } catch {
-                throw .invalidRecordMutationMaintainerSchema(
+                throw .invalidPersistableMutationMaintainerSchema(
                     identifier: maintainer.identifier,
                     reason: String(describing: error)
                 )

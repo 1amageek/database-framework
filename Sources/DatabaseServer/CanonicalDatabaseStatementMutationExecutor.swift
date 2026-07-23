@@ -119,9 +119,8 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         preconditions: [MutationExecuteOperation.Precondition] = [],
         graphPartitions: [DatabaseObjectField] = [],
         context: DatabaseOperationContext,
-        transaction: any Transaction
+        transaction: DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result {
-        let persistence = context.container.newContext().makePersistenceHandler()
         let records = DatabaseRecordMutationExecutor(
             container: context.container,
             runtimeLimits: runtimeLimits
@@ -142,7 +141,6 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     preconditions: preconditions,
                     context: context,
                     transaction: transaction,
-                    persistence: persistence,
                     records: records,
                     workMeter: workMeter
                 )
@@ -154,7 +152,6 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 graphPartitions: graphPartitions,
                 context: context,
                 transaction: transaction,
-                persistence: persistence,
                 records: records,
                 workMeter: workMeter
             )
@@ -166,8 +163,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         preconditions: [MutationExecuteOperation.Precondition],
         graphPartitions: [DatabaseObjectField],
         context: DatabaseOperationContext,
-        transaction: any Transaction,
-        persistence: any ModelPersistenceHandler,
+        transaction: DatabaseTransaction,
         records: DatabaseRecordMutationExecutor,
         workMeter: DatabaseWorkMeter
     ) async throws -> MutationExecuteOperation.Result {
@@ -179,7 +175,6 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     query,
                     context: context,
                     transaction: transaction,
-                    persistence: persistence,
                     records: records,
                     preconditions: preconditions,
                     workMeter: workMeter
@@ -192,7 +187,6 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     query,
                     context: context,
                     transaction: transaction,
-                    persistence: persistence,
                     records: records,
                     preconditions: preconditions,
                     workMeter: workMeter
@@ -205,7 +199,6 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     query,
                     context: context,
                     transaction: transaction,
-                    persistence: persistence,
                     records: records,
                     preconditions: preconditions,
                     workMeter: workMeter
@@ -337,8 +330,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
     private func executeInsert(
         _ query: InsertQuery,
         context: DatabaseOperationContext,
-        transaction: any Transaction,
-        persistence: any ModelPersistenceHandler,
+        transaction: DatabaseTransaction,
         records: DatabaseRecordMutationExecutor,
         preconditions: [MutationExecuteOperation.Precondition],
         workMeter: DatabaseWorkMeter
@@ -411,11 +403,10 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 container: context.container,
                 model: candidate
             )
-            let existing = try await persistence.load(
-                entity.name,
+            let existing = try await transaction.loadPersistedModel(
+                entity: entity.name,
                 id: resolved.id,
-                partition: resolved.partition,
-                transaction: transaction
+                partition: resolved.partition
             )
 
             switch (query.onConflict, existing) {
@@ -460,7 +451,6 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             try await records.validate(
                 preconditions,
                 transaction: transaction,
-                persistence: persistence,
                 workMeter: workMeter
             )
             return []
@@ -469,16 +459,14 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             changes,
             preconditions: preconditions,
             workMeter: workMeter,
-            transaction: transaction,
-            persistence: persistence
+            transaction: transaction
         )
     }
 
     private func executeUpdate(
         _ query: UpdateQuery,
         context: DatabaseOperationContext,
-        transaction: any Transaction,
-        persistence: any ModelPersistenceHandler,
+        transaction: DatabaseTransaction,
         records: DatabaseRecordMutationExecutor,
         preconditions: [MutationExecuteOperation.Precondition],
         workMeter: DatabaseWorkMeter
@@ -500,7 +488,6 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         let models = try await scan(
             entity,
             transaction: transaction,
-            persistence: persistence,
             workMeter: workMeter
         )
         var changes: [MutationExecuteOperation.Change] = []
@@ -537,7 +524,6 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             try await records.validate(
                 preconditions,
                 transaction: transaction,
-                persistence: persistence,
                 workMeter: workMeter
             )
             return []
@@ -546,16 +532,14 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             changes,
             preconditions: preconditions,
             workMeter: workMeter,
-            transaction: transaction,
-            persistence: persistence
+            transaction: transaction
         )
     }
 
     private func executeDelete(
         _ query: DeleteQuery,
         context: DatabaseOperationContext,
-        transaction: any Transaction,
-        persistence: any ModelPersistenceHandler,
+        transaction: DatabaseTransaction,
         records: DatabaseRecordMutationExecutor,
         preconditions: [MutationExecuteOperation.Precondition],
         workMeter: DatabaseWorkMeter
@@ -574,7 +558,6 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         let models = try await scan(
             entity,
             transaction: transaction,
-            persistence: persistence,
             workMeter: workMeter
         )
         var changes: [MutationExecuteOperation.Change] = []
@@ -604,7 +587,6 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             try await records.validate(
                 preconditions,
                 transaction: transaction,
-                persistence: persistence,
                 workMeter: workMeter
             )
             return []
@@ -613,15 +595,13 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             changes,
             preconditions: preconditions,
             workMeter: workMeter,
-            transaction: transaction,
-            persistence: persistence
+            transaction: transaction
         )
     }
 
     private func scan(
         _ entity: ResolvedEntity,
-        transaction: any Transaction,
-        persistence: any ModelPersistenceHandler,
+        transaction: DatabaseTransaction,
         workMeter: DatabaseWorkMeter
     ) async throws -> [any Persistable] {
         guard let maximumRows = Int(exactly: runtimeLimits.maximumRows),
@@ -634,11 +614,10 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 )
         }
         let limit = maximumRows + 1
-        let models = try await persistence.scan(
-            entity.name,
+        let models = try await transaction.scanPersistedModels(
+            entity: entity.name,
             partition: entity.partition,
-            limit: limit,
-            transaction: transaction
+            limit: limit
         )
         guard models.count <= maximumRows else {
             throw DatabaseRuntimeLimitError.resultLimitExceeded(

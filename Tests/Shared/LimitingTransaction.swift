@@ -298,7 +298,7 @@ public final class LimitingTransaction: Transaction, Sendable {
 
     // MARK: - Versionstamp
 
-    public func getVersionstamp() async throws -> Bytes? {
-        try await underlying.getVersionstamp()
+    public func requestVersionstamp() -> any PendingTransactionVersionstamp {
+        underlying.requestVersionstamp()
     }
 }

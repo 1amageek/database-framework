@@ -200,7 +200,7 @@ struct DatabaseSHACLValidationProcessorTests {
             statement.predicate = .iri(Self.rdfType)
             statement.object = .iri("urn:Person")
             statement.graph = .iri(Self.dataGraph)
-            context.insert(statement)
+            try context.insert(statement)
         }
         try await context.save()
     }

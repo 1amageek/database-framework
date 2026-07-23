@@ -157,13 +157,13 @@ struct ArrayFieldUniquenessTests {
         // Insert first record
         var user1 = UniqueEmail(email: email, name: "User 1")
         user1.id = uniqueID("U1")
-        context.insert(user1)
+        try context.insert(user1)
         try await context.save()
 
         // Try to insert second record with same email
         var user2 = UniqueEmail(email: email, name: "User 2")
         user2.id = uniqueID("U2")
-        context.insert(user2)
+        try context.insert(user2)
 
         // Should throw UniquenessViolationError
         do {
@@ -190,8 +190,8 @@ struct ArrayFieldUniquenessTests {
         var user2 = UniqueEmail(email: email2, name: "Bob")
         user2.id = uniqueID("U2")
 
-        context.insert(user1)
-        context.insert(user2)
+        try context.insert(user1)
+        try context.insert(user2)
 
         // Should succeed - different emails
         try await context.save()
@@ -216,13 +216,13 @@ struct ArrayFieldUniquenessTests {
         // Insert first document with the tag
         var doc1 = TaggedDocument(title: "Document 1", tags: [sharedTag])
         doc1.id = uniqueID("D1")
-        context.insert(doc1)
+        try context.insert(doc1)
         try await context.save()
 
         // Try to insert second document with same tag (among others)
         var doc2 = TaggedDocument(title: "Document 2", tags: [sharedTag, "other-tag"])
         doc2.id = uniqueID("D2")
-        context.insert(doc2)
+        try context.insert(doc2)
 
         // Should throw UniquenessViolationError
         do {
@@ -250,8 +250,8 @@ struct ArrayFieldUniquenessTests {
         var doc2 = TaggedDocument(title: "Document 2", tags: [tag2, tag3])
         doc2.id = uniqueID("D2")
 
-        context.insert(doc1)
-        context.insert(doc2)
+        try context.insert(doc1)
+        try context.insert(doc2)
 
         // Should succeed - no overlapping tags
         try await context.save()
@@ -269,13 +269,13 @@ struct ArrayFieldUniquenessTests {
         // Insert first document with sharedTag as second element
         var doc1 = TaggedDocument(title: "Document 1", tags: [tag1, sharedTag])
         doc1.id = uniqueID("D1")
-        context.insert(doc1)
+        try context.insert(doc1)
         try await context.save()
 
         // Try to insert second document where sharedTag is also not first
         var doc2 = TaggedDocument(title: "Document 2", tags: [tag2, sharedTag])
         doc2.id = uniqueID("D2")
-        context.insert(doc2)
+        try context.insert(doc2)
 
         // Should throw - sharedTag duplicated (even though not first element)
         do {
@@ -290,7 +290,7 @@ struct ArrayFieldUniquenessTests {
 
     // MARK: - Update Cases
 
-    // Note: Tests for self-update scenarios are complex because context.insert()
+    // Note: Tests for self-update scenarios are complex because try context.insert()
     // for an existing record requires the system to detect it as an update.
     // This is handled by FDBDataStore when it detects the record already exists.
 
@@ -305,20 +305,20 @@ struct ArrayFieldUniquenessTests {
         // Insert document 1 with takenTag
         var doc1 = TaggedDocument(title: "Doc 1", tags: [takenTag])
         doc1.id = uniqueID("D1")
-        context.insert(doc1)
+        try context.insert(doc1)
         try await context.save()
 
         // Insert document 2 with different tag
         var doc2 = TaggedDocument(title: "Doc 2", tags: [myTag])
         doc2.id = uniqueID("D2")
-        context.insert(doc2)
+        try context.insert(doc2)
         try await context.save()
 
         // Try to update doc2 to include takenTag
         let fetched = try await context.model(for: doc2.id, as: TaggedDocument.self)
         var updated = fetched!
         updated.tags = [myTag, takenTag]  // Adding takenTag which belongs to doc1
-        context.insert(updated)
+        try context.insert(updated)
 
         // Should throw
         do {
@@ -343,8 +343,8 @@ struct ArrayFieldUniquenessTests {
         var doc2 = TaggedDocument(title: "Doc 2", tags: ["unique2-\(UUID().uuidString.prefix(8))"])
         doc2.id = uniqueID("D2")
 
-        context.insert(doc1)
-        context.insert(doc2)
+        try context.insert(doc1)
+        try context.insert(doc2)
 
         // Should succeed - completely different tags
         try await context.save()
@@ -359,12 +359,12 @@ struct ArrayFieldUniquenessTests {
 
         var doc1 = TaggedDocument(title: "Doc 1", tags: [singleTag])
         doc1.id = uniqueID("D1")
-        context.insert(doc1)
+        try context.insert(doc1)
         try await context.save()
 
         var doc2 = TaggedDocument(title: "Doc 2", tags: [singleTag])
         doc2.id = uniqueID("D2")
-        context.insert(doc2)
+        try context.insert(doc2)
 
         // Should throw - even with single element
         do {
@@ -391,14 +391,14 @@ struct ArrayFieldUniquenessTests {
 
         // Insert document with UUID ID
         let doc = UUIDTaggedDocument(title: "Doc 1", tags: [tag])
-        context.insert(doc)
+        try context.insert(doc)
         try await context.save()
 
         // Fetch and update (keeping same tag)
         let fetched = try await context.model(for: doc.id, as: UUIDTaggedDocument.self)
         var updated = fetched!
         updated.title = "Updated Title"  // Change title only, keep tags
-        context.insert(updated)
+        try context.insert(updated)
 
         // Should succeed - same record, same tags
         // Before fix: Fails because UUID comparison returns false (falls through to else branch)
@@ -420,19 +420,19 @@ struct ArrayFieldUniquenessTests {
 
         // Document 1 owns takenTag
         let doc1 = UUIDTaggedDocument(title: "Doc 1", tags: [takenTag])
-        context.insert(doc1)
+        try context.insert(doc1)
         try await context.save()
 
         // Document 2 with different tag
         let doc2 = UUIDTaggedDocument(title: "Doc 2", tags: [myTag])
-        context.insert(doc2)
+        try context.insert(doc2)
         try await context.save()
 
         // Try to add takenTag to doc2
         let fetched = try await context.model(for: doc2.id, as: UUIDTaggedDocument.self)
         var updated = fetched!
         updated.tags = [myTag, takenTag]
-        context.insert(updated)
+        try context.insert(updated)
 
         // Should throw - takenTag belongs to doc1
         do {
@@ -456,8 +456,8 @@ struct ArrayFieldUniquenessTests {
         let doc1 = UUIDTaggedDocument(title: "Doc 1", tags: [tag1])
         let doc2 = UUIDTaggedDocument(title: "Doc 2", tags: [tag2])
 
-        context.insert(doc1)
-        context.insert(doc2)
+        try context.insert(doc1)
+        try context.insert(doc2)
 
         // Should succeed - different tags
         try await context.save()
@@ -474,14 +474,14 @@ struct ArrayFieldUniquenessTests {
 
         // Insert document with Int64 ID
         let doc = Int64TaggedDocument(title: "Doc 1", tags: [tag])
-        context.insert(doc)
+        try context.insert(doc)
         try await context.save()
 
         // Fetch and update (keeping same tag)
         let fetched = try await context.model(for: doc.id, as: Int64TaggedDocument.self)
         var updated = fetched!
         updated.title = "Updated Title"
-        context.insert(updated)
+        try context.insert(updated)
 
         // Should succeed - Int64 was already supported, but verify it still works
         try await context.save()
@@ -501,19 +501,19 @@ struct ArrayFieldUniquenessTests {
 
         // Document 1 owns takenTag
         let doc1 = Int64TaggedDocument(title: "Doc 1", tags: [takenTag])
-        context.insert(doc1)
+        try context.insert(doc1)
         try await context.save()
 
         // Document 2 with different tag
         let doc2 = Int64TaggedDocument(title: "Doc 2", tags: [myTag])
-        context.insert(doc2)
+        try context.insert(doc2)
         try await context.save()
 
         // Try to add takenTag to doc2
         let fetched = try await context.model(for: doc2.id, as: Int64TaggedDocument.self)
         var updated = fetched!
         updated.tags = [myTag, takenTag]
-        context.insert(updated)
+        try context.insert(updated)
 
         // Should throw - takenTag belongs to doc1
         do {
