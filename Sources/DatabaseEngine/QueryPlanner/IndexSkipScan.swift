@@ -158,15 +158,15 @@ public struct IndexSkipScanAnalyzer<T: Persistable> {
         let rangeInitCost = Double(distinctValues) * costModel.rangeInitiationWeight
         let entriesPerRange = totalRows * selectivity / Double(distinctValues)
         let indexReadCost = Double(distinctValues) * entriesPerRange * costModel.indexReadWeight
-        let recordFetchCost = totalRows * selectivity * costModel.recordFetchWeight
+        let entityFetchCost = totalRows * selectivity * costModel.entityFetchWeight
 
-        return rangeInitCost + indexReadCost + recordFetchCost
+        return rangeInitCost + indexReadCost + entityFetchCost
     }
 
     /// Estimate cost of table scan
     private func estimateTableScanCost(analysis: QueryAnalysis<T>) -> Double {
         let totalRows = Double(statistics.estimatedRowCount(for: T.self))
-        return totalRows * costModel.recordFetchWeight + costModel.rangeInitiationWeight
+        return totalRows * costModel.entityFetchWeight + costModel.rangeInitiationWeight
     }
 
     /// Estimate selectivity for a condition
@@ -323,7 +323,7 @@ public struct SkipScanCostEstimator {
 
         return PlanCost(
             indexReads: totalEntries,
-            recordFetches: totalEntries,
+            entityFetches: totalEntries,
             postFilterCount: 0,
             requiresSort: requiresSort,
             additionalCost: rangeInitCost,

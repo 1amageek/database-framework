@@ -63,7 +63,7 @@ private struct GraphAlgorithmContext {
     }
 
     /// Inserts canonical adjacency keys so these tests isolate scanner and
-    /// algorithm behavior from record-schema and index-maintainer behavior.
+    /// algorithm behavior from entity-schema and index-maintainer behavior.
     func insertEdges(_ edges: [Edge]) async throws {
         try await database.withTransaction(configuration: .batch) { transaction in
             for edge in edges {

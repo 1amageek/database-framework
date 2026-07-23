@@ -10,12 +10,12 @@ public enum PersistableMutationKind: Sendable, Equatable {
 /// Net observable effect of a logical transaction on one persisted identity.
 public struct PersistableMutationEffect: Sendable {
     public let kind: PersistableMutationKind
-    public let identity: RecordIdentity
+    public let identity: PersistableIdentity
     public let model: (any Persistable)?
 
     package init(
         kind: PersistableMutationKind,
-        identity: RecordIdentity,
+        identity: PersistableIdentity,
         model: (any Persistable)?
     ) {
         self.kind = kind

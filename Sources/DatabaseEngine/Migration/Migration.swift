@@ -740,7 +740,7 @@ public struct MigrationContext: Sendable {
         let subspace = try await container.resolveDirectory(for: T.self)
 
         let data = try DataAccess.serialize(item)
-        let identifier = try item.recordIdentifierTuple()
+        let identifier = try item.persistableIdentifierTuple()
         let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(identifier)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
@@ -764,7 +764,7 @@ public struct MigrationContext: Sendable {
         let itemType = T.persistableType
         let subspace = try await container.resolveDirectory(for: T.self)
 
-        let identifier = try item.recordIdentifierTuple()
+        let identifier = try item.persistableIdentifierTuple()
         let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(identifier)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
@@ -804,7 +804,7 @@ public struct MigrationContext: Sendable {
                 )
                 for item in batch {
                     let data = try DataAccess.serialize(item)
-                    let identifier = try item.recordIdentifierTuple()
+                    let identifier = try item.persistableIdentifierTuple()
                     let itemKey = itemSubspace.pack(identifier)
                     try await storage.write(data, for: itemKey)
                 }
@@ -839,7 +839,7 @@ public struct MigrationContext: Sendable {
                     blobsSubspace: blobsSubspace
                 )
                 for item in batch {
-                    let identifier = try item.recordIdentifierTuple()
+                    let identifier = try item.persistableIdentifierTuple()
                     let itemKey = itemSubspace.pack(identifier)
                     try await storage.delete(for: itemKey)
                 }

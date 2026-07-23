@@ -156,7 +156,7 @@ struct WritePreconditionTests {
         try context.upsert(user)
         try await context.save()
 
-        let version = try RecordVersionTokenCodec.digest(
+        let version = try PersistableVersionTokenCodec.digest(
             from: #require(QueryRowCodec.encode(user).version)
         )
 

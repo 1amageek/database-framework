@@ -117,7 +117,7 @@ public final class AdaptiveOptimizer<T: Persistable>: Sendable {
         state.withLock { state in
             var metrics = state.planPerformance[plan.id] ?? PlanPerformanceMetrics(planId: plan.id)
             metrics.recordExecution(
-                estimatedRows: Int(plan.currentPlan.estimatedCost.recordFetches),
+                estimatedRows: Int(plan.currentPlan.estimatedCost.entityFetches),
                 actualRows: actualRowCount,
                 executionTime: executionTime
             )

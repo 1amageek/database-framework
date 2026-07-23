@@ -7,27 +7,27 @@ public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
     case idempotencyKeyRequired
     case idempotencyKeyTooLarge(actual: Int, maximum: Int)
     case idempotencyKeyConflict
-    case idempotencyRecordCorrupted
+    case idempotencyEntryCorrupted
     case logicalVersionOverflow
     case unknownEntity(String)
     case entityHasNoPersistableType(String)
-    case invalidRecordIdentifier(entity: String, reason: String)
+    case invalidPersistableIdentifier(entity: String, reason: String)
     case invalidPartition(entity: String, reason: String)
     case invalidGraphPartitions(String)
-    case recordTypeMismatch(expected: String, actual: String)
-    case recordIdentityMismatch(RecordIdentity)
-    case duplicateChange(RecordIdentity)
-    case duplicatePrecondition(RecordIdentity)
-    case incompatiblePreconditions(RecordIdentity)
-    case recordAlreadyExists(RecordIdentity)
-    case recordNotFound(RecordIdentity)
-    case recordVersionMismatch(RecordIdentity)
-    case recordIdentifierNotRepresentable(String)
-    case recordFieldNotRepresentable(entity: String, field: String)
+    case entityTypeMismatch(expected: String, actual: String)
+    case persistableIdentityMismatch(PersistableIdentity)
+    case duplicateChange(PersistableIdentity)
+    case duplicatePrecondition(PersistableIdentity)
+    case incompatiblePreconditions(PersistableIdentity)
+    case entityAlreadyExists(PersistableIdentity)
+    case entityNotFound(PersistableIdentity)
+    case entityVersionMismatch(PersistableIdentity)
+    case identifierNotRepresentable(String)
+    case fieldNotRepresentable(entity: String, field: String)
     case invalidCompiledSchema(entity: String, reason: String)
     case unsupportedStatement(String)
-    case fieldsRequired(RecordIdentity)
-    case fieldsMustBeEmptyForDelete(RecordIdentity)
+    case fieldsRequired(PersistableIdentity)
+    case fieldsMustBeEmptyForDelete(PersistableIdentity)
     case stateStoreContainerMismatch
 
     public var description: String {
@@ -44,39 +44,39 @@ public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
             return "Idempotency key contains \(actual) UTF-8 bytes, exceeding the limit of \(maximum)"
         case .idempotencyKeyConflict:
             return "The idempotency key is already associated with a different request"
-        case .idempotencyRecordCorrupted:
-            return "The stored idempotency record is corrupted"
+        case .idempotencyEntryCorrupted:
+            return "The stored idempotency entry is corrupted"
         case .logicalVersionOverflow:
             return "The logical commit version reached UInt64.max"
         case .unknownEntity(let entity):
             return "Entity '\(entity)' is not registered in the runtime schema"
         case .entityHasNoPersistableType(let entity):
             return "Entity '\(entity)' has no compiled Persistable type"
-        case .invalidRecordIdentifier(let entity, let reason):
-            return "Entity '\(entity)' has an invalid record identifier: \(reason)"
+        case .invalidPersistableIdentifier(let entity, let reason):
+            return "Entity '\(entity)' has an invalid persistable identifier: \(reason)"
         case .invalidPartition(let entity, let reason):
             return "Entity '\(entity)' has an invalid partition: \(reason)"
         case .invalidGraphPartitions(let reason):
             return "Mutation graph partitions are invalid: \(reason)"
-        case .recordTypeMismatch(let expected, let actual):
-            return "Decoded record type '\(actual)' does not match entity '\(expected)'"
-        case .recordIdentityMismatch(let identity):
-            return "Decoded record does not match identity '\(identity)'"
+        case .entityTypeMismatch(let expected, let actual):
+            return "Decoded entity type '\(actual)' does not match entity '\(expected)'"
+        case .persistableIdentityMismatch(let identity):
+            return "Decoded entity does not match identity '\(identity)'"
         case .duplicateChange(let identity):
             return "Mutation contains more than one change for '\(identity)'"
         case .duplicatePrecondition(let identity):
             return "Mutation contains more than one precondition for '\(identity)'"
         case .incompatiblePreconditions(let identity):
             return "Mutation contains incompatible preconditions for '\(identity)'"
-        case .recordAlreadyExists(let identity):
-            return "Record '\(identity)' already exists"
-        case .recordNotFound(let identity):
-            return "Record '\(identity)' does not exist"
-        case .recordVersionMismatch(let identity):
-            return "Record '\(identity)' changed after the supplied version was read"
-        case .recordIdentifierNotRepresentable(let entity):
+        case .entityAlreadyExists(let identity):
+            return "Entity '\(identity)' already exists"
+        case .entityNotFound(let identity):
+            return "Entity '\(identity)' does not exist"
+        case .entityVersionMismatch(let identity):
+            return "Entity '\(identity)' changed after the supplied version was read"
+        case .identifierNotRepresentable(let entity):
             return "Entity '\(entity)' has an identifier that DatabaseWire cannot represent"
-        case .recordFieldNotRepresentable(let entity, let field):
+        case .fieldNotRepresentable(let entity, let field):
             return "Entity '\(entity)' field '\(field)' cannot be represented by DatabaseWire"
         case .invalidCompiledSchema(let entity, let reason):
             return "Entity '\(entity)' has an invalid compiled schema: \(reason)"

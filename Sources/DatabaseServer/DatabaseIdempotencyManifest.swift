@@ -31,7 +31,7 @@ struct DatabaseIdempotencyManifest: Sendable, Hashable {
     ) throws -> Self {
         var reader = DatabaseWireReader(bytes, limits: limits)
         guard try reader.readUInt16() == formatVersion else {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
         let operation = try DatabaseOperationIdentifier(from: &reader)
         let requestDigest = try reader.readBytes()
@@ -39,7 +39,7 @@ struct DatabaseIdempotencyManifest: Sendable, Hashable {
         let totalResponseBytes = try reader.readUInt64()
         let storedChunkByteCount = try reader.readUInt32()
         guard storedChunkByteCount == chunkByteCount else {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
         let chunkCount = try reader.readUInt32()
         let manifest = Self(
@@ -64,7 +64,7 @@ struct DatabaseIdempotencyManifest: Sendable, Hashable {
               chunkCount == Self.expectedChunkCount(
                   totalResponseBytes: totalResponseBytes
               ) else {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
     }
 

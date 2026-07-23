@@ -29,35 +29,35 @@ struct RankReadResultAssemblerTests {
         }
     }
 
-    @Test("Every ranked key must resolve to a fetched record")
-    func rejectsMissingFetchedRecord() {
+    @Test("Every ranked key must resolve to a fetched entity")
+    func rejectsMissingFetchedEntity() {
         let primaryKey = Tuple(Int64(7), "missing")
 
         #expect(
-            throws: RankReadError.missingFetchedRecord(
+            throws: RankReadError.missingFetchedEntity(
                 primaryKey: primaryKey.pack()
             )
         ) {
             try RankReadResultAssembler.assemble(
                 rankedKeys: [(primaryKey: primaryKey, rank: 0)],
-                records: []
+                entities: []
             )
         }
     }
 
-    @Test("Fetched records retain native rank order")
+    @Test("Fetched entities retain native rank order")
     func preservesRankOrder() throws {
-        let first = RankReadRecord(id: "first", score: 20)
-        let second = RankReadRecord(id: "second", score: 10)
-        let records = [
-            PolymorphicRecord(
+        let first = RankReadEntity(id: "first", score: 20)
+        let second = RankReadEntity(id: "second", score: 10)
+        let entities = [
+            PolymorphicEntity(
                 item: second,
-                typeName: RankReadRecord.persistableType,
+                typeName: RankReadEntity.persistableType,
                 typeCode: 7
             ),
-            PolymorphicRecord(
+            PolymorphicEntity(
                 item: first,
-                typeName: RankReadRecord.persistableType,
+                typeName: RankReadEntity.persistableType,
                 typeCode: 7
             )
         ]
@@ -67,22 +67,22 @@ struct RankReadResultAssemblerTests {
                 (primaryKey: Tuple(Int64(7), "first"), rank: 0),
                 (primaryKey: Tuple(Int64(7), "second"), rank: 1)
             ],
-            records: records
+            entities: entities
         )
 
-        let identifiers = results.map { $0.record.item.id as? String }
+        let identifiers = results.map { $0.entity.item.id as? String }
         #expect(identifiers == ["first", "second"])
         #expect(results.map(\.rank) == [0, 1])
     }
 }
 
-private struct RankReadRecord: Persistable {
+private struct RankReadEntity: Persistable {
     typealias ID = String
 
     let id: String
     let score: Int64
 
-    static let persistableType = "RankReadRecord"
+    static let persistableType = "RankReadEntity"
     static let allFields = ["id", "score"]
 
     subscript(dynamicMember member: String) -> (any Sendable)? {
@@ -94,11 +94,11 @@ private struct RankReadRecord: Persistable {
     }
 
     static func fieldName<Value>(
-        for keyPath: KeyPath<RankReadRecord, Value>
+        for keyPath: KeyPath<RankReadEntity, Value>
     ) -> String {
         switch keyPath {
-        case \RankReadRecord.id: return "id"
-        case \RankReadRecord.score: return "score"
+        case \RankReadEntity.id: return "id"
+        case \RankReadEntity.score: return "score"
         default: return String(describing: keyPath)
         }
     }

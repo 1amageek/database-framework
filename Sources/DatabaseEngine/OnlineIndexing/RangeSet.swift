@@ -42,7 +42,7 @@ private func bytesMax(_ lhs: Bytes, _ rhs: Bytes) -> Bytes {
 /// Represents a range with continuation support for resumable processing
 ///
 /// This enables the "continuation pattern" used by FDB Record Layer:
-/// - Process N records from the range
+/// - Process N entities from the range
 /// - Record the last processed key as continuation
 /// - Next batch starts AFTER the continuation key
 ///
@@ -305,7 +305,7 @@ public struct RangeSet: Sendable {
 
     /// Get progress as a percentage (0.0 to 1.0)
     ///
-    /// **Note**: This is an estimate based on key bytes, not record count.
+    /// **Note**: This is an estimate based on key bytes, not entity count.
     public var progressEstimate: Double {
         guard !continuations.isEmpty else { return 1.0 }
 

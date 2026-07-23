@@ -3,7 +3,7 @@ import DatabaseWire
 import StorageKit
 
 enum RelationshipIdentityCodec {
-    static func encode(_ identity: RecordIdentity) throws -> Bytes {
+    static func encode(_ identity: PersistableIdentity) throws -> Bytes {
         let encoded = try DatabaseWireWriter.encode {
             (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
             try identity.encode(into: &writer)
@@ -11,9 +11,9 @@ enum RelationshipIdentityCodec {
         return Bytes(retaining: encoded)
     }
 
-    static func decode(_ bytes: Bytes) throws -> RecordIdentity {
+    static func decode(_ bytes: Bytes) throws -> PersistableIdentity {
         var reader = DatabaseWireReader(DatabaseBytes(retaining: bytes))
-        let identity = try RecordIdentity(from: &reader)
+        let identity = try PersistableIdentity(from: &reader)
         guard reader.remainingCount == 0 else {
             throw RelationshipReferenceError.corruptedCatalogEntry
         }

@@ -74,7 +74,7 @@ public struct DBConfiguration: Sendable {
     /// Multiple configurations for the same index are allowed (e.g., multi-language full-text).
     public let indexConfigurations: [any IndexConfiguration]
 
-    /// Canonical physical record format for this database.
+    /// Canonical physical entity format for this database.
     public let itemStorage: ItemStorageConfiguration
 
     /// Container-scoped operational logging policy.

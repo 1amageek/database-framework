@@ -23,19 +23,19 @@ import TestSupport
 @testable import GraphIndex
 @testable import OntologyIndex
 
-// MARK: - Schema Anchor Record
+// MARK: - Schema Anchor Entity
 
 /// Anchors the container schema while ontology operations use their dedicated subspace.
 @Persistable
-struct OntologyPersistenceRecord {
-    #Directory<OntologyPersistenceRecord>("ontology_persistence_records")
+struct OntologyPersistenceEntity {
+    #Directory<OntologyPersistenceEntity>("ontology_persistence_entities")
 
     var id: String = ULID().ulidString
     var subject: String = ""
     var predicate: String = ""
     var object: String = ""
 
-    #Index(GraphIndexKind<OntologyPersistenceRecord>(
+    #Index(GraphIndexKind<OntologyPersistenceEntity>(
         from: \.subject,
         edge: \.predicate,
         to: \.object,
@@ -55,7 +55,7 @@ struct OntologyPersistenceTests {
     private func setupContext() async throws -> DatabaseContext {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([OntologyPersistenceRecord.self], version: Schema.Version(1, 0, 0))
+        let schema = Schema([OntologyPersistenceEntity.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),

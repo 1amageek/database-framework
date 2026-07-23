@@ -97,49 +97,49 @@ struct ArrayFieldUniquenessTests {
 
         // Make indexes readable via store
         let tagStore = try await container.store(for: TaggedDocument.self)
-        if let databaseStore = tagStore as? DatabaseDataStore {
-            let state = try await databaseStore.indexLifecycleStore.state(of: "TaggedDocument_tags")
-            if state != .readable {
-                if state == .disabled {
-                    try await databaseStore.indexLifecycleStore.enable("TaggedDocument_tags")
-                }
-                try await databaseStore.indexLifecycleStore.makeReadable("TaggedDocument_tags")
+        let tagState = try await tagStore.indexLifecycleStore.state(
+            of: "TaggedDocument_tags"
+        )
+        if tagState != .readable {
+            if tagState == .disabled {
+                try await tagStore.indexLifecycleStore.enable("TaggedDocument_tags")
             }
+            try await tagStore.indexLifecycleStore.makeReadable("TaggedDocument_tags")
         }
 
         let emailStore = try await container.store(for: UniqueEmail.self)
-        if let databaseStore = emailStore as? DatabaseDataStore {
-            let state = try await databaseStore.indexLifecycleStore.state(of: "UniqueEmail_email")
-            if state != .readable {
-                if state == .disabled {
-                    try await databaseStore.indexLifecycleStore.enable("UniqueEmail_email")
-                }
-                try await databaseStore.indexLifecycleStore.makeReadable("UniqueEmail_email")
+        let emailState = try await emailStore.indexLifecycleStore.state(
+            of: "UniqueEmail_email"
+        )
+        if emailState != .readable {
+            if emailState == .disabled {
+                try await emailStore.indexLifecycleStore.enable("UniqueEmail_email")
             }
+            try await emailStore.indexLifecycleStore.makeReadable("UniqueEmail_email")
         }
 
         // UUID ID model index
         let uuidStore = try await container.store(for: UUIDTaggedDocument.self)
-        if let databaseStore = uuidStore as? DatabaseDataStore {
-            let state = try await databaseStore.indexLifecycleStore.state(of: "UUIDTaggedDocument_tags")
-            if state != .readable {
-                if state == .disabled {
-                    try await databaseStore.indexLifecycleStore.enable("UUIDTaggedDocument_tags")
-                }
-                try await databaseStore.indexLifecycleStore.makeReadable("UUIDTaggedDocument_tags")
+        let uuidState = try await uuidStore.indexLifecycleStore.state(
+            of: "UUIDTaggedDocument_tags"
+        )
+        if uuidState != .readable {
+            if uuidState == .disabled {
+                try await uuidStore.indexLifecycleStore.enable("UUIDTaggedDocument_tags")
             }
+            try await uuidStore.indexLifecycleStore.makeReadable("UUIDTaggedDocument_tags")
         }
 
         // Int64 ID model index
         let int64Store = try await container.store(for: Int64TaggedDocument.self)
-        if let databaseStore = int64Store as? DatabaseDataStore {
-            let state = try await databaseStore.indexLifecycleStore.state(of: "Int64TaggedDocument_tags")
-            if state != .readable {
-                if state == .disabled {
-                    try await databaseStore.indexLifecycleStore.enable("Int64TaggedDocument_tags")
-                }
-                try await databaseStore.indexLifecycleStore.makeReadable("Int64TaggedDocument_tags")
+        let int64State = try await int64Store.indexLifecycleStore.state(
+            of: "Int64TaggedDocument_tags"
+        )
+        if int64State != .readable {
+            if int64State == .disabled {
+                try await int64Store.indexLifecycleStore.enable("Int64TaggedDocument_tags")
             }
+            try await int64Store.indexLifecycleStore.makeReadable("Int64TaggedDocument_tags")
         }
 
         return container
@@ -154,13 +154,13 @@ struct ArrayFieldUniquenessTests {
 
         let email = "unique-\(UUID().uuidString.prefix(8))@test.com"
 
-        // Insert first record
+        // Insert first entity
         var user1 = UniqueEmail(email: email, name: "User 1")
         user1.id = uniqueID("U1")
         try context.insert(user1)
         try await context.save()
 
-        // Try to insert second record with same email
+        // Try to insert second entity with same email
         var user2 = UniqueEmail(email: email, name: "User 2")
         user2.id = uniqueID("U2")
         try context.insert(user2)
@@ -291,8 +291,8 @@ struct ArrayFieldUniquenessTests {
     // MARK: - Update Cases
 
     // Note: Tests for self-update scenarios are complex because try context.insert()
-    // for an existing record requires the system to detect it as an update.
-    // This is handled by DatabaseDataStore when it detects the record already exists.
+    // for an existing entity requires the system to detect it as an update.
+    // This is handled by DatabaseDataStore when it detects the entity already exists.
 
     @Test("Array field update: cannot add element that exists elsewhere")
     func arrayUpdateAddDuplicateThrows() async throws {
@@ -400,7 +400,7 @@ struct ArrayFieldUniquenessTests {
         updated.title = "Updated Title"  // Change title only, keep tags
         try context.insert(updated)
 
-        // Should succeed - same record, same tags
+        // Should succeed - same entity, same tags
         // Before fix: Fails because UUID comparison returns false (falls through to else branch)
         // After fix: Succeeds because Tuple equality works for UUID
         try await context.save()

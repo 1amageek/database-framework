@@ -7,7 +7,7 @@ import Testing
 @testable import GraphIndex
 
 @Persistable
-private struct RDFQuadIndexRecord {
+private struct RDFQuadIndexEntity {
     var id: String = ""
     var subject: DatabaseRDFTerm
     var predicate: DatabaseRDFTerm
@@ -35,7 +35,7 @@ struct RDFQuadIndexMaintainerTests {
     func everyOrderingStoresCanonicalGraphDiscriminator() async throws {
         let setup = makeMaintainer()
         let graph = DatabaseRDFTerm.iri("https://calendar.example/graph/active")
-        let record = RDFQuadIndexRecord(
+        let entity = RDFQuadIndexEntity(
             id: "statement-1",
             subject: .iri("https://calendar.example/event/1"),
             predicate: .iri("https://calendar.example/ontology/title"),
@@ -49,8 +49,8 @@ struct RDFQuadIndexMaintainerTests {
         )
 
         let keys = try await setup.maintainer.computeIndexKeys(
-            for: record,
-            id: Tuple([record.id])
+            for: entity,
+            id: Tuple([entity.id])
         )
         #expect(keys.count == 6)
 
@@ -68,7 +68,7 @@ struct RDFQuadIndexMaintainerTests {
     @Test("Default graph uses a reserved discriminator in all six orderings")
     func defaultGraphUsesReservedDiscriminator() async throws {
         let setup = makeMaintainer()
-        let record = RDFQuadIndexRecord(
+        let entity = RDFQuadIndexEntity(
             id: "statement-2",
             subject: .iri("https://calendar.example/event/2"),
             predicate: .iri("https://calendar.example/ontology/title"),
@@ -82,8 +82,8 @@ struct RDFQuadIndexMaintainerTests {
         )
 
         let keys = try await setup.maintainer.computeIndexKeys(
-            for: record,
-            id: Tuple([record.id])
+            for: entity,
+            id: Tuple([entity.id])
         )
         for (offset, subspaceKey) in [2, 3, 4, 8, 9, 10].enumerated() {
             let tuple = try setup.base.subspace(Int64(subspaceKey)).unpack(keys[offset])
@@ -99,10 +99,10 @@ struct RDFQuadIndexMaintainerTests {
     }
 
     private func makeMaintainer() -> (
-        maintainer: RDFQuadIndexMaintainer<RDFQuadIndexRecord>,
+        maintainer: RDFQuadIndexMaintainer<RDFQuadIndexEntity>,
         base: Subspace
     ) {
-        let kind = RDFQuadIndexKind<RDFQuadIndexRecord>(
+        let kind = RDFQuadIndexKind<RDFQuadIndexEntity>(
             subject: \.subject,
             predicate: \.predicate,
             object: \.object,
@@ -118,7 +118,7 @@ struct RDFQuadIndexMaintainerTests {
                 FieldKeyExpression(fieldName: "graph"),
             ]),
             subspaceKey: "rdf_quad_test",
-            itemTypes: Set([RDFQuadIndexRecord.persistableType])
+            itemTypes: Set([RDFQuadIndexEntity.persistableType])
         )
         let base = Subspace(prefix: Tuple("rdf-quad-test").pack())
         return (

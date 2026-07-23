@@ -105,7 +105,7 @@ public struct DirectoryPath<T: Persistable>: Sendable {
                     reason: "partition fields must be required scalar values"
                 )
             }
-            let value = try DatabaseRecordEncoder.encodeValue(
+            let value = try PersistableFieldEncoder.encodeValue(
                 binding.value,
                 schema: schema,
                 entity: T.persistableType

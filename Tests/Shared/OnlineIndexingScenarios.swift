@@ -4,7 +4,7 @@
 // Provides:
 // - CountingIndexMaintainer: Tracks processing counts per item
 // - PlayerDatasetGenerator: Generates player datasets for transaction limit testing
-// - RecordingIndexLifecycleStore: Records index lifecycle transitions
+// - RecordingIndexLifecycleStore: Entities index lifecycle transitions
 
 import Foundation
 import Core
@@ -57,7 +57,7 @@ public final class CountingIndexMaintainer<Item: Persistable>: IndexMaintainer, 
         // Use stable binary encoding for ID string
         let idString = Data(id.pack()).base64EncodedString()
 
-        // Record processing
+        // Entity processing
         processCount.withLock { counts in
             counts[idString, default: 0] += 1
         }
@@ -250,7 +250,7 @@ public struct PlayerDatasetGenerator {
 
 // MARK: - RecordingIndexLifecycleStore
 
-/// Records index lifecycle state and transition history without external storage.
+/// Entities index lifecycle state and transition history without external storage.
 public actor RecordingIndexLifecycleStore {
     private var states: [String: IndexState] = [:]
     private var transitionHistory: [(name: String, from: IndexState?, to: IndexState)] = []

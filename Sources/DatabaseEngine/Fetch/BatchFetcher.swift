@@ -1,8 +1,8 @@
 // BatchFetcher.swift
-// DatabaseEngine - Optimized batch fetching for records from indexes
+// DatabaseEngine - Optimized batch fetching for entities from indexes
 //
 // Reference: FDB Record Layer Remote Fetch optimization
-// Efficiently fetches multiple records by batching primary key lookups.
+// Efficiently fetches multiple entities by batching primary key lookups.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -17,7 +17,7 @@ import Synchronization
 
 /// Configuration for batch fetching
 public struct BatchFetchConfiguration: Sendable, Equatable {
-    /// Maximum number of records to fetch in a single batch
+    /// Maximum number of entities to fetch in a single batch
     ///
     /// Larger batches are more efficient but use more memory.
     /// Reference: FDB transaction size limits suggest ~1MB per transaction.
@@ -86,9 +86,9 @@ public struct BatchFetchConfiguration: Sendable, Equatable {
 
 // MARK: - BatchFetcher
 
-/// Optimized batch fetcher for records
+/// Optimized batch fetcher for entities
 ///
-/// Efficiently fetches multiple records by:
+/// Efficiently fetches multiple entities by:
 /// 1. Batching primary key lookups
 /// 2. Parallelizing reads across keys
 /// 3. Prefetching next batch while processing current
@@ -126,7 +126,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     /// Item type name
     private let itemType: String
 
-    /// Container-scoped canonical record storage policy
+    /// Container-scoped canonical entity storage policy
     private let itemStorageFactory: ItemStorageFactory
 
     // MARK: - Initialization

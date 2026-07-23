@@ -1,5 +1,5 @@
 extension CostModel {
-    public func indexOnlySavings(records: Double) -> Double {
-        records * recordFetchWeight
+    public func indexOnlySavings(entities: Double) -> Double {
+        entities * entityFetchWeight
     }
 }

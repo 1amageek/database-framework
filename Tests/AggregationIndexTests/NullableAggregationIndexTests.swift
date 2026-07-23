@@ -12,23 +12,23 @@ struct NullableAggregationIndexTests {
     @Test("Indexed grouping preserves null and unsigned presentation types")
     func indexedGroupingPreservesNullAndUnsignedTypes() async throws {
         let container = try await DBContainer.open(
-            for: Schema([NullableUnsignedAggregationRecord.self]),
+            for: Schema([NullableUnsignedAggregationEntity.self]),
             configuration: .init(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
             security: .disabled
         )
         let context = container.newContext()
-        try context.insert(NullableUnsignedAggregationRecord(
+        try context.insert(NullableUnsignedAggregationEntity(
             group: nil,
             value: 1,
             optionalValue: nil
         ))
-        try context.insert(NullableUnsignedAggregationRecord(
+        try context.insert(NullableUnsignedAggregationEntity(
             group: nil,
             value: 2,
             optionalValue: "present"
         ))
-        try context.insert(NullableUnsignedAggregationRecord(
+        try context.insert(NullableUnsignedAggregationEntity(
             group: 7,
             value: 4,
             optionalValue: "present"
@@ -36,7 +36,7 @@ struct NullableAggregationIndexTests {
         try await context.save()
 
         let builder = context
-            .aggregate(NullableUnsignedAggregationRecord.self)
+            .aggregate(NullableUnsignedAggregationEntity.self)
             .groupBy(\.group)
             .count(as: "count")
             .sum(\.value, as: "sum")
@@ -69,7 +69,7 @@ struct NullableAggregationIndexTests {
         let engine = InMemoryEngine()
         let index = Index(
             name: "nullable-count-not-null",
-            kind: CountNotNullIndexKind<NullableUnsignedAggregationRecord>(
+            kind: CountNotNullIndexKind<NullableUnsignedAggregationEntity>(
                 groupBy: [\.group],
                 value: \.optionalValue
             ),
@@ -78,10 +78,10 @@ struct NullableAggregationIndexTests {
                 FieldKeyExpression(fieldName: "optionalValue"),
             ]),
             subspaceKey: "nullable-count-not-null",
-            itemTypes: [NullableUnsignedAggregationRecord.persistableType]
+            itemTypes: [NullableUnsignedAggregationEntity.persistableType]
         )
         let maintainer = CountNotNullIndexMaintainer<
-            NullableUnsignedAggregationRecord
+            NullableUnsignedAggregationEntity
         >(
             index: index,
             subspace: Subspace(
@@ -91,12 +91,12 @@ struct NullableAggregationIndexTests {
             groupByFieldNames: ["group"],
             valueFieldName: "optionalValue"
         )
-        let excluded = NullableUnsignedAggregationRecord(
+        let excluded = NullableUnsignedAggregationEntity(
             group: nil,
             value: 1,
             optionalValue: nil
         )
-        let included = NullableUnsignedAggregationRecord(
+        let included = NullableUnsignedAggregationEntity(
             group: nil,
             value: 1,
             optionalValue: "present"
@@ -129,8 +129,8 @@ struct NullableAggregationIndexTests {
 }
 
 @Persistable
-private struct NullableUnsignedAggregationRecord {
-    #Directory<NullableUnsignedAggregationRecord>(
+private struct NullableUnsignedAggregationEntity {
+    #Directory<NullableUnsignedAggregationEntity>(
         "tests",
         "nullable-unsigned-aggregation"
     )
@@ -140,10 +140,10 @@ private struct NullableUnsignedAggregationRecord {
     var value: Int64 = 0
     var optionalValue: String?
 
-    #Index(CountIndexKind<NullableUnsignedAggregationRecord>(
+    #Index(CountIndexKind<NullableUnsignedAggregationEntity>(
         groupBy: [\.group]
     ))
-    #Index(SumIndexKind<NullableUnsignedAggregationRecord, Int64>(
+    #Index(SumIndexKind<NullableUnsignedAggregationEntity, Int64>(
         groupBy: [\.group],
         value: \.value
     ))

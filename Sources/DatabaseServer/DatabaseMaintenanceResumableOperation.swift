@@ -236,7 +236,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
         ):
             guard context.operationContext.container.schema.version
                     == schemaVersion else {
-                throw DatabaseIndexRebuildError.corruptedRecord
+                throw DatabaseIndexRebuildError.corruptedRebuildState
             }
             let effectiveWorkUnits = min(
                 maximumWorkUnits,

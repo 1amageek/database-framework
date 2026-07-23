@@ -21,7 +21,7 @@ public struct RDFDatasetSourcePlanner: Sendable {
                 switch metadata.graphScope {
                 case .defaultGraph:
                     continue
-                case .recordField:
+                case .entityField:
                     break
                 case .fixed(let fixedGraph):
                     guard fixedGraph == namedGraph.term else { continue }

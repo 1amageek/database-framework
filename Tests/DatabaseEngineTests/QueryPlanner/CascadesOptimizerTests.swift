@@ -84,7 +84,7 @@ struct MemoTests {
         #expect(physicals.first?.cost == 100.0)
     }
 
-    @Test("Record and retrieve winner")
+    @Test("Entity and retrieve winner")
     func testRecordWinner() {
         let memo = Memo()
 

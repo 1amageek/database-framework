@@ -1,9 +1,10 @@
 import StorageKit
 
-/// Protocol for expressions that extract key values from records
+/// Protocol for expressions that extract key values from entities
 ///
 /// KeyExpressions are used to define primary keys and index keys.
-/// They use the Visitor pattern to extract values from records through RecordAccess.
+/// They use the visitor pattern to extract values through the persistable field-access
+/// contract.
 public protocol KeyExpression: Sendable {
     /// Number of columns this expression produces
     var columnCount: Int { get }
@@ -11,7 +12,7 @@ public protocol KeyExpression: Sendable {
 
 // MARK: - Field Key Expression
 
-/// Expression that extracts a single field from a record
+/// Expression that extracts a single field from an entity
 public struct FieldKeyExpression: KeyExpression {
     public let fieldName: String
 

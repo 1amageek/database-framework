@@ -141,8 +141,8 @@ private func benchmark(_ name: String, iterations: Int = 1, operation: () async 
 @Suite("LeaderboardIndex Insert Performance", .tags(.fdb), .serialized, .heartbeat)
 struct LeaderboardIndexInsertPerformanceTests {
 
-    @Test("Bulk insert performance - 100 records")
-    func testBulkInsert100Records() async throws {
+    @Test("Bulk insert performance - 100 entities")
+    func testBulkInsert100Entities() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await LeaderboardBenchmarkContext(testName: "bulk_insert_100")
 
@@ -155,7 +155,7 @@ struct LeaderboardIndexInsertPerformanceTests {
                 )
             }
 
-            let (totalMs, _) = try await benchmark("Insert 100 records") {
+            let (totalMs, _) = try await benchmark("Insert 100 entities") {
                 try await ctx.database.withTransaction { transaction in
                     for score in scores {
                         try await ctx.maintainer.updateIndex(
@@ -167,15 +167,15 @@ struct LeaderboardIndexInsertPerformanceTests {
                 }
             }
 
-            print("Insert 100 records: \(String(format: "%.2f", totalMs))ms")
-            print("Throughput: \(String(format: "%.0f", 100.0 / (totalMs / 1000))) records/s")
+            print("Insert 100 entities: \(String(format: "%.2f", totalMs))ms")
+            print("Throughput: \(String(format: "%.0f", 100.0 / (totalMs / 1000))) entities/s")
 
             try await ctx.cleanup()
         }
     }
 
-    @Test("Bulk insert performance - 1000 records")
-    func testBulkInsert1000Records() async throws {
+    @Test("Bulk insert performance - 1000 entities")
+    func testBulkInsert1000Entities() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await LeaderboardBenchmarkContext(testName: "bulk_insert_1000")
 
@@ -188,7 +188,7 @@ struct LeaderboardIndexInsertPerformanceTests {
                 )
             }
 
-            let (totalMs, _) = try await benchmark("Insert 1000 records") {
+            let (totalMs, _) = try await benchmark("Insert 1000 entities") {
                 try await ctx.database.withTransaction { transaction in
                     for score in scores {
                         try await ctx.maintainer.updateIndex(
@@ -200,8 +200,8 @@ struct LeaderboardIndexInsertPerformanceTests {
                 }
             }
 
-            print("Insert 1000 records: \(String(format: "%.2f", totalMs))ms")
-            print("Throughput: \(String(format: "%.0f", 1000.0 / (totalMs / 1000))) records/s")
+            print("Insert 1000 entities: \(String(format: "%.2f", totalMs))ms")
+            print("Throughput: \(String(format: "%.0f", 1000.0 / (totalMs / 1000))) entities/s")
 
             try await ctx.cleanup()
         }
@@ -235,7 +235,7 @@ struct LeaderboardIndexInsertPerformanceTests {
                 totalMs += ms
             }
 
-            print("Sequential insert 100 records: \(String(format: "%.2f", totalMs))ms")
+            print("Sequential insert 100 entities: \(String(format: "%.2f", totalMs))ms")
             print("Average per insert: \(String(format: "%.2f", totalMs / 100))ms")
 
             try await ctx.cleanup()
@@ -253,7 +253,7 @@ struct LeaderboardIndexQueryPerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await LeaderboardBenchmarkContext(testName: "topk_query")
 
-            // Setup: Insert 1000 records
+            // Setup: Insert 1000 entities
             let scores = (0..<1000).map { i in
                 LeaderboardBenchmarkScore(
                     id: "game-\(i)",
@@ -306,7 +306,7 @@ struct LeaderboardIndexQueryPerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await LeaderboardBenchmarkContext(testName: "rank_lookup")
 
-            // Setup: Insert 1000 records with sequential scores
+            // Setup: Insert 1000 entities with sequential scores
             let scores = (0..<1000).map { i in
                 LeaderboardBenchmarkScore(
                     id: "game-\(i)",
@@ -371,7 +371,7 @@ struct LeaderboardIndexQueryPerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await LeaderboardBenchmarkContext(testName: "available_windows")
 
-            // Setup: Insert records
+            // Setup: Insert entities
             let scores = (0..<100).map { i in
                 LeaderboardBenchmarkScore(
                     id: "game-\(i)",
@@ -418,7 +418,7 @@ struct LeaderboardIndexUpdatePerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await LeaderboardBenchmarkContext(testName: "score_update")
 
-            // Setup: Insert 100 records
+            // Setup: Insert 100 entities
             var scores = (0..<100).map { i in
                 LeaderboardBenchmarkScore(
                     id: "game-\(i)",
@@ -475,7 +475,7 @@ struct LeaderboardIndexUpdatePerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await LeaderboardBenchmarkContext(testName: "delete")
 
-            // Setup: Insert 100 records
+            // Setup: Insert 100 entities
             let scores = (0..<100).map { i in
                 LeaderboardBenchmarkScore(
                     id: "game-\(i)",
@@ -496,7 +496,7 @@ struct LeaderboardIndexUpdatePerformanceTests {
             }
 
             // Benchmark: Delete all
-            let (deleteMs, _) = try await benchmark("Delete 100 records") {
+            let (deleteMs, _) = try await benchmark("Delete 100 entities") {
                 try await ctx.database.withTransaction { transaction in
                     for score in scores {
                         try await ctx.maintainer.updateIndex(
@@ -508,7 +508,7 @@ struct LeaderboardIndexUpdatePerformanceTests {
                 }
             }
 
-            print("Delete 100 records: \(String(format: "%.2f", deleteMs))ms")
+            print("Delete 100 entities: \(String(format: "%.2f", deleteMs))ms")
             print("Per delete: \(String(format: "%.3f", deleteMs / 100))ms")
 
             // Verify
@@ -532,13 +532,13 @@ struct LeaderboardIndexScaleTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await LeaderboardBenchmarkContext(testName: "large_leaderboard")
 
-            // Insert 10000 records in batches
+            // Insert 10000 entities in batches
             let batchSize = 500
-            let totalRecords = 10000
+            let totalEntities = 10000
 
             var insertMs: Double = 0
-            for batch in stride(from: 0, to: totalRecords, by: batchSize) {
-                let scores = (batch..<min(batch + batchSize, totalRecords)).map { i in
+            for batch in stride(from: 0, to: totalEntities, by: batchSize) {
+                let scores = (batch..<min(batch + batchSize, totalEntities)).map { i in
                     LeaderboardBenchmarkScore(
                         id: "game-\(i)",
                         playerId: "player-\(i)",
@@ -561,8 +561,8 @@ struct LeaderboardIndexScaleTests {
                 insertMs += batchMs
             }
 
-            print("Insert \(totalRecords) records: \(String(format: "%.2f", insertMs))ms")
-            print("Throughput: \(String(format: "%.0f", Double(totalRecords) / (insertMs / 1000))) records/s")
+            print("Insert \(totalEntities) entities: \(String(format: "%.2f", insertMs))ms")
+            print("Throughput: \(String(format: "%.0f", Double(totalEntities) / (insertMs / 1000))) entities/s")
 
             // Query performance at scale
             var top10: [(pk: Tuple, score: Int64)]!
@@ -606,7 +606,7 @@ struct LeaderboardIndexScaleTests {
                 )
             }
 
-            let (scanMs, _) = try await benchmark("ScanItem 1000 records") {
+            let (scanMs, _) = try await benchmark("ScanItem 1000 entities") {
                 try await ctx.database.withTransaction { transaction in
                     for score in scores {
                         try await ctx.maintainer.scanItem(
@@ -618,9 +618,9 @@ struct LeaderboardIndexScaleTests {
                 }
             }
 
-            print("ScanItem 1000 records: \(String(format: "%.2f", scanMs))ms")
+            print("ScanItem 1000 entities: \(String(format: "%.2f", scanMs))ms")
             print("Per scanItem: \(String(format: "%.3f", scanMs / 1000))ms")
-            print("Throughput: \(String(format: "%.0f", 1000.0 / (scanMs / 1000))) records/s")
+            print("Throughput: \(String(format: "%.0f", 1000.0 / (scanMs / 1000))) entities/s")
 
             try await ctx.cleanup()
         }
@@ -631,7 +631,7 @@ struct LeaderboardIndexScaleTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await LeaderboardBenchmarkContext(testName: "ties")
 
-            // Insert 1000 records with only 10 distinct scores (many ties)
+            // Insert 1000 entities with only 10 distinct scores (many ties)
             let scores = (0..<1000).map { i in
                 LeaderboardBenchmarkScore(
                     id: "game-\(i)",

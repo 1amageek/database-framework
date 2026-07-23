@@ -51,7 +51,7 @@ actor MutableSnapshotSHACLDataSourceResolver: DatabaseSHACLDataSourceResolver {
             return nil
         case .nodes(let nodes):
             return nodes
-        case .records:
+        case .entities:
             return []
         }
     }

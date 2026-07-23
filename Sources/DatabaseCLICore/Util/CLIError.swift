@@ -5,7 +5,7 @@ public enum CLIError: Error, CustomStringConvertible {
     case unknownCommand(String)
     case invalidArguments(String)
     case entityNotFound(String)
-    case recordNotFound(type: String, id: String)
+    case entityNotFound(type: String, id: String)
     case invalidJSON(String)
     case connectionFailed(String)
     case alreadyInitialized(String)
@@ -24,8 +24,8 @@ public enum CLIError: Error, CustomStringConvertible {
             return "Invalid arguments. \(usage)"
         case .entityNotFound(let name):
             return "Type '\(name)' not found in schema. Use 'schema list' to see registered types."
-        case .recordNotFound(let type, let id):
-            return "Record '\(id)' not found in '\(type)'"
+        case .entityNotFound(let type, let id):
+            return "Entity '\(id)' not found in '\(type)'"
         case .invalidJSON(let message):
             return "Invalid JSON: \(message)"
         case .connectionFailed(let message):

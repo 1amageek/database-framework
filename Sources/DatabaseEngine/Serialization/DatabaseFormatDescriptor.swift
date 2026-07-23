@@ -8,7 +8,7 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
     private static let magic: Bytes = [0x44, 0x42, 0x46, 0x4D]
     private static let checksumOffset = 41
 
-    public let recordFormatVersion: UInt16
+    public let persistableFormatVersion: UInt16
     public let envelopeVersion: UInt8
     public let itemStorage: ItemStorageConfiguration
 
@@ -16,18 +16,18 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
         itemStorage: ItemStorageConfiguration
     ) -> DatabaseFormatDescriptor {
         DatabaseFormatDescriptor(
-            recordFormatVersion: DatabaseRecordStorageCodec.formatVersion,
+            persistableFormatVersion: PersistableStorageCodec.formatVersion,
             envelopeVersion: ItemEnvelope.currentVersion,
             itemStorage: itemStorage
         )
     }
 
     private init(
-        recordFormatVersion: UInt16,
+        persistableFormatVersion: UInt16,
         envelopeVersion: UInt8,
         itemStorage: ItemStorageConfiguration
     ) {
-        self.recordFormatVersion = recordFormatVersion
+        self.persistableFormatVersion = persistableFormatVersion
         self.envelopeVersion = envelopeVersion
         self.itemStorage = itemStorage
     }
@@ -40,7 +40,7 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
             output[2] = Self.magic[2]
             output[3] = Self.magic[3]
             output[4] = Self.descriptorVersion
-            Self.writeUInt16(recordFormatVersion, to: output, at: 5)
+            Self.writeUInt16(persistableFormatVersion, to: output, at: 5)
             output[7] = envelopeVersion
             output[8] = itemStorage.encoding.rawValue
             Self.writeUInt64(
@@ -112,10 +112,10 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
             )
         }
 
-        let recordFormatVersion = readUInt16(bytes, at: 5)
-        guard recordFormatVersion == DatabaseRecordStorageCodec.formatVersion else {
-            throw DatabaseFormatDescriptorError.unsupportedRecordFormatVersion(
-                recordFormatVersion
+        let persistableFormatVersion = readUInt16(bytes, at: 5)
+        guard persistableFormatVersion == PersistableStorageCodec.formatVersion else {
+            throw DatabaseFormatDescriptorError.unsupportedPersistableFormatVersion(
+                persistableFormatVersion
             )
         }
         let envelopeVersion = bytes[7]
@@ -160,7 +160,7 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
             )
         }
         return DatabaseFormatDescriptor(
-            recordFormatVersion: recordFormatVersion,
+            persistableFormatVersion: persistableFormatVersion,
             envelopeVersion: envelopeVersion,
             itemStorage: itemStorage
         )

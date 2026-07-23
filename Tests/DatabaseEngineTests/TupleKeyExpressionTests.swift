@@ -6,13 +6,13 @@ import Core
 import DatabaseValue
 @testable import DatabaseEngine
 
-private struct TupleKeyExpressionRecord: Persistable, Codable, Sendable {
+private struct TupleKeyExpressionEntity: Persistable, Codable, Sendable {
     typealias ID = String
 
     var id: String
     var title: String
 
-    static var persistableType: String { "TupleKeyExpressionRecord" }
+    static var persistableType: String { "TupleKeyExpressionEntity" }
     static var allFields: [String] { ["id", "title"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
     static func fieldNumber(for fieldName: String) -> Int? { nil }
@@ -26,24 +26,24 @@ private struct TupleKeyExpressionRecord: Persistable, Codable, Sendable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<TupleKeyExpressionRecord, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<TupleKeyExpressionEntity, Value>) -> String {
         switch keyPath {
-        case \TupleKeyExpressionRecord.id: return "id"
-        case \TupleKeyExpressionRecord.title: return "title"
+        case \TupleKeyExpressionEntity.id: return "id"
+        case \TupleKeyExpressionEntity.title: return "title"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<TupleKeyExpressionRecord>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<TupleKeyExpressionEntity>) -> String {
         switch keyPath {
-        case \TupleKeyExpressionRecord.id: return "id"
-        case \TupleKeyExpressionRecord.title: return "title"
+        case \TupleKeyExpressionEntity.id: return "id"
+        case \TupleKeyExpressionEntity.title: return "title"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TupleKeyExpressionRecord> {
+        if let partial = keyPath as? PartialKeyPath<TupleKeyExpressionEntity> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
@@ -54,11 +54,11 @@ private struct TupleKeyExpressionRecord: Persistable, Codable, Sendable {
 struct TupleKeyExpressionTests {
     @Test("TupleKeyExpression preserves composite tuple IDs")
     func preservesCompositeTuple() throws {
-        let record = TupleKeyExpressionRecord(id: "record-1", title: "Doc")
-        let compositeID = Tuple([Int64(42), "record-1"])
+        let entity = TupleKeyExpressionEntity(id: "entity-1", title: "Doc")
+        let compositeID = Tuple([Int64(42), "entity-1"])
 
         let extracted = try DataAccess.extractId(
-            from: record,
+            from: entity,
             using: TupleKeyExpression(value: compositeID)
         )
 

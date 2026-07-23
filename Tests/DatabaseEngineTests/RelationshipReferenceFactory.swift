@@ -10,7 +10,7 @@ enum RelationshipReferenceFactory {
         partitions: [DatabaseObjectField] = []
     ) throws -> DatabaseReference<Target> {
         try DatabaseReference(
-            identity: RecordIdentity(
+            identity: PersistableIdentity(
                 entity: Target.persistableType,
                 id: .string(id),
                 partitions: partitions

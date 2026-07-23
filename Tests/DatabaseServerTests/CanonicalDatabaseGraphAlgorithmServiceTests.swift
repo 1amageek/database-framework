@@ -424,7 +424,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
         let engine = CountingEngine()
         let container = try await DBContainer.open(
             for: Schema(
-                [DatabaseEndpointRecord.self, WeightedGraphEdge.self],
+                [DatabaseEndpointEntity.self, WeightedGraphEdge.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(engine)),

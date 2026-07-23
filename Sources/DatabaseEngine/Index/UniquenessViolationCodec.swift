@@ -7,7 +7,7 @@ import Foundation
 #endif
 import StorageKit
 
-/// Canonical bounded persistence codec for uniqueness violation records.
+/// Canonical bounded persistence codec for uniqueness violation entries.
 enum UniquenessViolationCodec {
     private static let magic: [UInt8] = [0x55, 0x56, 0x49, 0x4F]
     private static let version: UInt16 = 1

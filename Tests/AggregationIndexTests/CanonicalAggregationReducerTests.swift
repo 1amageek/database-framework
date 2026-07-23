@@ -13,8 +13,8 @@ struct CanonicalAggregationReducerTests {
         let context = try await makeEmptyQueryContext()
 
         let results = try await context
-            .aggregate(EmptyGlobalAggregationRecord.self)
-            .count(as: "recordCount")
+            .aggregate(EmptyGlobalAggregationEntity.self)
+            .count(as: "entityCount")
             .sum(\.value, as: "sum")
             .avg(\.value, as: "average")
             .min(\.value, as: "minimum")
@@ -30,15 +30,15 @@ struct CanonicalAggregationReducerTests {
         let context = try await makeEmptyQueryContext()
 
         let query = context
-            .aggregate(EmptyGlobalAggregationRecord.self)
-            .count(as: "recordCount")
+            .aggregate(EmptyGlobalAggregationEntity.self)
+            .count(as: "entityCount")
             .sum(\.value, as: "sum")
             .avg(\.value, as: "average")
             .min(\.value, as: "minimum")
             .max(\.value, as: "maximum")
         Self.assertAllIndexBacked(
             try query.determineExecutionStrategies(),
-            names: ["recordCount", "sum", "average", "minimum", "maximum"]
+            names: ["entityCount", "sum", "average", "minimum", "maximum"]
         )
 
         let results = try await query.execute()
@@ -48,7 +48,7 @@ struct CanonicalAggregationReducerTests {
 
     @Test("non-empty global aggregate indexes accept zero grouping fields")
     func nonEmptyGlobalIndexesAcceptZeroGroupingFields() async throws {
-        let schema = Schema([EmptyGlobalAggregationRecord.self])
+        let schema = Schema([EmptyGlobalAggregationEntity.self])
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
@@ -56,11 +56,11 @@ struct CanonicalAggregationReducerTests {
             security: .disabled
         )
         let context = container.newContext()
-        try context.insert(EmptyGlobalAggregationRecord(value: 4))
+        try context.insert(EmptyGlobalAggregationEntity(value: 4))
         try await context.save()
 
         let query = context
-            .aggregate(EmptyGlobalAggregationRecord.self)
+            .aggregate(EmptyGlobalAggregationEntity.self)
             .count(as: "count")
             .sum(\.value, as: "sum")
             .avg(\.value, as: "average")
@@ -87,7 +87,7 @@ struct CanonicalAggregationReducerTests {
     func emptyGlobalSketchIndexesPreserveCanonicalResults() async throws {
         let context = try await makeGlobalSketchQueryContext()
         let query = context
-            .aggregate(IndexedGlobalSketchRecord.self)
+            .aggregate(IndexedGlobalSketchEntity.self)
             .distinct(\.value, as: "distinct")
             .percentile(\.value, p: 0.5, as: "median")
         Self.assertAllIndexBacked(
@@ -106,13 +106,13 @@ struct CanonicalAggregationReducerTests {
     @Test("non-empty global sketch indexes are read outside subspace ranges")
     func nonEmptyGlobalSketchIndexesAreReadDirectly() async throws {
         let context = try await makeGlobalSketchQueryContext()
-        try context.insert(IndexedGlobalSketchRecord(value: 10))
-        try context.insert(IndexedGlobalSketchRecord(value: 20))
-        try context.insert(IndexedGlobalSketchRecord(value: 20))
+        try context.insert(IndexedGlobalSketchEntity(value: 10))
+        try context.insert(IndexedGlobalSketchEntity(value: 20))
+        try context.insert(IndexedGlobalSketchEntity(value: 20))
         try await context.save()
 
         let query = context
-            .aggregate(IndexedGlobalSketchRecord.self)
+            .aggregate(IndexedGlobalSketchEntity.self)
             .distinct(\.value, as: "distinct")
             .percentile(\.value, p: 0.5, as: "median")
         Self.assertAllIndexBacked(
@@ -136,7 +136,7 @@ struct CanonicalAggregationReducerTests {
             throws: AggregationQueryError.duplicateAggregationName("value")
         ) {
             try await context
-                .aggregate(EmptyGlobalAggregationRecord.self)
+                .aggregate(EmptyGlobalAggregationEntity.self)
                 .count(as: "value")
                 .sum(\.value, as: "value")
                 .execute()
@@ -159,7 +159,7 @@ struct CanonicalAggregationReducerTests {
     @Test("aggregate Double access rejects lossy integer conversion")
     func aggregateDoubleRejectsLossyIntegerConversion() {
         let value = FieldValue.uint64(9_007_199_254_740_993)
-        let result = AggregateResult<EmptyGlobalAggregationRecord>(
+        let result = AggregateResult<EmptyGlobalAggregationEntity>(
             groupKey: [:],
             aggregates: ["sum": value]
         )
@@ -347,19 +347,19 @@ struct CanonicalAggregationReducerTests {
 
     @Test("distinct ignores null and uses canonical numeric identity")
     func distinctUsesCanonicalIdentity() throws {
-        let records = [
-            AggregationReducerRecord(id: "1", group: nil, value: .int64(1)),
-            AggregationReducerRecord(id: "2", group: nil, value: .uint64(1)),
-            AggregationReducerRecord(id: "3", group: nil, value: .double(1)),
-            AggregationReducerRecord(id: "4", group: nil, value: nil),
+        let entities = [
+            AggregationReducerEntity(id: "1", group: nil, value: .int64(1)),
+            AggregationReducerEntity(id: "2", group: nil, value: .uint64(1)),
+            AggregationReducerEntity(id: "3", group: nil, value: .double(1)),
+            AggregationReducerEntity(id: "4", group: nil, value: nil),
         ]
 
         let result = try CanonicalAggregationReducer.aggregate(
-            items: records,
+            items: entities,
             aggregation: .distinct(field: "value")
         )
         let identity = try CanonicalAggregationReducer.groupIdentity(
-            item: records[0],
+            item: entities[0],
             fields: ["group"]
         )
 
@@ -369,7 +369,7 @@ struct CanonicalAggregationReducerTests {
 
     @Test("unknown fields are not silently treated as null")
     func unknownFieldsFailExplicitly() {
-        let record = AggregationReducerRecord(
+        let entity = AggregationReducerEntity(
             id: "1",
             group: nil,
             value: nil
@@ -377,7 +377,7 @@ struct CanonicalAggregationReducerTests {
 
         #expect(throws: AggregationQueryError.invalidField("missing")) {
             try CanonicalAggregationReducer.groupIdentity(
-                item: record,
+                item: entity,
                 fields: ["missing"]
             )
         }
@@ -409,7 +409,7 @@ struct CanonicalAggregationReducerTests {
         let subspace = Subspace(prefix: Tuple("malformed-minimum").pack())
         let index = Index(
             name: "minimum_by_group",
-            kind: MinIndexKind<AggregationTupleRecord, Int64>(
+            kind: MinIndexKind<AggregationTupleEntity, Int64>(
                 groupBy: [\.group],
                 value: \.number
             ),
@@ -418,9 +418,9 @@ struct CanonicalAggregationReducerTests {
                 FieldKeyExpression(fieldName: "number"),
             ]),
             subspaceKey: "minimum_by_group",
-            itemTypes: [AggregationTupleRecord.persistableType]
+            itemTypes: [AggregationTupleEntity.persistableType]
         )
-        let maintainer = MinIndexMaintainer<AggregationTupleRecord, Int64>(
+        let maintainer = MinIndexMaintainer<AggregationTupleEntity, Int64>(
             index: index,
             subspace: subspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -440,7 +440,7 @@ struct CanonicalAggregationReducerTests {
     func integerIndexReadRejectsLossyDoubleConversion() {
         let index = Index(
             name: "sum_by_group",
-            kind: SumIndexKind<AggregationTupleRecord, Int64>(
+            kind: SumIndexKind<AggregationTupleEntity, Int64>(
                 groupBy: [\.group],
                 value: \.number
             ),
@@ -449,9 +449,9 @@ struct CanonicalAggregationReducerTests {
                 FieldKeyExpression(fieldName: "number"),
             ]),
             subspaceKey: "sum_by_group",
-            itemTypes: [AggregationTupleRecord.persistableType]
+            itemTypes: [AggregationTupleEntity.persistableType]
         )
-        let maintainer = SumIndexMaintainer<AggregationTupleRecord, Int64>(
+        let maintainer = SumIndexMaintainer<AggregationTupleEntity, Int64>(
             index: index,
             subspace: Subspace(prefix: Tuple("lossless-sum").pack()),
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -474,7 +474,7 @@ struct CanonicalAggregationReducerTests {
             valueType: Double.self,
             name: "raw-double-sum"
         )
-        let record = FloatingAggregationRecord(
+        let entity = FloatingAggregationEntity(
             id: "1",
             group: "group",
             value: 0.000_000_4
@@ -483,7 +483,7 @@ struct CanonicalAggregationReducerTests {
         try await engine.withTransaction { transaction in
             try await maintainer.updateIndex(
                 oldItem: nil,
-                newItem: record,
+                newItem: entity,
                 transaction: transaction
             )
         }
@@ -494,7 +494,7 @@ struct CanonicalAggregationReducerTests {
             )
         }
 
-        #expect(sum == .double(record.value))
+        #expect(sum == .double(entity.value))
     }
 
     @Test("materialized floating aggregates preserve compensated contributions")
@@ -508,18 +508,18 @@ struct CanonicalAggregationReducerTests {
             valueType: Double.self,
             name: "compensated-double-average"
         )
-        let records = [
-            FloatingAggregationRecord(
+        let entities = [
+            FloatingAggregationEntity(
                 id: "large-positive",
                 group: "group",
                 value: 1.0e16
             ),
-            FloatingAggregationRecord(
+            FloatingAggregationEntity(
                 id: "unit",
                 group: "group",
                 value: 1
             ),
-            FloatingAggregationRecord(
+            FloatingAggregationEntity(
                 id: "large-negative",
                 group: "group",
                 value: -1.0e16
@@ -527,15 +527,15 @@ struct CanonicalAggregationReducerTests {
         ]
 
         try await engine.withTransaction { transaction in
-            for record in records {
+            for entity in entities {
                 try await sumMaintainer.updateIndex(
                     oldItem: nil,
-                    newItem: record,
+                    newItem: entity,
                     transaction: transaction
                 )
                 try await averageMaintainer.updateIndex(
                     oldItem: nil,
-                    newItem: record,
+                    newItem: entity,
                     transaction: transaction
                 )
             }
@@ -558,12 +558,12 @@ struct CanonicalAggregationReducerTests {
 
         try await engine.withTransaction { transaction in
             try await sumMaintainer.updateIndex(
-                oldItem: records[1],
+                oldItem: entities[1],
                 newItem: nil,
                 transaction: transaction
             )
             try await averageMaintainer.updateIndex(
-                oldItem: records[1],
+                oldItem: entities[1],
                 newItem: nil,
                 transaction: transaction
             )
@@ -608,7 +608,7 @@ struct CanonicalAggregationReducerTests {
             valueType: UInt64.self,
             name: "uint64-sum"
         )
-        let record = UnsignedAggregationRecord(
+        let entity = UnsignedAggregationEntity(
             id: "1",
             group: "group",
             value: .max
@@ -617,7 +617,7 @@ struct CanonicalAggregationReducerTests {
         try await engine.withTransaction { transaction in
             try await maintainer.updateIndex(
                 oldItem: nil,
-                newItem: record,
+                newItem: entity,
                 transaction: transaction
             )
         }
@@ -649,7 +649,7 @@ struct CanonicalAggregationReducerTests {
             valueType: UInt64.self,
             name: "sum-membership"
         )
-        let record = UnsignedAggregationRecord(
+        let entity = UnsignedAggregationEntity(
             id: "1",
             group: "group",
             value: 42
@@ -658,13 +658,13 @@ struct CanonicalAggregationReducerTests {
         try await engine.withTransaction { transaction in
             try await maintainer.updateIndex(
                 oldItem: nil,
-                newItem: record,
+                newItem: entity,
                 transaction: transaction
             )
         }
         try await engine.withTransaction { transaction in
             try await maintainer.updateIndex(
-                oldItem: record,
+                oldItem: entity,
                 newItem: nil,
                 transaction: transaction
             )
@@ -680,7 +680,7 @@ struct CanonicalAggregationReducerTests {
     func deletingFinalCountMemberRemovesStoredGroup() async throws {
         let engine = InMemoryEngine()
         let maintainer = makeCountMaintainer(name: "count-membership")
-        let record = AggregationTupleRecord(
+        let entity = AggregationTupleEntity(
             id: "1",
             group: "group",
             number: 42
@@ -689,13 +689,13 @@ struct CanonicalAggregationReducerTests {
         try await engine.withTransaction { transaction in
             try await maintainer.updateIndex(
                 oldItem: nil,
-                newItem: record,
+                newItem: entity,
                 transaction: transaction
             )
         }
         try await engine.withTransaction { transaction in
             try await maintainer.updateIndex(
-                oldItem: record,
+                oldItem: entity,
                 newItem: nil,
                 transaction: transaction
             )
@@ -744,13 +744,13 @@ struct CanonicalAggregationReducerTests {
             valueType: UInt64.self,
             name: "uint64-average"
         )
-        let records = [
-            UnsignedAggregationRecord(
+        let entities = [
+            UnsignedAggregationEntity(
                 id: "1",
                 group: "group",
                 value: .max
             ),
-            UnsignedAggregationRecord(
+            UnsignedAggregationEntity(
                 id: "2",
                 group: "group",
                 value: .max
@@ -758,10 +758,10 @@ struct CanonicalAggregationReducerTests {
         ]
 
         try await engine.withTransaction { transaction in
-            for record in records {
+            for entity in entities {
                 try await maintainer.updateIndex(
                     oldItem: nil,
-                    newItem: record,
+                    newItem: entity,
                     transaction: transaction
                 )
             }
@@ -795,12 +795,12 @@ struct CanonicalAggregationReducerTests {
             valueType: UInt64.self,
             name: "uint64-overflow"
         )
-        let maximum = UnsignedAggregationRecord(
+        let maximum = UnsignedAggregationEntity(
             id: "maximum",
             group: "group",
             value: .max
         )
-        let one = UnsignedAggregationRecord(
+        let one = UnsignedAggregationEntity(
             id: "one",
             group: "group",
             value: 1
@@ -844,8 +844,8 @@ struct CanonicalAggregationReducerTests {
             elements: grouping,
             appending: "sum"
         )
-        let record = SignedAggregationRecord(
-            id: "record",
+        let entity = SignedAggregationEntity(
+            id: "entity",
             group: "group",
             value: 2
         )
@@ -861,7 +861,7 @@ struct CanonicalAggregationReducerTests {
             try await engine.withTransaction { transaction in
                 try await maintainer.updateIndex(
                     oldItem: nil,
-                    newItem: record,
+                    newItem: entity,
                     transaction: transaction
                 )
             }
@@ -883,7 +883,7 @@ struct CanonicalAggregationReducerTests {
             valueType: Int64.self,
             name: "int64-minimum-delete"
         )
-        let record = SignedAggregationRecord(
+        let entity = SignedAggregationEntity(
             id: "minimum",
             group: "group",
             value: .min
@@ -892,13 +892,13 @@ struct CanonicalAggregationReducerTests {
         try await engine.withTransaction { transaction in
             try await maintainer.updateIndex(
                 oldItem: nil,
-                newItem: record,
+                newItem: entity,
                 transaction: transaction
             )
         }
         try await engine.withTransaction { transaction in
             try await maintainer.updateIndex(
-                oldItem: record,
+                oldItem: entity,
                 newItem: nil,
                 transaction: transaction
             )
@@ -921,13 +921,13 @@ struct CanonicalAggregationReducerTests {
             valueType: UInt64.self,
             name: "uint64-maximum"
         )
-        let records = [
-            UnsignedAggregationRecord(
+        let entities = [
+            UnsignedAggregationEntity(
                 id: "maximum",
                 group: "group",
                 value: .max
             ),
-            UnsignedAggregationRecord(
+            UnsignedAggregationEntity(
                 id: "previous",
                 group: "group",
                 value: .max - 1
@@ -935,15 +935,15 @@ struct CanonicalAggregationReducerTests {
         ]
 
         try await engine.withTransaction { transaction in
-            for record in records {
+            for entity in entities {
                 try await minimum.updateIndex(
                     oldItem: nil,
-                    newItem: record,
+                    newItem: entity,
                     transaction: transaction
                 )
                 try await maximum.updateIndex(
                     oldItem: nil,
-                    newItem: record,
+                    newItem: entity,
                     transaction: transaction
                 )
             }
@@ -962,10 +962,10 @@ struct CanonicalAggregationReducerTests {
     private func makeSumMaintainer<Value: IndexNumericValue>(
         valueType _: Value.Type,
         name: String
-    ) -> SumIndexMaintainer<AggregationValueRecord<Value>, Value> {
+    ) -> SumIndexMaintainer<AggregationValueEntity<Value>, Value> {
         let index = Index(
             name: name,
-            kind: SumIndexKind<AggregationValueRecord<Value>, Value>(
+            kind: SumIndexKind<AggregationValueEntity<Value>, Value>(
                 groupBy: [\.group],
                 value: \.value
             ),
@@ -974,7 +974,7 @@ struct CanonicalAggregationReducerTests {
                 FieldKeyExpression(fieldName: "value"),
             ]),
             subspaceKey: name,
-            itemTypes: [AggregationValueRecord<Value>.persistableType]
+            itemTypes: [AggregationValueEntity<Value>.persistableType]
         )
         return SumIndexMaintainer(
             index: index,
@@ -984,7 +984,7 @@ struct CanonicalAggregationReducerTests {
     }
 
     private func makeEmptyQueryContext() async throws -> DatabaseContext {
-        let schema = Schema([EmptyGlobalAggregationRecord.self])
+        let schema = Schema([EmptyGlobalAggregationEntity.self])
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
@@ -995,7 +995,7 @@ struct CanonicalAggregationReducerTests {
     }
 
     private func makeGlobalSketchQueryContext() async throws -> DatabaseContext {
-        let schema = Schema([IndexedGlobalSketchRecord.self])
+        let schema = Schema([IndexedGlobalSketchEntity.self])
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
@@ -1006,7 +1006,7 @@ struct CanonicalAggregationReducerTests {
     }
 
     private func assertCanonicalEmptyGlobalResult(
-        _ results: [AggregateResult<EmptyGlobalAggregationRecord>]
+        _ results: [AggregateResult<EmptyGlobalAggregationEntity>]
     ) {
         #expect(results.count == 1)
         guard let result = results.first else {
@@ -1014,13 +1014,13 @@ struct CanonicalAggregationReducerTests {
             return
         }
         #expect(result.groupKey.isEmpty)
-        #expect(result.aggregates.keys.contains("recordCount"))
+        #expect(result.aggregates.keys.contains("entityCount"))
         #expect(result.aggregates.keys.contains("sum"))
         #expect(result.aggregates.keys.contains("average"))
         #expect(result.aggregates.keys.contains("minimum"))
         #expect(result.aggregates.keys.contains("maximum"))
 
-        guard let storedCount = result.aggregates["recordCount"],
+        guard let storedCount = result.aggregates["entityCount"],
               let count = storedCount else {
             Issue.record("COUNT must be materialized in the global result")
             return
@@ -1046,8 +1046,8 @@ struct CanonicalAggregationReducerTests {
         #expect(storedValue == nil)
     }
 
-    private static func assertAllIndexBacked<Record: Persistable>(
-        _ strategies: [String: AggregationQueryBuilder<Record>.ExecutionStrategy],
+    private static func assertAllIndexBacked<Entity: Persistable>(
+        _ strategies: [String: AggregationQueryBuilder<Entity>.ExecutionStrategy],
         names: [String]
     ) {
         #expect(strategies.count == names.count)
@@ -1065,13 +1065,13 @@ struct CanonicalAggregationReducerTests {
 
     private func makeCountMaintainer(
         name: String
-    ) -> CountIndexMaintainer<AggregationTupleRecord> {
+    ) -> CountIndexMaintainer<AggregationTupleEntity> {
         let index = Index(
             name: name,
-            kind: CountIndexKind<AggregationTupleRecord>(groupBy: [\.group]),
+            kind: CountIndexKind<AggregationTupleEntity>(groupBy: [\.group]),
             rootExpression: FieldKeyExpression(fieldName: "group"),
             subspaceKey: name,
-            itemTypes: [AggregationTupleRecord.persistableType]
+            itemTypes: [AggregationTupleEntity.persistableType]
         )
         return CountIndexMaintainer(
             index: index,
@@ -1083,10 +1083,10 @@ struct CanonicalAggregationReducerTests {
     private func makeAverageMaintainer<Value: IndexNumericValue>(
         valueType _: Value.Type,
         name: String
-    ) -> AverageIndexMaintainer<AggregationValueRecord<Value>, Value> {
+    ) -> AverageIndexMaintainer<AggregationValueEntity<Value>, Value> {
         let index = Index(
             name: name,
-            kind: AverageIndexKind<AggregationValueRecord<Value>, Value>(
+            kind: AverageIndexKind<AggregationValueEntity<Value>, Value>(
                 groupBy: [\.group],
                 value: \.value
             ),
@@ -1095,7 +1095,7 @@ struct CanonicalAggregationReducerTests {
                 FieldKeyExpression(fieldName: "value"),
             ]),
             subspaceKey: name,
-            itemTypes: [AggregationValueRecord<Value>.persistableType]
+            itemTypes: [AggregationValueEntity<Value>.persistableType]
         )
         return AverageIndexMaintainer(
             index: index,
@@ -1109,10 +1109,10 @@ struct CanonicalAggregationReducerTests {
     >(
         valueType _: Value.Type,
         name: String
-    ) -> MinIndexMaintainer<AggregationValueRecord<Value>, Value> {
+    ) -> MinIndexMaintainer<AggregationValueEntity<Value>, Value> {
         let index = Index(
             name: name,
-            kind: MinIndexKind<AggregationValueRecord<Value>, Value>(
+            kind: MinIndexKind<AggregationValueEntity<Value>, Value>(
                 groupBy: [\.group],
                 value: \.value
             ),
@@ -1121,7 +1121,7 @@ struct CanonicalAggregationReducerTests {
                 FieldKeyExpression(fieldName: "value"),
             ]),
             subspaceKey: name,
-            itemTypes: [AggregationValueRecord<Value>.persistableType]
+            itemTypes: [AggregationValueEntity<Value>.persistableType]
         )
         return MinIndexMaintainer(
             index: index,
@@ -1135,10 +1135,10 @@ struct CanonicalAggregationReducerTests {
     >(
         valueType _: Value.Type,
         name: String
-    ) -> MaxIndexMaintainer<AggregationValueRecord<Value>, Value> {
+    ) -> MaxIndexMaintainer<AggregationValueEntity<Value>, Value> {
         let index = Index(
             name: name,
-            kind: MaxIndexKind<AggregationValueRecord<Value>, Value>(
+            kind: MaxIndexKind<AggregationValueEntity<Value>, Value>(
                 groupBy: [\.group],
                 value: \.value
             ),
@@ -1147,7 +1147,7 @@ struct CanonicalAggregationReducerTests {
                 FieldKeyExpression(fieldName: "value"),
             ]),
             subspaceKey: name,
-            itemTypes: [AggregationValueRecord<Value>.persistableType]
+            itemTypes: [AggregationValueEntity<Value>.persistableType]
         )
         return MaxIndexMaintainer(
             index: index,
@@ -1157,11 +1157,11 @@ struct CanonicalAggregationReducerTests {
     }
 }
 
-private typealias FloatingAggregationRecord = AggregationValueRecord<Double>
-private typealias UnsignedAggregationRecord = AggregationValueRecord<UInt64>
-private typealias SignedAggregationRecord = AggregationValueRecord<Int64>
+private typealias FloatingAggregationEntity = AggregationValueEntity<Double>
+private typealias UnsignedAggregationEntity = AggregationValueEntity<UInt64>
+private typealias SignedAggregationEntity = AggregationValueEntity<Int64>
 
-private struct AggregationValueRecord<Value: IndexNumericValue>: Persistable {
+private struct AggregationValueEntity<Value: IndexNumericValue>: Persistable {
     typealias ID = String
 
     let id: String
@@ -1169,7 +1169,7 @@ private struct AggregationValueRecord<Value: IndexNumericValue>: Persistable {
     let value: Value
 
     static var persistableType: String {
-        "AggregationValueRecord<\(Value.indexScalarType.rawValue)>"
+        "AggregationValueEntity<\(Value.indexScalarType.rawValue)>"
     }
     static var allFields: [String] { ["id", "group", "value"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
@@ -1257,55 +1257,55 @@ private struct AggregationValueRecord<Value: IndexNumericValue>: Persistable {
 private struct UnsupportedAggregationValue: Sendable {}
 
 @Persistable
-private struct EmptyGlobalAggregationRecord {
-    #Directory<EmptyGlobalAggregationRecord>("tests", "empty-global-aggregate")
+private struct EmptyGlobalAggregationEntity {
+    #Directory<EmptyGlobalAggregationEntity>("tests", "empty-global-aggregate")
 
     var id: String = ""
     var value: Int64 = 0
 
-    #Index(CountIndexKind<EmptyGlobalAggregationRecord>(groupBy: []))
-    #Index(SumIndexKind<EmptyGlobalAggregationRecord, Int64>(
+    #Index(CountIndexKind<EmptyGlobalAggregationEntity>(groupBy: []))
+    #Index(SumIndexKind<EmptyGlobalAggregationEntity, Int64>(
         groupBy: [],
         value: \.value
     ))
-    #Index(AverageIndexKind<EmptyGlobalAggregationRecord, Int64>(
+    #Index(AverageIndexKind<EmptyGlobalAggregationEntity, Int64>(
         groupBy: [],
         value: \.value
     ))
-    #Index(MinIndexKind<EmptyGlobalAggregationRecord, Int64>(
+    #Index(MinIndexKind<EmptyGlobalAggregationEntity, Int64>(
         groupBy: [],
         value: \.value
     ))
-    #Index(MaxIndexKind<EmptyGlobalAggregationRecord, Int64>(
+    #Index(MaxIndexKind<EmptyGlobalAggregationEntity, Int64>(
         groupBy: [],
         value: \.value
     ))
 }
 
 @Persistable
-private struct IndexedGlobalSketchRecord {
-    #Directory<IndexedGlobalSketchRecord>("tests", "indexed-global-sketch")
+private struct IndexedGlobalSketchEntity {
+    #Directory<IndexedGlobalSketchEntity>("tests", "indexed-global-sketch")
 
     var value: Int64 = 0
 
-    #Index(DistinctIndexKind<IndexedGlobalSketchRecord>(
+    #Index(DistinctIndexKind<IndexedGlobalSketchEntity>(
         groupBy: [],
         value: \.value
     ))
-    #Index(PercentileIndexKind<IndexedGlobalSketchRecord, Int64>(
+    #Index(PercentileIndexKind<IndexedGlobalSketchEntity, Int64>(
         groupBy: [],
         value: \.value
     ))
 }
 
-private struct AggregationReducerRecord: Persistable {
+private struct AggregationReducerEntity: Persistable {
     typealias ID = String
 
     let id: String
     let group: FieldValue?
     let value: FieldValue?
 
-    static let persistableType = "AggregationReducerRecord"
+    static let persistableType = "AggregationReducerEntity"
     static let allFields = ["id", "group", "value"]
     static let indexDescriptors: [IndexDescriptor] = []
 
@@ -1326,20 +1326,20 @@ private struct AggregationReducerRecord: Persistable {
     }
 
     static func fieldName<Value>(
-        for keyPath: KeyPath<AggregationReducerRecord, Value>
+        for keyPath: KeyPath<AggregationReducerEntity, Value>
     ) -> String {
-        fieldName(for: keyPath as PartialKeyPath<AggregationReducerRecord>)
+        fieldName(for: keyPath as PartialKeyPath<AggregationReducerEntity>)
     }
 
     static func fieldName(
-        for keyPath: PartialKeyPath<AggregationReducerRecord>
+        for keyPath: PartialKeyPath<AggregationReducerEntity>
     ) -> String {
         switch keyPath {
-        case \AggregationReducerRecord.id:
+        case \AggregationReducerEntity.id:
             return "id"
-        case \AggregationReducerRecord.group:
+        case \AggregationReducerEntity.group:
             return "group"
-        case \AggregationReducerRecord.value:
+        case \AggregationReducerEntity.value:
             return "value"
         default:
             preconditionFailure("Unsupported aggregation reducer key path")
@@ -1347,21 +1347,21 @@ private struct AggregationReducerRecord: Persistable {
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<AggregationReducerRecord> else {
+        guard let keyPath = keyPath as? PartialKeyPath<AggregationReducerEntity> else {
             preconditionFailure("Unsupported aggregation reducer key path type")
         }
         return fieldName(for: keyPath)
     }
 }
 
-private struct AggregationTupleRecord: Persistable {
+private struct AggregationTupleEntity: Persistable {
     typealias ID = String
 
     let id: String
     let group: String
     let number: Int64
 
-    static let persistableType = "AggregationTupleRecord"
+    static let persistableType = "AggregationTupleEntity"
     static let allFields = ["id", "group", "number"]
     static let indexDescriptors: [IndexDescriptor] = []
 
@@ -1382,20 +1382,20 @@ private struct AggregationTupleRecord: Persistable {
     }
 
     static func fieldName<Value>(
-        for keyPath: KeyPath<AggregationTupleRecord, Value>
+        for keyPath: KeyPath<AggregationTupleEntity, Value>
     ) -> String {
-        fieldName(for: keyPath as PartialKeyPath<AggregationTupleRecord>)
+        fieldName(for: keyPath as PartialKeyPath<AggregationTupleEntity>)
     }
 
     static func fieldName(
-        for keyPath: PartialKeyPath<AggregationTupleRecord>
+        for keyPath: PartialKeyPath<AggregationTupleEntity>
     ) -> String {
         switch keyPath {
-        case \AggregationTupleRecord.id:
+        case \AggregationTupleEntity.id:
             return "id"
-        case \AggregationTupleRecord.group:
+        case \AggregationTupleEntity.group:
             return "group"
-        case \AggregationTupleRecord.number:
+        case \AggregationTupleEntity.number:
             return "number"
         default:
             preconditionFailure("Unsupported aggregation tuple key path")
@@ -1403,7 +1403,7 @@ private struct AggregationTupleRecord: Persistable {
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<AggregationTupleRecord> else {
+        guard let keyPath = keyPath as? PartialKeyPath<AggregationTupleEntity> else {
             preconditionFailure("Unsupported aggregation tuple key path type")
         }
         return fieldName(for: keyPath)

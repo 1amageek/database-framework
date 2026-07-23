@@ -12,8 +12,8 @@ import Testing
 
 @Suite("Schema database SHACL data source resolver")
 struct SchemaDatabaseSHACLDataSourceResolverTests {
-    @Test("record focus resolves compiled RDF subjects")
-    func resolvesRecordFocus() async throws {
+    @Test("entity focus resolves compiled RDF subjects")
+    func resolvesEntityFocus() async throws {
         let resolutionContext = try await makeSHACLDataSourceResolutionContext()
         var statement = DatabaseSHACLStatement()
         statement.id = "statement-1"
@@ -25,7 +25,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
         try context.insert(statement)
         try await context.save()
 
-        let identity = RecordIdentity(
+        let identity = PersistableIdentity(
             entity: DatabaseSHACLStatement.persistableType,
             id: .string(statement.id)
         )
@@ -34,7 +34,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
         ) { transaction in
             try await resolutionContext.resolver.resolve(
                 data: resolutionContext.data,
-                focus: .records([identity]),
+                focus: .entities([identity]),
                 entailment: .none,
                 workBudget: SHACLValidationWorkBudget(
                     budget: DatabaseExecutionBudget(maximumWorkUnits: 10)
@@ -44,21 +44,21 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
         }
 
         #expect(resolved.data == resolutionContext.data)
-        #expect(resolved.focus == .records([identity]))
+        #expect(resolved.focus == .entities([identity]))
         #expect(resolved.graphScope == .named(try RDFGraphName(iri: "urn:data")))
         #expect(resolved.selectedFocusNodes == [.iri("urn:person:1")])
         #expect(resolved.snapshotFingerprint.count == 8)
     }
 
-    @Test("an empty record focus remains an empty selection")
-    func preservesEmptyRecordFocus() async throws {
+    @Test("an empty entity focus remains an empty selection")
+    func preservesEmptyEntityFocus() async throws {
         let resolutionContext = try await makeSHACLDataSourceResolutionContext()
         let resolved = try await resolutionContext.container.engine.withTransaction(
             configuration: .readOnly
         ) { transaction in
             try await resolutionContext.resolver.resolve(
                 data: resolutionContext.data,
-                focus: .records([]),
+                focus: .entities([]),
                 entailment: .none,
                 workBudget: SHACLValidationWorkBudget(
                     budget: DatabaseExecutionBudget(maximumWorkUnits: 2)

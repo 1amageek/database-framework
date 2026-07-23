@@ -1,6 +1,6 @@
 import Core
 
-/// Decodes a complete typed record from bounded canonical DBIX bytes.
+/// Decodes a complete typed entity from bounded canonical DBIX bytes.
 public struct IndexEntryDecoder<T: Persistable>: Sendable {
     private let metadata: CoveringIndexMetadata
 
@@ -35,6 +35,6 @@ public struct IndexEntryDecoder<T: Persistable>: Sendable {
                 unexpectedFields: actualNames.subtracting(expectedNames).sorted()
             )
         }
-        return try T.decodeDatabaseRecord(fields)
+        return try T.decodePersistedFields(fields)
     }
 }

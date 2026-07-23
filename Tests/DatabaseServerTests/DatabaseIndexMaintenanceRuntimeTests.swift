@@ -12,13 +12,13 @@ struct DatabaseIndexMaintenanceRuntimeTests {
     func rebuildResumesAfterRecreation() async throws {
         let engine = InMemoryEngine()
         let firstContainer = try await makeContainer(engine: engine)
-        try await insertRecords(into: firstContainer)
+        try await insertEntities(into: firstContainer)
         let generation = try #require(DatabaseUUID(bytes: Array(0..<16)))
         let partitions = [try tenantPartition("tenant-a")]
-        var directoryPath = DirectoryPath<CatalogPartitionedRecord>()
+        var directoryPath = DirectoryPath<CatalogPartitionedEntity>()
         directoryPath.set(\.tenantID, to: "tenant-a")
         let entitySubspace = try await firstContainer.resolveDirectory(
-            for: CatalogPartitionedRecord.self,
+            for: CatalogPartitionedEntity.self,
             path: directoryPath
         )
         let longLivedStateReader = IndexLifecycleStore(
@@ -39,7 +39,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         let preparedPartitions = try await firstContainer.newContext()
             .withTransaction { transaction in
             try await firstRuntime.prepareResources(
-                entity: CatalogPartitionedRecord.persistableType,
+                entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
                 transaction: transaction.storageAccess
@@ -50,7 +50,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         let firstSlice = try await firstContainer.newContext().withTransaction {
             transaction in
             try await firstRuntime.runRebuildSlice(
-                entity: CatalogPartitionedRecord.persistableType,
+                entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
                 generation: generation,
@@ -76,7 +76,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
             partitions: partitions
         )
         #expect(intermediate.indexState == .writeOnly)
-        #expect(intermediate.rebuildRecord?.indexedRecordCount == 1)
+        #expect(intermediate.rebuildState?.indexedEntityCount == 1)
 
         let recreatedContainer = try await makeContainer(engine: engine)
         let recreatedRuntime = DatabaseIndexMaintenanceRuntime(
@@ -85,7 +85,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         let finalSlice = try await recreatedContainer.newContext().withTransaction {
             transaction in
             try await recreatedRuntime.runRebuildSlice(
-                entity: CatalogPartitionedRecord.persistableType,
+                entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
                 generation: generation,
@@ -96,7 +96,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         }
         #expect(finalSlice.completedWorkUnits == 1)
         #expect(finalSlice.isComplete)
-        #expect(finalSlice.indexedRecordCount == 2)
+        #expect(finalSlice.indexedEntityCount == 2)
 
         let completed = try await status(
             runtime: recreatedRuntime,
@@ -104,20 +104,20 @@ struct DatabaseIndexMaintenanceRuntimeTests {
             partitions: partitions
         )
         #expect(completed.indexState == .readable)
-        #expect(completed.rebuildRecord?.phase == .complete)
-        #expect(completed.rebuildRecord?.indexedRecordCount == 2)
+        #expect(completed.rebuildState?.phase == .complete)
+        #expect(completed.rebuildState?.indexedEntityCount == 2)
     }
 
     @Test("A second generation cannot enter an active rebuild")
     func rejectsConcurrentGeneration() async throws {
         let container = try await makeContainer(engine: InMemoryEngine())
-        try await insertRecords(into: container)
+        try await insertEntities(into: container)
         let partitions = [try tenantPartition("tenant-a")]
         let runtime = DatabaseIndexMaintenanceRuntime(container: container)
         let preparedPartitions = try await container.newContext()
             .withTransaction { transaction in
             try await runtime.prepareResources(
-                entity: CatalogPartitionedRecord.persistableType,
+                entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
                 transaction: transaction.storageAccess
@@ -129,7 +129,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         )
         _ = try await container.newContext().withTransaction { transaction in
             try await runtime.runRebuildSlice(
-                entity: CatalogPartitionedRecord.persistableType,
+                entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
                 generation: firstGeneration,
@@ -150,7 +150,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         ) {
             try await container.newContext().withTransaction { transaction in
                 try await runtime.runRebuildSlice(
-                    entity: CatalogPartitionedRecord.persistableType,
+                    entity: CatalogPartitionedEntity.persistableType,
                     index: "catalog_value",
                     partitions: partitions,
                     generation: secondGeneration,
@@ -162,15 +162,15 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         }
     }
 
-    @Test("Resume requires an existing matching building record")
-    func resumeRequiresExistingBuildingRecord() async throws {
+    @Test("Resume requires an existing matching building entity")
+    func resumeRequiresExistingBuildingEntity() async throws {
         let container = try await makeContainer(engine: InMemoryEngine())
-        try await insertRecords(into: container)
+        try await insertEntities(into: container)
         let partitions = [try tenantPartition("tenant-a")]
         let runtime = DatabaseIndexMaintenanceRuntime(container: container)
         _ = try await container.newContext().withTransaction { transaction in
             try await runtime.prepareResources(
-                entity: CatalogPartitionedRecord.persistableType,
+                entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
                 transaction: transaction.storageAccess
@@ -178,10 +178,10 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         }
         let generation = DatabaseUUID(high: 3, low: 1)
 
-        await #expect(throws: DatabaseIndexRebuildError.corruptedRecord) {
+        await #expect(throws: DatabaseIndexRebuildError.corruptedRebuildState) {
             try await container.newContext().withTransaction { transaction in
                 try await runtime.runRebuildSlice(
-                    entity: CatalogPartitionedRecord.persistableType,
+                    entity: CatalogPartitionedEntity.persistableType,
                     index: "catalog_value",
                     partitions: partitions,
                     generation: generation,
@@ -200,7 +200,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
     ) async throws -> DatabaseIndexMaintenanceStatus {
         try await container.newContext().withTransaction { transaction in
             try await runtime.status(
-                entity: CatalogPartitionedRecord.persistableType,
+                entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
                 transaction: transaction.storageAccess
@@ -208,13 +208,13 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         }
     }
 
-    private func insertRecords(into container: DBContainer) async throws {
+    private func insertEntities(into container: DBContainer) async throws {
         let context = container.newContext()
-        var first = CatalogPartitionedRecord()
+        var first = CatalogPartitionedEntity()
         first.id = "first"
         first.tenantID = "tenant-a"
         first.value = "alpha"
-        var second = CatalogPartitionedRecord()
+        var second = CatalogPartitionedEntity()
         second.id = "second"
         second.tenantID = "tenant-a"
         second.value = "beta"
@@ -224,7 +224,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
     }
 
     private func tenantPartition(_ tenant: String) throws -> DatabaseObjectField {
-        let schema = try #require(CatalogPartitionedRecord.fieldSchemas.first {
+        let schema = try #require(CatalogPartitionedEntity.fieldSchemas.first {
             $0.name == "tenantID"
         })
         let number = try #require(UInt32(exactly: schema.fieldNumber))
@@ -238,7 +238,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
     private func makeContainer(engine: InMemoryEngine) async throws -> DBContainer {
         try await DBContainer.open(
             for: Schema(
-                [CatalogPartitionedRecord.self],
+                [CatalogPartitionedEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .init(backend: .custom(engine)),

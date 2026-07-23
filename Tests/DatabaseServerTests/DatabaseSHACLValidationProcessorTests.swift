@@ -73,8 +73,8 @@ struct DatabaseSHACLValidationProcessorTests {
         }
     }
 
-    @Test("an empty record selection does not expand to shape targets")
-    func emptyRecordSelectionRemainsEmpty() async throws {
+    @Test("an empty entity selection does not expand to shape targets")
+    func emptyEntitySelectionRemainsEmpty() async throws {
         let validationContext = try await makeSHACLValidationContext()
         try await insertMissingNamePeople(validationContext: validationContext)
         try await upsertShapes(
@@ -85,7 +85,7 @@ struct DatabaseSHACLValidationProcessorTests {
 
         let response = try await validate(
             page: QueryExecuteOperation.Page(limit: 10),
-            focus: .records([]),
+            focus: .entities([]),
             validationContext: validationContext
         )
 

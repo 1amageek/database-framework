@@ -1,6 +1,6 @@
 import StorageKit
 
-/// Canonical record storage bound to one transaction and one blob subspace.
+/// Canonical entity storage bound to one transaction and one blob subspace.
 ///
 /// v1 stores identity-encoded payloads. Inline reads remain views into the
 /// backend-owned envelope buffer. External writes pass constant-time payload
@@ -21,7 +21,7 @@ public struct ItemStorage: Sendable {
         self.configuration = configuration
     }
 
-    /// Writes one complete record using the canonical v1 physical format.
+    /// Writes one complete entity using the canonical v1 physical format.
     ///
     /// All fallible validation and envelope construction happens before old
     /// blob mutations are cleared. The enclosing transaction remains the
@@ -78,7 +78,7 @@ public struct ItemStorage: Sendable {
         try transaction.setValue(envelopeBytes, for: key)
     }
 
-    /// Reads, structurally validates, and checksum-verifies one record.
+    /// Reads, structurally validates, and checksum-verifies one entity.
     public func read(
         for key: Bytes,
         snapshot: Bool = false
@@ -342,7 +342,7 @@ public struct ItemStorage: Sendable {
     }
 }
 
-/// Lazy record scan that preserves backend-native key/value ownership.
+/// Lazy entity scan that preserves backend-native key/value ownership.
 public struct ItemScanSequence: AsyncSequence, Sendable {
     public typealias Element = (key: Bytes, data: Bytes)
 

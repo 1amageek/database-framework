@@ -56,8 +56,8 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
                 of: index,
                 transaction: transaction
             ),
-            rebuildRecord: try await loadRecord(
-                key: recordKey(target: target),
+            rebuildState: try await loadRebuildState(
+                key: rebuildStateKey(target: target),
                 entity: entity,
                 index: index,
                 transaction: transaction
@@ -89,18 +89,18 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             container: container,
             subspace: target.subspace
         )
-        let key = recordKey(target: target)
-        let existingRecord = try await loadRecord(
+        let key = rebuildStateKey(target: target)
+        let existingState = try await loadRebuildState(
             key: key,
             entity: entity,
             index: indexName,
             transaction: transaction
         )
 
-        let current: DatabaseIndexRebuildRecord
+        let current: DatabaseIndexRebuildState
         switch mode {
         case .start:
-            if let existing = existingRecord, existing.phase == .building {
+            if let existing = existingState, existing.phase == .building {
                 throw DatabaseIndexRebuildError.buildAlreadyActive(
                     index: indexName,
                     generation: existing.generation
@@ -112,17 +112,17 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
                 lifecycleStore: lifecycleStore,
                 transaction: transaction
             )
-            current = DatabaseIndexRebuildRecord(
+            current = DatabaseIndexRebuildState(
                 entity: entity,
                 index: indexName,
                 generation: generation,
                 phase: .building
             )
         case .resume:
-            guard let existing = existingRecord,
+            guard let existing = existingState,
                   existing.generation == generation,
                   existing.phase == .building else {
-                throw DatabaseIndexRebuildError.corruptedRecord
+                throw DatabaseIndexRebuildError.corruptedRebuildState
             }
             current = existing
         }
@@ -140,24 +140,24 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             maximumWorkUnits: workLimit,
             transaction: transaction
         )
-        let (count, overflow) = current.indexedRecordCount
+        let (count, overflow) = current.indexedEntityCount
             .addingReportingOverflow(slice.processed)
         guard !overflow else {
-            throw DatabaseIndexRebuildError.recordCountOverflow
+            throw DatabaseIndexRebuildError.entityCountOverflow
         }
 
-        let updated: DatabaseIndexRebuildRecord
+        let updated: DatabaseIndexRebuildState
         if slice.hasMore {
             guard let lastKey = slice.lastProcessedKey else {
-                throw DatabaseIndexRebuildError.corruptedRecord
+                throw DatabaseIndexRebuildError.corruptedRebuildState
             }
-            updated = DatabaseIndexRebuildRecord(
+            updated = DatabaseIndexRebuildState(
                 entity: entity,
                 index: indexName,
                 generation: generation,
                 phase: .building,
                 lastProcessedKey: lastKey,
-                indexedRecordCount: count
+                indexedEntityCount: count
             )
         } else {
             if index.isUnique {
@@ -178,13 +178,13 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
                 indexName,
                 transaction: transaction
             )
-            updated = DatabaseIndexRebuildRecord(
+            updated = DatabaseIndexRebuildState(
                 entity: entity,
                 index: indexName,
                 generation: generation,
                 phase: .complete,
                 lastProcessedKey: slice.lastProcessedKey,
-                indexedRecordCount: count
+                indexedEntityCount: count
             )
         }
         try transaction.setValue(
@@ -196,7 +196,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         )
         return DatabaseIndexRebuildSlice(
             completedWorkUnits: slice.processed,
-            indexedRecordCount: count,
+            indexedEntityCount: count,
             isComplete: !slice.hasMore
         )
     }
@@ -215,26 +215,26 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             partitions: partitions,
             directoryAccess: .open(transaction)
         )
-        let key = recordKey(target: target)
-        guard let record = try await loadRecord(
+        let key = rebuildStateKey(target: target)
+        guard let state = try await loadRebuildState(
             key: key,
             entity: entity,
             index: index,
             transaction: transaction
         ) else {
-            throw DatabaseIndexRebuildError.corruptedRecord
+            throw DatabaseIndexRebuildError.corruptedRebuildState
         }
-        guard record.generation == generation,
-              record.phase == .building else {
-            throw DatabaseIndexRebuildError.corruptedRecord
+        guard state.generation == generation,
+              state.phase == .building else {
+            throw DatabaseIndexRebuildError.corruptedRebuildState
         }
-        let failed = DatabaseIndexRebuildRecord(
+        let failed = DatabaseIndexRebuildState(
             entity: entity,
             index: index,
             generation: generation,
             phase: .failed,
-            lastProcessedKey: record.lastProcessedKey,
-            indexedRecordCount: record.indexedRecordCount,
+            lastProcessedKey: state.lastProcessedKey,
+            indexedEntityCount: state.indexedEntityCount,
             detail: detail
         )
         try transaction.setValue(
@@ -282,7 +282,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             target.descriptor.name,
             transaction: transaction
         )
-        let record = DatabaseIndexRebuildRecord(
+        let state = DatabaseIndexRebuildState(
             entity: target.entity,
             index: target.descriptor.name,
             generation: generation,
@@ -290,19 +290,19 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         )
         try transaction.setValue(
             Bytes(retaining: try DatabaseEnvelopeCodec.encode(
-                record,
+                state,
                 limits: wireLimits
             )),
-            for: recordKey(target: target)
+            for: rebuildStateKey(target: target)
         )
     }
 
-    private func loadRecord(
+    private func loadRebuildState(
         key: Bytes,
         entity: String,
         index: String,
         transaction: any TransactionAccess
-    ) async throws -> DatabaseIndexRebuildRecord? {
+    ) async throws -> DatabaseIndexRebuildState? {
         guard let bytes = try await transaction.getValue(
             for: key,
             snapshot: false
@@ -310,19 +310,19 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             return nil
         }
         do {
-            let record = try DatabaseEnvelopeCodec.decode(
-                DatabaseIndexRebuildRecord.self,
+            let state = try DatabaseEnvelopeCodec.decode(
+                DatabaseIndexRebuildState.self,
                 from: DatabaseBytes(retaining: bytes),
                 limits: wireLimits
             )
-            guard record.entity == entity, record.index == index else {
-                throw DatabaseIndexRebuildError.corruptedRecord
+            guard state.entity == entity, state.index == index else {
+                throw DatabaseIndexRebuildError.corruptedRebuildState
             }
-            return record
+            return state
         } catch let error as DatabaseIndexRebuildError {
             throw error
         } catch {
-            throw DatabaseIndexRebuildError.corruptedRecord
+            throw DatabaseIndexRebuildError.corruptedRebuildState
         }
     }
 
@@ -381,7 +381,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         case open(any TransactionAccess)
     }
 
-    private func recordKey(target: Target) -> Bytes {
+    private func rebuildStateKey(target: Target) -> Bytes {
         target.subspace
             .subspace(SubspaceKey.metadata)
             .subspace("index-rebuild")

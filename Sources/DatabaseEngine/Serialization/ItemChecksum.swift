@@ -1,6 +1,6 @@
 import StorageKit
 
-/// Portable CRC32C used to reject corrupted record payloads before decoding.
+/// Portable CRC32C used to reject corrupted entity payloads before decoding.
 enum ItemChecksum {
     private static let table: [UInt32] = (0..<256).map { value in
         var crc = UInt32(value)

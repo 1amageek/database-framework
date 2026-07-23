@@ -6,7 +6,7 @@ import Testing
 struct ScalarFilterIndexEntryDecoderTests {
     @Test("Composite index fields are excluded from the primary key")
     func decodesCompositeIndexPrimaryKey() throws {
-        let tuple = Tuple("category", Int64(42), "record-id")
+        let tuple = Tuple("category", Int64(42), "entity-id")
 
         let primaryKey = try ScalarFilterIndexEntryDecoder.primaryKey(
             from: tuple,
@@ -14,12 +14,12 @@ struct ScalarFilterIndexEntryDecoderTests {
             fieldName: "category"
         )
 
-        #expect(primaryKey == Tuple("record-id"))
+        #expect(primaryKey == Tuple("entity-id"))
     }
 
     @Test("Composite primary keys retain every component")
     func preservesCompositePrimaryKey() throws {
-        let tuple = Tuple(Int64(42), "tenant", "record-id")
+        let tuple = Tuple(Int64(42), "tenant", "entity-id")
 
         let primaryKey = try ScalarFilterIndexEntryDecoder.primaryKey(
             from: tuple,
@@ -27,7 +27,7 @@ struct ScalarFilterIndexEntryDecoderTests {
             fieldName: "sequence"
         )
 
-        #expect(primaryKey == Tuple("tenant", "record-id"))
+        #expect(primaryKey == Tuple("tenant", "entity-id"))
     }
 
     @Test("Missing primary key is a typed failure")

@@ -9,8 +9,8 @@ public enum RelationshipReferenceCatalog {
     )
 
     public static func set(
-        target: RecordIdentity,
-        owner: RecordIdentity,
+        target: PersistableIdentity,
+        owner: PersistableIdentity,
         descriptor: RelationshipDescriptor,
         transaction: any TransactionAccess
     ) throws {
@@ -26,8 +26,8 @@ public enum RelationshipReferenceCatalog {
     }
 
     public static func clear(
-        target: RecordIdentity,
-        owner: RecordIdentity,
+        target: PersistableIdentity,
+        owner: PersistableIdentity,
         descriptor: RelationshipDescriptor,
         transaction: any TransactionAccess
     ) throws {
@@ -42,15 +42,15 @@ public enum RelationshipReferenceCatalog {
     }
 
     public static func referrers(
-        of target: RecordIdentity,
+        of target: PersistableIdentity,
         descriptor: RelationshipDescriptor,
         limit: Int,
         transaction: any TransactionAccess
-    ) async throws -> [RecordIdentity] {
+    ) async throws -> [PersistableIdentity] {
         guard limit > 0 else {
             throw RelationshipReferenceError.invalidScanLimit(limit)
         }
-        var identities: [RecordIdentity] = []
+        var identities: [PersistableIdentity] = []
         identities.reserveCapacity(limit)
         var continuation: Bytes?
         while identities.count < limit {
@@ -71,7 +71,7 @@ public enum RelationshipReferenceCatalog {
     }
 
     public static func referrerPage(
-        of target: RecordIdentity,
+        of target: PersistableIdentity,
         descriptor: RelationshipDescriptor,
         continuation: Bytes?,
         limit: Int,
@@ -111,7 +111,7 @@ public enum RelationshipReferenceCatalog {
     }
 
     private static func entryKey(
-        target: RecordIdentity,
+        target: PersistableIdentity,
         ownerBytes: Bytes,
         descriptor: RelationshipDescriptor
     ) throws -> Bytes {
@@ -120,7 +120,7 @@ public enum RelationshipReferenceCatalog {
     }
 
     private static func referenceSubspace(
-        target: RecordIdentity,
+        target: PersistableIdentity,
         descriptor: RelationshipDescriptor
     ) throws -> Subspace {
         root

@@ -97,7 +97,7 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
             typeCode: polymorphicType.typeCode(
                 for: modelType.persistableType
             ),
-            identifier: try model.recordIdentifierTuple()
+            identifier: try model.persistableIdentifierTuple()
         )
         let key = projection.items.pack(compositeID)
         let storage = container.itemStorageFactory.make(

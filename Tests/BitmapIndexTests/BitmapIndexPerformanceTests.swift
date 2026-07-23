@@ -309,8 +309,8 @@ struct RoaringBitmapPerformanceTests {
 @Suite("BitmapIndex FDB Performance Tests", .tags(.fdb), .serialized, .heartbeat)
 struct BitmapIndexFDBPerformanceTests {
 
-    @Test("Bulk insert performance - 100 records, 10 categories")
-    func testBulkInsert100Records() async throws {
+    @Test("Bulk insert performance - 100 entities, 10 categories")
+    func testBulkInsert100Entities() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BitmapBenchmarkContext(testName: "bulk_insert_100")
 
@@ -324,7 +324,7 @@ struct BitmapIndexFDBPerformanceTests {
             )
         }
 
-        let (totalMs, _) = try await benchmark("Insert 100 records") {
+        let (totalMs, _) = try await benchmark("Insert 100 entities") {
             try await ctx.database.withTransaction { transaction in
                 for product in products {
                     try await ctx.maintainer.updateIndex(
@@ -336,8 +336,8 @@ struct BitmapIndexFDBPerformanceTests {
             }
         }
 
-        print("Insert 100 records: \(String(format: "%.2f", totalMs))ms")
-        print("Throughput: \(String(format: "%.0f", 100.0 / (totalMs / 1000))) records/s")
+        print("Insert 100 entities: \(String(format: "%.2f", totalMs))ms")
+        print("Throughput: \(String(format: "%.0f", 100.0 / (totalMs / 1000))) entities/s")
 
         // Verify
         let count = try await ctx.database.withTransaction { transaction in
@@ -348,8 +348,8 @@ struct BitmapIndexFDBPerformanceTests {
         try await ctx.cleanup()
     }
 
-    @Test("Bulk insert performance - 1000 records, 10 categories")
-    func testBulkInsert1000Records() async throws {
+    @Test("Bulk insert performance - 1000 entities, 10 categories")
+    func testBulkInsert1000Entities() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BitmapBenchmarkContext(testName: "bulk_insert_1000")
 
@@ -363,7 +363,7 @@ struct BitmapIndexFDBPerformanceTests {
             )
         }
 
-        let (totalMs, _) = try await benchmark("Insert 1000 records") {
+        let (totalMs, _) = try await benchmark("Insert 1000 entities") {
             try await ctx.database.withTransaction { transaction in
                 for product in products {
                     try await ctx.maintainer.updateIndex(
@@ -375,8 +375,8 @@ struct BitmapIndexFDBPerformanceTests {
             }
         }
 
-        print("Insert 1000 records: \(String(format: "%.2f", totalMs))ms")
-        print("Throughput: \(String(format: "%.0f", 1000.0 / (totalMs / 1000))) records/s")
+        print("Insert 1000 entities: \(String(format: "%.2f", totalMs))ms")
+        print("Throughput: \(String(format: "%.0f", 1000.0 / (totalMs / 1000))) entities/s")
 
         // Verify
         let count = try await ctx.database.withTransaction { transaction in
@@ -392,7 +392,7 @@ struct BitmapIndexFDBPerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BitmapBenchmarkContext(testName: "query_single")
 
-        // Setup: Insert 1000 records
+        // Setup: Insert 1000 entities
         let categories = (0..<10).map { "category-\($0)" }
         let products = (0..<1000).map { i in
             BitmapBenchmarkProduct(
@@ -445,7 +445,7 @@ struct BitmapIndexFDBPerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BitmapBenchmarkContext(testName: "query_or")
 
-        // Setup: Insert 1000 records
+        // Setup: Insert 1000 entities
         let categories = (0..<10).map { "category-\($0)" }
         let products = (0..<1000).map { i in
             BitmapBenchmarkProduct(
@@ -516,7 +516,7 @@ struct BitmapIndexFDBPerformanceTests {
             idExpression: FieldKeyExpression(fieldName: "id")
         )
 
-        // Setup: Insert 1000 records
+        // Setup: Insert 1000 entities
         let categories = (0..<10).map { "category-\($0)" }
         let brands = (0..<20).map { "brand-\($0)" }
         let products = (0..<1000).map { i in
@@ -575,7 +575,7 @@ struct BitmapIndexFDBPerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BitmapBenchmarkContext(testName: "pk_retrieval")
 
-        // Setup: Insert 1000 records
+        // Setup: Insert 1000 entities
         let products = (0..<1000).map { i in
             BitmapBenchmarkProduct(
                 id: "product-\(i)",
@@ -620,7 +620,7 @@ struct BitmapIndexFDBPerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BitmapBenchmarkContext(testName: "update")
 
-        // Setup: Insert 100 records
+        // Setup: Insert 100 entities
         var products = (0..<100).map { i in
             BitmapBenchmarkProduct(
                 id: "product-\(i)",
@@ -647,7 +647,7 @@ struct BitmapIndexFDBPerformanceTests {
         #expect(initialCount == 100)
 
         // Benchmark: Update category for all products
-        let (updateMs, _) = try await benchmark("Update 100 records") {
+        let (updateMs, _) = try await benchmark("Update 100 entities") {
             try await ctx.database.withTransaction { transaction in
                 for i in 0..<100 {
                     let oldProduct = products[i]
@@ -665,7 +665,7 @@ struct BitmapIndexFDBPerformanceTests {
             }
         }
 
-        print("Update 100 records: \(String(format: "%.2f", updateMs))ms")
+        print("Update 100 entities: \(String(format: "%.2f", updateMs))ms")
         print("Per update: \(String(format: "%.3f", updateMs / 100))ms")
 
         // Verify final state
@@ -686,7 +686,7 @@ struct BitmapIndexFDBPerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await BitmapBenchmarkContext(testName: "delete")
 
-        // Setup: Insert 100 records
+        // Setup: Insert 100 entities
         let products = (0..<100).map { i in
             BitmapBenchmarkProduct(
                 id: "product-\(i)",
@@ -707,7 +707,7 @@ struct BitmapIndexFDBPerformanceTests {
         }
 
         // Benchmark: Delete all products
-        let (deleteMs, _) = try await benchmark("Delete 100 records") {
+        let (deleteMs, _) = try await benchmark("Delete 100 entities") {
             try await ctx.database.withTransaction { transaction in
                 for product in products {
                     try await ctx.maintainer.updateIndex(
@@ -719,7 +719,7 @@ struct BitmapIndexFDBPerformanceTests {
             }
         }
 
-        print("Delete 100 records: \(String(format: "%.2f", deleteMs))ms")
+        print("Delete 100 entities: \(String(format: "%.2f", deleteMs))ms")
         print("Per delete: \(String(format: "%.3f", deleteMs / 100))ms")
 
         // Verify
@@ -745,7 +745,7 @@ struct BitmapIndexFDBPerformanceTests {
             )
         }
 
-        let (scanMs, _) = try await benchmark("ScanItem 1000 records") {
+        let (scanMs, _) = try await benchmark("ScanItem 1000 entities") {
             try await ctx.database.withTransaction { transaction in
                 for product in products {
                     try await ctx.maintainer.scanItem(
@@ -757,9 +757,9 @@ struct BitmapIndexFDBPerformanceTests {
             }
         }
 
-        print("ScanItem 1000 records: \(String(format: "%.2f", scanMs))ms")
+        print("ScanItem 1000 entities: \(String(format: "%.2f", scanMs))ms")
         print("Per scanItem: \(String(format: "%.3f", scanMs / 1000))ms")
-        print("Throughput: \(String(format: "%.0f", 1000.0 / (scanMs / 1000))) records/s")
+        print("Throughput: \(String(format: "%.0f", 1000.0 / (scanMs / 1000))) entities/s")
 
         try await ctx.cleanup()
     }
@@ -779,7 +779,7 @@ struct BitmapIndexFDBPerformanceTests {
             )
         }
 
-        let (insertMs, _) = try await benchmark("Insert 1000 records (100 categories)") {
+        let (insertMs, _) = try await benchmark("Insert 1000 entities (100 categories)") {
             try await ctx.database.withTransaction { transaction in
                 for product in products {
                     try await ctx.maintainer.updateIndex(
@@ -791,7 +791,7 @@ struct BitmapIndexFDBPerformanceTests {
             }
         }
 
-        print("Insert 1000 records (100 categories): \(String(format: "%.2f", insertMs))ms")
+        print("Insert 1000 entities (100 categories): \(String(format: "%.2f", insertMs))ms")
 
         // Query distinct values
         var distinctValues: [[any TupleElement]]!

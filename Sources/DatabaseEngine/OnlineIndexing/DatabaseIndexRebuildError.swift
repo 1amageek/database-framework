@@ -7,7 +7,7 @@ package enum DatabaseIndexRebuildError: Error, Sendable, Equatable {
     case buildAlreadyActive(index: String, generation: DatabaseUUID)
     case invalidContinuation
     case invalidWorkLimit(UInt64)
-    case corruptedRecord
-    case recordCountOverflow
+    case corruptedRebuildState
+    case entityCountOverflow
     case uniquenessViolation(index: String)
 }

@@ -68,7 +68,7 @@ struct CanonicalPaginationBoundaryTests {
         #expect(throws: CanonicalReadError.self) {
             _ = try CanonicalQueryPagination.window(
                 rows: rows(3),
-                selectQuery: selectQuery(table: "OtherRecord"),
+                selectQuery: selectQuery(table: "OtherEntity"),
                 options: execution(
                     pageSize: 1,
                     continuation: continuation
@@ -122,7 +122,7 @@ struct CanonicalPaginationBoundaryTests {
     }
 
     private func selectQuery(
-        table: String = "PaginationRecord",
+        table: String = "PaginationEntity",
         limit: Int? = nil,
         offset: Int? = nil
     ) -> SelectQuery {

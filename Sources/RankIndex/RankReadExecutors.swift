@@ -187,7 +187,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             )
         }
 
-        let records = try await context.fetchPolymorphicItems(
+        let entities = try await context.fetchPolymorphicItems(
             group: group,
             ids: rankedKeys.map { $0.primaryKey },
             configuration: execution.transactionConfiguration,
@@ -196,15 +196,15 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
 
         let orderedResults = try RankReadResultAssembler.assemble(
             rankedKeys: rankedKeys,
-            records: records
+            entities: entities
         )
 
         let rows = try orderedResults.map { result in
             try IndexReadRow.materializing(
-                any: result.record.item,
+                any: result.entity.item,
                 annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(result.record.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(result.record.typeCode),
+                    PolymorphicRowAnnotation.typeName: .string(result.entity.typeName),
+                    PolymorphicRowAnnotation.typeCode: .int64(result.entity.typeCode),
                     "rank": .int64(Int64(result.rank))
                 ]
             )

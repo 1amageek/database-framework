@@ -7,7 +7,7 @@ import DatabaseWire
 ///
 /// DataAccess provides static functions for extracting metadata and field values
 /// from Persistable items. It uses the @dynamicMemberLookup subscript for field
-/// access and the canonical compiled-record codec for serialization.
+/// access and the canonical compiled-entity codec for serialization.
 ///
 /// **Design**: Stateless namespace with generic static functions
 /// **No instantiation needed**: All methods are static
@@ -316,22 +316,22 @@ public struct DataAccess: Sendable {
 
     // MARK: - Serialization
 
-    /// Serialize an item to canonical compiled-record bytes.
+    /// Serialize an item to canonical compiled-entity bytes.
     ///
     /// - Parameter item: The item to serialize
     /// - Returns: Serialized bytes
     /// - Throws: Error if serialization fails
     public static func serialize<Item: Persistable>(_ item: Item) throws -> Bytes {
-        try DatabaseRecordStorageCodec.encode(item)
+        try PersistableStorageCodec.encode(item)
     }
 
-    /// Deserialize canonical compiled-record bytes.
+    /// Deserialize canonical compiled-entity bytes.
     ///
     /// - Parameter bytes: The bytes to deserialize
     /// - Returns: Deserialized item
     /// - Throws: Error if deserialization fails
     public static func deserialize<Item: Persistable>(_ bytes: Bytes) throws -> Item {
-        try DatabaseRecordStorageCodec.decode(Item.self, from: bytes)
+        try PersistableStorageCodec.decode(Item.self, from: bytes)
     }
 
     /// Deserialize bytes to a type-erased Persistable using runtime type
@@ -347,7 +347,7 @@ public struct DataAccess: Sendable {
         _ bytes: Bytes,
         as type: any (Persistable & Codable).Type
     ) throws -> any Persistable {
-        try DatabaseRecordStorageCodec.decodeAny(type, from: bytes)
+        try PersistableStorageCodec.decodeAny(type, from: bytes)
     }
 
     // MARK: - Covering Index Support (Optional)

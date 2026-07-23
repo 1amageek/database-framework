@@ -3,7 +3,7 @@ import DatabaseEngine
 import Graph
 import StorageKit
 
-/// Maintains the canonical RDF projection of an OWL-bound record.
+/// Maintains the canonical RDF projection of an OWL-bound entity.
 public struct OWLClassRDFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private let subspace: Subspace
     private let physicalCodec: RDFQuadIndexPhysicalCodec

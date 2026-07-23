@@ -63,10 +63,10 @@ public struct PlanCost: Sendable {
     /// Estimated number of index entries to read
     public let indexReads: Double
 
-    /// Estimated number of records to fetch
-    public let recordFetches: Double
+    /// Estimated number of entities to fetch
+    public let entityFetches: Double
 
-    /// Estimated number of records to post-filter
+    /// Estimated number of entities to post-filter
     public let postFilterCount: Double
 
     /// Whether in-memory sorting is required
@@ -78,7 +78,7 @@ public struct PlanCost: Sendable {
     /// and should NOT be multiplied by any additional weight in `totalCost`.
     ///
     /// Examples of costs stored here:
-    /// - Deduplication: `records * deduplicationWeight`
+    /// - Deduplication: `entities * deduplicationWeight`
     /// - Intersection ID operations: `ids * intersectionWeight`
     /// - Range initiation: `count * rangeInitiationWeight`
     public let additionalCost: Double
@@ -89,14 +89,14 @@ public struct PlanCost: Sendable {
     /// Create plan cost with custom model
     public init(
         indexReads: Double,
-        recordFetches: Double,
+        entityFetches: Double,
         postFilterCount: Double,
         requiresSort: Bool,
         additionalCost: Double = 0,
         costModel: CostModel = .default
     ) {
         self.indexReads = indexReads
-        self.recordFetches = recordFetches
+        self.entityFetches = entityFetches
         self.postFilterCount = postFilterCount
         self.requiresSort = requiresSort
         self.additionalCost = additionalCost
@@ -106,11 +106,11 @@ public struct PlanCost: Sendable {
     /// Total estimated cost (weighted sum)
     public var totalCost: Double {
         let indexReadCost = indexReads * costModel.indexReadWeight
-        let recordFetchCost = recordFetches * costModel.recordFetchWeight
+        let entityFetchCost = entityFetches * costModel.entityFetchWeight
         let postFilterCost = postFilterCount * costModel.postFilterWeight
-        let sortCost = requiresSort ? (recordFetches * costModel.sortWeight) : 0
+        let sortCost = requiresSort ? (entityFetches * costModel.sortWeight) : 0
         // additionalCost is already pre-weighted, add directly
-        return indexReadCost + recordFetchCost + postFilterCost + sortCost + additionalCost
+        return indexReadCost + entityFetchCost + postFilterCost + sortCost + additionalCost
     }
 }
 
@@ -127,14 +127,14 @@ extension PlanCost: Comparable {
 
     /// Zero cost (for empty plans)
     public static var zero: PlanCost {
-        PlanCost(indexReads: 0, recordFetches: 0, postFilterCount: 0, requiresSort: false, additionalCost: 0)
+        PlanCost(indexReads: 0, entityFetches: 0, postFilterCount: 0, requiresSort: false, additionalCost: 0)
     }
 
     /// Add two costs
     public static func + (lhs: PlanCost, rhs: PlanCost) -> PlanCost {
         PlanCost(
             indexReads: lhs.indexReads + rhs.indexReads,
-            recordFetches: lhs.recordFetches + rhs.recordFetches,
+            entityFetches: lhs.entityFetches + rhs.entityFetches,
             postFilterCount: lhs.postFilterCount + rhs.postFilterCount,
             requiresSort: lhs.requiresSort || rhs.requiresSort,
             additionalCost: lhs.additionalCost + rhs.additionalCost,

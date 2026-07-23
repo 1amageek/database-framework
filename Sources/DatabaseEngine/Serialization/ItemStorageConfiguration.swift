@@ -1,4 +1,4 @@
-/// Validated physical storage policy for database records.
+/// Validated physical storage policy for database entities.
 public struct ItemStorageConfiguration: Sendable, Equatable {
     public let encoding: ItemPayloadEncoding
     public let maximumPlainByteCount: Int

@@ -20,13 +20,13 @@ public struct CostModel: Sendable {
     /// Cost weight for reading an index entry
     public var indexReadWeight: Double
 
-    /// Cost weight for fetching a record by primary key
-    public var recordFetchWeight: Double
+    /// Cost weight for fetching an entity by primary key
+    public var entityFetchWeight: Double
 
-    /// Cost weight for post-filtering a record in memory
+    /// Cost weight for post-filtering an entity in memory
     public var postFilterWeight: Double
 
-    /// Cost weight for in-memory sorting (per record)
+    /// Cost weight for in-memory sorting (per entity)
     public var sortWeight: Double
 
     // === Range/Scan Costs ===
@@ -44,8 +44,8 @@ public struct CostModel: Sendable {
     /// Cost for intersection ID set operations (per ID)
     public var intersectionWeight: Double
 
-    /// Additional cost for fetching records after intersection
-    /// (records fetched from first child then filtered by intersection)
+    /// Additional cost for fetching entities after intersection
+    /// (entities fetched from first child then filtered by intersection)
     public var intersectionFetchWeight: Double
 
     // === Default Selectivity Estimates ===
@@ -75,7 +75,7 @@ public struct CostModel: Sendable {
 
     public init(
         indexReadWeight: Double = 1.0,
-        recordFetchWeight: Double = 10.0,
+        entityFetchWeight: Double = 10.0,
         postFilterWeight: Double = 0.1,
         sortWeight: Double = 0.01,
         rangeInitiationWeight: Double = 50.0,
@@ -91,7 +91,7 @@ public struct CostModel: Sendable {
         defaultVectorSelectivity: Double = 1.0
     ) {
         self.indexReadWeight = indexReadWeight
-        self.recordFetchWeight = recordFetchWeight
+        self.entityFetchWeight = entityFetchWeight
         self.postFilterWeight = postFilterWeight
         self.sortWeight = sortWeight
         self.rangeInitiationWeight = rangeInitiationWeight
@@ -114,7 +114,7 @@ public struct CostModel: Sendable {
 
     /// Cost model that favors index usage over table scans
     public static let favorIndexes = CostModel(
-        recordFetchWeight: 20.0,
+        entityFetchWeight: 20.0,
         postFilterWeight: 5.0
     )
 
@@ -127,13 +127,13 @@ public struct CostModel: Sendable {
     /// Cost model for write-heavy workloads (minimize index overhead)
     public static let writeOptimized = CostModel(
         indexReadWeight: 0.5,
-        recordFetchWeight: 5.0
+        entityFetchWeight: 5.0
     )
 
     /// Cost model for read-heavy workloads (maximize index usage)
     public static let readOptimized = CostModel(
         indexReadWeight: 0.5,
-        recordFetchWeight: 20.0,
+        entityFetchWeight: 20.0,
         postFilterWeight: 10.0
     )
 }
@@ -148,41 +148,41 @@ extension CostModel {
         return readCost + initCost
     }
 
-    /// Calculate the cost of fetching records
-    public func fetchCost(records: Double) -> Double {
-        records * recordFetchWeight
+    /// Calculate the cost of fetching entities
+    public func fetchCost(entities: Double) -> Double {
+        entities * entityFetchWeight
     }
 
     /// Calculate the cost of post-filtering
-    public func filterCost(records: Double, selectivity: Double) -> Double {
-        records * (1 - selectivity) * postFilterWeight
+    public func filterCost(entities: Double, selectivity: Double) -> Double {
+        entities * (1 - selectivity) * postFilterWeight
     }
 
     /// Calculate the cost of sorting
-    public func sortCost(records: Double) -> Double {
+    public func sortCost(entities: Double) -> Double {
         // O(n log n) sorting, simplified as linear for cost estimation
-        records * sortWeight * DatabaseMath.binaryLogarithm(max(2, records))
+        entities * sortWeight * DatabaseMath.binaryLogarithm(max(2, entities))
     }
 
     /// Calculate the cost of deduplication
-    public func dedupCost(records: Double) -> Double {
-        records * deduplicationWeight
+    public func dedupCost(entities: Double) -> Double {
+        entities * deduplicationWeight
     }
 
     /// Calculate the cost of intersection
     ///
     /// **Note**: This is a simplified convenience method. CostEstimator uses a more
-    /// detailed calculation that accounts for index reads vs record fetches separately.
+    /// detailed calculation that accounts for index reads vs entity fetches separately.
     /// Use this method for quick estimates; CostEstimator's implementation is preferred
     /// for accurate query planning.
-    public func intersectCost(childRecords: [Double]) -> Double {
-        let totalIds = childRecords.reduce(0, +)
+    public func intersectCost(childEntities: [Double]) -> Double {
+        let totalIds = childEntities.reduce(0, +)
         let idSetCost = totalIds * intersectionWeight
 
         // Estimate intersection result (product of selectivities, simplified)
-        let minRecords = childRecords.min() ?? 0
+        let minEntities = childEntities.min() ?? 0
         let intersectionRatio = 0.1 // Heuristic
-        let fetchCost = minRecords * intersectionRatio * intersectionFetchWeight
+        let fetchCost = minEntities * intersectionRatio * intersectionFetchWeight
 
         return idSetCost + fetchCost
     }
@@ -195,7 +195,7 @@ extension CostModel: CustomStringConvertible {
         """
         CostModel(
           indexRead: \(indexReadWeight),
-          recordFetch: \(recordFetchWeight),
+          entityFetch: \(entityFetchWeight),
           postFilter: \(postFilterWeight),
           sort: \(sortWeight),
           rangeInit: \(rangeInitiationWeight),

@@ -3,7 +3,7 @@ import DatabaseEngine
 import Relationship
 
 extension DatabaseContext {
-    /// Loads a record snapshot by its complete typed identity.
+    /// Loads an entity snapshot by its complete typed identity.
     public func get<Target: Persistable>(
         _ reference: DatabaseReference<Target>
     ) async throws -> Snapshot<Target>? {

@@ -15,7 +15,7 @@ public indirect enum PlanOperator<T: Persistable>: Sendable {
 
     // === Scan Operators ===
 
-    /// Full table scan - reads all records
+    /// Full table scan - reads all entities
     case tableScan(TableScanOperator<T>)
 
     /// Index range scan - reads a range of index entries
@@ -24,7 +24,7 @@ public indirect enum PlanOperator<T: Persistable>: Sendable {
     /// Index seek - point lookup(s) in index
     case indexSeek(IndexSeekOperator<T>)
 
-    /// Index-only scan - reads from covering index without record fetch
+    /// Index-only scan - reads from covering index without entity fetch
     case indexOnlyScan(IndexOnlyScanOperator<T>)
 
     // === Join/Combine Operators ===
@@ -37,10 +37,10 @@ public indirect enum PlanOperator<T: Persistable>: Sendable {
 
     // === Transform Operators ===
 
-    /// Filter records by predicate
+    /// Filter entities by predicate
     case filter(FilterOperator<T>)
 
-    /// Sort records
+    /// Sort entities
     case sort(SortOperator<T>)
 
     /// Limit/offset results
@@ -75,7 +75,7 @@ public indirect enum PlanOperator<T: Persistable>: Sendable {
 
 // MARK: - Table Scan Operator
 
-/// Table scan operator - reads all records
+/// Table scan operator - reads all entities
 public struct TableScanOperator<T: Persistable>: Sendable {
     /// Estimated row count
     public let estimatedRows: Int
@@ -195,7 +195,7 @@ public struct IndexSeekOperator<T: Persistable>: Sendable {
 /// is required, the PlanEnumerator will wrap this operator with a SortOperator.
 ///
 /// Deduplication uses `Persistable.ID` (which is `Hashable`) to identify
-/// duplicate records across children.
+/// duplicate entities across children.
 public struct UnionOperator<T: Persistable>: Sendable {
     /// Child plans to union
     public let children: [PlanOperator<T>]

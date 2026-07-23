@@ -8,7 +8,7 @@ extension PlanExplanation {
             "estimatedCost": [
                 "total": estimatedCost.totalCost,
                 "indexReads": estimatedCost.indexReads,
-                "recordFetches": estimatedCost.recordFetches,
+                "entityFetches": estimatedCost.entityFetches,
                 "postFilterCount": estimatedCost.postFilterCount,
                 "requiresSort": estimatedCost.requiresSort,
             ],

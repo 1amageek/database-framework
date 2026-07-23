@@ -8,7 +8,7 @@ import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 
-struct CRUDBenchmarkRecord: Persistable {
+struct CRUDBenchmarkEntity: Persistable {
     typealias ID = String
 
     var id: String
@@ -31,7 +31,7 @@ struct CRUDBenchmarkRecord: Persistable {
         self.score = score
     }
 
-    static var persistableType: String { "CRUDBenchmarkRecord" }
+    static var persistableType: String { "CRUDBenchmarkEntity" }
 
     static var allFields: [String] {
         ["id", "runID", "name", "age", "score"]
@@ -42,7 +42,7 @@ struct CRUDBenchmarkRecord: Persistable {
             .staticPath("test"),
             .staticPath("performance"),
             .dynamicField(fieldName: "runID"),
-            .staticPath("crud-records"),
+            .staticPath("crud-entities"),
         ]
     }
 
@@ -59,30 +59,30 @@ struct CRUDBenchmarkRecord: Persistable {
         }
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<CRUDBenchmarkRecord, Value>) -> String {
+    static func fieldName<Value>(for keyPath: KeyPath<CRUDBenchmarkEntity, Value>) -> String {
         switch keyPath {
-        case \CRUDBenchmarkRecord.id: return "id"
-        case \CRUDBenchmarkRecord.runID: return "runID"
-        case \CRUDBenchmarkRecord.name: return "name"
-        case \CRUDBenchmarkRecord.age: return "age"
-        case \CRUDBenchmarkRecord.score: return "score"
+        case \CRUDBenchmarkEntity.id: return "id"
+        case \CRUDBenchmarkEntity.runID: return "runID"
+        case \CRUDBenchmarkEntity.name: return "name"
+        case \CRUDBenchmarkEntity.age: return "age"
+        case \CRUDBenchmarkEntity.score: return "score"
         default: return "\(keyPath)"
         }
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<CRUDBenchmarkRecord>) -> String {
+    static func fieldName(for keyPath: PartialKeyPath<CRUDBenchmarkEntity>) -> String {
         switch keyPath {
-        case \CRUDBenchmarkRecord.id: return "id"
-        case \CRUDBenchmarkRecord.runID: return "runID"
-        case \CRUDBenchmarkRecord.name: return "name"
-        case \CRUDBenchmarkRecord.age: return "age"
-        case \CRUDBenchmarkRecord.score: return "score"
+        case \CRUDBenchmarkEntity.id: return "id"
+        case \CRUDBenchmarkEntity.runID: return "runID"
+        case \CRUDBenchmarkEntity.name: return "name"
+        case \CRUDBenchmarkEntity.age: return "age"
+        case \CRUDBenchmarkEntity.score: return "score"
         default: return "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<CRUDBenchmarkRecord> {
+        if let partial = keyPath as? PartialKeyPath<CRUDBenchmarkEntity> {
             return fieldName(for: partial)
         }
         return "\(keyPath)"
@@ -93,19 +93,19 @@ private struct CRUDBenchmarkContext: Sendable {
     let engine: any StorageEngine
     let container: DBContainer
     let runID: String
-    let path: DirectoryPath<CRUDBenchmarkRecord>
+    let path: DirectoryPath<CRUDBenchmarkEntity>
     let rawSubspace: Subspace
 
     init(runID: String = "crud-\(UUID().uuidString.prefix(8))") async throws {
         self.engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         self.runID = runID
 
-        var path = DirectoryPath<CRUDBenchmarkRecord>()
+        var path = DirectoryPath<CRUDBenchmarkEntity>()
         path.set(\.runID, to: runID)
         self.path = path
         self.rawSubspace = Subspace(prefix: Tuple(["test", "performance", "raw-crud", runID]).pack())
 
-        let schema = Schema([CRUDBenchmarkRecord.self], version: .init(1, 0, 0))
+        let schema = Schema([CRUDBenchmarkEntity.self], version: .init(1, 0, 0))
         self.container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
@@ -116,7 +116,7 @@ private struct CRUDBenchmarkContext: Sendable {
 
     func cleanup() async throws {
         do {
-            try await engine.removeDirectory(path: ["test", "performance", runID, "crud-records"])
+            try await engine.removeDirectory(path: ["test", "performance", runID, "crud-entities"])
         } catch {
             // Ignore missing directory for empty/failed runs.
         }
@@ -126,9 +126,9 @@ private struct CRUDBenchmarkContext: Sendable {
         }
     }
 
-    func makeRecord(id: String = UUID().uuidString, seed: Int = 0) -> CRUDBenchmarkRecord {
+    func makeEntity(id: String = UUID().uuidString, seed: Int = 0) -> CRUDBenchmarkEntity {
         let name = "user-\(seed)"
-        return CRUDBenchmarkRecord(
+        return CRUDBenchmarkEntity(
             id: id,
             runID: runID,
             name: name,
@@ -138,9 +138,9 @@ private struct CRUDBenchmarkContext: Sendable {
     }
 
     func frameworkLayout() async throws -> (itemSubspace: Subspace, blobsSubspace: Subspace) {
-        let subspace = try await container.resolveDirectory(for: CRUDBenchmarkRecord.self, path: path)
+        let subspace = try await container.resolveDirectory(for: CRUDBenchmarkEntity.self, path: path)
         return (
-            itemSubspace: subspace.subspace(SubspaceKey.items).subspace(CRUDBenchmarkRecord.persistableType),
+            itemSubspace: subspace.subspace(SubspaceKey.items).subspace(CRUDBenchmarkEntity.persistableType),
             blobsSubspace: subspace.subspace(SubspaceKey.blobs)
         )
     }
@@ -153,10 +153,10 @@ private struct CRUDBenchmarkContext: Sendable {
         }
     }
 
-    func frameworkLayoutWrite(_ record: CRUDBenchmarkRecord) async throws {
+    func frameworkLayoutWrite(_ entity: CRUDBenchmarkEntity) async throws {
         let layout = try await frameworkLayout()
-        let key = layout.itemSubspace.pack(Tuple([record.id]))
-        let data = try DataAccess.serialize(record)
+        let key = layout.itemSubspace.pack(Tuple([entity.id]))
+        let data = try DataAccess.serialize(entity)
         try await engine.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: layout.blobsSubspace, configuration: .v1)
             try await storage.write(data, for: key)
@@ -171,7 +171,7 @@ private struct CRUDBenchmarkContext: Sendable {
         }
     }
 
-    func frameworkLayoutRead(id: String) async throws -> CRUDBenchmarkRecord? {
+    func frameworkLayoutRead(id: String) async throws -> CRUDBenchmarkEntity? {
         let layout = try await frameworkLayout()
         let key = layout.itemSubspace.pack(Tuple([id]))
         return try await engine.withTransaction { transaction in
@@ -179,36 +179,36 @@ private struct CRUDBenchmarkContext: Sendable {
             guard let data = try await storage.read(for: key, snapshot: false) else {
                 return nil
             }
-            let decoded: CRUDBenchmarkRecord = try DataAccess.deserialize(data)
+            let decoded: CRUDBenchmarkEntity = try DataAccess.deserialize(data)
             return decoded
         }
     }
 
-    func dataStoreWrite(_ record: CRUDBenchmarkRecord) async throws {
-        let store = try await container.store(for: CRUDBenchmarkRecord.self, path: path)
-        try await store.executeBatch(inserts: [record], deletes: [])
+    func dataStoreWrite(_ entity: CRUDBenchmarkEntity) async throws {
+        let store = try await container.store(for: CRUDBenchmarkEntity.self, path: path)
+        try await store.executeBatch(inserts: [entity], deletes: [])
     }
 
-    func dataStoreRead(id: String) async throws -> CRUDBenchmarkRecord? {
-        let store = try await container.store(for: CRUDBenchmarkRecord.self, path: path)
+    func dataStoreRead(id: String) async throws -> CRUDBenchmarkEntity? {
+        let store = try await container.store(for: CRUDBenchmarkEntity.self, path: path)
         return try await store.withTransaction(configuration: .readOnly) { transaction in
             try await transaction.fetch(
-                CRUDBenchmarkRecord.self,
+                CRUDBenchmarkEntity.self,
                 identifiedBy: id,
                 in: path
             )
         }
     }
 
-    func frameworkWrite(_ record: CRUDBenchmarkRecord) async throws {
+    func frameworkWrite(_ entity: CRUDBenchmarkEntity) async throws {
         let context = DatabaseContext(container: container)
-        try context.insert(record)
+        try context.insert(entity)
         try await context.save()
     }
 
-    func frameworkRead(id: String) async throws -> CRUDBenchmarkRecord? {
+    func frameworkRead(id: String) async throws -> CRUDBenchmarkEntity? {
         let context = DatabaseContext(container: container)
-        return try await context.model(for: id, as: CRUDBenchmarkRecord.self, partition: path)
+        return try await context.model(for: id, as: CRUDBenchmarkEntity.self, partition: path)
     }
 }
 
@@ -242,15 +242,15 @@ struct FDBFrameworkCRUDBenchmarkTests {
                 }
 
                 let storageMeasurement = try await measureBenchmark(name: "L2 ItemStorage") {
-                    try await context.frameworkLayoutWrite(context.makeRecord(seed: Int.random(in: 0...1_000_000)))
+                    try await context.frameworkLayoutWrite(context.makeEntity(seed: Int.random(in: 0...1_000_000)))
                 }
 
                 let dataStoreMeasurement = try await measureBenchmark(name: "L3 DataStore") {
-                    try await context.dataStoreWrite(context.makeRecord(seed: Int.random(in: 0...1_000_000)))
+                    try await context.dataStoreWrite(context.makeEntity(seed: Int.random(in: 0...1_000_000)))
                 }
 
                 let frameworkMeasurement = try await measureBenchmark(name: "L4 DatabaseContext") {
-                    try await context.frameworkWrite(context.makeRecord(seed: Int.random(in: 0...1_000_000)))
+                    try await context.frameworkWrite(context.makeEntity(seed: Int.random(in: 0...1_000_000)))
                 }
 
                 let measurements = [rawMeasurement, storageMeasurement, dataStoreMeasurement, frameworkMeasurement]
@@ -266,20 +266,20 @@ struct FDBFrameworkCRUDBenchmarkTests {
     func testReadPathLayerComparison() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             try await withCRUDBenchmarkContext { context in
-                let records: [(String, CRUDBenchmarkRecord)] = (0..<128).map { index in
-                    let id = "record-\(index)"
-                    let record = context.makeRecord(id: id, seed: index)
-                    return (id, record)
+                let entities: [(String, CRUDBenchmarkEntity)] = (0..<128).map { index in
+                    let id = "entity-\(index)"
+                    let entity = context.makeEntity(id: id, seed: index)
+                    return (id, entity)
                 }
 
-                for (_, record) in records {
-                    try await context.frameworkLayoutWrite(record)
+                for (_, entity) in entities {
+                    try await context.frameworkLayoutWrite(entity)
                 }
 
                 var cursor = 0
                 func nextID() -> String {
-                    defer { cursor = (cursor + 1) % records.count }
-                    return records[cursor].0
+                    defer { cursor = (cursor + 1) % entities.count }
+                    return entities[cursor].0
                 }
 
                 let rawMeasurement = try await measureBenchmark(name: "L1 Framework Key Read") {
@@ -288,18 +288,18 @@ struct FDBFrameworkCRUDBenchmarkTests {
                 }
 
                 let storageMeasurement = try await measureBenchmark(name: "L2 ItemStorage Decode") {
-                    let record = try await context.frameworkLayoutRead(id: nextID())
-                    #expect(record != nil)
+                    let entity = try await context.frameworkLayoutRead(id: nextID())
+                    #expect(entity != nil)
                 }
 
                 let dataStoreMeasurement = try await measureBenchmark(name: "L3 DataStore Fetch") {
-                    let record = try await context.dataStoreRead(id: nextID())
-                    #expect(record != nil)
+                    let entity = try await context.dataStoreRead(id: nextID())
+                    #expect(entity != nil)
                 }
 
                 let frameworkMeasurement = try await measureBenchmark(name: "L4 DatabaseContext Model") {
-                    let record = try await context.frameworkRead(id: nextID())
-                    #expect(record != nil)
+                    let entity = try await context.frameworkRead(id: nextID())
+                    #expect(entity != nil)
                 }
 
                 let measurements = [rawMeasurement, storageMeasurement, dataStoreMeasurement, frameworkMeasurement]
@@ -318,11 +318,11 @@ struct FDBFrameworkCRUDBenchmarkTests {
             let second = try await CRUDBenchmarkContext(runID: "crud-b-\(UUID().uuidString.prefix(8))")
 
             do {
-                let firstRecord = first.makeRecord(id: "shared-id", seed: 1)
-                let secondRecord = second.makeRecord(id: "shared-id", seed: 2)
+                let firstEntity = first.makeEntity(id: "shared-id", seed: 1)
+                let secondEntity = second.makeEntity(id: "shared-id", seed: 2)
 
-                try await first.frameworkWrite(firstRecord)
-                try await second.frameworkWrite(secondRecord)
+                try await first.frameworkWrite(firstEntity)
+                try await second.frameworkWrite(secondEntity)
 
                 let firstFetch = try await first.frameworkRead(id: "shared-id")
                 let secondFetch = try await second.frameworkRead(id: "shared-id")

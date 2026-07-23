@@ -1,6 +1,6 @@
 import Core
 
-/// Plan operator that reads complete records from canonical DBIX projections.
+/// Plan operator that reads complete entities from canonical DBIX projections.
 public struct IndexOnlyScanOperator<T: Persistable>: Sendable {
     public let index: IndexDescriptor
     public let metadata: CoveringIndexMetadata

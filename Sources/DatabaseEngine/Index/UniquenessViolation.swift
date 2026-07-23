@@ -24,7 +24,7 @@ import Synchronization
 /// ```swift
 /// let violations = try await tracker.scanViolations(indexName: "email_idx")
 /// for violation in violations {
-///     print("Duplicate value \(violation.valueDescription) found for records: \(violation.primaryKeys)")
+///     print("Duplicate value \(violation.valueDescription) found for entities: \(violation.primaryKeys)")
 /// }
 /// ```
 public struct UniquenessViolation: Sendable, Equatable {
@@ -108,7 +108,7 @@ extension UniquenessViolation: CustomStringConvertible {
             index: \(indexName),
             type: \(persistableType),
             value: [\(valueDescription)],
-            conflictingRecords: \(pkDescriptions.count),
+            conflictingEntities: \(pkDescriptions.count),
             primaryKeys: [\(pkDescriptions.joined(separator: ", "))],
             detectedAt: \(detectedAt)
         )
@@ -123,7 +123,7 @@ extension UniquenessViolation: CustomStringConvertible {
 /// Provides detailed information about the conflict including:
 /// - Which index was violated
 /// - What value caused the conflict
-/// - Which records have the duplicate value
+/// - Which entities have the duplicate value
 ///
 /// **Usage**:
 /// ```swift
@@ -131,8 +131,8 @@ extension UniquenessViolation: CustomStringConvertible {
 ///     try await context.save()
 /// } catch let error as UniquenessViolationError {
 ///     print("Duplicate \(error.indexName): \(error.valueDescription)")
-///     print("Existing record: \(error.existingPrimaryKey)")
-///     print("New record: \(error.newPrimaryKey)")
+///     print("Existing entity: \(error.existingPrimaryKey)")
+///     print("New entity: \(error.newPrimaryKey)")
 /// }
 /// ```
 public struct UniquenessViolationError: Error, Sendable, CustomStringConvertible {
@@ -145,10 +145,10 @@ public struct UniquenessViolationError: Error, Sendable, CustomStringConvertible
     /// The duplicate value (as string descriptions)
     public let conflictingValues: [String]
 
-    /// Primary key of the existing record
+    /// Primary key of the existing entity
     public let existingPrimaryKey: Tuple
 
-    /// Primary key of the new record attempting to insert
+    /// Primary key of the new entity attempting to insert
     public let newPrimaryKey: Tuple
 
     public init(
@@ -174,8 +174,8 @@ public struct UniquenessViolationError: Error, Sendable, CustomStringConvertible
         """
         Uniqueness violation on index '\(indexName)' for type '\(persistableType)':
         Value [\(valueDescription)] already exists.
-        Existing record: \(existingPrimaryKey)
-        Conflicting record: \(newPrimaryKey)
+        Existing entity: \(existingPrimaryKey)
+        Conflicting entity: \(newPrimaryKey)
         """
     }
 }
@@ -203,12 +203,12 @@ public enum UniquenessCheckMode: Sendable, Hashable {
 
 /// Result of attempting to resolve a uniqueness violation
 public enum ViolationResolution: Sendable {
-    /// Violation was resolved (duplicate records no longer exist)
+    /// Violation was resolved (duplicate entities no longer exist)
     case resolved
 
-    /// Violation still exists (duplicate records remain)
+    /// Violation still exists (duplicate entities remain)
     case unresolved(UniquenessViolation)
 
-    /// Violation record was not found (may have been resolved already)
+    /// Violation entry was not found (may have been resolved already)
     case notFound
 }

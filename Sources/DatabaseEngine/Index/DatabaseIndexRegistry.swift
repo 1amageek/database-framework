@@ -30,7 +30,12 @@ import Synchronization
 /// // 2. Register all indexes from schema
 /// let registeredIndexes = DatabaseIndexRegistry(database: database, subspace: subspace)
 /// for indexDescriptor in schema.indexes {
-///     let index = try Index(from: indexDescriptor, recordType: ...)
+///     let index = Index(
+///         name: indexDescriptor.name,
+///         kind: indexDescriptor.kind,
+///         rootExpression: expression,
+///         itemTypes: [entity.name]
+///     )
 ///     try registeredIndexes.register(index: index)
 /// }
 ///

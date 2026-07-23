@@ -149,7 +149,7 @@ struct CoveringIndexBenchmark {
 
         Swift.print("\n📊 Scan Scalability Analysis:")
         for point in result.dataPoints {
-            Swift.print("  \(point.dataSize) records: \(String(format: "%.2f", point.metrics.latency.p95))ms (p95)")
+            Swift.print("  \(point.dataSize) entities: \(String(format: "%.2f", point.metrics.latency.p95))ms (p95)")
         }
         Swift.print("")
     }

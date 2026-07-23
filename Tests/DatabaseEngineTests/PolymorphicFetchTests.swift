@@ -84,7 +84,7 @@ struct PolymorphicFetchReport: PolymorphicFetchDocument {
 /// The regression was not caught by existing tests because no test exercised
 /// the end-to-end round trip through the flat-tuple item subspace:
 /// - `PermutedReadExecutors` / `VectorReadExecutors` use `fetchPolymorphicItems`
-///   (a different code path that reconstructs keys from record annotations).
+///   (a different code path that reconstructs keys from entity annotations).
 /// - `CanonicalQueryRPC` tests use `scanPolymorphicItems`, which scans the
 ///   whole item subspace without reconstructing a per-type subspace.
 ///

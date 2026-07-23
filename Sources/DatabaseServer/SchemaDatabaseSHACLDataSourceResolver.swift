@@ -81,7 +81,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         transaction: any TransactionAccess
     ) async throws -> ResolvedSource {
         guard let entity = container.schema.entity(named: data.entity) else {
-            throw DatabaseSHACLDataSourceError.entityNotFound(data.entity)
+            throw DatabaseSHACLDataSourceError.schemaEntityNotFound(data.entity)
         }
         guard let descriptor = entity.indexDescriptors.first(
             where: { $0.name == data.index }
@@ -182,9 +182,9 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
             return nil
         case .nodes(let nodes):
             return Array(Set(nodes)).sorted()
-        case .records(let identities):
+        case .entities(let identities):
             guard let persistableType = entity.persistableType else {
-                throw DatabaseSHACLDataSourceError.entityNotFound(data.entity)
+                throw DatabaseSHACLDataSourceError.schemaEntityNotFound(data.entity)
             }
             let expectedPartition: [String]
             do {
@@ -207,36 +207,36 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
             for identity in identities {
                 try workBudget.consume()
                 guard identity.entity == data.entity else {
-                    throw DatabaseSHACLDataSourceError.recordEntityMismatch(
+                    throw DatabaseSHACLDataSourceError.focusEntityMismatch(
                         expected: data.entity,
                         actual: identity.entity
                     )
                 }
-                let resolved = try DatabaseResolvedRecordIdentity.resolve(
+                let resolved = try DatabaseResolvedPersistableIdentity.resolve(
                     identity,
                     container: container
                 )
                 guard resolved.partitionPath == expectedPartition else {
                     throw DatabaseSHACLDataSourceError
-                        .recordPartitionMismatch(identity)
+                        .focusPartitionMismatch(identity)
                 }
-                guard let record = try await databaseTransaction
+                guard let entity = try await databaseTransaction
                     .loadPersistedModel(
                     entity: data.entity,
                     id: resolved.id,
                     partition: resolved.partition
                     ) else {
-                    throw DatabaseSHACLDataSourceError.recordNotFound(identity)
+                    throw DatabaseSHACLDataSourceError.focusEntityNotFound(identity)
                 }
-                let fields = try DatabaseRecordProjection.fields(for: record)
+                let fields = try DatabaseEntityProjection.fields(for: entity)
                 guard let value = fields.first(
                     where: {
                         $0.name == selection.metadata.subjectFieldName
                     }
                 )?.value,
                 case .rdfTerm(let subject) = value else {
-                    throw DatabaseSHACLDataSourceError.recordSubjectMissing(
-                        record: identity,
+                    throw DatabaseSHACLDataSourceError.focusSubjectMissing(
+                        entity: identity,
                         field: selection.metadata.subjectFieldName
                     )
                 }

@@ -185,18 +185,18 @@ public final class DatabaseContext: Sendable {
     }
 
     private struct StagedMutation: Sendable {
-        let identity: RecordIdentity
+        let identity: PersistableIdentity
         let intent: StagedMutationIntent
     }
 
     private struct ActiveSave: Sendable {
         let identifier: UInt64
-        let capturedMutations: [RecordIdentity: PendingMutation]
+        let capturedMutations: [PersistableIdentity: PendingMutation]
         var followupMutations: [StagedMutation]
 
         init(
             identifier: UInt64,
-            capturedMutations: [RecordIdentity: PendingMutation]
+            capturedMutations: [PersistableIdentity: PendingMutation]
         ) {
             self.identifier = identifier
             self.capturedMutations = capturedMutations
@@ -205,7 +205,7 @@ public final class DatabaseContext: Sendable {
     }
 
     private struct ContextState: Sendable {
-        var pending: [RecordIdentity: PendingMutation] = [:]
+        var pending: [PersistableIdentity: PendingMutation] = [:]
         var activeSave: ActiveSave?
         var nextSaveIdentifier: UInt64 = 1
         var commitOutcomeUnknown = false
@@ -291,14 +291,14 @@ public final class DatabaseContext: Sendable {
         partitions: [DatabaseObjectField]
     ) -> (inserted: T?, isDeleted: Bool) {
         pendingModelLookup(
-            for: id.recordIdentifierValue,
+            for: id.persistableIdentifierValue,
             as: type,
             partitions: partitions
         )
     }
 
     private func pendingModelLookup<T: Persistable>(
-        for identifier: RecordIdentifierValue,
+        for identifier: PersistableIdentifierValue,
         as type: T.Type,
         partitions: [DatabaseObjectField]
     ) -> (inserted: T?, isDeleted: Bool) {
@@ -307,7 +307,7 @@ public final class DatabaseContext: Sendable {
                 return (nil, false)
             }
 
-            let identity = RecordIdentity(
+            let identity = PersistableIdentity(
                 entity: T.persistableType,
                 id: identifier,
                 partitions: partitions
@@ -420,7 +420,7 @@ public final class DatabaseContext: Sendable {
 
     private static func apply(
         _ stagedMutation: StagedMutation,
-        to mutations: inout [RecordIdentity: PendingMutation]
+        to mutations: inout [PersistableIdentity: PendingMutation]
     ) {
         let identity = stagedMutation.identity
         switch stagedMutation.intent {
@@ -743,9 +743,9 @@ public final class DatabaseContext: Sendable {
             )
         }
 
-        let identifier = try RecordIdentifierKeyCodec.value(
+        let identifier = try PersistableIdentifierKeyCodec.value(
             from: identifierTuple,
-            expectedType: T.recordIdentifierType
+            expectedType: T.persistableIdentifierType
         )
         let pendingResult = pendingModelLookup(
             for: identifier,
@@ -853,9 +853,9 @@ public final class DatabaseContext: Sendable {
     ) async throws -> T? {
         try ensureUsable()
 
-        let identifier = try RecordIdentifierKeyCodec.value(
+        let identifier = try PersistableIdentifierKeyCodec.value(
             from: identifierTuple,
-            expectedType: T.recordIdentifierType
+            expectedType: T.persistableIdentifierType
         )
         let partitions = try path.canonicalPartitions()
         let pendingResult = pendingModelLookup(
@@ -908,7 +908,7 @@ public final class DatabaseContext: Sendable {
             case identifierExhausted
             case start(
                 identifier: UInt64,
-                mutations: [RecordIdentity: PendingMutation]
+                mutations: [PersistableIdentity: PendingMutation]
             )
         }
 
@@ -996,7 +996,7 @@ public final class DatabaseContext: Sendable {
     }
 
     private static func persistableMutations(
-        from mutations: [RecordIdentity: PendingMutation]
+        from mutations: [PersistableIdentity: PendingMutation]
     ) -> [PersistableMutation] {
         var result: [PersistableMutation] = []
         result.reserveCapacity(mutations.count)

@@ -713,7 +713,7 @@ struct IndexMaintenanceMatrixE2ETests {
                 via: \.customer,
                 limit: 1
             )
-            #expect(inverse.records.map(\.id) == [order.id])
+            #expect(inverse.entities.map(\.id) == [order.id])
 
             try context.delete(customer)
             try await context.save()

@@ -216,8 +216,8 @@ struct DatabaseFrameworkE2ETests {
         return order
     }
 
-    @Test("file-backed SQLite container persists indexed records across container reopen")
-    func fileBackedSQLiteContainerPersistsIndexedRecordsAcrossContainerReopen() async throws {
+    @Test("file-backed SQLite container persists indexed entities across container reopen")
+    func fileBackedSQLiteContainerPersistsIndexedEntitiesAcrossContainerReopen() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("database-framework-e2e-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1517,8 +1517,8 @@ struct DatabaseFrameworkE2ETests {
         #expect(tenantAAfterDelete.map(\.id) == ["order-a-2", "order-a-3", "order-a-4"])
     }
 
-    @Test("SQLite migration rewrites legacy records and serves them through the new indexed schema")
-    func sqliteMigrationRewritesLegacyRecordsAndServesNewIndexedSchema() async throws {
+    @Test("SQLite migration rewrites legacy entities and serves them through the new indexed schema")
+    func sqliteMigrationRewritesLegacyEntitiesAndServesNewIndexedSchema() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
 
         let initialContainer = try await DBContainer.open(

@@ -27,7 +27,7 @@ public struct PersistableValidationContext: ~Copyable, Sendable {
     deinit {}
 
     public func fetch(
-        _ identity: RecordIdentity
+        _ identity: PersistableIdentity
     ) async throws -> (any Persistable)? {
         try await scope.enter()
         do {

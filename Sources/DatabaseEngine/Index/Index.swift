@@ -2,8 +2,8 @@ import Core
 
 /// Index definition
 ///
-/// Defines a secondary index on record fields. Indexes are maintained automatically
-/// when records are inserted, updated, or deleted.
+/// Defines a secondary index on entity fields. Indexes are maintained automatically
+/// when entities are inserted, updated, or deleted.
 ///
 public struct Index: Sendable {
     // MARK: - Properties
@@ -22,8 +22,7 @@ public struct Index: Sendable {
 
     /// Item types this index applies to (nil = universal, applies to all types)
     ///
-    /// **Terminology**: Uses "itemTypes" (not "recordTypes") for layer-independent terminology.
-    /// Compatible with Persistable types across all layers (record-layer, graph-layer, document-layer).
+    /// Compatible with Persistable types across entity, graph, and document models.
     public let itemTypes: Set<String>?
 
     /// Whether this index enforces uniqueness constraint

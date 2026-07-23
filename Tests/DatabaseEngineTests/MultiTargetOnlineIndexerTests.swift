@@ -3,7 +3,7 @@
 // MultiTargetOnlineIndexerTests.swift
 // Tests for MultiTargetOnlineIndexer implementation
 //
-// Reference: FDB Record Layer multi-target indexing strategy
+// Reference: FDB Entity Layer multi-target indexing strategy
 
 import Testing
 import TestHeartbeat

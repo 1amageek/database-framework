@@ -561,7 +561,7 @@ struct RelationshipIndexPerformanceTests {
                     via: \.customer,
                     limit: ordersPerCustomer
                 )
-                #expect(inverse.records.count == ordersPerCustomer)
+                #expect(inverse.entities.count == ordersPerCustomer)
             }
         }
 

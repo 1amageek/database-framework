@@ -41,7 +41,7 @@ import StorageKit
 ///
 /// **Design Rationale**:
 /// Roaring bitmaps use 32-bit integers for efficiency. Since primary keys can be
-/// any type (String, UUID, etc.), we assign sequential 32-bit IDs to each record
+/// any type (String, UUID, etc.), we assign sequential 32-bit IDs to each entity
 /// and maintain bidirectional mappings.
 ///
 /// **Examples**:
@@ -393,7 +393,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// - Parameters:
     ///   - fieldValue: The field value to query
     ///   - transaction: The transaction to use
-    /// - Returns: RoaringBitmap of matching record IDs
+    /// - Returns: RoaringBitmap of matching entity IDs
     public func getBitmap(
         for fieldValues: [any TupleElement],
         transaction: any TransactionAccess
@@ -407,12 +407,12 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         return try RoaringBitmap.deserialize(Data(bytes))
     }
 
-    /// Get count of records with a specific field value
+    /// Get count of entities with a specific field value
     ///
     /// - Parameters:
     ///   - fieldValue: The field value to count
     ///   - transaction: The transaction to use
-    /// - Returns: Number of records with this value
+    /// - Returns: Number of entities with this value
     public func getCount(
         for fieldValues: [any TupleElement],
         transaction: any TransactionAccess
@@ -426,7 +426,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// - Parameters:
     ///   - values: Array of field values to AND together
     ///   - transaction: The transaction to use
-    /// - Returns: Bitmap of records matching ALL values
+    /// - Returns: Bitmap of entities matching ALL values
     public func andQuery(
         values: [[any TupleElement]],
         transaction: any TransactionAccess
@@ -446,7 +446,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// - Parameters:
     ///   - values: Array of field values to OR together
     ///   - transaction: The transaction to use
-    /// - Returns: Bitmap of records matching ANY value
+    /// - Returns: Bitmap of entities matching ANY value
     public func orQuery(
         values: [[any TupleElement]],
         transaction: any TransactionAccess

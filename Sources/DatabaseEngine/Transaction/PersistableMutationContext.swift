@@ -32,7 +32,7 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
     deinit {}
 
     public func fetch(
-        _ identity: RecordIdentity
+        _ identity: PersistableIdentity
     ) async throws -> (any Persistable)? {
         try await perform {
             try await transaction.fetchPersistedModel(
@@ -69,7 +69,7 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
     }
 
     public func isDeletionScheduled(
-        for identity: RecordIdentity
+        for identity: PersistableIdentity
     ) async throws -> Bool {
         try await perform {
             try await transaction.isDeletionScheduled(

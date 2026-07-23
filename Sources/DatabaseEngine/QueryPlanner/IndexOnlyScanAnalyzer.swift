@@ -1,6 +1,6 @@
 import Core
 
-/// Finds indexes whose canonical projection contains every compiled record field.
+/// Finds indexes whose canonical projection contains every compiled entity field.
 public struct IndexOnlyScanAnalyzer<T: Persistable> {
     public init() {}
 

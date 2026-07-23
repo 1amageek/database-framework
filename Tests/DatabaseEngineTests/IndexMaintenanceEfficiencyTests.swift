@@ -216,13 +216,13 @@ struct IndexMaintenanceEfficiencyTests {
         #expect(latestFetch.first?.id == productId)
     }
 
-    @Test("Update with many existing records completes efficiently")
-    func testUpdateWithManyRecords() async throws {
+    @Test("Update with many existing entities completes efficiently")
+    func testUpdateWithManyEntities() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
         let context = container.newContext()
 
-        // Insert many records to create a large index
+        // Insert many entities to create a large index
         let testPrefix = uniqueID("batch")
         let batchSize = 100
         var productIds: [String] = []
@@ -242,7 +242,7 @@ struct IndexMaintenanceEfficiencyTests {
         }
         try await context.save()
 
-        // Now update ONE record - this should be efficient (not scan all 100 records)
+        // Now update ONE entity - this should be efficient (not scan all 100 entities)
         let targetId = productIds[50]
         let updatedSku = "\(testPrefix)-UPDATED-50"
         let updatedPrice = priceBase + 99999

@@ -82,11 +82,11 @@ public struct CostEstimator<T: Persistable> {
     ) -> PlanCost {
         // IN-Union: parallel seeks for each value
         let indexReads = Double(op.estimatedTotalResults)
-        let recordFetches = indexReads  // Each index entry requires a record fetch
+        let entityFetches = indexReads  // Each index entry requires an entity fetch
 
         return PlanCost(
             indexReads: indexReads,
-            recordFetches: recordFetches,
+            entityFetches: entityFetches,
             postFilterCount: 0,  // Exact match, no post-filter
             requiresSort: !analysis.sortRequirements.isEmpty,
             costModel: costModel
@@ -108,11 +108,11 @@ public struct CostEstimator<T: Persistable> {
         // Estimate selectivity based on value count and index size
         let estimatedSelectivity = Double(op.valueCount) / max(1.0, totalIndexEntries)
         let matchingEntries = totalIndexEntries * estimatedSelectivity
-        let recordFetches = matchingEntries
+        let entityFetches = matchingEntries
 
         return PlanCost(
             indexReads: indexReads,
-            recordFetches: recordFetches,
+            entityFetches: entityFetches,
             postFilterCount: 0,  // Hash lookup filtering doesn't add post-filter cost
             requiresSort: !analysis.sortRequirements.isEmpty,
             costModel: costModel
@@ -131,7 +131,7 @@ public struct CostEstimator<T: Persistable> {
         let selectivity = estimatePredicateSelectivity(analysis.originalPredicate)
 
         // For table scan, we read all rows
-        let recordFetches = totalRows
+        let entityFetches = totalRows
 
         // Post-filter cost represents rows that are processed by the filter but DON'T pass
         // These rows consume CPU for evaluation but don't contribute to results
@@ -140,7 +140,7 @@ public struct CostEstimator<T: Persistable> {
 
         return PlanCost(
             indexReads: 0,
-            recordFetches: recordFetches,
+            entityFetches: entityFetches,
             postFilterCount: postFilterCount,
             requiresSort: !analysis.sortRequirements.isEmpty,
             costModel: costModel
@@ -170,7 +170,7 @@ public struct CostEstimator<T: Persistable> {
 
         return PlanCost(
             indexReads: indexEntries,
-            recordFetches: indexEntries,
+            entityFetches: indexEntries,
             postFilterCount: indexEntries * postFilterRatio,
             requiresSort: !orderingSatisfied && !analysis.sortRequirements.isEmpty,
             additionalCost: rangeInitCost,
@@ -207,14 +207,14 @@ public struct CostEstimator<T: Persistable> {
 
     // MARK: - Index-Only Scan (Covering Index)
 
-    /// Estimate cost for index-only scan (no record fetches needed)
+    /// Estimate cost for index-only scan (no entity fetches needed)
     ///
     /// **Assumption**: This operator is only generated when `CoveringIndexMetadata.isFullyCovering`
     /// is true, meaning the index contains ALL fields of type T. PlanEnumerator enforces this
     /// via `IndexOnlyScanAnalyzer.analyze()` check before creating the operator.
     ///
     /// If the index is not truly covering (e.g., storedFields not available in IndexEntry),
-    /// the PlanExecutor will fall back to record fetches at runtime, but this is an exceptional
+    /// the PlanExecutor will fall back to entity fetches at runtime, but this is an exceptional
     /// case that should not occur if PlanEnumerator works correctly.
     private func estimateIndexOnlyScan(
         _ op: IndexOnlyScanOperator<T>,
@@ -235,11 +235,11 @@ public struct CostEstimator<T: Persistable> {
         // Range initiation cost
         let rangeInitCost = costModel.rangeInitiationWeight
 
-        // KEY DIFFERENCE: No record fetches for index-only scan!
+        // KEY DIFFERENCE: No entity fetches for index-only scan!
         // All required data comes from the index (key fields + stored fields)
         return PlanCost(
             indexReads: indexEntries,
-            recordFetches: 0,  // True index-only: all data from index
+            entityFetches: 0,  // True index-only: all data from index
             postFilterCount: indexEntries * postFilterRatio,
             requiresSort: !orderingSatisfied && !analysis.sortRequirements.isEmpty,
             additionalCost: rangeInitCost,
@@ -280,23 +280,23 @@ public struct CostEstimator<T: Persistable> {
     ) -> PlanCost {
         let seekCount = Double(op.seekValues.count)
 
-        // For unique indexes, assume 1 record per seek
+        // For unique indexes, assume 1 entity per seek
         // For non-unique, estimate based on statistics
-        let recordsPerSeek: Double
+        let entitiesPerSeek: Double
         if op.index.isUnique {
-            recordsPerSeek = 1.0
+            entitiesPerSeek = 1.0
         } else {
             let avgEntriesPerKey = Double(statistics.estimatedIndexEntries(index: op.index) ?? 10000) /
                                    Double(max(1, statistics.estimatedDistinctValues(field: op.satisfiedConditions.first?.fieldName ?? "", type: T.self) ?? 1000))
-            recordsPerSeek = avgEntriesPerKey
+            entitiesPerSeek = avgEntriesPerKey
         }
 
-        let totalRecords = seekCount * recordsPerSeek
+        let totalEntities = seekCount * entitiesPerSeek
         let requiresSort = !analysis.sortRequirements.isEmpty && seekCount > 1
 
         return PlanCost(
             indexReads: seekCount,
-            recordFetches: totalRecords,
+            entityFetches: totalEntities,
             postFilterCount: 0,
             requiresSort: requiresSort,
             costModel: costModel
@@ -319,13 +319,13 @@ public struct CostEstimator<T: Persistable> {
         // Range initiation cost per child (pre-weighted, goes to additionalCost)
         let rangeInitCost = Double(op.children.count) * costModel.rangeInitiationWeight
 
-        // Total records fetched across all children
-        let totalRecordFetches = childCosts.reduce(0.0) { $0 + $1.recordFetches }
+        // Total entities fetched across all children
+        let totalEntityFetches = childCosts.reduce(0.0) { $0 + $1.entityFetches }
 
         // Deduplication cost (pre-weighted, goes to additionalCost)
         // Uses string-based ID comparison for Sendable safety
         let dedupCost = op.deduplicate
-            ? costModel.dedupCost(records: totalRecordFetches)
+            ? costModel.dedupCost(entities: totalEntityFetches)
             : 0
 
         // Union output is UNORDERED - requires sort if ordering is needed
@@ -334,7 +334,7 @@ public struct CostEstimator<T: Persistable> {
 
         return PlanCost(
             indexReads: totalCost.indexReads,
-            recordFetches: totalRecordFetches,
+            entityFetches: totalEntityFetches,
             postFilterCount: totalCost.postFilterCount,
             requiresSort: requiresSort,
             additionalCost: totalCost.additionalCost + rangeInitCost + dedupCost,
@@ -357,7 +357,7 @@ public struct CostEstimator<T: Persistable> {
         let rangeInitCost = Double(op.children.count) * costModel.rangeInitiationWeight
 
         // Estimate intersection result size
-        let childFetches = childCosts.map { $0.recordFetches }
+        let childFetches = childCosts.map { $0.entityFetches }
         let minChildFetches = childFetches.min() ?? 0
         let intersectionRatio = 0.1 // Heuristic: 10% survive intersection
         let estimatedResults = minChildFetches * intersectionRatio
@@ -365,7 +365,7 @@ public struct CostEstimator<T: Persistable> {
         // Cost for ID set operations (pre-weighted, goes to additionalCost)
         let idSetCost = totalIndexReads * costModel.intersectionWeight
 
-        // Cost for fetching final records (pre-weighted, goes to additionalCost)
+        // Cost for fetching final entities (pre-weighted, goes to additionalCost)
         let fetchCost = estimatedResults * costModel.intersectionFetchWeight
 
         // Sum up child additional costs
@@ -373,7 +373,7 @@ public struct CostEstimator<T: Persistable> {
 
         return PlanCost(
             indexReads: totalIndexReads,
-            recordFetches: estimatedResults,
+            entityFetches: estimatedResults,
             postFilterCount: 0,
             requiresSort: !analysis.sortRequirements.isEmpty,
             additionalCost: childAdditionalCosts + rangeInitCost + idSetCost + fetchCost,
@@ -389,14 +389,14 @@ public struct CostEstimator<T: Persistable> {
     ) -> PlanCost {
         let inputCost = estimate(plan: op.input, analysis: analysis)
 
-        // Filter reduces record count but adds post-filter cost
-        let filteredRecords = inputCost.recordFetches * op.selectivity
+        // Filter reduces entity count but adds post-filter cost
+        let filteredEntities = inputCost.entityFetches * op.selectivity
         // filterCost is pre-weighted (already includes postFilterWeight), goes to additionalCost
-        let filterCostValue = costModel.filterCost(records: inputCost.recordFetches, selectivity: op.selectivity)
+        let filterCostValue = costModel.filterCost(entities: inputCost.entityFetches, selectivity: op.selectivity)
 
         return PlanCost(
             indexReads: inputCost.indexReads,
-            recordFetches: filteredRecords,
+            entityFetches: filteredEntities,
             postFilterCount: inputCost.postFilterCount,
             requiresSort: inputCost.requiresSort,
             additionalCost: inputCost.additionalCost + filterCostValue,
@@ -413,11 +413,11 @@ public struct CostEstimator<T: Persistable> {
         let inputCost = estimate(plan: op.input, analysis: analysis)
 
         // sortCost is pre-weighted (already includes sortWeight), goes to additionalCost
-        let sortCostValue = costModel.sortCost(records: inputCost.recordFetches)
+        let sortCostValue = costModel.sortCost(entities: inputCost.entityFetches)
 
         return PlanCost(
             indexReads: inputCost.indexReads,
-            recordFetches: inputCost.recordFetches,
+            entityFetches: inputCost.entityFetches,
             postFilterCount: inputCost.postFilterCount,
             requiresSort: false, // Sort operator satisfies sort requirement
             additionalCost: inputCost.additionalCost + sortCostValue,
@@ -433,39 +433,39 @@ public struct CostEstimator<T: Persistable> {
     ) -> PlanCost {
         let inputCost = estimate(plan: op.input, analysis: analysis)
 
-        // Limit can reduce the number of records we need to process
-        let limitedRecords: Double
+        // Limit can reduce the number of entities we need to process
+        let limitedEntities: Double
         if let limit = op.limit {
             let offset = Double(op.offset ?? 0)
-            limitedRecords = min(inputCost.recordFetches, Double(limit) + offset)
+            limitedEntities = min(inputCost.entityFetches, Double(limit) + offset)
         } else {
-            limitedRecords = inputCost.recordFetches
+            limitedEntities = inputCost.entityFetches
         }
 
         // Ratio of reduction
-        let ratio = limitedRecords / max(1, inputCost.recordFetches)
+        let ratio = limitedEntities / max(1, inputCost.entityFetches)
 
         // Early termination is ONLY possible when input is already sorted
-        // If requiresSort is true, we must scan ALL records, sort them, THEN apply limit
+        // If requiresSort is true, we must scan ALL entities, sort them, THEN apply limit
         let canEarlyTerminate = !inputCost.requiresSort
 
         if canEarlyTerminate {
             // Early termination: reduce all costs proportionally
             return PlanCost(
                 indexReads: inputCost.indexReads * ratio,
-                recordFetches: limitedRecords,
+                entityFetches: limitedEntities,
                 postFilterCount: inputCost.postFilterCount * ratio,
                 requiresSort: false,
                 additionalCost: inputCost.additionalCost * ratio,
                 costModel: costModel
             )
         } else {
-            // Must process all records before limiting
+            // Must process all entities before limiting
             // Index reads and post-filtering happen on full dataset
-            // Only final record output is limited
+            // Only final entity output is limited
             return PlanCost(
                 indexReads: inputCost.indexReads,
-                recordFetches: inputCost.recordFetches,
+                entityFetches: inputCost.entityFetches,
                 postFilterCount: inputCost.postFilterCount,
                 requiresSort: true, // Still requires sort
                 additionalCost: inputCost.additionalCost,
@@ -484,7 +484,7 @@ public struct CostEstimator<T: Persistable> {
 
         return PlanCost(
             indexReads: estimatedResults,
-            recordFetches: estimatedResults,
+            entityFetches: estimatedResults,
             postFilterCount: 0,
             requiresSort: !analysis.sortRequirements.isEmpty, // FT doesn't preserve order
             costModel: costModel
@@ -506,7 +506,7 @@ public struct CostEstimator<T: Persistable> {
 
         return PlanCost(
             indexReads: searchCost,
-            recordFetches: k,
+            entityFetches: k,
             postFilterCount: 0,
             requiresSort: false, // Results ordered by similarity
             costModel: costModel
@@ -523,7 +523,7 @@ public struct CostEstimator<T: Persistable> {
 
         return PlanCost(
             indexReads: estimatedResults * 2, // R-tree traversal
-            recordFetches: estimatedResults,
+            entityFetches: estimatedResults,
             postFilterCount: 0,
             requiresSort: !analysis.sortRequirements.isEmpty,
             costModel: costModel

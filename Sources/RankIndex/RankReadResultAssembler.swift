@@ -20,32 +20,32 @@ enum RankReadResultAssembler {
 
     static func assemble(
         rankedKeys: [(primaryKey: Tuple, rank: Int)],
-        records: [PolymorphicRecord]
-    ) throws -> [(record: PolymorphicRecord, rank: Int)] {
-        var recordByID: [Bytes: PolymorphicRecord] = [:]
-        recordByID.reserveCapacity(records.count)
-        for record in records {
-            let key = try recordKey(for: record)
-            if let _ = recordByID[key] {
-                throw RankReadError.duplicateFetchedRecord(primaryKey: key)
+        entities: [PolymorphicEntity]
+    ) throws -> [(entity: PolymorphicEntity, rank: Int)] {
+        var entityByID: [Bytes: PolymorphicEntity] = [:]
+        entityByID.reserveCapacity(entities.count)
+        for entity in entities {
+            let key = try entityKey(for: entity)
+            if let _ = entityByID[key] {
+                throw RankReadError.duplicateFetchedEntity(primaryKey: key)
             }
-            recordByID[key] = record
+            entityByID[key] = entity
         }
 
-        var ordered: [(record: PolymorphicRecord, rank: Int)] = []
+        var ordered: [(entity: PolymorphicEntity, rank: Int)] = []
         ordered.reserveCapacity(rankedKeys.count)
         for rankedKey in rankedKeys {
             let key = rankedKey.primaryKey.pack()
-            guard let record = recordByID[key] else {
-                throw RankReadError.missingFetchedRecord(primaryKey: key)
+            guard let entity = entityByID[key] else {
+                throw RankReadError.missingFetchedEntity(primaryKey: key)
             }
-            ordered.append((record: record, rank: rankedKey.rank))
+            ordered.append((entity: entity, rank: rankedKey.rank))
         }
         return ordered
     }
 
-    private static func recordKey(for record: PolymorphicRecord) throws -> Bytes {
-        let identifier = try record.item.recordIdentifierTuple()
-        return Tuple(record.typeCode).appending(identifier).pack()
+    private static func entityKey(for entity: PolymorphicEntity) throws -> Bytes {
+        let identifier = try entity.item.persistableIdentifierTuple()
+        return Tuple(entity.typeCode).appending(identifier).pack()
     }
 }

@@ -65,14 +65,14 @@ public struct SchemaRegistry: Sendable {
             snapshot: false
         )
         for (key, value) in existingRows {
-            let existing = try SchemaEntityRecordCodec.decode(value)
+            let existing = try SchemaEntityEntryCodec.decode(value)
             if !targetNames.contains(existing.name) {
                 try transaction.clear(key: key)
             }
         }
         for entity in entities {
             try transaction.setValue(
-                try SchemaEntityRecordCodec.encode(entity),
+                try SchemaEntityEntryCodec.encode(entity),
                 for: Self.key(for: entity.name)
             )
         }
@@ -96,14 +96,14 @@ public struct SchemaRegistry: Sendable {
             snapshot: false
         )
         for (key, value) in existingRows {
-            let existing = try SchemaEntityRecordCodec.decode(value)
+            let existing = try SchemaEntityEntryCodec.decode(value)
             if !targetNames.contains(existing.name) {
                 try transaction.clear(key: key)
             }
         }
         for entity in schema.entities {
             try transaction.setValue(
-                try SchemaEntityRecordCodec.encode(entity),
+                try SchemaEntityEntryCodec.encode(entity),
                 for: Self.key(for: entity.name)
             )
         }
@@ -138,7 +138,7 @@ public struct SchemaRegistry: Sendable {
             guard let value = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try SchemaEntityRecordCodec.decode(value)
+            return try SchemaEntityEntryCodec.decode(value)
         }
     }
 
@@ -156,7 +156,7 @@ public struct SchemaRegistry: Sendable {
 
         try await database.withTransaction(configuration: .default) { transaction in
             let key = Self.key(for: entity.name)
-            let value = try SchemaEntityRecordCodec.encode(entity)
+            let value = try SchemaEntityEntryCodec.encode(entity)
             try transaction.setValue(value, for: key)
         }
 
@@ -199,7 +199,7 @@ public struct SchemaRegistry: Sendable {
                 snapshot: true
             )
             for (_, value) in sequence {
-                let entity = try SchemaEntityRecordCodec.decode(value)
+                let entity = try SchemaEntityEntryCodec.decode(value)
                 entities.append(entity)
             }
             return entities
@@ -235,7 +235,7 @@ public struct SchemaRegistry: Sendable {
             ) else {
                 continue
             }
-            existingByName[name] = try SchemaEntityRecordCodec.decode(value)
+            existingByName[name] = try SchemaEntityEntryCodec.decode(value)
         }
 
         for entity in entities {

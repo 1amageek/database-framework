@@ -15,20 +15,20 @@ struct RankUInt64IndexRuntimeTests {
             UInt64(Int64.max) + 1,
             UInt64.max,
         ]
-        let kind = RankIndexKind<UnsignedRankRecord, UInt64>(field: \.score)
+        let kind = RankIndexKind<UnsignedRankEntity, UInt64>(field: \.score)
         #expect(kind.scoreType == .uint64)
 
         let index = Index(
-            name: "UnsignedRankRecord_rank_score",
+            name: "UnsignedRankEntity_rank_score",
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "score"),
-            subspaceKey: "UnsignedRankRecord_rank_score",
-            itemTypes: [UnsignedRankRecord.persistableType]
+            subspaceKey: "UnsignedRankEntity_rank_score",
+            itemTypes: [UnsignedRankEntity.persistableType]
         )
         let indexSubspace = Subspace(
             prefix: Tuple("rank-uint64-runtime").pack()
         )
-        let maintainer: any IndexMaintainer<UnsignedRankRecord> = try RankIndexMaintainerProvider()
+        let maintainer: any IndexMaintainer<UnsignedRankEntity> = try RankIndexMaintainerProvider()
             .makeIndexMaintainer(
                 index: index,
                 subspace: indexSubspace,
@@ -40,10 +40,10 @@ struct RankUInt64IndexRuntimeTests {
         var keys: [Bytes] = []
         keys.reserveCapacity(scores.count)
         for (offset, score) in scores.enumerated() {
-            let record = UnsignedRankRecord(id: "record-\(offset)", score: score)
+            let entity = UnsignedRankEntity(id: "entity-\(offset)", score: score)
             let computed = try await maintainer.computeIndexKeys(
-                for: record,
-                id: Tuple(record.id)
+                for: entity,
+                id: Tuple(entity.id)
             )
             #expect(computed.count == 1)
             let key = try #require(computed.first)
@@ -63,15 +63,15 @@ struct RankUInt64IndexRuntimeTests {
 
     @Test("Rank runtime rejects NaN before emitting an unordered key")
     func rejectsNaNScore() async throws {
-        let kind = RankIndexKind<FloatingRankRecord, Double>(field: \.score)
+        let kind = RankIndexKind<FloatingRankEntity, Double>(field: \.score)
         let index = Index(
-            name: "FloatingRankRecord_rank_score",
+            name: "FloatingRankEntity_rank_score",
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "score"),
-            subspaceKey: "FloatingRankRecord_rank_score",
-            itemTypes: [FloatingRankRecord.persistableType]
+            subspaceKey: "FloatingRankEntity_rank_score",
+            itemTypes: [FloatingRankEntity.persistableType]
         )
-        let maintainer: any IndexMaintainer<FloatingRankRecord> = try RankIndexMaintainerProvider()
+        let maintainer: any IndexMaintainer<FloatingRankEntity> = try RankIndexMaintainerProvider()
             .makeIndexMaintainer(
                 index: index,
                 subspace: Subspace(prefix: Tuple("rank-nan-runtime").pack()),
@@ -81,20 +81,20 @@ struct RankUInt64IndexRuntimeTests {
 
         await #expect(throws: RankIndexError.self) {
             try await maintainer.computeIndexKeys(
-                for: FloatingRankRecord(id: "nan", score: .nan),
+                for: FloatingRankEntity(id: "nan", score: .nan),
                 id: Tuple("nan")
             )
         }
     }
 }
 
-private struct UnsignedRankRecord: Persistable {
+private struct UnsignedRankEntity: Persistable {
     typealias ID = String
 
     let id: String
     let score: UInt64
 
-    static var persistableType: String { "UnsignedRankRecord" }
+    static var persistableType: String { "UnsignedRankEntity" }
     static var allFields: [String] { ["id", "score"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -110,40 +110,40 @@ private struct UnsignedRankRecord: Persistable {
     }
 
     static func fieldName<Value>(
-        for keyPath: KeyPath<UnsignedRankRecord, Value>
+        for keyPath: KeyPath<UnsignedRankEntity, Value>
     ) -> String {
         switch keyPath {
-        case \UnsignedRankRecord.id: "id"
-        case \UnsignedRankRecord.score: "score"
+        case \UnsignedRankEntity.id: "id"
+        case \UnsignedRankEntity.score: "score"
         default: "\(keyPath)"
         }
     }
 
     static func fieldName(
-        for keyPath: PartialKeyPath<UnsignedRankRecord>
+        for keyPath: PartialKeyPath<UnsignedRankEntity>
     ) -> String {
         switch keyPath {
-        case \UnsignedRankRecord.id: "id"
-        case \UnsignedRankRecord.score: "score"
+        case \UnsignedRankEntity.id: "id"
+        case \UnsignedRankEntity.score: "score"
         default: "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<UnsignedRankRecord> else {
+        guard let keyPath = keyPath as? PartialKeyPath<UnsignedRankEntity> else {
             return "\(keyPath)"
         }
         return fieldName(for: keyPath)
     }
 }
 
-private struct FloatingRankRecord: Persistable {
+private struct FloatingRankEntity: Persistable {
     typealias ID = String
 
     let id: String
     let score: Double
 
-    static var persistableType: String { "FloatingRankRecord" }
+    static var persistableType: String { "FloatingRankEntity" }
     static var allFields: [String] { ["id", "score"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -159,27 +159,27 @@ private struct FloatingRankRecord: Persistable {
     }
 
     static func fieldName<Value>(
-        for keyPath: KeyPath<FloatingRankRecord, Value>
+        for keyPath: KeyPath<FloatingRankEntity, Value>
     ) -> String {
         switch keyPath {
-        case \FloatingRankRecord.id: "id"
-        case \FloatingRankRecord.score: "score"
+        case \FloatingRankEntity.id: "id"
+        case \FloatingRankEntity.score: "score"
         default: "\(keyPath)"
         }
     }
 
     static func fieldName(
-        for keyPath: PartialKeyPath<FloatingRankRecord>
+        for keyPath: PartialKeyPath<FloatingRankEntity>
     ) -> String {
         switch keyPath {
-        case \FloatingRankRecord.id: "id"
-        case \FloatingRankRecord.score: "score"
+        case \FloatingRankEntity.id: "id"
+        case \FloatingRankEntity.score: "score"
         default: "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<FloatingRankRecord> else {
+        guard let keyPath = keyPath as? PartialKeyPath<FloatingRankEntity> else {
             return "\(keyPath)"
         }
         return fieldName(for: keyPath)

@@ -1,5 +1,5 @@
 // PlayerAndTenantOrder.swift
-// Persistable records shared by ranking, indexing, and partition scenarios.
+// Persistable entities shared by ranking, indexing, and partition scenarios.
 
 import Foundation
 import Core

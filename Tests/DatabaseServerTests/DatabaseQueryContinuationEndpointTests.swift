@@ -34,7 +34,7 @@ struct DatabaseQueryContinuationEndpointTests {
         let identifiers = try (first.rows + second.rows).map {
             try identifier(from: $0)
         }
-        #expect(identifiers == ["record-0", "record-1", "record-2", "record-3"])
+        #expect(identifiers == ["entity-0", "entity-1", "entity-2", "entity-3"])
         #expect(Set(identifiers).count == identifiers.count)
         #expect(second.continuation == nil)
     }
@@ -103,8 +103,8 @@ struct DatabaseQueryContinuationEndpointTests {
         let continuation = try #require(first.continuation)
 
         let context = container.newContext()
-        var inserted = DatabaseEndpointRecord()
-        inserted.id = "record-added"
+        var inserted = DatabaseEndpointEntity()
+        inserted.id = "entity-added"
         inserted.title = "Added after the first page"
         inserted.priority = 100
         try context.insert(inserted)
@@ -162,7 +162,7 @@ struct DatabaseQueryContinuationEndpointTests {
     private func makeContainer(seedCount: Int = 0) async throws -> DBContainer {
         let container = try await DBContainer.open(
             for: Schema(
-                [DatabaseEndpointRecord.self],
+                [DatabaseEndpointEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
@@ -174,11 +174,11 @@ struct DatabaseQueryContinuationEndpointTests {
         }
         let context = container.newContext()
         for index in 0..<seedCount {
-            var record = DatabaseEndpointRecord()
-            record.id = "record-\(index)"
-            record.title = "Title \(index)"
-            record.priority = index
-            try context.insert(record)
+            var entity = DatabaseEndpointEntity()
+            entity.id = "entity-\(index)"
+            entity.title = "Title \(index)"
+            entity.priority = index
+            try context.insert(entity)
         }
         try await context.save()
         return container
@@ -188,7 +188,7 @@ struct DatabaseQueryContinuationEndpointTests {
         SelectQuery(
             projection: .all,
             source: .values(
-                (0..<4).map { [.string("record-\($0)")] },
+                (0..<4).map { [.string("entity-\($0)")] },
                 columnNames: ["id"]
             ),
             distinct: distinct
@@ -198,7 +198,7 @@ struct DatabaseQueryContinuationEndpointTests {
     private func tableQuery() -> SelectQuery {
         SelectQuery(
             projection: .all,
-            source: .table(TableRef(DatabaseEndpointRecord.persistableType))
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
         )
     }
 

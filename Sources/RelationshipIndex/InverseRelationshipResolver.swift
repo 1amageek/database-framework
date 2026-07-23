@@ -97,8 +97,8 @@ public struct InverseRelationshipResolver: Sendable {
                 limit: limit,
                 transaction: transaction.storageAccess
             )
-            var records: [Owner] = []
-            records.reserveCapacity(page.identities.count)
+            var entities: [Owner] = []
+            entities.reserveCapacity(page.identities.count)
             for identity in page.identities {
                 guard let model = try await transaction.fetchPersistedModel(
                     identifiedBy: identity
@@ -111,10 +111,10 @@ public struct InverseRelationshipResolver: Sendable {
                         actual: type(of: model).persistableType
                     )
                 }
-                records.append(owner)
+                entities.append(owner)
             }
             return RelationshipPage(
-                records: records,
+                entities: entities,
                 continuation: page.continuation
             )
         }

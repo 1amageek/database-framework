@@ -412,7 +412,7 @@ struct OntologyIRIValidationTests {
         try await loadTestOntology(context: context)
 
         let schema = Schema(
-            [OntologyPersistenceRecord.self],
+            [OntologyPersistenceEntity.self],
             version: Schema.Version(1, 0, 0)
         )
 

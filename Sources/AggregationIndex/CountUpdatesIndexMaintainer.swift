@@ -1,7 +1,7 @@
 // CountUpdatesIndexMaintainer.swift
 // AggregationIndex - Index maintainer for COUNT_UPDATES aggregation
 //
-// Tracks the number of times each record has been updated.
+// Tracks the number of times each entity has been updated.
 // Reference: FDB Record Layer COUNT_UPDATES index type
 
 #if canImport(FoundationEssentials)
@@ -16,7 +16,7 @@ import StorageKit
 /// Maintainer for COUNT_UPDATES indexes
 ///
 /// **Functionality**:
-/// - Track update counts per record
+/// - Track update counts per entity
 /// - Checked transactional increment on updates
 /// - Query by update frequency
 ///
@@ -75,7 +75,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
             // every storage backend instead of relying on wrapping atomics.
             guard let stored = try await transaction.getValue(for: oldKey) else {
                 throw IndexError.invalidStructure(
-                    "COUNT_UPDATES entry is missing for an existing record"
+                    "COUNT_UPDATES entry is missing for an existing entity"
                 )
             }
             let current = try ByteConversion.bytesToInt64(stored)
@@ -119,7 +119,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
 
     // MARK: - Query Methods
 
-    /// Get the update count for a specific record
+    /// Get the update count for a specific entity
     public func getUpdateCount(
         id: Tuple,
         transaction: any TransactionAccess
@@ -145,7 +145,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
         )
     }
 
-    /// Get records with update count above threshold
+    /// Get entities with update count above threshold
     public func getFrequentlyUpdated(
         threshold: Int64,
         transaction: any TransactionAccess

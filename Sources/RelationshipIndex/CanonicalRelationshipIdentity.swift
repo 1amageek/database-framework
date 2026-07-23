@@ -4,7 +4,7 @@ import StorageKit
 
 enum CanonicalRelationshipIdentity {
     static func resolve(
-        _ identity: RecordIdentity,
+        _ identity: PersistableIdentity,
         container: DBContainer
     ) throws -> (id: Tuple, partition: AnyDirectoryPath?) {
         guard let entity = container.schema.entity(named: identity.entity),
@@ -13,9 +13,9 @@ enum CanonicalRelationshipIdentity {
         }
         let id: Tuple
         do {
-            id = try RecordIdentifierKeyCodec.tuple(
+            id = try PersistableIdentifierKeyCodec.tuple(
                 for: identity,
-                expectedType: type.recordIdentifierType
+                expectedType: type.persistableIdentifierType
             )
         } catch let error {
             throw RelationshipReferenceError.invalidTargetIdentifier(

@@ -28,7 +28,7 @@ enum DatabaseQueryRowEncoder {
     static func encode(_ row: QueryRow) throws -> QueryExecuteOperation.Row {
         let version: DatabaseBytes?
         if let token = row.version {
-            version = try RecordVersionTokenCodec.digest(from: token)
+            version = try PersistableVersionTokenCodec.digest(from: token)
         } else {
             version = nil
         }

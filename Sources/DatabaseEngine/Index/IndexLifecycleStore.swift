@@ -179,7 +179,7 @@ public final class IndexLifecycleStore: Sendable {
     /// Declarative operation for container initialization, distinct from the
     /// imperative `enable()` → `makeReadable()` lifecycle used by OnlineIndexer.
     ///
-    /// A missing state may become `readable` only when the associated record
+    /// A missing state may become `readable` only when the associated entity
     /// range is empty in the same transaction. Existing `disabled` and
     /// `writeOnly` states fail fast because their derived data is not proven
     /// complete.
@@ -188,15 +188,15 @@ public final class IndexLifecycleStore: Sendable {
     ///
     /// - Parameters:
     ///   - indexNames: Names of the indexes to validate.
-    ///   - recordRange: Complete source-record range covered by the indexes.
+    ///   - entityRange: Complete source entity range covered by the indexes.
     public func ensureReadable(
         _ indexNames: [String],
-        recordRange: (begin: Bytes, end: Bytes)
+        entityRange: (begin: Bytes, end: Bytes)
     ) async throws {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.ensureReadable(
                 indexNames,
-                recordRange: recordRange,
+                entityRange: entityRange,
                 transaction: transaction
             )
         }
@@ -205,12 +205,12 @@ public final class IndexLifecycleStore: Sendable {
     /// Transaction-scoped variant used by atomic schema bootstrap.
     public func ensureReadable(
         _ indexNames: [String],
-        recordRange: (begin: Bytes, end: Bytes),
+        entityRange: (begin: Bytes, end: Bytes),
         transaction: any TransactionAccess
     ) async throws {
         let sourceRows = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(recordRange.begin),
-            to: .firstGreaterOrEqual(recordRange.end),
+            from: .firstGreaterOrEqual(entityRange.begin),
+            to: .firstGreaterOrEqual(entityRange.end),
             limit: 1,
             snapshot: false
         )
@@ -249,12 +249,12 @@ public final class IndexLifecycleStore: Sendable {
 
     /// Validates index readability without creating or changing index state.
     ///
-    /// A missing state is safe only while the covered record range is empty.
+    /// A missing state is safe only while the covered entity range is empty.
     /// This keeps query execution read-only while preserving the same
     /// fail-fast guarantee used during declarative initialization.
     func validateReadableForRead(
         _ indexNames: [String],
-        recordRange: (begin: Bytes, end: Bytes),
+        entityRange: (begin: Bytes, end: Bytes),
         transaction: any TransactionAccess
     ) async throws {
         var sourceIsEmpty: Bool?
@@ -267,8 +267,8 @@ public final class IndexLifecycleStore: Sendable {
             guard let storedBytes else {
                 if sourceIsEmpty == nil {
                     let sourceRows = try await transaction.collectRange(
-                        from: .firstGreaterOrEqual(recordRange.begin),
-                        to: .firstGreaterOrEqual(recordRange.end),
+                        from: .firstGreaterOrEqual(entityRange.begin),
+                        to: .firstGreaterOrEqual(entityRange.end),
                         limit: 1,
                         snapshot: true
                     )
@@ -447,7 +447,7 @@ public enum IndexStateError: Error, CustomStringConvertible {
     /// Invalid state transition attempted
     case invalidTransition(from: IndexState, to: IndexState, index: String, reason: String)
 
-    /// Index metadata is absent even though source records already exist.
+    /// Index metadata is absent even though source entities already exist.
     case missingStateForNonEmptyStore(index: String)
 
     /// An index is explicitly incomplete or disabled.

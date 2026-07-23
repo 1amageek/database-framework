@@ -11,7 +11,7 @@ public enum PolymorphicRowAnnotation {
     public static let typeCode = "_typeCode"
 }
 
-public struct PolymorphicRecord: Sendable {
+public struct PolymorphicEntity: Sendable {
     public let item: any Persistable
     public let typeName: String
     public let typeCode: Int64
@@ -40,7 +40,7 @@ extension DatabaseContext {
         limit: Int? = nil,
         offset: Int? = nil,
         orderBy: [String]? = nil
-    ) async throws -> [PolymorphicRecord] {
+    ) async throws -> [PolymorphicEntity] {
         let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
@@ -56,7 +56,7 @@ extension DatabaseContext {
         return try await withStorageAccess(configuration: configuration) { transaction in
             let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
             let (begin, end) = itemSubspace.range()
-            var records: [PolymorphicRecord] = []
+            var entities: [PolymorphicEntity] = []
 
             for try await (key, data) in storage.scan(begin: begin, end: end, snapshot: true) {
                 let tuple = try itemSubspace.unpack(key)
@@ -68,15 +68,15 @@ extension DatabaseContext {
                 guard self.isPolymorphicGetAllowed(item) else {
                     continue
                 }
-                records.append(
-                    PolymorphicRecord(
+                entities.append(
+                    PolymorphicEntity(
                         item: item,
                         typeName: runtimeType.persistableType,
                         typeCode: typeCode
                     )
                 )
             }
-            return records
+            return entities
         }
     }
 
@@ -85,7 +85,7 @@ extension DatabaseContext {
         ids: [Tuple],
         configuration: TransactionConfiguration = .default,
         cachePolicy: CachePolicy = .server
-    ) async throws -> [PolymorphicRecord] {
+    ) async throws -> [PolymorphicEntity] {
         let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
@@ -93,7 +93,7 @@ extension DatabaseContext {
 
         return try await withStorageAccess(configuration: configuration) { transaction in
             let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
-            var items: [PolymorphicRecord] = []
+            var items: [PolymorphicEntity] = []
 
             for id in ids {
                 guard let typeCode = id[0] as? Int64 else {
@@ -109,7 +109,7 @@ extension DatabaseContext {
                     continue
                 }
                 items.append(
-                    PolymorphicRecord(
+                    PolymorphicEntity(
                         item: item,
                         typeName: runtimeType.persistableType,
                         typeCode: typeCode

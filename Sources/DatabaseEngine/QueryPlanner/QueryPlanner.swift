@@ -391,8 +391,8 @@ public final class QueryPlanner<T: Persistable>: Sendable {
             // For OR queries, each branch independently filters its results.
             // If child 1 satisfies condition A and child 2 satisfies condition B,
             // both are satisfied because:
-            // - Records from child 1 already passed condition A
-            // - Records from child 2 already passed condition B
+            // - Entities from child 1 already passed condition A
+            // - Entities from child 2 already passed condition B
             // No post-filter is needed for A or B.
             for child in op.children {
                 identifiers.formUnion(collectSatisfiedConditionIdentifiers(child))
@@ -400,7 +400,7 @@ public final class QueryPlanner<T: Persistable>: Sendable {
 
         case .intersection(let op):
             // Intersection: union of all child conditions
-            // All children must produce matching records, so any condition
+            // All children must produce matching entities, so any condition
             // satisfied by any child contributes to the overall filter.
             for child in op.children {
                 identifiers.formUnion(collectSatisfiedConditionIdentifiers(child))

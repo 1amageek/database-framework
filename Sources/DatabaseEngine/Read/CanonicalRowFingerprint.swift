@@ -20,8 +20,8 @@ public enum CanonicalRowFingerprint {
         var hasher = SHA256Accumulator()
         var domain = UInt32(0x0152_4244).littleEndian
         withUnsafeBytes(of: &domain) { hasher.update($0) }
-        hasher.update(try RecordVersionTokenCodec.digest(fields: row.fields))
-        hasher.update(try RecordVersionTokenCodec.digest(fields: row.annotations))
+        hasher.update(try PersistableVersionTokenCodec.digest(fields: row.fields))
+        hasher.update(try PersistableVersionTokenCodec.digest(fields: row.annotations))
         if let version = row.version {
             updateUTF8(version.value, hasher: &hasher)
         }
@@ -38,7 +38,7 @@ public enum CanonicalRowFingerprint {
                 at: .resultMaterialization
             )
             guard let value = fields[key] else {
-                throw RecordVersionTokenCodecError.inconsistentFieldMap(key)
+                throw PersistableVersionTokenCodecError.inconsistentFieldMap(key)
             }
             try consume(value, workMeter: workMeter)
         }
@@ -97,7 +97,7 @@ public enum CanonicalRowFingerprint {
     }
 
     private static func consume(
-        _ identifier: RecordIdentifierValue,
+        _ identifier: PersistableIdentifierValue,
         workMeter: DatabaseWorkMeter
     ) throws {
         try workMeter.consume(at: .resultMaterialization)

@@ -627,7 +627,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Fetch count of models matching a query
     ///
     /// This method attempts to use indexes for efficient counting:
-    /// 1. If no predicate, count all records without deserialization
+    /// 1. If no predicate, count all entities without deserialization
     /// 2. If predicate matches an index, count using index scan
     /// 3. Fall back to fetch and count if no optimization possible
     package func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
@@ -1158,7 +1158,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         id: T.ID,
         transaction: any TransactionAccess
     ) async throws -> T? {
-        let identifier = try RecordIdentifierKeyCodec.tuple(for: id)
+        let identifier = try PersistableIdentifierKeyCodec.tuple(for: id)
         return try await fetchByIdentifierTupleInTransaction(
             type,
             identifier: identifier,
@@ -1166,9 +1166,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
         )
     }
 
-    /// Fetches a record from an identifier tuple already produced by an index.
+    /// Fetches an entity from an identifier tuple already produced by an index.
     ///
-    /// Callers must validate the tuple against `T.recordIdentifierType` before
+    /// Callers must validate the tuple against `T.persistableIdentifierType` before
     /// entering this storage-only path. Keeping the original tuple avoids an
     /// otherwise redundant logical-value-to-tuple conversion.
     func fetchByIdentifierTupleInTransaction<T: Persistable>(
@@ -1291,7 +1291,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         return count
     }
 
-    /// Count using index scan (without deserializing records)
+    /// Count using index scan (without deserializing entities)
     private func countUsingIndex(condition: IndexableCondition, index: IndexDescriptor) async throws -> Int {
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
         let valueTuple = condition.valueTuple
@@ -1543,7 +1543,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     ) async throws -> PersistableWriteResult {
         let modelType = type(of: model)
         let persistableType = modelType.persistableType
-        let idTuple = try model.recordIdentifierTuple()
+        let idTuple = try model.persistableIdentifierTuple()
 
         let key = itemKey(for: persistableType, id: idTuple)
 
@@ -1578,12 +1578,12 @@ package final class DatabaseDataStore: DataStore, Sendable {
         try Self.evaluateWritePrecondition(
             precondition,
             existingRowPresent: existingRowPresent,
-            currentVersion: existingRowPresent ? oldModel.map(Self.recordVersionDigest) : nil,
+            currentVersion: existingRowPresent ? oldModel.map(Self.entityVersionDigest) : nil,
             typeName: persistableType,
             idDescription: String(describing: model.id)
         )
 
-        let data = try DatabaseRecordStorageCodec.encode(model)
+        let data = try PersistableStorageCodec.encode(model)
 
         try await storage.write(data, for: key)
 
@@ -1652,7 +1652,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                     typeName: typeName,
                     idDescription: idDescription,
                     precondition: precondition,
-                    reason: "record version changed"
+                    reason: "entity version changed"
                 )
             }
         case .matchesStoredOrAbsent(let version):
@@ -1662,17 +1662,17 @@ package final class DatabaseDataStore: DataStore, Sendable {
                     typeName: typeName,
                     idDescription: idDescription,
                     precondition: precondition,
-                    reason: "record version changed"
+                    reason: "entity version changed"
                 )
             }
         }
     }
 
-    private static func recordVersionDigest(
+    private static func entityVersionDigest(
         for model: any Persistable
     ) throws -> DatabaseBytes {
-        let fields = try DatabaseRecordEncoder.encode(model)
-        return try RecordVersionTokenCodec.digest(fields: fields)
+        let fields = try PersistableFieldEncoder.encode(model)
+        return try PersistableVersionTokenCodec.digest(fields: fields)
     }
 
     /// Deletes the currently persisted value and its physical indexes.
@@ -1683,7 +1683,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         transaction: any TransactionAccess
     ) async throws -> (any Persistable)? {
         let persistableType = type(of: model).persistableType
-        let idTuple = try model.recordIdentifierTuple()
+        let idTuple = try model.persistableIdentifierTuple()
         let key = itemKey(for: persistableType, id: idTuple)
         let storage = container.itemStorageFactory.make(
             transaction: transaction,
@@ -1706,7 +1706,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         try Self.evaluateWritePrecondition(
             precondition,
             existingRowPresent: true,
-            currentVersion: try Self.recordVersionDigest(for: persistedModel),
+            currentVersion: try Self.entityVersionDigest(for: persistedModel),
             typeName: persistableType,
             idDescription: String(describing: model.id)
         )
@@ -1782,7 +1782,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
 /// Errors that can occur during index operations
 public enum DatabaseIndexError: Error, CustomStringConvertible {
-    /// Unique constraint violation: duplicate value exists for another record
+    /// Unique constraint violation: duplicate value exists for another entity
     case uniqueConstraintViolation(indexName: String, values: [String])
 
     /// Index not found in schema
@@ -1794,7 +1794,7 @@ public enum DatabaseIndexError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .uniqueConstraintViolation(let indexName, let values):
-            return "Unique constraint violation on index '\(indexName)': values [\(values.joined(separator: ", "))] already exist for another record"
+            return "Unique constraint violation on index '\(indexName)': values [\(values.joined(separator: ", "))] already exist for another entity"
         case .indexNotFound(let indexName):
             return "Index '\(indexName)' not found in schema"
         case .unsupportedIndexKind(let indexName, let kindIdentifier):

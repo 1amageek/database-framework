@@ -470,9 +470,9 @@ public struct IndexQueryContext: Sendable {
         } else {
             store = try await context.container.store(for: type)
         }
-        _ = try RecordIdentifierKeyCodec.value(
+        _ = try PersistableIdentifierKeyCodec.value(
             from: id,
-            expectedType: T.recordIdentifierType
+            expectedType: T.persistableIdentifierType
         )
         return try await store.fetchByIdentifierTupleInTransaction(
             type,

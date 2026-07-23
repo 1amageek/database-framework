@@ -20,16 +20,16 @@ struct IndexConfigurationTests {
     func indexConfigurationApplicableApply() async throws {
         let configuration = DimensionIndexConfiguration(
             fieldName: "embedding",
-            modelTypeName: "IndexConfigurationRecord",
+            modelTypeName: "IndexConfigurationEntity",
             dimensions: 384,
             distanceMetric: "cosine"
         )
 
         let index = Index(
-            name: "IndexConfigurationRecord_embedding",
+            name: "IndexConfigurationEntity_embedding",
             kind: DimensionConfiguredIndexKind(dimensions: 384),
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "IndexConfigurationRecord_embedding"
+            subspaceKey: "IndexConfigurationEntity_embedding"
         )
 
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
@@ -37,14 +37,14 @@ struct IndexConfigurationTests {
         let registry = try IndexMaintainerProviderRegistry(
             providers: [DimensionConfiguredIndexMaintainerProvider()]
         )
-        let maintainer: any IndexMaintainer<IndexConfigurationRecord> = try registry.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<IndexConfigurationEntity> = try registry.makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
             configurations: [configuration]
         )
 
-        if let recordingMaintainer = maintainer as? ConfigurationRecordingIndexMaintainer<IndexConfigurationRecord> {
+        if let recordingMaintainer = maintainer as? ConfigurationRecordingIndexMaintainer<IndexConfigurationEntity> {
             #expect(recordingMaintainer.appliedDimensions == 384)
             #expect(recordingMaintainer.appliedDistanceMetric == "cosine")
             #expect(recordingMaintainer.configurationApplied == true)
@@ -56,16 +56,16 @@ struct IndexConfigurationTests {
     @Test("Provider applies all matching configurations")
     func multiIndexConfigurationApplicableApply() async throws {
         let configs: [any IndexConfiguration] = [
-            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationRecord", language: "en"),
-            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationRecord", language: "ja"),
-            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationRecord", language: "zh")
+            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationEntity", language: "en"),
+            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationEntity", language: "ja"),
+            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationEntity", language: "zh")
         ]
 
         let index = Index(
-            name: "IndexConfigurationRecord_content",
+            name: "IndexConfigurationEntity_content",
             kind: LanguageConfiguredIndexKind(),
             rootExpression: FieldKeyExpression(fieldName: "content"),
-            subspaceKey: "IndexConfigurationRecord_content"
+            subspaceKey: "IndexConfigurationEntity_content"
         )
 
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
@@ -73,14 +73,14 @@ struct IndexConfigurationTests {
         let registry = try IndexMaintainerProviderRegistry(
             providers: [LanguageConfiguredIndexMaintainerProvider()]
         )
-        let maintainer: any IndexMaintainer<IndexConfigurationRecord> = try registry.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<IndexConfigurationEntity> = try registry.makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
             configurations: configs
         )
 
-        if let recordingMaintainer = maintainer as? LanguageRecordingIndexMaintainer<IndexConfigurationRecord> {
+        if let recordingMaintainer = maintainer as? LanguageRecordingIndexMaintainer<IndexConfigurationEntity> {
             #expect(recordingMaintainer.appliedLanguages.count == 3)
             #expect(recordingMaintainer.appliedLanguages.contains("en"))
             #expect(recordingMaintainer.appliedLanguages.contains("ja"))
@@ -94,15 +94,15 @@ struct IndexConfigurationTests {
     func configurationNotAppliedForMismatchedIndex() async throws {
         let configuration = DimensionIndexConfiguration(
             fieldName: "embedding",
-            modelTypeName: "IndexConfigurationRecord",
+            modelTypeName: "IndexConfigurationEntity",
             dimensions: 768,
             distanceMetric: "euclidean"
         )
         let index = Index(
-            name: "IndexConfigurationRecord_otherField",
+            name: "IndexConfigurationEntity_otherField",
             kind: DimensionConfiguredIndexKind(dimensions: 128),
             rootExpression: FieldKeyExpression(fieldName: "otherField"),
-            subspaceKey: "IndexConfigurationRecord_otherField"
+            subspaceKey: "IndexConfigurationEntity_otherField"
         )
 
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
@@ -110,14 +110,14 @@ struct IndexConfigurationTests {
         let registry = try IndexMaintainerProviderRegistry(
             providers: [DimensionConfiguredIndexMaintainerProvider()]
         )
-        let maintainer: any IndexMaintainer<IndexConfigurationRecord> = try registry.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<IndexConfigurationEntity> = try registry.makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
             configurations: [configuration]
         )
 
-        if let recordingMaintainer = maintainer as? ConfigurationRecordingIndexMaintainer<IndexConfigurationRecord> {
+        if let recordingMaintainer = maintainer as? ConfigurationRecordingIndexMaintainer<IndexConfigurationEntity> {
             #expect(recordingMaintainer.configurationApplied == false)
             #expect(recordingMaintainer.appliedDimensions == 128)
         } else {
@@ -131,13 +131,13 @@ struct IndexConfigurationTests {
     func indexConfigurationIndexName() {
         let configuration = DimensionIndexConfiguration(
             fieldName: "embedding",
-            modelTypeName: "IndexConfigurationRecord",
+            modelTypeName: "IndexConfigurationEntity",
             dimensions: 384,
             distanceMetric: "cosine"
         )
 
         // indexName should be "{modelTypeName}_{fieldName}"
-        #expect(configuration.indexName == "IndexConfigurationRecord_embedding")
+        #expect(configuration.indexName == "IndexConfigurationEntity_embedding")
     }
 
     @Test("IndexConfiguration kindIdentifier matches expected kind")
@@ -147,10 +147,10 @@ struct IndexConfigurationTests {
     }
 }
 
-// MARK: - Configuration Record
+// MARK: - Configuration Entity
 
 @Persistable
-struct IndexConfigurationRecord {
+struct IndexConfigurationEntity {
     var content: String = ""
     var embedding: [Float] = []
     var otherField: String = ""
@@ -290,7 +290,7 @@ struct LanguageConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
 
 // MARK: - Recording Index Maintainers
 
-/// Records the dimension configuration selected by the provider.
+/// Entities the dimension configuration selected by the provider.
 struct ConfigurationRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer {
     let index: Index
     let subspace: Subspace
@@ -317,7 +317,7 @@ struct ConfigurationRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer
     }
 }
 
-/// Records every language configuration selected by the provider.
+/// Entities every language configuration selected by the provider.
 struct LanguageRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer {
     let index: Index
     let subspace: Subspace

@@ -488,7 +488,7 @@ public struct PlanEnumerator<T: Persistable> {
     /// Wrap plan with limit, pushing down to scan operators when possible
     ///
     /// **Optimization**: For simple scan plans, push limit directly into the scan
-    /// operator to avoid fetching unnecessary records. This is particularly
+    /// operator to avoid fetching unnecessary entities. This is particularly
     /// effective for pagination queries (LIMIT + OFFSET).
     ///
     /// When offset is present, we request `limit + offset` entries from the scan
@@ -592,7 +592,7 @@ public struct PlanEnumerator<T: Persistable> {
     private func estimateOutputSize(plan: PlanOperator<T>, analysis: QueryAnalysis<T>) -> Int {
         let estimator = CostEstimator<T>(statistics: statistics, costModel: costModel)
         let cost = estimator.estimate(plan: plan, analysis: analysis)
-        return Int(cost.recordFetches)
+        return Int(cost.entityFetches)
     }
 
     // MARK: - Index-Only Scan Plans (Covering Index)
@@ -600,7 +600,7 @@ public struct PlanEnumerator<T: Persistable> {
     /// Try to create index-only scan plans for covering indexes
     ///
     /// An index-only scan is possible when all required fields are available
-    /// in the index, eliminating the need to fetch the actual record.
+    /// in the index, eliminating the need to fetch the actual entity.
     private func tryIndexOnlyScanPlans(analysis: QueryAnalysis<T>) -> [PlanOperator<T>] {
         var plans: [PlanOperator<T>] = []
         let analyzer = IndexOnlyScanAnalyzer<T>()

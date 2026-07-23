@@ -30,10 +30,10 @@ struct SPARQLUpdateExecutor: Sendable {
         preconditions: [MutationExecuteOperation.Precondition],
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction,
-        records: DatabaseRecordMutationExecutor,
+        entities: DatabaseEntityMutationExecutor,
         workMeter: DatabaseWorkMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
-        try await records.validate(
+        try await entities.validate(
             preconditions,
             transaction: transaction,
             workMeter: workMeter

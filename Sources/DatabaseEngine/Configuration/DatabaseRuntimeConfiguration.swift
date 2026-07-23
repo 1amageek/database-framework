@@ -48,11 +48,11 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 throw .missingCompiledEntityType(entityName: entity.name)
             }
             do {
-                try RecordIdentifierValidator.validate(
-                    persistableType.recordIdentifierType
+                try PersistableIdentifierValidator.validate(
+                    persistableType.persistableIdentifierType
                 )
             } catch let error {
-                throw .invalidRecordIdentifierType(
+                throw .invalidPersistableIdentifierType(
                     entityName: entity.name,
                     reason: error
                 )

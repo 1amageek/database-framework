@@ -152,7 +152,7 @@ struct MinMaxBatchBenchmark {
         ConsoleReporter.print(result)
 
         Swift.print("\n📝 Note: Index-backed batch aggregation performs a bounded O(G) scan.")
-        Swift.print("Full scan aggregation requires O(n) where n = records per group.")
+        Swift.print("Full scan aggregation requires O(n) where n = entities per group.")
         Swift.print("Expected improvement: 10-50x depending on group size\n")
     }
 

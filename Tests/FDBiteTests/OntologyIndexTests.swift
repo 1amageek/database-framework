@@ -99,7 +99,7 @@ struct OWLClassRDFDescriptorTests {
         #expect(index?.kindIdentifier == "owl_class_rdf")
     }
 
-    @Test("Record and RDF descriptors are merged")
+    @Test("Entity and RDF descriptors are merged")
     func descriptorsMerge() {
         let rdfIndex = OntoPerson.indexDescriptors.first {
             $0.kindIdentifier == "owl_class_rdf"
@@ -107,7 +107,7 @@ struct OWLClassRDFDescriptorTests {
         #expect(rdfIndex?.name == "OntoPerson_owl_rdf")
     }
 
-    @Test("A plain record does not register an RDF projection")
+    @Test("A plain entity does not register an RDF projection")
     func plainEntityHasNoProjection() {
         #expect(
             PlainItem.indexDescriptors.allSatisfy {
@@ -199,7 +199,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         return try await DBContainer.inMemory(for: schema, security: .disabled)
     }
 
-    @Test("Saving a record atomically creates its RDF projection")
+    @Test("Saving an entity atomically creates its RDF projection")
     func insertCreatesProjection() async throws {
         let container = try await makeContainer()
         let context = container.newContext()
@@ -216,7 +216,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         #expect(entries.count == 18)
     }
 
-    @Test("Updating a record replaces stale RDF assertions")
+    @Test("Updating an entity replaces stale RDF assertions")
     func updateReplacesProjection() async throws {
         let container = try await makeContainer()
         let context = container.newContext()
@@ -244,7 +244,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         #expect(entries.contains { containsSubsequence($0, newLiteral) })
     }
 
-    @Test("Deleting a record removes its RDF projection")
+    @Test("Deleting an entity removes its RDF projection")
     func deleteRemovesProjection() async throws {
         let container = try await makeContainer()
         let context = container.newContext()

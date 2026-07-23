@@ -431,8 +431,8 @@ struct DatabaseFrameworkDeepE2ETests {
         )
         let movedRelated = try await context.related(movedOrder, \.customer)
 
-        #expect(oldCustomerOrders.records.isEmpty)
-        #expect(newCustomerOrders.records.map(\.id) == [order.id])
+        #expect(oldCustomerOrders.entities.isEmpty)
+        #expect(newCustomerOrders.entities.map(\.id) == [order.id])
         #expect(movedRelated?.id == bob.id)
 
         try context.delete(bob)

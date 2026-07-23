@@ -15,11 +15,11 @@ import Foundation
 @Suite("RuntimeStatistics Tests", .heartbeat)
 struct RuntimeStatisticsTests {
 
-    // MARK: - ExecutionRecord Tests
+    // MARK: - ExecutionObservation Tests
 
-    @Test("ExecutionRecord calculates error ratio correctly")
-    func testExecutionRecordErrorRatio() {
-        let record = ExecutionRecord(
+    @Test("ExecutionObservation calculates error ratio correctly")
+    func testExecutionObservationErrorRatio() {
+        let entity = ExecutionObservation(
             planId: UUID(),
             typeName: "QueryPlannerUser",
             timestamp: Date(),
@@ -27,17 +27,17 @@ struct RuntimeStatisticsTests {
             actualRowCount: 50,
             executionTime: 0.1,
             indexScansPerformed: 1,
-            recordFetches: 50,
+            entityFetches: 50,
             usedIndexes: ["idx_email"]
         )
 
         // Error = |100 - 50| / 50 = 1.0 (100% error)
-        #expect(record.errorRatio == 1.0)
+        #expect(entity.errorRatio == 1.0)
     }
 
-    @Test("ExecutionRecord error ratio handles zero actual rows")
-    func testExecutionRecordErrorRatioZeroActual() {
-        let record = ExecutionRecord(
+    @Test("ExecutionObservation error ratio handles zero actual rows")
+    func testExecutionObservationErrorRatioZeroActual() {
+        let entity = ExecutionObservation(
             planId: UUID(),
             typeName: "QueryPlannerUser",
             timestamp: Date(),
@@ -45,17 +45,17 @@ struct RuntimeStatisticsTests {
             actualRowCount: 0,
             executionTime: 0.1,
             indexScansPerformed: 1,
-            recordFetches: 0,
+            entityFetches: 0,
             usedIndexes: []
         )
 
         // Error = |100 - 0| / max(1, 0) = 100
-        #expect(record.errorRatio == 100.0)
+        #expect(entity.errorRatio == 100.0)
     }
 
     // MARK: - RuntimeStatisticsTracker Tests
 
-    @Test("Tracker records execution statistics")
+    @Test("Tracker entities execution statistics")
     func testTrackerRecordsStatistics() throws {
         let tracker = RuntimeStatisticsTracker(autoUpdateStatistics: false)
         let planner = QueryPlanner<QueryPlannerUser>(indexes: QueryPlannerUser.indexDescriptors)
@@ -70,7 +70,7 @@ struct RuntimeStatisticsTests {
             actualRowCount: 100,
             executionTime: 0.05,
             indexScansPerformed: 1,
-            recordFetches: 100
+            entityFetches: 100
         )
 
         let history = tracker.getRecentHistory(limit: 10)
@@ -91,7 +91,7 @@ struct RuntimeStatisticsTests {
         query = query.where(\QueryPlannerUser.age > 18)
         let plan = try planner.plan(query: query)
 
-        // Record 10 executions
+        // Entity 10 executions
         for i in 0..<10 {
             tracker.record(
                 plan: plan,
@@ -113,7 +113,7 @@ struct RuntimeStatisticsTests {
         query = query.where(\QueryPlannerUser.email == "test@example.com")
         let plan = try planner.plan(query: query)
 
-        // Record multiple executions
+        // Entity multiple executions
         for _ in 0..<5 {
             tracker.record(
                 plan: plan,
@@ -166,7 +166,7 @@ struct RuntimeStatisticsTests {
         query = query.where(\QueryPlannerUser.age > 18)
         let plan = try planner.plan(query: query)
 
-        // Record executions with varying accuracy
+        // Entity executions with varying accuracy
         tracker.record(plan: plan, actualRowCount: 100, executionTime: 0.05) // Good estimate
         tracker.record(plan: plan, actualRowCount: 10, executionTime: 0.01) // Poor estimate (if estimated high)
 
@@ -224,8 +224,8 @@ struct RuntimeStatisticsTests {
     func testDriftDetectorMinimumSamples() {
         let detector = StatisticsDriftDetector(driftThreshold: 0.5, minimumSamples: 10)
 
-        let records = (0..<5).map { _ in
-            ExecutionRecord(
+        let entities = (0..<5).map { _ in
+            ExecutionObservation(
                 planId: UUID(),
                 typeName: "QueryPlannerUser",
                 timestamp: Date(),
@@ -233,12 +233,12 @@ struct RuntimeStatisticsTests {
                 actualRowCount: 50,
                 executionTime: 0.1,
                 indexScansPerformed: 1,
-                recordFetches: 50,
+                entityFetches: 50,
                 usedIndexes: []
             )
         }
 
-        let report = detector.detectDrift(from: records)
+        let report = detector.detectDrift(from: entities)
 
         #expect(report.hasDrifted == false) // Not enough samples
     }
@@ -247,9 +247,9 @@ struct RuntimeStatisticsTests {
     func testDriftDetectorDetectsDrift() {
         let detector = StatisticsDriftDetector(driftThreshold: 0.5, minimumSamples: 5)
 
-        // Create records with high error (estimated 100, actual 10 = 900% error)
-        let records = (0..<10).map { _ in
-            ExecutionRecord(
+        // Create entities with high error (estimated 100, actual 10 = 900% error)
+        let entities = (0..<10).map { _ in
+            ExecutionObservation(
                 planId: UUID(),
                 typeName: "QueryPlannerUser",
                 timestamp: Date(),
@@ -257,12 +257,12 @@ struct RuntimeStatisticsTests {
                 actualRowCount: 10,
                 executionTime: 0.1,
                 indexScansPerformed: 1,
-                recordFetches: 10,
+                entityFetches: 10,
                 usedIndexes: []
             )
         }
 
-        let report = detector.detectDrift(from: records)
+        let report = detector.detectDrift(from: entities)
 
         #expect(report.hasDrifted == true)
         #expect(report.recommendation != nil)
@@ -272,9 +272,9 @@ struct RuntimeStatisticsTests {
     func testDriftDetectorNoDrift() {
         let detector = StatisticsDriftDetector(driftThreshold: 0.5, minimumSamples: 5)
 
-        // Create records with accurate estimates
-        let records = (0..<10).map { _ in
-            ExecutionRecord(
+        // Create entities with accurate estimates
+        let entities = (0..<10).map { _ in
+            ExecutionObservation(
                 planId: UUID(),
                 typeName: "QueryPlannerUser",
                 timestamp: Date(),
@@ -282,12 +282,12 @@ struct RuntimeStatisticsTests {
                 actualRowCount: 95, // Within 5% error
                 executionTime: 0.1,
                 indexScansPerformed: 1,
-                recordFetches: 95,
+                entityFetches: 95,
                 usedIndexes: []
             )
         }
 
-        let report = detector.detectDrift(from: records)
+        let report = detector.detectDrift(from: entities)
 
         #expect(report.hasDrifted == false)
     }

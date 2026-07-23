@@ -8,12 +8,12 @@ struct CoveringIndexMetadataTests {
     @Test("Complete compiled fields are required")
     func completeCoverage() {
         let full = CoveringIndexMetadata.build(
-            for: IndexProjectionRecordFactory.descriptor(),
-            type: IndexProjectionRecord.self
+            for: IndexProjectionEntityFactory.descriptor(),
+            type: IndexProjectionEntity.self
         )
         let partial = CoveringIndexMetadata.build(
-            for: IndexProjectionRecordFactory.descriptor(storedFields: []),
-            type: IndexProjectionRecord.self
+            for: IndexProjectionEntityFactory.descriptor(storedFields: []),
+            type: IndexProjectionEntity.self
         )
 
         #expect(full.isFullyCovering)

@@ -272,7 +272,7 @@ public actor FoundationDBScenarioCoordinator {
 
     /// Clears the complete user keyspace owned by the isolated test cluster.
     ///
-    /// Directory metadata, records, indexes, the schema catalog, and the
+    /// Directory metadata, entities, indexes, the schema catalog, and the
     /// database format descriptor form one consistency domain. Clearing only
     /// selected directories can leave a non-empty database without its format
     /// descriptor, so initialization must reset that domain atomically and

@@ -17,7 +17,7 @@ enum DatabaseSchemaFingerprint {
             let entities = schema.entities.sorted { $0.name < $1.name }
             try writer.writeCount(entities.count)
             for entity in entities {
-                try SchemaEntityRecordCodec.writeCanonical(
+                try SchemaEntityEntryCodec.writeCanonical(
                     entity,
                     into: &writer
                 )
@@ -29,7 +29,7 @@ enum DatabaseSchemaFingerprint {
             try writer.writeCount(groups.count)
             for group in groups {
                 try writer.writeString(group.identifier)
-                try SchemaEntityRecordCodec.writeDirectory(
+                try SchemaEntityEntryCodec.writeDirectory(
                     group.directoryComponents,
                     layer: group.directoryLayer,
                     into: &writer
@@ -37,12 +37,12 @@ enum DatabaseSchemaFingerprint {
                 let indexes = group.indexes.sorted { $0.name < $1.name }
                 try writer.writeCount(indexes.count)
                 for index in indexes {
-                    try SchemaEntityRecordCodec.write(
+                    try SchemaEntityEntryCodec.write(
                         index,
                         into: &writer
                     )
                 }
-                try SchemaEntityRecordCodec.writeStringArray(
+                try SchemaEntityEntryCodec.writeStringArray(
                     group.memberTypeNames.sorted(),
                     into: &writer
                 )

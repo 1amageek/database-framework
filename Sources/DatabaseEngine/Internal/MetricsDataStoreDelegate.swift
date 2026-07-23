@@ -1,9 +1,9 @@
 import Metrics
 
-/// Internal delegate that records data store metrics using swift-metrics
+/// Internal delegate that collects data store metrics using swift-metrics
 ///
 /// This delegate is the default implementation used by DatabaseDataStore.
-/// It records operation counts and durations to the configured metrics backend.
+/// It emits operation counts and durations to the configured metrics backend.
 ///
 /// **Metrics Recorded**:
 /// - `database_persistence_operations_total` (Counter): Total operation count by type and status

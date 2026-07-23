@@ -7,16 +7,16 @@ import Testing
 struct PlanEnumeratorIndexOnlyTests {
     @Test("Planner emits index-only only for a complete DBIX projection")
     func planSelection() throws {
-        let query = Query<IndexProjectionRecord>()
-            .where(\IndexProjectionRecord.email == "owner@example.com")
-        let analysis = try QueryAnalyzer<IndexProjectionRecord>().analyze(query)
+        let query = Query<IndexProjectionEntity>()
+            .where(\IndexProjectionEntity.email == "owner@example.com")
+        let analysis = try QueryAnalyzer<IndexProjectionEntity>().analyze(query)
         let statistics = HeuristicStatisticsProvider(defaultRowCount: 100)
-        let fullPlans = PlanEnumerator<IndexProjectionRecord>(
-            indexes: [IndexProjectionRecordFactory.descriptor()],
+        let fullPlans = PlanEnumerator<IndexProjectionEntity>(
+            indexes: [IndexProjectionEntityFactory.descriptor()],
             statistics: statistics
         ).enumerate(analysis: analysis)
-        let partialPlans = PlanEnumerator<IndexProjectionRecord>(
-            indexes: [IndexProjectionRecordFactory.descriptor(storedFields: [])],
+        let partialPlans = PlanEnumerator<IndexProjectionEntity>(
+            indexes: [IndexProjectionEntityFactory.descriptor(storedFields: [])],
             statistics: statistics
         ).enumerate(analysis: analysis)
 

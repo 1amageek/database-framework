@@ -54,25 +54,25 @@ public struct StoreTimerEvent: Hashable, Sendable, CustomStringConvertible {
     /// Number of retries
     public static let retries = StoreTimerEvent(name: "retries", isCount: true)
 
-    // MARK: - Record Operations
+    // MARK: - Entity Operations
 
-    /// Time to save a record
-    public static let saveRecord = StoreTimerEvent(name: "save_record")
+    /// Time to save an entity
+    public static let saveEntity = StoreTimerEvent(name: "save_entity")
 
-    /// Time to load a record
-    public static let loadRecord = StoreTimerEvent(name: "load_record")
+    /// Time to load an entity
+    public static let loadEntity = StoreTimerEvent(name: "load_entity")
 
-    /// Time to delete a record
-    public static let deleteRecord = StoreTimerEvent(name: "delete_record")
+    /// Time to delete an entity
+    public static let deleteEntity = StoreTimerEvent(name: "delete_entity")
 
-    /// Number of records saved
-    public static let recordsSaved = StoreTimerEvent(name: "records_saved", isCount: true)
+    /// Number of entities saved
+    public static let entitiesSaved = StoreTimerEvent(name: "entities_saved", isCount: true)
 
-    /// Number of records loaded
-    public static let recordsLoaded = StoreTimerEvent(name: "records_loaded", isCount: true)
+    /// Number of entities loaded
+    public static let entitiesLoaded = StoreTimerEvent(name: "entities_loaded", isCount: true)
 
-    /// Number of records deleted
-    public static let recordsDeleted = StoreTimerEvent(name: "records_deleted", isCount: true)
+    /// Number of entities deleted
+    public static let entitiesDeleted = StoreTimerEvent(name: "entities_deleted", isCount: true)
 
     // MARK: - Index Operations
 
@@ -104,10 +104,10 @@ public struct StoreTimerEvent: Hashable, Sendable, CustomStringConvertible {
 
     // MARK: - Serialization
 
-    /// Time to serialize record
+    /// Time to serialize an entity
     public static let serialize = StoreTimerEvent(name: "serialize")
 
-    /// Time to deserialize record
+    /// Time to deserialize an entity
     public static let deserialize = StoreTimerEvent(name: "deserialize")
 
     /// Bytes serialized
@@ -143,8 +143,8 @@ public struct StoreTimerEvent: Hashable, Sendable, CustomStringConvertible {
     /// Time for single online index batch
     public static let onlineIndexBatch = StoreTimerEvent(name: "online_index_batch")
 
-    /// Number of records indexed
-    public static let recordsIndexed = StoreTimerEvent(name: "records_indexed", isCount: true)
+    /// Number of entities indexed
+    public static let entitiesIndexed = StoreTimerEvent(name: "entities_indexed", isCount: true)
 
     // MARK: - Cache
 
@@ -165,12 +165,12 @@ public struct StoreTimerEvent: Hashable, Sendable, CustomStringConvertible {
 /// **Usage**:
 /// ```swift
 /// let timer = StoreTimer()
-/// timer.record(.saveRecord, duration: 5_000_000) // 5ms in nanoseconds
-/// timer.increment(.recordsSaved, by: 10)
+/// timer.record(.saveEntity, duration: 5_000_000) // 5ms in nanoseconds
+/// timer.increment(.entitiesSaved, by: 10)
 ///
 /// // Or use the scoped timing API
-/// let result = try await timer.time(.loadRecord) {
-///     try await loadRecordFromDatabase()
+/// let result = try await timer.time(.loadEntity) {
+///     try await loadEntityFromDatabase()
 /// }
 /// ```
 ///
@@ -209,7 +209,7 @@ public final class StoreTimer: Sendable {
 
     // MARK: - Initialization
 
-    public init(metricsPrefix: String = "fdb", emitMetrics: Bool = true) {
+    public init(metricsPrefix: String = "database", emitMetrics: Bool = true) {
         self.metricsPrefix = metricsPrefix
         self.emitMetrics = emitMetrics
         self.state = Mutex(State())
@@ -219,7 +219,7 @@ public final class StoreTimer: Sendable {
             // Timer events (timing-based)
             let timerEvents: [StoreTimerEvent] = [
                 .getReadVersion, .commit, .commitWait, .transactionDuration,
-                .saveRecord, .loadRecord, .deleteRecord,
+                .saveEntity, .loadEntity, .deleteEntity,
                 .updateIndex, .scanIndex,
                 .rangeScan,
                 .serialize, .deserialize,
@@ -237,12 +237,12 @@ public final class StoreTimer: Sendable {
             // Counter events (count/size-based)
             let counterEvents: [StoreTimerEvent] = [
                 .retries,
-                .recordsSaved, .recordsLoaded, .recordsDeleted,
+                .entitiesSaved, .entitiesLoaded, .entitiesDeleted,
                 .indexEntriesWritten, .indexEntriesRead, .indexEntriesDeleted,
                 .rangesScanned, .rangeKeyValues,
                 .bytesSerialized, .bytesDeserialized,
                 .plansEvaluated,
-                .recordsIndexed,
+                .entitiesIndexed,
                 .cacheHit, .cacheMiss
             ]
 

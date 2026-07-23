@@ -26,7 +26,7 @@ enum CanonicalBindingFingerprint {
             )
             appendString(key, to: &fieldHasher)
             guard let value = fields[key] else {
-                throw RecordVersionTokenCodecError.inconsistentFieldMap(key)
+                throw PersistableVersionTokenCodecError.inconsistentFieldMap(key)
             }
             try appendValue(
                 value,

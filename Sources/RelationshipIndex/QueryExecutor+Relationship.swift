@@ -130,13 +130,13 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
             }
 
             let resolver = RelationshipReferenceResolver(schema: container.schema)
-            var referencesByModel: [[[RecordIdentity]]] = []
+            var referencesByModel: [[[PersistableIdentity]]] = []
             referencesByModel.reserveCapacity(models.count)
-            var orderedIdentities: [RecordIdentity] = []
-            var seenIdentities = Set<RecordIdentity>()
+            var orderedIdentities: [PersistableIdentity] = []
+            var seenIdentities = Set<PersistableIdentity>()
 
             for model in models {
-                var modelReferences: [[RecordIdentity]] = []
+                var modelReferences: [[PersistableIdentity]] = []
                 modelReferences.reserveCapacity(joins.count)
                 for join in joins {
                     let references = try resolver.orderedReferences(
@@ -151,7 +151,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
                 referencesByModel.append(modelReferences)
             }
 
-            var loadedByIdentity: [RecordIdentity: any Persistable] = [:]
+            var loadedByIdentity: [PersistableIdentity: any Persistable] = [:]
             loadedByIdentity.reserveCapacity(orderedIdentities.count)
             for identity in orderedIdentities {
                 if let loaded = try await transaction.fetchPersistedModel(

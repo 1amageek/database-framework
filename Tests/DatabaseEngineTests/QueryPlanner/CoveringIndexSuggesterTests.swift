@@ -7,13 +7,13 @@ import Testing
 struct CoveringIndexSuggesterTests {
     @Test("An incomplete usable index receives every missing field")
     func extendsIncompleteIndex() throws {
-        let query = Query<IndexProjectionRecord>()
-            .where(\IndexProjectionRecord.email == "owner@example.com")
-        let analysis = try QueryAnalyzer<IndexProjectionRecord>().analyze(query)
-        let suggestion = CoveringIndexSuggester<IndexProjectionRecord>().suggest(
+        let query = Query<IndexProjectionEntity>()
+            .where(\IndexProjectionEntity.email == "owner@example.com")
+        let analysis = try QueryAnalyzer<IndexProjectionEntity>().analyze(query)
+        let suggestion = CoveringIndexSuggester<IndexProjectionEntity>().suggest(
             analysis: analysis,
             existingIndexes: [
-                IndexProjectionRecordFactory.descriptor(storedFields: [])
+                IndexProjectionEntityFactory.descriptor(storedFields: [])
             ]
         )
 
@@ -25,14 +25,14 @@ struct CoveringIndexSuggesterTests {
 
     @Test("An existing complete index needs no suggestion")
     func completeIndexNeedsNoChange() throws {
-        let query = Query<IndexProjectionRecord>()
-            .where(\IndexProjectionRecord.email == "owner@example.com")
-        let analysis = try QueryAnalyzer<IndexProjectionRecord>().analyze(query)
+        let query = Query<IndexProjectionEntity>()
+            .where(\IndexProjectionEntity.email == "owner@example.com")
+        let analysis = try QueryAnalyzer<IndexProjectionEntity>().analyze(query)
 
         #expect(
-            CoveringIndexSuggester<IndexProjectionRecord>().suggest(
+            CoveringIndexSuggester<IndexProjectionEntity>().suggest(
                 analysis: analysis,
-                existingIndexes: [IndexProjectionRecordFactory.descriptor()]
+                existingIndexes: [IndexProjectionEntityFactory.descriptor()]
             ) == nil
         )
     }

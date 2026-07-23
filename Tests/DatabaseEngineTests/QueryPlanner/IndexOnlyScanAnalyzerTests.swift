@@ -7,18 +7,18 @@ import Testing
 struct IndexOnlyScanAnalyzerTests {
     @Test("Only complete canonical projections produce index-only plans")
     func coverageDecision() throws {
-        let query = Query<IndexProjectionRecord>()
-            .where(\IndexProjectionRecord.email == "owner@example.com")
-        let analysis = try QueryAnalyzer<IndexProjectionRecord>().analyze(query)
-        let analyzer = IndexOnlyScanAnalyzer<IndexProjectionRecord>()
+        let query = Query<IndexProjectionEntity>()
+            .where(\IndexProjectionEntity.email == "owner@example.com")
+        let analysis = try QueryAnalyzer<IndexProjectionEntity>().analyze(query)
+        let analyzer = IndexOnlyScanAnalyzer<IndexProjectionEntity>()
 
         let full = analyzer.analyze(
             analysis: analysis,
-            index: IndexProjectionRecordFactory.descriptor()
+            index: IndexProjectionEntityFactory.descriptor()
         )
         let partial = analyzer.analyze(
             analysis: analysis,
-            index: IndexProjectionRecordFactory.descriptor(storedFields: [])
+            index: IndexProjectionEntityFactory.descriptor(storedFields: [])
         )
 
         #expect(full.canUseIndexOnlyScan)

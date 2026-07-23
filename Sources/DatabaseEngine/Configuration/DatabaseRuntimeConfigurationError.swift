@@ -7,9 +7,9 @@ public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
     case duplicateFusionReadExecutor(String)
     case duplicatePersistableMutationMaintainer(identifier: String)
     case missingCompiledEntityType(entityName: String)
-    case invalidRecordIdentifierType(
+    case invalidPersistableIdentifierType(
         entityName: String,
-        reason: RecordIdentifierValidationError
+        reason: PersistableIdentifierValidationError
     )
     case missingCompiledPolymorphicMemberType(
         groupIdentifier: String,

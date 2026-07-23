@@ -203,7 +203,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         // Clear existing data if requested
         if clearFirst {
             try await clearIndexData()
-            // Also clear any existing violation records for this index
+            // Also clear any existing violation entries for this index
             if index.isUnique {
                 try await violationTracker.clearAllViolations(indexName: index.name)
             }
@@ -232,7 +232,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 throw OnlineIndexerError.uniquenessViolationsDetected(
                     indexName: index.name,
                     violationCount: summary.violationCount,
-                    totalConflictingRecords: summary.totalConflictingRecords
+                    totalConflictingEntities: summary.totalConflictingEntities
                 )
             }
         }
@@ -474,7 +474,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         if clearFirst {
             try await clearIndexData()
             try await progress.clearProgress()
-            // Also clear any existing violation records for this index
+            // Also clear any existing violation entries for this index
             if index.isUnique {
                 try await violationTracker.clearAllViolations(indexName: index.name)
             }
@@ -504,7 +504,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     throw OnlineIndexerError.uniquenessViolationsDetected(
                         indexName: index.name,
                         violationCount: summary.violationCount,
-                        totalConflictingRecords: summary.totalConflictingRecords
+                        totalConflictingEntities: summary.totalConflictingEntities
                     )
                 }
             }
@@ -556,7 +556,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     throw OnlineIndexerError.uniquenessViolationsDetected(
                         indexName: index.name,
                         violationCount: summary.violationCount,
-                        totalConflictingRecords: summary.totalConflictingRecords
+                        totalConflictingEntities: summary.totalConflictingEntities
                     )
                 }
             }
@@ -615,7 +615,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 throw OnlineIndexerError.uniquenessViolationsDetected(
                     indexName: index.name,
                     violationCount: summary.violationCount,
-                    totalConflictingRecords: summary.totalConflictingRecords
+                    totalConflictingEntities: summary.totalConflictingEntities
                 )
             }
         }
@@ -1007,26 +1007,26 @@ public enum OnlineIndexerError: Error, CustomStringConvertible {
     ///
     /// **Recovery**:
     /// 1. Scan violations to identify duplicates
-    /// 2. Resolve duplicates (delete or update records)
+    /// 2. Resolve duplicates (delete or update entities)
     /// 3. Re-run the index build
     ///
     /// - Parameters:
     ///   - indexName: Name of the affected index
     ///   - violationCount: Number of distinct duplicate values
-    ///   - totalConflictingRecords: Total records with duplicates
+    ///   - totalConflictingEntities: Total entities with duplicates
     case uniquenessViolationsDetected(
         indexName: String,
         violationCount: Int,
-        totalConflictingRecords: Int
+        totalConflictingEntities: Int
     )
     case corruptedProgress
 
     public var description: String {
         switch self {
-        case .uniquenessViolationsDetected(let indexName, let violationCount, let totalRecords):
+        case .uniquenessViolationsDetected(let indexName, let violationCount, let totalEntities):
             return """
             Unique index '\(indexName)' has violations: \
-            \(violationCount) duplicate value(s) affecting \(totalRecords) record(s). \
+            \(violationCount) duplicate value(s) affecting \(totalEntities) entity(s). \
             Index remains in write-only state. \
             Use scanUniquenessViolations() to review and resolve duplicates.
             """

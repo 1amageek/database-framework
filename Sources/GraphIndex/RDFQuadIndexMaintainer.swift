@@ -4,7 +4,7 @@ import DatabaseValue
 import Graph
 import StorageKit
 
-/// Maintains the canonical RDF dataset projections for a Persistable record.
+/// Maintains the canonical RDF dataset projections for a Persistable entity.
 public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public let index: Index
     public let subspace: Subspace

@@ -97,7 +97,7 @@ public final class DBContainer: Sendable {
     /// Container-scoped runtime extensions and operation dependencies.
     public let runtimeConfiguration: DatabaseRuntimeConfiguration
 
-    /// Container-scoped factory for the database's canonical record format.
+    /// Container-scoped factory for the database's canonical entity format.
     public let itemStorageFactory: ItemStorageFactory
 
     /// Persisted database-wide physical format source of truth.
@@ -311,7 +311,7 @@ public final class DBContainer: Sendable {
     /// Validate all indexes and initialize indexes only for empty stores.
     ///
     /// Existing incomplete states fail fast. A missing state is initialized
-    /// only when its source record range is empty in the same transaction.
+    /// only when its source entity range is empty in the same transaction.
     public func ensureIndexesReady() async throws {
         for entity in schema.entities {
             guard !entity.indexDescriptors.isEmpty else { continue }
@@ -322,7 +322,7 @@ public final class DBContainer: Sendable {
             let indexNames = entity.indexDescriptors.map { $0.name }
             try await lifecycleStore.ensureReadable(
                 indexNames,
-                recordRange: subspace
+                entityRange: subspace
                     .subspace(SubspaceKey.items)
                     .subspace(persistableType.persistableType)
                     .range()
@@ -335,7 +335,7 @@ public final class DBContainer: Sendable {
             let indexNames = group.indexes.map(\.name)
             try await lifecycleStore.ensureReadable(
                 indexNames,
-                recordRange: subspace.subspace(SubspaceKey.items).range()
+                entityRange: subspace.subspace(SubspaceKey.items).range()
             )
         }
     }
@@ -490,7 +490,7 @@ public final class DBContainer: Sendable {
         )
         try await lifecycleStore.validateReadableForRead(
             [indexName],
-            recordRange: subspace
+            entityRange: subspace
                 .subspace(SubspaceKey.items)
                 .subspace(type.persistableType)
                 .range(),
@@ -610,7 +610,7 @@ public final class DBContainer: Sendable {
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
         try await lifecycleStore.ensureReadable(
             indexNames,
-            recordRange: subspace
+            entityRange: subspace
                 .subspace(SubspaceKey.items)
                 .subspace(type.persistableType)
                 .range()
@@ -628,7 +628,7 @@ public final class DBContainer: Sendable {
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
         try await lifecycleStore.ensureReadable(
             indexNames,
-            recordRange: subspace
+            entityRange: subspace
                 .subspace(SubspaceKey.items)
                 .subspace(type.persistableType)
                 .range(),
@@ -1207,13 +1207,13 @@ extension DBContainer {
                     snapshot: false
                 )
                 guard rows.isEmpty else {
-                    throw MigrationPlanError.unversionedStoreContainsRecords(
+                    throw MigrationPlanError.unversionedStoreContainsEntities(
                         entity: store.entity
                     )
                 }
                 try await store.lifecycleStore.ensureReadable(
                     store.indexNames,
-                    recordRange: store.range,
+                    entityRange: store.range,
                     transaction: transaction
                 )
             }

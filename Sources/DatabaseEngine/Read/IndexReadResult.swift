@@ -16,12 +16,12 @@ import DatabaseValue
 public struct IndexReadRow: Sendable {
     public let fields: [String: DatabaseValue]
     public let annotations: [String: DatabaseValue]
-    public let version: RecordVersionToken?
+    public let version: PersistableVersionToken?
 
     public init(
         fields: [String: DatabaseValue],
         annotations: [String: DatabaseValue] = [:],
-        version: RecordVersionToken? = nil
+        version: PersistableVersionToken? = nil
     ) {
         self.fields = fields
         self.annotations = annotations

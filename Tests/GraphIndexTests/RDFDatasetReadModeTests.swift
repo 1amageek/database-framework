@@ -365,7 +365,7 @@ struct RDFDatasetReadModeTests {
             state.withLock { $0.keySnapshots }
         }
 
-        func recordRange(limit: Int, snapshot: Bool) {
+        func entityRange(limit: Int, snapshot: Bool) {
             state.withLock {
                 $0.rangeCalls.append(RangeCall(limit: limit, snapshot: snapshot))
             }
@@ -441,7 +441,7 @@ struct RDFDatasetReadModeTests {
             snapshot: Bool,
             streamingMode: StreamingMode
         ) -> RangeResult {
-            observations.recordRange(limit: limit, snapshot: snapshot)
+            observations.entityRange(limit: limit, snapshot: snapshot)
             return RangeResult(cursor: underlying.rangeCursor(
                 from: begin,
                 to: end,

@@ -7,8 +7,8 @@ public enum RankReadError: Error, Sendable, Equatable {
     case invalidPercentile(Double)
     case invalidCount(Int)
     case unsupportedSortExpression
-    case invalidRecordIdentifier(typeName: String)
-    case duplicateFetchedRecord(primaryKey: Bytes)
-    case missingFetchedRecord(primaryKey: Bytes)
+    case invalidPersistableIdentifier(typeName: String)
+    case duplicateFetchedEntity(primaryKey: Bytes)
+    case missingFetchedEntity(primaryKey: Bytes)
     case missingRankEntry(rank: Int)
 }

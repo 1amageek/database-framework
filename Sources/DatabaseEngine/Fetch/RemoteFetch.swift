@@ -1,8 +1,8 @@
 // RemoteFetch.swift
-// DatabaseEngine - Remote Fetch optimization for record retrieval
+// DatabaseEngine - Remote Fetch optimization for entity retrieval
 //
 // Reference: FDB Record Layer RemoteFetchProperties and FDBRecordStore.fetchRemote
-// Optimizes record retrieval by reducing round trips and leveraging locality.
+// Optimizes entity retrieval by reducing round trips and leveraging locality.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -99,9 +99,9 @@ public struct RemoteFetchConfiguration: Sendable, Equatable {
 
 // MARK: - RemoteFetcher
 
-/// Optimized remote fetcher for records
+/// Optimized remote fetcher for entities
 ///
-/// Provides efficient record retrieval using:
+/// Provides efficient entity retrieval using:
 /// - Batched key lookups to reduce round trips
 /// - Locality-aware grouping for better cache utilization
 /// - Streaming results for low-latency access
@@ -113,7 +113,7 @@ public struct RemoteFetchConfiguration: Sendable, Equatable {
 ///     configuration: .default
 /// )
 ///
-/// // Fetch multiple records efficiently
+/// // Fetch multiple entities efficiently
 /// let users = try await fetcher.fetch(
 ///     primaryKeys: keys,
 ///     transaction: transaction
@@ -139,7 +139,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// Item type name for subspace
     private let itemType: String
 
-    /// Container-scoped canonical record storage policy
+    /// Container-scoped canonical entity storage policy
     private let itemStorageFactory: ItemStorageFactory
 
     // MARK: - Initialization
@@ -160,7 +160,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
 
     // MARK: - Fetch
 
-    /// Fetch records by primary keys
+    /// Fetch entities by primary keys
     ///
     /// Uses optimized batching and locality grouping for efficient retrieval.
     ///
@@ -221,7 +221,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         return orderedResults
     }
 
-    /// Fetch a single batch of records
+    /// Fetch a single batch of entities
     private func fetchBatch(
         primaryKeys: [Tuple],
         subspace: Subspace,
@@ -244,7 +244,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
 
     // MARK: - Streaming
 
-    /// Stream records with low-latency access
+    /// Stream entities with low-latency access
     ///
     /// Returns items as they are fetched, minimizing time to first result.
     ///
@@ -285,7 +285,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
 
     // MARK: - Fetch with Metadata
 
-    /// Fetch records with fetch metadata
+    /// Fetch entities with fetch metadata
     ///
     /// - Parameters:
     ///   - primaryKeys: The primary keys to fetch
@@ -457,7 +457,7 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
         self.maxConcurrency = maxConcurrency
     }
 
-    /// Fetch records using parallel transactions
+    /// Fetch entities using parallel transactions
     ///
     /// **Warning**: Results may reflect different read versions if data is being modified.
     /// Use within a single transaction if consistency is required.

@@ -29,7 +29,7 @@ import Core
 /// are maintained correctly via their specialized IndexMaintainer implementations.
 ///
 /// **Not Responsible For**:
-/// - Record serialization/deserialization (DataAccess)
+/// - Persistable serialization/deserialization (DataAccess)
 /// - Transaction management (Database)
 /// - Directory resolution (DBContainer)
 /// - Index state persistence (IndexLifecycleStore)
@@ -404,7 +404,7 @@ internal final class IndexMaintenanceService: Sendable {
     /// conform to `Codable` (required by `Persistable.ID`). The ID is always a single
     /// `TupleElement` (e.g., String, Int64) which is wrapped in a `Tuple` for key building.
     static func extractIDTuple(from model: any Persistable) throws -> Tuple {
-        try model.recordIdentifierTuple()
+        try model.persistableIdentifierTuple()
     }
 
     // MARK: - Private: Helpers
@@ -513,7 +513,7 @@ internal final class IndexMaintenanceService: Sendable {
             // Parse the key to extract the primary key (last element after value tuple)
             let keyTuple = Tuple(try Tuple.unpack(from: key))
 
-            // Skip if this is the same record (update case)
+            // Skip if this is the same entity (update case)
             // Uses Tuple equality which is type-agnostic (compares encoded bytes)
             // This supports all TupleElement ID types: String, Int64, UUID, etc.
             if let oldModel = oldModel {

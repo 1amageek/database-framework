@@ -178,7 +178,7 @@ struct IndexRebuildConsistencyTests {
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildTripleStatement.self, container: container)
-            #expect(saveKeys.count == 6, "tripleStore: 2 records × 3 = 6 keys, got \(saveKeys.count)")
+            #expect(saveKeys.count == 6, "tripleStore: 2 entities × 3 = 6 keys, got \(saveKeys.count)")
 
             let admin = container.newAdminContext()
             try await admin.rebuildIndex(getIndexName(for: RebuildTripleStatement.self)!, progress: nil)
@@ -206,7 +206,7 @@ struct IndexRebuildConsistencyTests {
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildEdge.self, container: container)
-            #expect(saveKeys.count == 4, "adjacency: 2 records × 2 = 4 keys, got \(saveKeys.count)")
+            #expect(saveKeys.count == 4, "adjacency: 2 entities × 2 = 4 keys, got \(saveKeys.count)")
 
             let admin = container.newAdminContext()
             try await admin.rebuildIndex(getIndexName(for: RebuildEdge.self)!, progress: nil)

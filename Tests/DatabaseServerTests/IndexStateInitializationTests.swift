@@ -12,7 +12,7 @@ struct IndexStateInitializationTests {
 
         try await indexContext.indexStateManager.ensureReadable(
             [indexContext.indexName],
-            recordRange: indexContext.recordRange
+            entityRange: indexContext.entityRange
         )
 
         #expect(
@@ -22,17 +22,17 @@ struct IndexStateInitializationTests {
         )
     }
 
-    @Test("Missing state fails when source records already exist")
+    @Test("Missing state fails when source entities already exist")
     func rejectsMissingStateForNonEmptyStore() async throws {
         let indexContext = try await makeIndexInitializationContext()
         try await indexContext.engine.withTransaction { transaction in
-            try transaction.setValue([1], for: indexContext.recordSubspace.pack(Tuple("record")))
+            try transaction.setValue([1], for: indexContext.entitySubspace.pack(Tuple("entity")))
         }
 
         await #expect(throws: IndexStateError.self) {
             try await indexContext.indexStateManager.ensureReadable(
                 [indexContext.indexName],
-                recordRange: indexContext.recordRange
+                entityRange: indexContext.entityRange
             )
         }
         #expect(
@@ -50,7 +50,7 @@ struct IndexStateInitializationTests {
         await #expect(throws: IndexStateError.self) {
             try await indexContext.indexStateManager.ensureReadable(
                 [indexContext.indexName],
-                recordRange: indexContext.recordRange
+                entityRange: indexContext.entityRange
             )
         }
         #expect(
@@ -68,7 +68,7 @@ struct IndexStateInitializationTests {
         await #expect(throws: IndexStateError.self) {
             try await indexContext.indexStateManager.ensureReadable(
                 [indexContext.indexName],
-                recordRange: indexContext.recordRange
+                entityRange: indexContext.entityRange
             )
         }
         #expect(
@@ -81,7 +81,7 @@ struct IndexStateInitializationTests {
     private func makeIndexInitializationContext() async throws -> IndexInitializationContext {
         let engine = InMemoryEngine()
         let schema = Schema(
-            [DatabaseEndpointRecord.self],
+            [DatabaseEndpointEntity.self],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.open(
@@ -91,11 +91,11 @@ struct IndexStateInitializationTests {
             security: .disabled
         )
         let root = Subspace(prefix: Tuple("index-state-initialization").pack())
-        let recordSubspace = root.subspace("records")
+        let entitySubspace = root.subspace("entities")
         return IndexInitializationContext(
             engine: engine,
             indexStateManager: IndexLifecycleStore(container: container, subspace: root),
-            recordSubspace: recordSubspace,
+            entitySubspace: entitySubspace,
             indexName: "initialization_index"
         )
     }
@@ -103,11 +103,11 @@ struct IndexStateInitializationTests {
     private struct IndexInitializationContext {
         let engine: any StorageEngine
         let indexStateManager: IndexLifecycleStore
-        let recordSubspace: Subspace
+        let entitySubspace: Subspace
         let indexName: String
 
-        var recordRange: (begin: Bytes, end: Bytes) {
-            recordSubspace.range()
+        var entityRange: (begin: Bytes, end: Bytes) {
+            entitySubspace.range()
         }
     }
 }

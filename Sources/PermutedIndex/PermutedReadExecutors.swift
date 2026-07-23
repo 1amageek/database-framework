@@ -222,18 +222,18 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
             primaryKeys = Array(primaryKeys.prefix(Int(limit)))
         }
 
-        let records = try await context.fetchPolymorphicItems(
+        let entities = try await context.fetchPolymorphicItems(
             group: group,
             ids: primaryKeys,
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        let rows = try records.map { record in
+        let rows = try entities.map { entity in
             try IndexReadRow.materializing(
-                any: record.item,
+                any: entity.item,
                 annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(record.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
+                    PolymorphicRowAnnotation.typeName: .string(entity.typeName),
+                    PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
                 ]
             )
         }

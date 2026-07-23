@@ -88,8 +88,8 @@ struct InstrumentedTransactionTests {
         let timer = StoreTimer(emitMetrics: false)
         metrics.export(to: timer)
 
-        #expect(timer.getCount(.recordsLoaded) == 5)
-        #expect(timer.getCount(.recordsSaved) == 3)
+        #expect(timer.getCount(.entitiesLoaded) == 5)
+        #expect(timer.getCount(.entitiesSaved) == 3)
         #expect(timer.getCount(.rangesScanned) == 2)
         #expect(timer.getCount(.rangeKeyValues) == 50)
         #expect(timer.getCount(.retries) == 1)
@@ -245,7 +245,7 @@ struct InstrumentedTransactionTests {
     @Test func metricsAggregatorConcurrentAccess() async {
         let aggregator = MetricsAggregator()
 
-        // Record from multiple concurrent tasks
+        // Entity from multiple concurrent tasks
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<100 {
                 group.addTask {
@@ -269,13 +269,13 @@ struct InstrumentedTransactionTests {
     @Test func aggregatorDurationTracking() {
         let aggregator = MetricsAggregator()
 
-        // Record transaction with 10ms duration
+        // Entity transaction with 10ms duration
         var metrics1 = TransactionMetrics()
         metrics1.startTime = Date(timeIntervalSince1970: 1000.000)
         metrics1.endTime = Date(timeIntervalSince1970: 1000.010)
         aggregator.record(metrics1)
 
-        // Record transaction with 20ms duration
+        // Entity transaction with 20ms duration
         var metrics2 = TransactionMetrics()
         metrics2.startTime = Date(timeIntervalSince1970: 1000.000)
         metrics2.endTime = Date(timeIntervalSince1970: 1000.020)

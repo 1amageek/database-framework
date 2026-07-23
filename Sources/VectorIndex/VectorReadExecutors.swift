@@ -229,7 +229,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         }
 
         let tuples = primaryKeysWithDistances.map { Tuple($0.primaryKey) }
-        let records = try await context.fetchPolymorphicItems(
+        let entities = try await context.fetchPolymorphicItems(
             group: group,
             ids: tuples,
             configuration: execution.transactionConfiguration,
@@ -237,7 +237,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         )
         return try makeResponse(
             results: primaryKeysWithDistances,
-            records: records,
+            entities: entities,
             selectQuery: selectQuery,
             options: options
         )
@@ -375,32 +375,32 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
     private func makeResponse(
         results: [(primaryKey: [any TupleElement], distance: Double)],
-        records: [PolymorphicRecord],
+        entities: [PolymorphicEntity],
         selectQuery: SelectQuery,
         options: ReadExecutionContext
     ) throws -> IndexReadResult {
-        var recordByID: [String: PolymorphicRecord] = [:]
-        recordByID.reserveCapacity(records.count)
-        for record in records {
-            let identifier = try record.item.recordIdentifierTuple()
+        var entityByID: [String: PolymorphicEntity] = [:]
+        entityByID.reserveCapacity(entities.count)
+        for entity in entities {
+            let identifier = try entity.item.persistableIdentifierTuple()
             let key = stableKey(
-                Tuple(record.typeCode).appending(identifier)
+                Tuple(entity.typeCode).appending(identifier)
             )
-            recordByID[key] = record
+            entityByID[key] = entity
         }
 
-        let orderedResults: [(record: PolymorphicRecord, distance: Double)] = results.compactMap { result -> (record: PolymorphicRecord, distance: Double)? in
+        let orderedResults: [(entity: PolymorphicEntity, distance: Double)] = results.compactMap { result -> (entity: PolymorphicEntity, distance: Double)? in
             let key = stableKey(Tuple(result.primaryKey))
-            guard let record = recordByID[key] else { return nil }
-            return (record: record, distance: result.distance)
+            guard let entity = entityByID[key] else { return nil }
+            return (entity: entity, distance: result.distance)
         }
 
         let rows = try orderedResults.map { result in
             try IndexReadRow.materializing(
-                any: result.record.item,
+                any: result.entity.item,
                 annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(result.record.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(result.record.typeCode),
+                    PolymorphicRowAnnotation.typeName: .string(result.entity.typeName),
+                    PolymorphicRowAnnotation.typeCode: .int64(result.entity.typeCode),
                     "distance": .double(result.distance)
                 ]
             )

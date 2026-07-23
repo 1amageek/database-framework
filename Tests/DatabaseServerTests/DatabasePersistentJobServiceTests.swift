@@ -882,7 +882,7 @@ struct DatabasePersistentJobServiceTests {
                 job.jobID,
                 transaction: transaction
             ) else {
-                throw PersistentJobScenarioError.missingRecord
+                throw PersistentJobScenarioError.missingEntity
             }
             let abandonedLease = try snapshot.state.acquiringLease(
                 owner: DatabaseUUID(high: 29, low: 1),
@@ -943,7 +943,7 @@ struct DatabasePersistentJobServiceTests {
                 job.jobID,
                 transaction: transaction
             ) else {
-                throw PersistentJobScenarioError.missingRecord
+                throw PersistentJobScenarioError.missingEntity
             }
             let abandonedLease = try snapshot.state.acquiringLease(
                 owner: DatabaseUUID(high: 41, low: 1),
@@ -1553,7 +1553,7 @@ struct DatabasePersistentJobServiceTests {
                 started.jobID,
                 transaction: transaction
             ) else {
-                throw PersistentJobScenarioError.missingRecord
+                throw PersistentJobScenarioError.missingEntity
             }
             let firstLease = try snapshot.state.acquiringLease(
                 owner: DatabaseUUID(high: 9, low: 1),
@@ -1649,7 +1649,7 @@ struct DatabasePersistentJobServiceTests {
                 started.jobID,
                 transaction: transaction
             ) else {
-                throw PersistentJobScenarioError.missingRecord
+                throw PersistentJobScenarioError.missingEntity
             }
             let exhausted = try snapshot.state.acquiringLease(
                 owner: DatabaseUUID(high: 9, low: 3),
@@ -1898,7 +1898,7 @@ struct DatabasePersistentJobServiceTests {
     ) async throws -> PersistentJobServiceContext {
         let container = try await DBContainer.open(
             for: Schema(
-                [DatabaseEndpointRecord.self],
+                [DatabaseEndpointEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .init(backend: .custom(InMemoryEngine())),
@@ -1957,7 +1957,7 @@ struct DatabasePersistentJobServiceTests {
             configuration: .readOnly
         ) { transaction in
             guard let marker = try await transaction.fetch(
-                DatabaseEndpointRecord.self,
+                DatabaseEndpointEntity.self,
                 identifiedBy: id
             ) else {
                 return nil
@@ -2134,7 +2134,7 @@ struct DatabasePersistentJobServiceTests {
             identifiedBy id: String,
             using transaction: any DatabaseTransactionWriting
         ) async throws {
-            var marker = DatabaseEndpointRecord()
+            var marker = DatabaseEndpointEntity()
             marker.id = id
             marker.title = title
             marker.priority = Int(value)
@@ -3063,7 +3063,7 @@ struct DatabasePersistentJobServiceTests {
         case forcedSliceFailure
         case unsuccessfulOutcomeCommitFailure
         case unexpectedExecution
-        case missingRecord
+        case missingEntity
         case schedulerFailure
     }
 }

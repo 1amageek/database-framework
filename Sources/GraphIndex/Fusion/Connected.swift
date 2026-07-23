@@ -367,15 +367,15 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
         // Strategy 1: If the field is the ID field, use direct ID lookup
         if fieldName == "id" {
-            guard T.recordIdentifierType == .string else {
+            guard T.persistableIdentifierType == .string else {
                 throw FusionQueryError.invalidConfiguration(
-                    "Graph node identifiers require a String record identifier when the graph field is 'id'"
+                    "Graph node identifiers require a String entity identifier when the graph field is 'id'"
                 )
             }
             let identifierTuples = try nodeValues.map { nodeValue in
-                try RecordIdentifierKeyCodec.tuple(
+                try PersistableIdentifierKeyCodec.tuple(
                     for: .string(nodeValue),
-                    expectedType: T.recordIdentifierType
+                    expectedType: T.persistableIdentifierType
                 )
             }
             return try await queryContext.fetchItems(

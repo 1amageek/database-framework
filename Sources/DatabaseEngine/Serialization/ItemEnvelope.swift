@@ -1,6 +1,6 @@
 import StorageKit
 
-/// Canonical v1 envelope for persisted database records.
+/// Canonical v1 envelope for persisted database entities.
 ///
 /// The fixed header is encoded in network byte order:
 ///
@@ -10,7 +10,7 @@ import StorageKit
 /// ```
 ///
 /// Inline content is the stored payload itself. External content is an
-/// eight-byte `ExternalRef`; the payload is stored under the record's blob
+/// eight-byte `ExternalRef`; the payload is stored under the entity's blob
 /// subspace. Deserialization returns inline content as a view into the owned
 /// envelope buffer.
 public struct ItemEnvelope: Sendable, Equatable {

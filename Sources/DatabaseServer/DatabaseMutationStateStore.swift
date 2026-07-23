@@ -55,7 +55,7 @@ public struct DatabaseMutationStateStore: Sendable {
             return 0
         }
         guard bytes.count == MemoryLayout<UInt64>.size else {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
         return bytes.withUnsafeBytes { storage in
             UInt64(storage[0]) << 56
@@ -69,16 +69,16 @@ public struct DatabaseMutationStateStore: Sendable {
         }
     }
 
-    func idempotencyRecord(
+    func idempotencyEntry(
         for key: String,
         transaction: any TransactionAccess,
         limits: DatabaseWireLimits
-    ) async throws -> DatabaseIdempotencyRecord? {
-        let record = idempotencySubspace.subspace(key)
+    ) async throws -> DatabaseIdempotencyEntry? {
+        let entry = idempotencySubspace.subspace(key)
         let metadata = try await transaction.getValue(
-            for: record.pack(Tuple("metadata"))
+            for: entry.pack(Tuple("metadata"))
         )
-        let chunks = record.subspace("chunks")
+        let chunks = entry.subspace("chunks")
         guard let metadata else {
             let range = chunks.range()
             let orphanedChunks = try await transaction.collectRange(
@@ -89,13 +89,13 @@ public struct DatabaseMutationStateStore: Sendable {
                 streamingMode: .exact
             )
             guard orphanedChunks.isEmpty else {
-                throw DatabaseMutationError.idempotencyRecordCorrupted
+                throw DatabaseMutationError.idempotencyEntryCorrupted
             }
             return nil
         }
         guard metadata.count <= Int(DatabaseIdempotencyManifest.chunkByteCount)
         else {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
         let manifest: DatabaseIdempotencyManifest
         do {
@@ -104,17 +104,17 @@ public struct DatabaseMutationStateStore: Sendable {
                 limits: limits
             )
         } catch {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
         guard let expectedChunkCount = Int(exactly: manifest.chunkCount),
               let totalResponseBytes = Int(exactly: manifest.totalResponseBytes)
         else {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
         let (rangeLimit, rangeLimitOverflow) = expectedChunkCount
             .addingReportingOverflow(1)
         guard !rangeLimitOverflow else {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
         let range = chunks.range()
         let storedChunks = try await transaction.collectRange(
@@ -125,7 +125,7 @@ public struct DatabaseMutationStateStore: Sendable {
             streamingMode: .exact
         )
         guard storedChunks.count == expectedChunkCount else {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
 
         var copiedByteCount = 0
@@ -139,17 +139,17 @@ public struct DatabaseMutationStateStore: Sendable {
                       forChunkAt: chunkIndex
                   ),
                   storedChunk.1.count == expectedByteCount else {
-                throw DatabaseMutationError.idempotencyRecordCorrupted
+                throw DatabaseMutationError.idempotencyEntryCorrupted
             }
             let (nextCopiedByteCount, overflow) = copiedByteCount
                 .addingReportingOverflow(expectedByteCount)
             guard !overflow, nextCopiedByteCount <= totalResponseBytes else {
-                throw DatabaseMutationError.idempotencyRecordCorrupted
+                throw DatabaseMutationError.idempotencyEntryCorrupted
             }
             copiedByteCount = nextCopiedByteCount
         }
         guard copiedByteCount == totalResponseBytes else {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
 
         let responsePayload = DatabaseBytes.copying(
@@ -169,7 +169,7 @@ public struct DatabaseMutationStateStore: Sendable {
                 }
             }
         }
-        return try DatabaseIdempotencyRecord.reconstruct(
+        return try DatabaseIdempotencyEntry.reconstruct(
             manifest: manifest,
             responsePayload: responsePayload,
             limits: limits
@@ -177,18 +177,18 @@ public struct DatabaseMutationStateStore: Sendable {
     }
 
     func store(
-        _ record: DatabaseIdempotencyRecord,
+        _ entry: DatabaseIdempotencyEntry,
         for key: String,
         transaction: any TransactionAccess,
         limits: DatabaseWireLimits
     ) throws {
         let storage = idempotencySubspace.subspace(key)
         let chunks = storage.subspace("chunks")
-        let manifest = try record.manifest(limits: limits)
+        let manifest = try entry.manifest(limits: limits)
         let metadata = try manifest.encode(limits: limits)
         guard metadata.count <= Int(DatabaseIdempotencyManifest.chunkByteCount),
               let chunkCount = Int(exactly: manifest.chunkCount) else {
-            throw DatabaseMutationError.idempotencyRecordCorrupted
+            throw DatabaseMutationError.idempotencyEntryCorrupted
         }
         let chunkRange = chunks.range()
         try transaction.clearRange(
@@ -201,13 +201,13 @@ public struct DatabaseMutationStateStore: Sendable {
             )
             let upperBound = min(
                 lowerBound + Int(DatabaseIdempotencyManifest.chunkByteCount),
-                record.responsePayload.count
+                entry.responsePayload.count
             )
             guard let chunkIndex = UInt32(exactly: index),
                   lowerBound < upperBound else {
-                throw DatabaseMutationError.idempotencyRecordCorrupted
+                throw DatabaseMutationError.idempotencyEntryCorrupted
             }
-            let chunk = record.responsePayload.slice(lowerBound..<upperBound)
+            let chunk = entry.responsePayload.slice(lowerBound..<upperBound)
             try transaction.setValue(
                 Bytes(retaining: chunk),
                 for: Self.chunkKey(in: chunks, index: chunkIndex)

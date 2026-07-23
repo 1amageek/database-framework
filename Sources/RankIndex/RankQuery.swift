@@ -285,7 +285,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         let safeTargetRank = max(0, min(targetRank, totalCount - 1))
 
         guard let entry = try await scanner.nthFromTop(safeTargetRank) else {
-            throw RankQueryError.missingIndexedRecord(rank: safeTargetRank)
+            throw RankQueryError.missingIndexedEntity(rank: safeTargetRank)
         }
         return try await fetchItemsWithRank(
             entries: [entry],
@@ -297,7 +297,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// Fetch items by primary key and pair each with its scan-position rank.
     ///
     /// Uses `fetchItemsPreservingOrder` so every fetched item retains its native
-    /// index rank. A missing record is an index consistency failure and throws;
+    /// index rank. A missing entity is an index consistency failure and throws;
     /// it is never removed from a successful result page.
     private func fetchItemsWithRank(
         entries: [RankScanEntry],
@@ -315,7 +315,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         for (offset, maybeItem) in items.enumerated() {
             let rank = startRank + offset
             guard let item = maybeItem else {
-                throw RankQueryError.missingIndexedRecord(rank: rank)
+                throw RankQueryError.missingIndexedEntity(rank: rank)
             }
             results.append((item: item, rank: rank))
         }
@@ -510,8 +510,8 @@ public enum RankQueryError: Error, Sendable, Equatable, CustomStringConvertible 
     /// Canonical query response is missing required metadata
     case invalidResponse(String)
 
-    /// An index entry points to a record that could not be fetched
-    case missingIndexedRecord(rank: Int)
+    /// An index entry points to an entity that could not be fetched
+    case missingIndexedEntity(rank: Int)
 
     public var description: String {
         switch self {
@@ -527,8 +527,8 @@ public enum RankQueryError: Error, Sendable, Equatable, CustomStringConvertible 
             return "Rank index not found: \(name)"
         case .invalidResponse(let reason):
             return "Invalid rank query response: \(reason)"
-        case .missingIndexedRecord(let rank):
-            return "Rank index entry at rank \(rank) has no corresponding record"
+        case .missingIndexedEntity(let rank):
+            return "Rank index entry at rank \(rank) has no corresponding entity"
         }
     }
 }

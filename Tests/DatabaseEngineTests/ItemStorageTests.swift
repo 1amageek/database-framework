@@ -451,13 +451,13 @@ struct ItemStorageTests {
         let dataKey = itemsSubspace.pack(Tuple(["data"]))
         let indexKey = itemsSubspace.pack(Tuple(["index", "value1"]))
 
-        let testData = Bytes("Record data".utf8)
+        let testData = Bytes("Entity data".utf8)
 
-        // Write record via storage, index via underlying
+        // Write entity via storage, index via underlying
         try await database.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
 
-            // Record data - uses compression/splitting
+            // Entity data - uses compression/splitting
             try await storage.write(testData, for: dataKey)
 
             // Index entry - uses underlying directly (empty value)

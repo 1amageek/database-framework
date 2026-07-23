@@ -3,21 +3,21 @@ import DatabaseWire
 
 public enum DatabaseSHACLDataSourceError: Error, Sendable, Equatable,
     CustomStringConvertible {
-    case entityNotFound(String)
+    case schemaEntityNotFound(String)
     case indexNotFound(entity: String, index: String)
     case indexIsNotRDFDataset(entity: String, index: String)
     case graphNotCovered(entity: String, index: String)
     case invalidGraphName(DatabaseRDFTerm)
     case invalidPartition(entity: String, reason: String)
-    case recordEntityMismatch(expected: String, actual: String)
-    case recordPartitionMismatch(RecordIdentity)
-    case recordNotFound(RecordIdentity)
-    case recordSubjectMissing(record: RecordIdentity, field: String)
+    case focusEntityMismatch(expected: String, actual: String)
+    case focusPartitionMismatch(PersistableIdentity)
+    case focusEntityNotFound(PersistableIdentity)
+    case focusSubjectMissing(entity: PersistableIdentity, field: String)
     case unsupportedEntailment(SHACLExecuteOperation.Entailment)
 
     public var description: String {
         switch self {
-        case .entityNotFound(let entity):
+        case .schemaEntityNotFound(let entity):
             return "SHACL data entity was not found: \(entity)"
         case .indexNotFound(let entity, let index):
             return "SHACL RDF index '\(index)' was not found on entity '\(entity)'"
@@ -29,14 +29,14 @@ public enum DatabaseSHACLDataSourceError: Error, Sendable, Equatable,
             return "SHACL named graph is not a valid RDF graph name: \(graph)"
         case .invalidPartition(let entity, let reason):
             return "SHACL partition for entity '\(entity)' is invalid: \(reason)"
-        case .recordEntityMismatch(let expected, let actual):
-            return "SHACL focus record belongs to '\(actual)', expected '\(expected)'"
-        case .recordPartitionMismatch(let identity):
-            return "SHACL focus record is outside the selected data partition: \(identity)"
-        case .recordNotFound(let identity):
-            return "SHACL focus record was not found: \(identity)"
-        case .recordSubjectMissing(let identity, let field):
-            return "SHACL focus record \(identity) has no RDF subject in field '\(field)'"
+        case .focusEntityMismatch(let expected, let actual):
+            return "SHACL focus entity belongs to '\(actual)', expected '\(expected)'"
+        case .focusPartitionMismatch(let identity):
+            return "SHACL focus entity is outside the selected data partition: \(identity)"
+        case .focusEntityNotFound(let identity):
+            return "SHACL focus entity was not found: \(identity)"
+        case .focusSubjectMissing(let identity, let field):
+            return "SHACL focus entity \(identity) has no RDF subject in field '\(field)'"
         case .unsupportedEntailment(let entailment):
             return "SHACL entailment is not implemented completely: \(entailment)"
         }

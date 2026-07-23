@@ -6,65 +6,65 @@ import Testing
 
 @Suite("Canonical index entry decoder", .heartbeat)
 struct IndexEntryDecoderTests {
-    @Test("Generated record decoder restores the complete model")
-    func completeRecordRoundTrip() throws {
-        let record = try IndexProjectionRecordFactory.record()
-        let descriptor = IndexProjectionRecordFactory.descriptor()
+    @Test("Generated entity decoder restores the complete model")
+    func completeEntityRoundTrip() throws {
+        let entity = try IndexProjectionEntityFactory.entity()
+        let descriptor = IndexProjectionEntityFactory.descriptor()
         let metadata = CoveringIndexMetadata.build(
             for: descriptor,
-            type: IndexProjectionRecord.self
+            type: IndexProjectionEntity.self
         )
         let bytes = try CoveringValueBuilder.build(
-            for: record,
-            index: IndexProjectionRecordFactory.runtimeIndex(from: descriptor)
+            for: entity,
+            index: IndexProjectionEntityFactory.runtimeIndex(from: descriptor)
         )
         let entry = IndexEntry(
-            itemID: Tuple([record.id]),
-            keyValues: Tuple([record.email]),
+            itemID: Tuple([entity.id]),
+            keyValues: Tuple([entity.email]),
             coveringValue: bytes
         )
 
-        let decoded = try IndexEntryDecoder<IndexProjectionRecord>(
+        let decoded = try IndexEntryDecoder<IndexProjectionEntity>(
             metadata: metadata
         ).decode(from: entry)
 
-        #expect(decoded.id == record.id)
-        #expect(decoded.email == record.email)
-        #expect(decoded.name == record.name)
-        #expect(decoded.age == record.age)
-        #expect(decoded.nickname == record.nickname)
-        #expect(decoded.tags == record.tags)
-        #expect(decoded.target == record.target)
+        #expect(decoded.id == entity.id)
+        #expect(decoded.email == entity.email)
+        #expect(decoded.name == entity.name)
+        #expect(decoded.age == entity.age)
+        #expect(decoded.nickname == entity.nickname)
+        #expect(decoded.tags == entity.tags)
+        #expect(decoded.target == entity.target)
     }
 
     @Test("Partial metadata cannot construct a decoder")
     func partialMetadataFails() {
         let metadata = CoveringIndexMetadata.build(
-            for: IndexProjectionRecordFactory.descriptor(storedFields: []),
-            type: IndexProjectionRecord.self
+            for: IndexProjectionEntityFactory.descriptor(storedFields: []),
+            type: IndexProjectionEntity.self
         )
         #expect(throws: CanonicalIndexProjectionError.self) {
-            _ = try IndexEntryDecoder<IndexProjectionRecord>(metadata: metadata)
+            _ = try IndexEntryDecoder<IndexProjectionEntity>(metadata: metadata)
         }
     }
 
     @Test("Corrupt DBIX never falls back to tuple reconstruction")
     func corruptProjectionFails() throws {
-        let descriptor = IndexProjectionRecordFactory.descriptor()
+        let descriptor = IndexProjectionEntityFactory.descriptor()
         let metadata = CoveringIndexMetadata.build(
             for: descriptor,
-            type: IndexProjectionRecord.self
+            type: IndexProjectionEntity.self
         )
         let entry = IndexEntry(
             itemID: Tuple(["owner-1"]),
             keyValues: Tuple(["owner@example.com"]),
             coveringValue: [0, 0, 0, 0]
         )
-        let decoder = try IndexEntryDecoder<IndexProjectionRecord>(
+        let decoder = try IndexEntryDecoder<IndexProjectionEntity>(
             metadata: metadata
         )
 
-        #expect(throws: DatabaseRecordFrameError.invalidMagic) {
+        #expect(throws: PersistableFieldFrameError.invalidMagic) {
             _ = try decoder.decode(from: entry)
         }
     }

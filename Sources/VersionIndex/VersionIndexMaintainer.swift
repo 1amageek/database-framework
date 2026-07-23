@@ -135,7 +135,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
             // Reverse scan: fetch newest N versions directly.
             // FDB stores versionstamps in ascending order (oldest first).
             // Reverse scan returns newest first, so limit correctly returns newest N.
-            let records = try await transaction.collectRange(
+            let rangeEntries = try await transaction.collectRange(
                 from: KeySelector.firstGreaterOrEqual(beginKey),
                 to: KeySelector.firstGreaterOrEqual(endKey),
                 limit: limit,
@@ -144,7 +144,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
                 streamingMode: .wantAll
             )
 
-            for (key, value) in records {
+            for (key, value) in rangeEntries {
                 guard key.count >= 10 else { continue }
                 let versionBytes = key[(key.count - 10)..<key.count]
                 let version = Version(bytes: versionBytes)

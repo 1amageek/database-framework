@@ -69,7 +69,7 @@ package struct RDFDatasetIndexSelection: Sendable {
                 predicateFieldName: kind.fieldNames[1],
                 objectFieldName: kind.fieldNames[2],
                 graphScope: kind.fieldNames.count == 4
-                    ? .recordField(kind.fieldNames[3])
+                    ? .entityField(kind.fieldNames[3])
                     : .defaultGraph
             )
 

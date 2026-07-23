@@ -47,7 +47,7 @@ public struct CoveringIndexSuggester<T: Persistable> {
                 type: T.self
             ).keyFields,
             storedFields: candidate.missingFields.sorted(),
-            reason: "Store every missing compiled record field"
+            reason: "Store every missing compiled entity field"
         )
     }
 }

@@ -27,7 +27,7 @@ extension PlanExecutionError: CustomStringConvertible {
 /// Executes a query plan and returns results
 ///
 /// PlanExecutor takes a `QueryPlan` and executes it against a data store,
-/// returning the matching records.
+/// returning the matching entities.
 ///
 /// **Usage**:
 /// ```swift
@@ -36,7 +36,7 @@ extension PlanExecutionError: CustomStringConvertible {
 /// ```
 ///
 /// **Architecture**:
-/// - Record access via `QueryExecutionContext.scanRecords/fetchItem`
+/// - Entity access via `QueryExecutionContext.scanEntities/fetchItem`
 /// - Index access via `IndexSearcher` + `context.storageReader`
 public final class PlanExecutor<T: Persistable & Codable>: Sendable {
 
@@ -119,8 +119,8 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
             return input
 
         case .project(let projectOp):
-            // Project doesn't change records, just limits fields
-            // In practice, we'd return partial records
+            // Project doesn't change entities, just limits fields
+            // In practice, we'd return partial entities
             return try await executeOperator(projectOp.input)
 
         case .fullTextScan(let ftOp):
@@ -142,11 +142,11 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
 
     // MARK: - ID-Only Operator Execution
 
-    /// Execute an operator returning only IDs (no record fetch)
+    /// Execute an operator returning only IDs (no entity fetch)
     ///
     /// This is used for optimized set operations (UNION/INTERSECTION) where
     /// we first collect IDs, perform set operations, then batch fetch only
-    /// the final needed records. This avoids fetching records that will be
+    /// the final needed entities. This avoids fetching entities that will be
     /// eliminated by the set operation.
     ///
     /// Reference: FDB Record Layer "remote fetch" optimization pattern
@@ -186,7 +186,7 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
             return resultIds
 
         case .filter(let filterOp):
-            // For filter, we need to fetch records to apply the predicate
+            // For filter, we need to fetch entities to apply the predicate
             // Then extract IDs from filtered results
             let input = try await executeOperator(filterOp.input)
             let filtered = input.filter { evaluatePredicate(filterOp.predicate, on: $0) }
@@ -230,14 +230,14 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
 
     /// Extract item ID as Tuple from a Persistable item
     private func extractItemID(_ item: T) throws -> Tuple {
-        try item.recordIdentifierTuple()
+        try item.persistableIdentifierTuple()
     }
 
     // MARK: - Table Scan
 
     /// Execute a full table scan
     ///
-    /// **Current Limitation**: Table scan fetches all records into memory before
+    /// **Current Limitation**: Table scan fetches all entities into memory before
     /// applying the filter predicate. This is because the underlying StorageReader
     /// does not support predicate push-down for arbitrary conditions.
     ///
@@ -249,11 +249,11 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
     /// index scans over table scans whenever a suitable index exists. Table scan
     /// with filter is only used as a fallback when no index can satisfy the query.
     ///
-    /// **Memory Impact**: O(N) where N = total records of type T
+    /// **Memory Impact**: O(N) where N = total entities of type T
     private func executeTableScan(_ op: TableScanOperator<T>) async throws -> [T] {
-        // Scan all records of type T
-        // NOTE: This fetches all records before filtering - see doc comment above
-        let results = try await executionContext.scanRecords(type: T.self)
+        // Scan all entities of type T
+        // NOTE: This fetches all entities before filtering - see doc comment above
+        let results = try await executionContext.scanEntities(type: T.self)
 
         // Apply filter in memory if present
         if let filterPredicate = op.filterPredicate {
@@ -348,7 +348,7 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
                 using: executionContext.storageReader
             )
 
-            // Collect IDs only - no record fetch yet
+            // Collect IDs only - no entity fetch yet
             for entry in entries {
                 allIds.append(entry.itemID)
             }
@@ -396,10 +396,10 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
 
     /// Execute union using ID-first approach for improved efficiency
     ///
-    /// **Optimization**: Instead of fetching full records from each child and then
+    /// **Optimization**: Instead of fetching full entities from each child and then
     /// deduplicating, we first collect only IDs from all children, deduplicate the
-    /// IDs, then batch fetch only the unique records once. This avoids fetching
-    /// records that will be eliminated by deduplication.
+    /// IDs, then batch fetch only the unique entities once. This avoids fetching
+    /// entities that will be eliminated by deduplication.
     ///
     /// Reference: FDB Record Layer "remote fetch" optimization pattern
     private func executeUnion(_ op: UnionOperator<T>) async throws -> [T] {
@@ -415,7 +415,7 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
             }
         }
 
-        // Batch fetch only the unique records
+        // Batch fetch only the unique entities
         return try await context.indexQueryContext.batchFetchItems(
             ids: Array(allIDs),
             type: T.self,
@@ -427,10 +427,10 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
     ///
     /// For non-deduplicated unions, we need to preserve exact order and duplicates
     /// from each child. The optimization here is to use ID-first execution for
-    /// simple scan children (which don't require full record fetch for ordering),
+    /// simple scan children (which don't require full entity fetch for ordering),
     /// and fall back to full execution only for complex children.
     ///
-    /// **Note**: For scan-only children, this fetches each unique record once.
+    /// **Note**: For scan-only children, this fetches each unique entity once.
     /// For complex children (with filters, sorts, limits), we must execute fully
     /// to preserve correct ordering.
     private func executeDuplicatePreservingUnion(
@@ -486,10 +486,10 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
 
     /// Execute intersection using ID-first approach for improved efficiency
     ///
-    /// **Optimization**: Instead of fetching full records from all children and then
+    /// **Optimization**: Instead of fetching full entities from all children and then
     /// intersecting, we first collect only IDs from each child, compute the
-    /// intersection of IDs, then batch fetch only the final intersected records.
-    /// This avoids fetching records that will be eliminated by the intersection.
+    /// intersection of IDs, then batch fetch only the final intersected entities.
+    /// This avoids fetching entities that will be eliminated by the intersection.
     ///
     /// **Early Exit**: If any child returns empty or the intersection becomes empty,
     /// we can short-circuit without fetching remaining children.
@@ -514,7 +514,7 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
             if resultIds.isEmpty { return [] }
         }
 
-        // Batch fetch only the intersected records
+        // Batch fetch only the intersected entities
         return try await context.indexQueryContext.batchFetchItems(
             ids: Array(resultIds),
             type: T.self,
@@ -526,13 +526,13 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
 
     /// Execute table scan returning only IDs
     private func executeTableScanIdsOnly(_ op: TableScanOperator<T>) async throws -> Set<Tuple> {
-        // For table scan, we need to fetch records to get IDs
+        // For table scan, we need to fetch entities to get IDs
         // (unless we have a separate ID-only scan API)
         let results = try await executeTableScan(op)
         return Set(try results.map { try extractItemID($0) })
     }
 
-    /// Execute index scan returning only IDs (no record fetch)
+    /// Execute index scan returning only IDs (no entity fetch)
     private func executeIndexScanIdsOnly(_ op: IndexScanOperator<T>) async throws -> Set<Tuple> {
         let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse, limit: op.limit)
 
@@ -546,11 +546,11 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
             using: executionContext.storageReader
         )
 
-        // Return only IDs - no record fetch!
+        // Return only IDs - no entity fetch!
         return Set(entries.map { $0.itemID })
     }
 
-    /// Execute index seek returning only IDs (no record fetch)
+    /// Execute index seek returning only IDs (no entity fetch)
     private func executeIndexSeekIdsOnly(_ op: IndexSeekOperator<T>) async throws -> Set<Tuple> {
         var ids: Set<Tuple> = []
         let searcher = ScalarIndexSearcher(keyFieldCount: op.index.fieldNames.count)
@@ -578,7 +578,7 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
         return ids
     }
 
-    /// Execute index-only scan returning only IDs (no record fetch or decode)
+    /// Execute index-only scan returning only IDs (no entity fetch or decode)
     private func executeIndexOnlyScanIdsOnly(_ op: IndexOnlyScanOperator<T>) async throws -> Set<Tuple> {
         let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse, limit: op.limit)
 
@@ -592,7 +592,7 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
             using: executionContext.storageReader
         )
 
-        // Return only IDs - no record decode or fetch!
+        // Return only IDs - no entity decode or fetch!
         return Set(entries.map { $0.itemID })
     }
 
@@ -803,7 +803,7 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
         return results
     }
 
-    /// Execute IN-Union returning only IDs (no record fetch)
+    /// Execute IN-Union returning only IDs (no entity fetch)
     private func executeInUnionIdsOnly(_ op: any InOperatorExecutable<T>) async throws -> Set<Tuple> {
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(op.index.name)
@@ -944,7 +944,7 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
         return matchingIds
     }
 
-    /// Execute IN-Join returning only IDs (no record fetch)
+    /// Execute IN-Join returning only IDs (no entity fetch)
     private func executeInJoinIdsOnly(_ op: any InOperatorExecutable<T>) async throws -> Set<Tuple> {
         let strategySelector = InJoinStrategySelector()
         let estimatedIndexSize = op.estimatedTotalResults * 10
@@ -1037,17 +1037,17 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
         to continuation: AsyncThrowingStream<T, Error>.Continuation,
         postFilter: Predicate<T>? = nil
     ) async throws {
-        // Stream records
-        for try await record in executionContext.streamRecords(type: T.self) {
+        // Stream entities
+        for try await entity in executionContext.streamEntities(type: T.self) {
             // Apply operator's filter first
             if let filter = op.filterPredicate {
-                guard evaluatePredicate(filter, on: record) else { continue }
+                guard evaluatePredicate(filter, on: entity) else { continue }
             }
             // Then apply post-filter if present
             if let postFilter = postFilter {
-                guard evaluatePredicate(postFilter, on: record) else { continue }
+                guard evaluatePredicate(postFilter, on: entity) else { continue }
             }
-            continuation.yield(record)
+            continuation.yield(entity)
         }
     }
 
@@ -1130,16 +1130,16 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
 
 /// Protocol for query execution context
 ///
-/// Provides access to records and raw storage for `PlanExecutor` and `IndexSearcher`.
+/// Provides access to entities and raw storage for `PlanExecutor` and `IndexSearcher`.
 ///
 /// **Architecture**:
-/// - Record access: `scanRecords`, `fetchItem` (high-level)
+/// - Entity access: `scanEntities`, `fetchItem` (high-level)
 /// - Index access: via `storageReader` + `IndexSearcher` (low-level)
 ///
 /// **Usage**:
 /// ```swift
-/// // Record access
-/// let records = try await context.scanRecords(type: User.self)
+/// // Entity access
+/// let entities = try await context.scanEntities(type: User.self)
 ///
 /// // Index search via IndexSearcher
 /// let searcher = ScalarIndexSearcher(keyFieldCount: 1)
@@ -1151,11 +1151,11 @@ public final class PlanExecutor<T: Persistable & Codable>: Sendable {
 /// ```
 public protocol QueryExecutionContext: Sendable {
 
-    /// Scan all records of a type
-    func scanRecords<T: Persistable & Codable>(type: T.Type) async throws -> [T]
+    /// Scan all entities of a type
+    func scanEntities<T: Persistable & Codable>(type: T.Type) async throws -> [T]
 
-    /// Stream records of a type
-    func streamRecords<T: Persistable & Codable>(type: T.Type) -> AsyncThrowingStream<T, Error>
+    /// Stream entities of a type
+    func streamEntities<T: Persistable & Codable>(type: T.Type) -> AsyncThrowingStream<T, Error>
 
     /// Fetch an item by ID
     func fetchItem<T: Persistable & Codable>(id: Tuple, type: T.Type) async throws -> T?

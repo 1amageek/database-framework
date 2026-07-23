@@ -45,7 +45,7 @@ public struct ExpressionID: Hashable, Sendable, CustomStringConvertible {
 /// The optimizer transforms these into physical operators with specific
 /// algorithms and access paths.
 public enum LogicalOperator: Sendable, Equatable {
-    /// Table scan - read all records of a type
+    /// Table scan - read all entities of a type
     case scan(typeName: String)
 
     /// Filter - apply predicate to input
@@ -244,7 +244,7 @@ public enum PhysicalOperator: Sendable, Equatable {
     /// Limit operator
     case limit(input: GroupID, count: Int, offset: Int?)
 
-    /// Fetch records by IDs (after index scan)
+    /// Fetch entities by IDs (after index scan)
     case fetch(input: GroupID, typeName: String)
 }
 

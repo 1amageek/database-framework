@@ -93,9 +93,9 @@ public protocol DataStore: AnyObject, Sendable {
     /// Execute batch save and delete operations
     ///
     /// Security (evaluated via securityDelegate):
-    /// - CREATE operation is evaluated for new records
-    /// - UPDATE operation is evaluated for existing records (with old and new values)
-    /// - DELETE operation is evaluated for records being deleted
+    /// - CREATE operation is evaluated for new entities
+    /// - UPDATE operation is evaluated for existing entities (with old and new values)
+    /// - DELETE operation is evaluated for entities being deleted
     ///
     /// All operations are executed atomically in a single transaction.
     /// If any operation fails (including security), all changes are rolled back.

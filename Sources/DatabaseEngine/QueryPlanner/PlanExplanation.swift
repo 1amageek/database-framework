@@ -64,7 +64,7 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
         lines.append("Query Plan:")
         lines.append("  Estimated Cost: \(DatabaseTextFormatting.fixedDecimal(info.estimatedCost.totalCost, fractionDigits: 2))")
         lines.append("  Index Reads: \(DatabaseTextFormatting.fixedDecimal(info.estimatedCost.indexReads, fractionDigits: 1))")
-        lines.append("  Record Fetches: \(DatabaseTextFormatting.fixedDecimal(info.estimatedCost.recordFetches, fractionDigits: 1))")
+        lines.append("  Entity Fetches: \(DatabaseTextFormatting.fixedDecimal(info.estimatedCost.entityFetches, fractionDigits: 1))")
         lines.append("  Post Filter: \(DatabaseTextFormatting.fixedDecimal(info.estimatedCost.postFilterCount, fractionDigits: 1))")
         lines.append("  Requires Sort: \(info.estimatedCost.requiresSort)")
         lines.append("  Ordering Satisfied: \(info.orderingSatisfied)")
@@ -125,7 +125,7 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
 
         case .indexOnlyScan(let scanOp):
             lines.append("\(prefix)-> IndexOnlyScan[\(scanOp.index.name)]")
-            lines.append("\(prefix)   covering: true (no record fetch needed)")
+            lines.append("\(prefix)   covering: true (no entity fetch needed)")
             lines.append("\(prefix)   fields: \(scanOp.projectedFields.joined(separator: ", "))")
             lines.append("\(prefix)   est. entries: \(scanOp.estimatedEntries)")
 

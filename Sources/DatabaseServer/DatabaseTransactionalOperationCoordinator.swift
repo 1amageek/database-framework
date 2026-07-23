@@ -143,7 +143,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 executionDeadline: deadline.transactionExecutionDeadline
             ) { transactionContext in
                 let transaction = transactionContext.storageAccess
-                if let stored = try await stateStore.idempotencyRecord(
+                if let stored = try await stateStore.idempotencyEntry(
                     for: idempotencyKey,
                     transaction: transaction,
                     limits: wireLimits
@@ -180,7 +180,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                             prepared
                         )
                     } catch {
-                        throw DatabaseMutationError.idempotencyRecordCorrupted
+                        throw DatabaseMutationError.idempotencyEntryCorrupted
                     }
                 }
 
@@ -223,7 +223,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                     throw error
                 }
                 try stateStore.store(
-                    DatabaseIdempotencyRecord(
+                    DatabaseIdempotencyEntry(
                         operation: operation,
                         requestDigest: requestDigest,
                         responseDigest: DatabaseRequestDigest.compute(
@@ -331,7 +331,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 executionDeadline: deadline.transactionExecutionDeadline
             ) { transactionContext in
                 let transaction = transactionContext.storageAccess
-                guard let stored = try await stateStore.idempotencyRecord(
+                guard let stored = try await stateStore.idempotencyEntry(
                     for: idempotencyKey,
                     transaction: transaction,
                     limits: wireLimits
@@ -363,7 +363,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                         successPayload: successPayload
                     )
                 } catch {
-                    throw DatabaseMutationError.idempotencyRecordCorrupted
+                    throw DatabaseMutationError.idempotencyEntryCorrupted
                 }
             }
         } catch let error as TransactionExecutionDeadlineExceeded

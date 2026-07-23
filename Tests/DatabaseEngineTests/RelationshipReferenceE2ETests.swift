@@ -36,7 +36,7 @@ struct RelationshipReferenceE2ETests {
         }
     }
 
-    @Test("Mutually referencing records validate against final transaction state")
+    @Test("Mutually referencing entities validate against final transaction state")
     func cyclicReferences() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()
@@ -151,13 +151,13 @@ struct RelationshipReferenceE2ETests {
                 continuation: secondContinuation
             )
             let ownerIDs = Set(
-                (firstPage.records + secondPage.records + thirdPage.records)
+                (firstPage.entities + secondPage.entities + thirdPage.entities)
                     .map(\.id)
             )
 
-            #expect(firstPage.records.count == 2)
-            #expect(secondPage.records.count == 2)
-            #expect(thirdPage.records.count == 1)
+            #expect(firstPage.entities.count == 2)
+            #expect(secondPage.entities.count == 2)
+            #expect(thirdPage.entities.count == 1)
             #expect(thirdPage.continuation == nil)
             #expect(ownerIDs == Set(owners.map(\.id)))
         }
@@ -313,7 +313,7 @@ struct RelationshipReferenceE2ETests {
         }
     }
 
-    @Test("References distinguish records with equal IDs in different partitions")
+    @Test("References distinguish entities with equal IDs in different partitions")
     func partitionIdentity() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()

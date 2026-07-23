@@ -1,7 +1,7 @@
 /// DatabaseREPL - Interactive database shell powered by schema entities
 ///
 /// Connects to a storage engine, loads schema entries, and provides a
-/// read-only catalog inspection REPL using the canonical database record codec.
+/// read-only catalog inspection REPL using the canonical database entity codec.
 ///
 /// **Standalone mode** (no compiled types needed):
 /// ```swift

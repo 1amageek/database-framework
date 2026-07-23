@@ -257,12 +257,12 @@ struct UniquenessEnforcementTests {
         let summary = ViolationSummary(
             indexName: "email_idx",
             violationCount: 5,
-            totalConflictingRecords: 12
+            totalConflictingEntities: 12
         )
 
         #expect(summary.indexName == "email_idx")
         #expect(summary.violationCount == 5)
-        #expect(summary.totalConflictingRecords == 12)
+        #expect(summary.totalConflictingEntities == 12)
         #expect(summary.hasViolations == true)
     }
 
@@ -271,7 +271,7 @@ struct UniquenessEnforcementTests {
         let summary = ViolationSummary(
             indexName: "email_idx",
             violationCount: 0,
-            totalConflictingRecords: 0
+            totalConflictingEntities: 0
         )
 
         #expect(summary.hasViolations == false)
@@ -279,8 +279,8 @@ struct UniquenessEnforcementTests {
 
     // MARK: - UniquenessViolationTracker Tests
 
-    @Test("UniquenessViolationTracker record and scan violations")
-    func trackerRecordAndScan() async throws {
+    @Test("UniquenessViolationTracker entity and scan violations")
+    func trackerEntityAndScan() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
@@ -294,7 +294,7 @@ struct UniquenessEnforcementTests {
             let tracker = databaseStore.violationTracker
             let indexName = "test_violation_idx"
 
-            // Record a violation
+            // Entity a violation
             try await container.engine.withTransaction { transaction in
                 try await tracker.recordViolation(
                     indexName: indexName,
@@ -475,7 +475,7 @@ struct UniquenessEnforcementTests {
             let summary = try await tracker.violationSummary(indexName: indexName)
             #expect(summary.indexName == indexName)
             #expect(summary.violationCount == 2)
-            #expect(summary.totalConflictingRecords == 4)
+            #expect(summary.totalConflictingEntities == 4)
             #expect(summary.hasViolations == true)
 
             // Cleanup
@@ -609,7 +609,7 @@ struct UniquenessEnforcementTests {
                 indexName: indexName
             )
             #expect(summary.violationCount == 1)
-            #expect(summary.totalConflictingRecords == 2)
+            #expect(summary.totalConflictingEntities == 2)
 
             // Cleanup
             try await context.clearAllUniquenessViolations(
@@ -626,7 +626,7 @@ struct UniquenessEnforcementTests {
         let error = OnlineIndexerError.uniquenessViolationsDetected(
             indexName: "email_idx",
             violationCount: 3,
-            totalConflictingRecords: 7
+            totalConflictingEntities: 7
         )
 
         let description = error.description

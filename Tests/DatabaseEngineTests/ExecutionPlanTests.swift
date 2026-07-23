@@ -187,7 +187,7 @@ struct ExecutionPlanTests {
 
     // MARK: - RangeBound
 
-    @Test("Range bound records inclusive vs exclusive endpoints")
+    @Test("Range bound entities inclusive vs exclusive endpoints")
     func rangeBoundEndpointsSurface() throws {
         let range = KeyRangeBound(
             fieldName: "score",

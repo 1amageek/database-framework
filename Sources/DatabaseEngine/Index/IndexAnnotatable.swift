@@ -1,27 +1,26 @@
 // IndexAnnotatable.swift
 // DatabaseEngine - Abstract index metadata protocol
 //
-// Part of the FDB Record Layer abstraction redesign.
-// This protocol provides a minimal, FDB-independent way to declare
-// index metadata for models.
+// This protocol provides the database-domain contract for declaring
+// index metadata on persisted models and documents.
 
 import Core
 
 /// Protocol for types that can provide index metadata.
 ///
 /// This protocol is designed to be implemented by:
-/// - `@Recordable` macro-generated code (FDBRecordCore)
+/// - `@Persistable` macro-generated code
 /// - Manual implementations for custom models
 ///
 /// **Design Goals**:
-/// - Zero FDB dependencies (Swift stdlib + Foundation only)
-/// - Codable-friendly (uses String for field names, not KeyPath)
+/// - Storage-engine independent
+/// - Uses stable field names in descriptors
 /// - Extensible (new index kinds via IndexKind enum)
 /// - Macro-friendly (simple static property)
 ///
 /// **Example**:
 /// ```swift
-/// @Recordable
+/// @Persistable
 /// struct User {
 ///     #PrimaryKey<User>([\.userID])
 ///     #Index([\.email])

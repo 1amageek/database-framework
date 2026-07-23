@@ -308,7 +308,7 @@ struct DatabaseTransactionLifecycleTests {
     func deletingMissingIdentityFails() async throws {
         let container = try await makeContainer()
         let context = container.newContext()
-        let identity = RecordIdentity(
+        let identity = PersistableIdentity(
             entity: TransactionLifecycleParent.persistableType,
             id: .string("missing-parent")
         )

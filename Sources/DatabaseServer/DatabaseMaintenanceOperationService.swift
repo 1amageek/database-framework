@@ -207,7 +207,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                 return .execution(
                     MaintenanceExecuteOperation.ExecutionResult(
                         kind: .indexRebuild,
-                        completedWorkUnits: slice.indexedRecordCount,
+                        completedWorkUnits: slice.indexedEntityCount,
                         isComplete: slice.isComplete,
                         continuation: continuation
                     )
@@ -243,7 +243,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
         case .readable:
             wireState = .ready
         case .writeOnly:
-            wireState = status.rebuildRecord?.phase == .failed
+            wireState = status.rebuildState?.phase == .failed
                 ? .failed
                 : .building
         case .disabled:
@@ -254,8 +254,8 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
             index: status.index,
             partitions: status.partitions,
             state: wireState,
-            indexedRecordCount: status.rebuildRecord?.indexedRecordCount ?? 0,
-            detail: status.rebuildRecord?.detail
+            indexedEntityCount: status.rebuildState?.indexedEntityCount ?? 0,
+            detail: status.rebuildState?.detail
         )
     }
 }

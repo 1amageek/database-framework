@@ -9,7 +9,7 @@ public enum RelationshipError: Error, Sendable, CustomStringConvertible {
     )
     case mutationLimitExceeded(actual: Int, maximum: Int)
     case workLimitExceeded(maximum: UInt64)
-    case catalogOwnerMissing(RecordIdentity)
+    case catalogOwnerMissing(PersistableIdentity)
 
     public var description: String {
         switch self {

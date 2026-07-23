@@ -277,14 +277,14 @@ struct DatabaseEndpointTests {
         )
         #expect(schema.version == container.schema.version)
         #expect(schema.entities.count == 1)
-        #expect(schema.entities[0].name == DatabaseEndpointRecord.persistableType)
+        #expect(schema.entities[0].name == DatabaseEndpointEntity.persistableType)
         #expect(schema.entities[0].fields.map(\.name) == ["id", "title", "priority"])
         #expect(schema.entities[0].fields.map(\.type) == [.string, .string, .int64])
     }
 
     private func makeContainer() async throws -> DBContainer {
         let schema = Schema(
-            [DatabaseEndpointRecord.self],
+            [DatabaseEndpointEntity.self],
             version: Schema.Version(1, 0, 0)
         )
         return try await DBContainer.open(

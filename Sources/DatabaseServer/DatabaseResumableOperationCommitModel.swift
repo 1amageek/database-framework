@@ -4,7 +4,7 @@ public enum DatabaseResumableOperationCommitModel: Sendable, Equatable {
     case atomicWithJobState
 
     /// The operation commits an idempotent durable checkpoint before the job
-    /// runner records progress. A retry must derive its next step from that
+    /// runner persists progress. A retry must derive its next step from that
     /// operation-owned checkpoint. At a cancellation race, a completed
     /// checkpoint wins; an incomplete checkpoint is recorded before the job
     /// transitions to its cancelled unsuccessful outcome.

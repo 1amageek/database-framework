@@ -387,7 +387,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
         case .nodes(let nodes):
             writer.writeUInt8(2)
             try encodeTerms(nodes, into: &writer)
-        case .records(let identities):
+        case .entities(let identities):
             writer.writeUInt8(3)
             try writer.writeCount(identities.count)
             for identity in identities {

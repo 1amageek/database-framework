@@ -260,7 +260,7 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
         costModel: CostModel
     ) -> Double {
         let entries = Double(matchResult.estimatedEntries)
-        return costModel.indexCost(entries: entries) + costModel.fetchCost(records: entries)
+        return costModel.indexCost(entries: entries) + costModel.fetchCost(entities: entries)
     }
 
     // MARK: - Private Helpers
@@ -438,7 +438,7 @@ public struct FullTextIndexStrategy: IndexPlanningStrategy {
         costModel: CostModel
     ) -> Double {
         let entries = Double(matchResult.estimatedEntries)
-        return costModel.indexCost(entries: entries) + costModel.fetchCost(records: entries)
+        return costModel.indexCost(entries: entries) + costModel.fetchCost(entities: entries)
     }
 }
 
@@ -520,7 +520,7 @@ public struct VectorIndexStrategy: IndexPlanningStrategy {
         let efSearch = k * 10 // Default ef_search
 
         let searchCost = DatabaseMath.binaryLogarithm(max(2, totalRows)) * efSearch * 0.1
-        return searchCost + costModel.fetchCost(records: k)
+        return searchCost + costModel.fetchCost(entities: k)
     }
 }
 
@@ -592,7 +592,7 @@ public struct SpatialIndexStrategy: IndexPlanningStrategy {
     ) -> Double {
         let entries = Double(matchResult.estimatedEntries)
         // R-tree traversal cost
-        return costModel.indexCost(entries: entries * 2) + costModel.fetchCost(records: entries)
+        return costModel.indexCost(entries: entries * 2) + costModel.fetchCost(entities: entries)
     }
 }
 

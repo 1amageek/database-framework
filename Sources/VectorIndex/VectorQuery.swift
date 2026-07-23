@@ -562,7 +562,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             // Create ID to item map for efficient lookup
             var idToItem: [String: T] = [:]
             for item in items {
-                let identifier = try item.recordIdentifierTuple()
+                let identifier = try item.persistableIdentifierTuple()
                 let key = Data(identifier.pack()).base64EncodedString()
                 idToItem[key] = item
             }

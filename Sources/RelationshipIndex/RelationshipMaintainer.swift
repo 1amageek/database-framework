@@ -62,7 +62,7 @@ public final class RelationshipMaintainer: Sendable {
                     context: context,
                     state: &state
                 )
-                var active: [(RecordIdentity, any Persistable)] = []
+                var active: [(PersistableIdentity, any Persistable)] = []
                 let resolver = RelationshipReferenceResolver(schema: schema)
                 for identity in owners {
                     if try await context.isDeletionScheduled(for: identity) {
@@ -118,7 +118,7 @@ public final class RelationshipMaintainer: Sendable {
                             transaction: context.storageAccess
                         )
                     case .nullify:
-                        let updated = try RelationshipRecordEditor(
+                        let updated = try RelationshipEntityEditor(
                             schema: schema
                         ).removingReference(
                             to: target,
@@ -143,11 +143,11 @@ public final class RelationshipMaintainer: Sendable {
     }
 
     private func referrers(
-        of target: RecordIdentity,
+        of target: PersistableIdentity,
         descriptor: RelationshipDescriptor,
         context: borrowing PersistableMutationContext,
         state: inout EnforcementState
-    ) async throws -> [RecordIdentity] {
+    ) async throws -> [PersistableIdentity] {
         let remaining = state.remainingWork
         guard remaining > 0 else {
             throw RelationshipError.workLimitExceeded(
@@ -173,8 +173,8 @@ public final class RelationshipMaintainer: Sendable {
     private struct EnforcementState: Sendable {
         let maximumWorkUnits: UInt64
         var consumedWorkUnits: UInt64 = 0
-        var visited = Set<RecordIdentity>()
-        var mutations = Set<RecordIdentity>()
+        var visited = Set<PersistableIdentity>()
+        var mutations = Set<PersistableIdentity>()
 
         var remainingWork: UInt64 {
             maximumWorkUnits - consumedWorkUnits
@@ -190,7 +190,7 @@ public final class RelationshipMaintainer: Sendable {
         }
 
         mutating func markMutation(
-            _ identity: RecordIdentity,
+            _ identity: PersistableIdentity,
             maximum: Int
         ) throws {
             mutations.insert(identity)

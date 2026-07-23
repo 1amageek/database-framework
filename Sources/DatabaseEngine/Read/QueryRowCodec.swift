@@ -15,7 +15,7 @@ public enum QueryRowCodec {
         return QueryRow(
             fields: fields,
             annotations: annotations,
-            version: try RecordVersionTokenCodec.token(for: fields)
+            version: try PersistableVersionTokenCodec.token(for: fields)
         )
     }
 
@@ -40,7 +40,7 @@ public enum QueryRowCodec {
                 )
             )
         }
-        return try T.decodeDatabaseRecord(fields)
+        return try T.decodePersistedFields(fields)
     }
 
     public static func encodeAny(
@@ -51,14 +51,14 @@ public enum QueryRowCodec {
         return QueryRow(
             fields: fields,
             annotations: annotations,
-            version: try RecordVersionTokenCodec.token(for: fields)
+            version: try PersistableVersionTokenCodec.token(for: fields)
         )
     }
 
     private static func canonicalFields(
         _ item: any Persistable
     ) throws -> [String: DatabaseValue] {
-        let encoded = try DatabaseRecordEncoder.encode(item)
+        let encoded = try PersistableFieldEncoder.encode(item)
         var fields: [String: DatabaseValue] = [:]
         fields.reserveCapacity(encoded.count)
         for field in encoded {

@@ -444,7 +444,7 @@ struct IndexStateBehaviorTests {
             let indexEntryCount = try await ctx.countIndexEntries(indexName: indexName)
             #expect(indexEntryCount == 0, "Disabled index should have no entries after batch insert")
 
-            // Verify records exist
+            // Verify entities exist
             let allUsers = try await dataStore.fetchAll(IndexedUser.self)
             #expect(allUsers.count == 3)
 

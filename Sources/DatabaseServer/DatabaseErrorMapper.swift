@@ -85,10 +85,10 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 retryability: .never
             )
         }
-        if error is DatabaseRecordDecodingError || error is QueryRowCodecError {
+        if error is PersistableDecodingError || error is QueryRowCodecError {
             return DatabaseRemoteError(
                 category: .invalidRequest,
-                code: "INVALID_RECORD",
+                code: "INVALID_ENTITY",
                 message: String(describing: error),
                 retryability: .never
             )
@@ -842,7 +842,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .idempotencyKeyConflict:
             category = .conflict
             code = "IDEMPOTENCY_KEY_CONFLICT"
-        case .idempotencyRecordCorrupted, .logicalVersionOverflow,
+        case .idempotencyEntryCorrupted, .logicalVersionOverflow,
              .stateStoreContainerMismatch:
             category = .internalFailure
             code = "MUTATION_RUNTIME_FAILURE"
@@ -852,29 +852,29 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .entityHasNoPersistableType:
             category = .invalidRequest
             code = "ENTITY_NOT_PERSISTABLE"
-        case .invalidRecordIdentifier, .recordIdentifierNotRepresentable:
+        case .invalidPersistableIdentifier, .identifierNotRepresentable:
             category = .invalidRequest
-            code = "INVALID_RECORD_IDENTIFIER"
+            code = "INVALID_ENTITY_IDENTIFIER"
         case .invalidPartition:
             category = .invalidRequest
             code = "INVALID_PARTITION"
         case .invalidGraphPartitions:
             category = .invalidRequest
             code = "INVALID_GRAPH_PARTITIONS"
-        case .recordTypeMismatch, .recordIdentityMismatch,
-             .recordFieldNotRepresentable:
+        case .entityTypeMismatch, .persistableIdentityMismatch,
+             .fieldNotRepresentable:
             category = .invalidRequest
-            code = "INVALID_RECORD"
+            code = "INVALID_ENTITY"
         case .duplicateChange, .duplicatePrecondition,
              .incompatiblePreconditions:
             category = .invalidRequest
             code = "INVALID_MUTATION"
-        case .recordAlreadyExists, .recordVersionMismatch:
+        case .entityAlreadyExists, .entityVersionMismatch:
             category = .conflict
             code = "MUTATION_CONFLICT"
-        case .recordNotFound:
+        case .entityNotFound:
             category = .notFound
-            code = "RECORD_NOT_FOUND"
+            code = "ENTITY_NOT_FOUND"
         case .invalidCompiledSchema:
             category = .internalFailure
             code = "MUTATION_SCHEMA_INVALID"
@@ -925,7 +925,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             code = "ENTITY_RUNTIME_NOT_COMPILED"
         case .invalidIdentity:
             category = .invalidRequest
-            code = "INVALID_RECORD_IDENTITY"
+            code = "INVALID_ENTITY_IDENTITY"
         case .persistedModelNotFound:
             category = .notFound
             code = "PERSISTED_MODEL_NOT_FOUND"
@@ -1089,7 +1089,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .loadedTypeMismatch:
             category = .internalFailure
             code = "RELATIONSHIP_STORED_TYPE_MISMATCH"
-        case .targetRecordMissing:
+        case .targetEntityMissing:
             category = .constraint
             code = "RELATIONSHIP_TARGET_NOT_FOUND"
         case .corruptedCatalogEntry:
@@ -1101,7 +1101,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .nullifyRequiresOptionalField:
             category = .internalFailure
             code = "RELATIONSHIP_NULLIFY_FIELD_INVALID"
-        case .recordDecodingFailed:
+        case .entityDecodingFailed:
             category = .internalFailure
             code = "RELATIONSHIP_PROJECTION_DECODING_FAILED"
         }
@@ -1200,7 +1200,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .invalidContinuation:
             category = .invalidRequest
             code = "INVALID_INDEX_CONTINUATION"
-        case .compiledTypeMissing, .corruptedRecord, .recordCountOverflow:
+        case .compiledTypeMissing, .corruptedRebuildState, .entityCountOverflow:
             category = .internalFailure
             code = "INDEX_REBUILD_FAILURE"
         }
@@ -1489,15 +1489,15 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         let category: DatabaseErrorCategory
         let code: String
         switch error {
-        case .entityNotFound, .indexNotFound, .recordNotFound:
+        case .schemaEntityNotFound, .indexNotFound, .focusEntityNotFound:
             category = .notFound
             code = "SHACL_DATA_SOURCE_NOT_FOUND"
         case .unsupportedEntailment:
             category = .invalidRequest
             code = "SHACL_ENTAILMENT_UNSUPPORTED"
         case .indexIsNotRDFDataset, .graphNotCovered, .invalidGraphName,
-             .invalidPartition, .recordEntityMismatch,
-             .recordPartitionMismatch, .recordSubjectMissing:
+             .invalidPartition, .focusEntityMismatch,
+             .focusPartitionMismatch, .focusSubjectMissing:
             category = .invalidRequest
             code = "INVALID_SHACL_DATA_SOURCE"
         }

@@ -256,7 +256,7 @@ struct DatabaseErrorMapperTests {
     @Test("Mutation errors distinguish input, conflict, and schema failures")
     func mutationFailures() async throws {
         let context = try await makeContext()
-        let identity = RecordIdentity(
+        let identity = PersistableIdentity(
             entity: "Event",
             id: .string("event-1")
         )
@@ -268,14 +268,14 @@ struct DatabaseErrorMapperTests {
                     "IDEMPOTENCY_KEY_REQUIRED"
                 ),
                 (
-                    DatabaseMutationError.recordAlreadyExists(identity),
+                    DatabaseMutationError.entityAlreadyExists(identity),
                     .conflict,
                     "MUTATION_CONFLICT"
                 ),
                 (
-                    DatabaseMutationError.recordNotFound(identity),
+                    DatabaseMutationError.entityNotFound(identity),
                     .notFound,
-                    "RECORD_NOT_FOUND"
+                    "ENTITY_NOT_FOUND"
                 ),
                 (
                     DatabaseMutationError.invalidCompiledSchema(
@@ -293,7 +293,7 @@ struct DatabaseErrorMapperTests {
     @Test("Database transaction errors preserve their lifecycle contract")
     func databaseTransactionFailures() async throws {
         let context = try await makeContext()
-        let identity = RecordIdentity(
+        let identity = PersistableIdentity(
             entity: "Event",
             id: .string("event-1")
         )
@@ -345,7 +345,7 @@ struct DatabaseErrorMapperTests {
                         reason: "invalid identifier"
                     ),
                     .invalidRequest,
-                    "INVALID_RECORD_IDENTITY"
+                    "INVALID_ENTITY_IDENTITY"
                 ),
                 (
                     DatabaseTransactionError.persistedModelNotFound(identity),
@@ -459,7 +459,7 @@ struct DatabaseErrorMapperTests {
     @Test("Relationship errors distinguish constraints, limits, and corruption")
     func relationshipFailures() async throws {
         let context = try await makeContext()
-        let identity = RecordIdentity(
+        let identity = PersistableIdentity(
             entity: "Event",
             id: .string("event-1")
         )
@@ -501,7 +501,7 @@ struct DatabaseErrorMapperTests {
     @Test("Relationship reference errors preserve each boundary failure")
     func relationshipReferenceFailures() async throws {
         let context = try await makeContext()
-        let identity = RecordIdentity(
+        let identity = PersistableIdentity(
             entity: "Event",
             id: .string("event-1")
         )
@@ -589,7 +589,7 @@ struct DatabaseErrorMapperTests {
                     "RELATIONSHIP_STORED_TYPE_MISMATCH"
                 ),
                 (
-                    RelationshipReferenceError.targetRecordMissing(identity),
+                    RelationshipReferenceError.targetEntityMissing(identity),
                     .constraint,
                     "RELATIONSHIP_TARGET_NOT_FOUND"
                 ),
@@ -612,7 +612,7 @@ struct DatabaseErrorMapperTests {
                     "RELATIONSHIP_NULLIFY_FIELD_INVALID"
                 ),
                 (
-                    RelationshipReferenceError.recordDecodingFailed(
+                    RelationshipReferenceError.entityDecodingFailed(
                         entity: "Event",
                         reason: "invalid projection"
                     ),
@@ -1094,7 +1094,7 @@ struct DatabaseErrorMapperTests {
     private func makeContext() async throws -> DatabaseOperationContext {
         let container = try await DBContainer.open(
             for: Schema(
-                [DatabaseEndpointRecord.self],
+                [DatabaseEndpointEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),

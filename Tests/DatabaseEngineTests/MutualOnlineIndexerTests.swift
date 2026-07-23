@@ -3,7 +3,7 @@
 // MutualOnlineIndexerTests.swift
 // Tests for MutualOnlineIndexer and SymmetricIndexBuilder implementations
 //
-// Reference: FDB Record Layer mutual indexing strategy
+// Reference: FDB Entity Layer mutual indexing strategy
 
 import Testing
 import TestHeartbeat

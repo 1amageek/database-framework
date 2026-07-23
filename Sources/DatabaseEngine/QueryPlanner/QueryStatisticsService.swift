@@ -316,7 +316,7 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
     /// Collect statistics for a Persistable type
     ///
     /// Implements PostgreSQL ANALYZE-style statistics collection:
-    /// 1. Scan records and collect samples (reservoir sampling)
+    /// 1. Scan entities and collect samples (reservoir sampling)
     /// 2. Build MCV (Most Common Values) list
     /// 3. Build histogram excluding MCV values (prevents double-counting)
     /// 4. Estimate cardinality using HyperLogLog++
@@ -328,7 +328,7 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
     ///
     /// - Parameters:
     ///   - type: The Persistable type
-    ///   - store: DataStore for accessing records
+    ///   - store: DataStore for accessing entities
     ///   - sampleRate: Sample rate (0.0-1.0), nil uses default
     ///   - fields: Specific fields to collect (nil for all)
     public func collectStatistics<T: Persistable>(
@@ -360,7 +360,7 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
             fieldNullCounts[field] = 0
         }
 
-        // Scan records and collect statistics
+        // Scan entities and collect statistics
         var totalCount: Int64 = 0
         var totalSize: Int64 = 0
 
@@ -372,7 +372,7 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
             let encodedData = try DataAccess.serialize(item)
             totalSize += Int64(encodedData.count)
 
-            // Sample this record based on sample rate
+            // Sample this entity based on sample rate
             let shouldSample = Double.random(in: 0..<1) < effectiveSampleRate
 
             // Collect field-level statistics

@@ -7,8 +7,8 @@ import Testing
 
 @Suite("RDF dataset index metadata")
 struct RDFDatasetIndexMetadataTests {
-    @Test("RDF quad metadata preserves a record graph field")
-    func rdfQuadRecordGraphField() throws {
+    @Test("RDF quad metadata preserves an entity graph field")
+    func rdfQuadEntityGraphField() throws {
         let descriptor = makeDescriptor(
             identifier: "rdf_quad",
             fieldNames: ["subject", "predicate", "object", "graph"],
@@ -22,7 +22,7 @@ struct RDFDatasetIndexMetadataTests {
         #expect(selection.metadata.subjectFieldName == "subject")
         #expect(selection.metadata.predicateFieldName == "predicate")
         #expect(selection.metadata.objectFieldName == "object")
-        #expect(selection.metadata.graphScope == .recordField("graph"))
+        #expect(selection.metadata.graphScope == .entityField("graph"))
         #expect(try selection.metadata.graphScope.sourceCoverage == .dataset)
     }
 

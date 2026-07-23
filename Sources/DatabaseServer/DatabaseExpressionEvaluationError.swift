@@ -25,9 +25,9 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
         case .numericOverflow:
             return "Expression numeric result is outside the canonical value range"
         case .unsupportedExpression(let expression):
-            return "Expression is not supported in a record mutation: \(expression)"
+            return "Expression is not supported in an entity mutation: \(expression)"
         case .unsupportedFunction(let function):
-            return "Scalar function '\(function)' is not supported in a record mutation"
+            return "Scalar function '\(function)' is not supported in an entity mutation"
         case .invalidCast(let type):
             return "Expression cannot be cast to \(type)"
         case .invalidRDFLiteral(let datatype):

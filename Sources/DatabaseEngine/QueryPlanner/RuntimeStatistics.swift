@@ -27,7 +27,7 @@ public final class RuntimeStatisticsTracker: Sendable {
 
     /// Internal state
     private struct State: Sendable {
-        var executionHistory: [ExecutionRecord] = []
+        var executionHistory: [ExecutionObservation] = []
         var fieldHistograms: [String: [String: FieldHistogram]] = [:] // typeName -> fieldName -> histogram
         var indexUsageStats: [String: IndexUsageStats] = [:] // indexName -> stats
         var maxHistorySize: Int
@@ -64,17 +64,17 @@ public final class RuntimeStatisticsTracker: Sendable {
         actualRowCount: Int,
         executionTime: TimeInterval,
         indexScansPerformed: Int = 0,
-        recordFetches: Int = 0
+        entityFetches: Int = 0
     ) {
-        let entry = ExecutionRecord(
+        let entry = ExecutionObservation(
             planId: plan.id,
             typeName: String(describing: T.self),
             timestamp: Date(),
-            estimatedRowCount: Int(plan.estimatedCost.recordFetches),
+            estimatedRowCount: Int(plan.estimatedCost.entityFetches),
             actualRowCount: actualRowCount,
             executionTime: executionTime,
             indexScansPerformed: indexScansPerformed,
-            recordFetches: recordFetches,
+            entityFetches: entityFetches,
             usedIndexes: plan.usedIndexes.map { $0.name }
         )
 
@@ -163,16 +163,16 @@ public final class RuntimeStatisticsTracker: Sendable {
     }
 
     /// Aggregate statistics from execution history
-    private func aggregateStatistics(from history: [ExecutionRecord]) -> [String: AggregatedTypeStats] {
+    private func aggregateStatistics(from history: [ExecutionObservation]) -> [String: AggregatedTypeStats] {
         var result: [String: AggregatedTypeStats] = [:]
 
-        for record in history {
-            var stats = result[record.typeName] ?? AggregatedTypeStats()
-            stats.totalActualRows += record.actualRowCount
-            stats.totalEstimatedRows += record.estimatedRowCount
+        for observation in history {
+            var stats = result[observation.typeName] ?? AggregatedTypeStats()
+            stats.totalActualRows += observation.actualRowCount
+            stats.totalEstimatedRows += observation.estimatedRowCount
             stats.sampleCount += 1
-            stats.totalExecutionTime += record.executionTime
-            result[record.typeName] = stats
+            stats.totalExecutionTime += observation.executionTime
+            result[observation.typeName] = stats
         }
 
         return result
@@ -195,7 +195,7 @@ public final class RuntimeStatisticsTracker: Sendable {
 
         // Calculate estimation errors
         var errors: [Double] = []
-        var worstCases: [(entry: ExecutionRecord, error: Double)] = []
+        var worstCases: [(entry: ExecutionObservation, error: Double)] = []
 
         for executionEntry in history {
             let estimated = Double(executionEntry.estimatedRowCount)
@@ -218,7 +218,7 @@ public final class RuntimeStatisticsTracker: Sendable {
         let topWorstCases = worstCases
             .sorted { $0.error > $1.error }
             .prefix(10)
-            .map { WorstCaseRecord(planId: $0.entry.planId, error: $0.error, entry: $0.entry) }
+            .map { WorstCaseObservation(planId: $0.entry.planId, error: $0.error, entry: $0.entry) }
 
         return EstimationAccuracyReport(
             totalExecutions: history.count,
@@ -263,7 +263,7 @@ public final class RuntimeStatisticsTracker: Sendable {
     // MARK: - History Access
 
     /// Get recent execution history
-    public func getRecentHistory(limit: Int = 100) -> [ExecutionRecord] {
+    public func getRecentHistory(limit: Int = 100) -> [ExecutionObservation] {
         state.withLock { state in
             Array(state.executionHistory.suffix(limit))
         }
@@ -281,8 +281,8 @@ public final class RuntimeStatisticsTracker: Sendable {
 
 // MARK: - Supporting Types
 
-/// Record of a single query execution
-public struct ExecutionRecord: Sendable {
+/// Statistics for a single query execution.
+public struct ExecutionObservation: Sendable {
     public let planId: UUID
     public let typeName: String
     public let timestamp: Date
@@ -290,7 +290,7 @@ public struct ExecutionRecord: Sendable {
     public let actualRowCount: Int
     public let executionTime: TimeInterval
     public let indexScansPerformed: Int
-    public let recordFetches: Int
+    public let entityFetches: Int
     public let usedIndexes: [String]
 
     /// Estimation error ratio
@@ -384,7 +384,7 @@ public struct EstimationAccuracyReport: Sendable {
     public let totalExecutions: Int
     public let averageError: Double
     public let medianError: Double
-    public let worstCases: [WorstCaseRecord]
+    public let worstCases: [WorstCaseObservation]
 
     /// Summary description
     public var summary: String {
@@ -399,10 +399,10 @@ public struct EstimationAccuracyReport: Sendable {
 }
 
 /// A log entry for a poorly estimated query
-public struct WorstCaseRecord: Sendable {
+public struct WorstCaseObservation: Sendable {
     public let planId: UUID
     public let error: Double
-    public let entry: ExecutionRecord
+    public let entry: ExecutionObservation
 }
 
 /// Index recommendation
@@ -440,7 +440,7 @@ extension PlanExecutor {
             actualRowCount: results.count,
             executionTime: executionTime,
             indexScansPerformed: plan.usedIndexes.count,
-            recordFetches: results.count
+            entityFetches: results.count
         )
 
         return results
@@ -464,13 +464,13 @@ public struct StatisticsDriftDetector: Sendable {
     }
 
     /// Check if statistics have drifted based on recent executions
-    public func detectDrift(from records: [ExecutionRecord]) -> DriftReport {
-        guard records.count >= minimumSamples else {
+    public func detectDrift(from observations: [ExecutionObservation]) -> DriftReport {
+        guard observations.count >= minimumSamples else {
             return DriftReport(hasDrifted: false, driftedFields: [], recommendation: nil)
         }
 
         // Calculate average error
-        let errors = records.map { $0.errorRatio }
+        let errors = observations.map { $0.errorRatio }
         let avgError = errors.reduce(0, +) / Double(errors.count)
 
         let hasDrifted = avgError > driftThreshold

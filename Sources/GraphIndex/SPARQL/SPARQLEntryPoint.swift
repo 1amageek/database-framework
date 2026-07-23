@@ -72,7 +72,7 @@ public struct SPARQLEntryPoint<T: Persistable>: Sendable {
         )
     }
 
-    /// Use the only RDF dataset index declared by this record type.
+    /// Use the only RDF dataset index declared by this entity type.
     ///
     /// - Returns: SPARQL query builder configured with the default index
     public func defaultIndex() throws -> SPARQLQueryBuilder<T> {

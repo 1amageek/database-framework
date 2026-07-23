@@ -128,7 +128,7 @@ struct AdaptiveThrottlerTests {
         )
         let throttler = AdaptiveThrottler(configuration: config)
 
-        // Record 3 successes
+        // Entity 3 successes
         for _ in 0..<3 {
             throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
         }

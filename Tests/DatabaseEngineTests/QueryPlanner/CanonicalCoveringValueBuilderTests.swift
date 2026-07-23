@@ -11,11 +11,11 @@ import Testing
 struct CanonicalCoveringValueBuilderTests {
     @Test("Stored fields retain null, arrays, and typed references")
     func storedFieldsRoundTrip() throws {
-        let record = try IndexProjectionRecordFactory.record()
-        let descriptor = IndexProjectionRecordFactory.descriptor()
+        let entity = try IndexProjectionEntityFactory.entity()
+        let descriptor = IndexProjectionEntityFactory.descriptor()
         let bytes = try CoveringValueBuilder.build(
-            for: record,
-            index: IndexProjectionRecordFactory.runtimeIndex(from: descriptor)
+            for: entity,
+            index: IndexProjectionEntityFactory.runtimeIndex(from: descriptor)
         )
         let properties = try CoveringValueBuilder.decode(
             bytes,
@@ -23,24 +23,24 @@ struct CanonicalCoveringValueBuilderTests {
         )
 
         #expect(Array(bytes.prefix(4)) == [0x44, 0x42, 0x49, 0x58])
-        #expect(properties["name"] == .string(record.name))
-        #expect(properties["age"] == .int64(Int64(record.age)))
+        #expect(properties["name"] == .string(entity.name))
+        #expect(properties["age"] == .int64(Int64(entity.age)))
         #expect(properties["nickname"] == .null)
         #expect(properties["tags"] == .array([
             .string("calendar"),
             .string("graph"),
         ]))
         #expect(properties["target"] == .reference(
-            try #require(record.target).identity
+            try #require(entity.target).identity
         ))
     }
 
     @Test("A non-covering index without stored fields has an empty value")
     func nonCoveringIndexHasNoProjection() throws {
         let bytes = try CoveringValueBuilder.build(
-            for: IndexProjectionRecordFactory.record(),
-            index: IndexProjectionRecordFactory.runtimeIndex(
-                from: IndexProjectionRecordFactory.descriptor(storedFields: [])
+            for: IndexProjectionEntityFactory.entity(),
+            index: IndexProjectionEntityFactory.runtimeIndex(
+                from: IndexProjectionEntityFactory.descriptor(storedFields: [])
             )
         )
 
@@ -49,16 +49,16 @@ struct CanonicalCoveringValueBuilderTests {
 
     @Test("A fully covering key-only index still writes canonical bytes")
     func keyOnlyIndexWritesProjection() throws {
-        var record = IndexProjectionKeyOnlyRecord(email: "key@example.com")
-        record.id = "key-1"
+        var entity = IndexProjectionKeyOnlyEntity(email: "key@example.com")
+        entity.id = "key-1"
         let descriptor = IndexDescriptor(
-            name: "IndexProjectionKeyOnlyRecord_email",
-            keyPaths: [\IndexProjectionKeyOnlyRecord.email],
-            kind: ScalarIndexKind<IndexProjectionKeyOnlyRecord>(fields: [\.email])
+            name: "IndexProjectionKeyOnlyEntity_email",
+            keyPaths: [\IndexProjectionKeyOnlyEntity.email],
+            kind: ScalarIndexKind<IndexProjectionKeyOnlyEntity>(fields: [\.email])
         )
         let bytes = try CoveringValueBuilder.build(
-            for: record,
-            index: IndexProjectionRecordFactory.runtimeIndex(from: descriptor)
+            for: entity,
+            index: IndexProjectionEntityFactory.runtimeIndex(from: descriptor)
         )
 
         #expect(!bytes.isEmpty)
@@ -67,24 +67,24 @@ struct CanonicalCoveringValueBuilderTests {
 
     @Test("Unknown stored fields fail before an index write")
     func unknownFieldFails() throws {
-        let descriptor = IndexProjectionRecordFactory.descriptor(
+        let descriptor = IndexProjectionEntityFactory.descriptor(
             storedFields: ["unknown"]
         )
         #expect(throws: CanonicalIndexProjectionError.self) {
             _ = try CoveringValueBuilder.build(
-                for: IndexProjectionRecordFactory.record(),
-                index: IndexProjectionRecordFactory.runtimeIndex(from: descriptor)
+                for: IndexProjectionEntityFactory.entity(),
+                index: IndexProjectionEntityFactory.runtimeIndex(from: descriptor)
             )
         }
     }
 
     @Test("Truncated projections are rejected deterministically")
     func truncatedProjectionFails() throws {
-        let record = try IndexProjectionRecordFactory.record()
-        let descriptor = IndexProjectionRecordFactory.descriptor()
+        let entity = try IndexProjectionEntityFactory.entity()
+        let descriptor = IndexProjectionEntityFactory.descriptor()
         let bytes = try CoveringValueBuilder.build(
-            for: record,
-            index: IndexProjectionRecordFactory.runtimeIndex(from: descriptor)
+            for: entity,
+            index: IndexProjectionEntityFactory.runtimeIndex(from: descriptor)
         )
         #expect(throws: DatabaseWireError.self) {
             _ = try CoveringValueBuilder.decode(
@@ -100,12 +100,12 @@ struct CanonicalCoveringValueBuilderTests {
         let payload = DatabaseBytes.copying(count: 4_096) { buffer in
             buffer.initializeMemory(as: UInt8.self, repeating: 0xA5)
         }
-        let frame = try DatabaseRecordFieldFrameCodec.encode(
+        let frame = try PersistableFieldFrameCodec.encode(
             magic: [0x54, 0x45, 0x53, 0x54],
             version: 1,
             entity: "Projection",
             fields: [
-                DatabaseRecordField(
+                PersistableField(
                     number: 1,
                     name: "selected",
                     value: .bytes(payload)
@@ -113,7 +113,7 @@ struct CanonicalCoveringValueBuilderTests {
             ],
             limits: limits
         )
-        let decoded = try DatabaseRecordFieldFrameCodec.decodeSelected(
+        let decoded = try PersistableFieldFrameCodec.decodeSelected(
             frame,
             magic: [0x54, 0x45, 0x53, 0x54],
             version: 1,
@@ -149,17 +149,17 @@ struct CanonicalCoveringValueBuilderTests {
         let ignoredPayload = DatabaseBytes.copying(count: 65_536) { buffer in
             buffer.initializeMemory(as: UInt8.self, repeating: 0xA5)
         }
-        var frame = try DatabaseRecordFieldFrameCodec.encode(
+        var frame = try PersistableFieldFrameCodec.encode(
             magic: [0x54, 0x45, 0x53, 0x54],
             version: 1,
             entity: "Projection",
             fields: [
-                DatabaseRecordField(
+                PersistableField(
                     number: 1,
                     name: "selected",
                     value: .string("calendar")
                 ),
-                DatabaseRecordField(
+                PersistableField(
                     number: 2,
                     name: "ignored",
                     value: .bytes(ignoredPayload)
@@ -177,7 +177,7 @@ struct CanonicalCoveringValueBuilderTests {
         )
         frame[ignoredTagOffset] = 0xFE
 
-        let selected = try DatabaseRecordFieldFrameCodec.decodeSelected(
+        let selected = try PersistableFieldFrameCodec.decodeSelected(
             frame,
             magic: [0x54, 0x45, 0x53, 0x54],
             version: 1,
@@ -186,7 +186,7 @@ struct CanonicalCoveringValueBuilderTests {
         )
         #expect(selected.fieldsByName == ["selected": .string("calendar")])
         #expect(throws: DatabaseWireError.self) {
-            _ = try DatabaseRecordFieldFrameCodec.decode(
+            _ = try PersistableFieldFrameCodec.decode(
                 frame,
                 magic: [0x54, 0x45, 0x53, 0x54],
                 version: 1,

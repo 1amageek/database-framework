@@ -16,7 +16,7 @@ struct StoreTimerEventTests {
     @Test("Events have unique names")
     func eventUniqueNames() {
         let events: [StoreTimerEvent] = [
-            .getReadVersion, .commit, .saveRecord, .loadRecord,
+            .getReadVersion, .commit, .saveEntity, .loadEntity,
             .updateIndex, .scanIndex, .rangeScan, .serialize, .deserialize
         ]
 
@@ -28,20 +28,20 @@ struct StoreTimerEventTests {
 
     @Test("Event description returns name")
     func eventDescription() {
-        let event = StoreTimerEvent.saveRecord
-        #expect(event.description == "save_record")
+        let event = StoreTimerEvent.saveEntity
+        #expect(event.description == "save_entity")
     }
 
     @Test("Count events are marked correctly")
     func countEvents() {
-        #expect(StoreTimerEvent.recordsSaved.isCount == true)
-        #expect(StoreTimerEvent.saveRecord.isCount == false)
+        #expect(StoreTimerEvent.entitiesSaved.isCount == true)
+        #expect(StoreTimerEvent.saveEntity.isCount == false)
     }
 
     @Test("Size events are marked correctly")
     func sizeEvents() {
         #expect(StoreTimerEvent.bytesSerialized.isSize == true)
-        #expect(StoreTimerEvent.saveRecord.isSize == false)
+        #expect(StoreTimerEvent.saveEntity.isSize == false)
     }
 }
 
@@ -50,14 +50,14 @@ struct StoreTimerEventTests {
 @Suite("StoreTimer Tests", .heartbeat)
 struct StoreTimerTests {
 
-    @Test("Record timing event")
+    @Test("Entity timing event")
     func recordTimingEvent() {
         let timer = StoreTimer(emitMetrics: false)
 
-        timer.record(.saveRecord, duration: 1_000_000) // 1ms
-        timer.record(.saveRecord, duration: 2_000_000) // 2ms
+        timer.record(.saveEntity, duration: 1_000_000) // 1ms
+        timer.record(.saveEntity, duration: 2_000_000) // 2ms
 
-        let stats = timer.getStats(.saveRecord)
+        let stats = timer.getStats(.saveEntity)
         #expect(stats != nil)
         #expect(stats?.count == 2)
         #expect(stats?.totalNanos == 3_000_000)
@@ -69,10 +69,10 @@ struct StoreTimerTests {
     func incrementCountEvent() {
         let timer = StoreTimer(emitMetrics: false)
 
-        timer.increment(.recordsSaved, by: 5)
-        timer.increment(.recordsSaved, by: 10)
+        timer.increment(.entitiesSaved, by: 5)
+        timer.increment(.entitiesSaved, by: 10)
 
-        let count = timer.getCount(.recordsSaved)
+        let count = timer.getCount(.entitiesSaved)
         #expect(count == 15)
     }
 
@@ -97,14 +97,14 @@ struct StoreTimerTests {
     func timeAsyncOperation() async throws {
         let timer = StoreTimer(emitMetrics: false)
 
-        let result = try await timer.time(.loadRecord) {
+        let result = try await timer.time(.loadEntity) {
             try await Task.sleep(nanoseconds: 10_000_000) // 10ms
             return 42
         }
 
         #expect(result == 42)
 
-        let stats = timer.getStats(.loadRecord)
+        let stats = timer.getStats(.loadEntity)
         #expect(stats != nil)
         #expect(stats?.count == 1)
     }
@@ -113,9 +113,9 @@ struct StoreTimerTests {
     func getAllStats() {
         let timer = StoreTimer(emitMetrics: false)
 
-        timer.record(.saveRecord, duration: 1_000_000)
-        timer.record(.loadRecord, duration: 2_000_000)
-        timer.increment(.recordsSaved, by: 5)
+        timer.record(.saveEntity, duration: 1_000_000)
+        timer.record(.loadEntity, duration: 2_000_000)
+        timer.increment(.entitiesSaved, by: 5)
 
         let allStats = timer.getAllStats()
         #expect(allStats.count == 3)
@@ -125,13 +125,13 @@ struct StoreTimerTests {
     func resetClearsData() {
         let timer = StoreTimer(emitMetrics: false)
 
-        timer.record(.saveRecord, duration: 1_000_000)
-        timer.increment(.recordsSaved, by: 5)
+        timer.record(.saveEntity, duration: 1_000_000)
+        timer.increment(.entitiesSaved, by: 5)
 
         timer.reset()
 
-        #expect(timer.getCount(.saveRecord) == 0)
-        #expect(timer.getCount(.recordsSaved) == 0)
+        #expect(timer.getCount(.saveEntity) == 0)
+        #expect(timer.getCount(.entitiesSaved) == 0)
         #expect(timer.getAllStats().isEmpty)
     }
 
@@ -139,13 +139,13 @@ struct StoreTimerTests {
     func resetSpecificEvent() {
         let timer = StoreTimer(emitMetrics: false)
 
-        timer.record(.saveRecord, duration: 1_000_000)
-        timer.record(.loadRecord, duration: 2_000_000)
+        timer.record(.saveEntity, duration: 1_000_000)
+        timer.record(.loadEntity, duration: 2_000_000)
 
-        timer.reset(.saveRecord)
+        timer.reset(.saveEntity)
 
-        #expect(timer.getStats(.saveRecord) == nil)
-        #expect(timer.getStats(.loadRecord) != nil)
+        #expect(timer.getStats(.saveEntity) == nil)
+        #expect(timer.getStats(.loadEntity) != nil)
     }
 
     @Test("Add timers merges data")
@@ -153,12 +153,12 @@ struct StoreTimerTests {
         let timer1 = StoreTimer(emitMetrics: false)
         let timer2 = StoreTimer(emitMetrics: false)
 
-        timer1.record(.saveRecord, duration: 1_000_000)
-        timer2.record(.saveRecord, duration: 2_000_000)
+        timer1.record(.saveEntity, duration: 1_000_000)
+        timer2.record(.saveEntity, duration: 2_000_000)
 
         timer1.add(timer2)
 
-        let stats = timer1.getStats(.saveRecord)
+        let stats = timer1.getStats(.saveEntity)
         #expect(stats?.count == 2)
         #expect(stats?.totalNanos == 3_000_000)
     }
@@ -167,10 +167,10 @@ struct StoreTimerTests {
     func eventStatsCalculations() {
         let timer = StoreTimer(emitMetrics: false)
 
-        timer.record(.saveRecord, duration: 1_000_000)
-        timer.record(.saveRecord, duration: 3_000_000)
+        timer.record(.saveEntity, duration: 1_000_000)
+        timer.record(.saveEntity, duration: 3_000_000)
 
-        let stats = timer.getStats(.saveRecord)!
+        let stats = timer.getStats(.saveEntity)!
 
         #expect(stats.avgNanos == 2_000_000)
         #expect(stats.totalMs == 4.0)
@@ -189,31 +189,31 @@ struct StoreTimerSnapshotTests {
     func snapshotCapturesState() {
         let timer = StoreTimer(emitMetrics: false)
 
-        timer.record(.saveRecord, duration: 1_000_000)
-        timer.increment(.recordsSaved, by: 5)
+        timer.record(.saveEntity, duration: 1_000_000)
+        timer.increment(.entitiesSaved, by: 5)
 
         let snapshot = StoreTimerSnapshot(from: timer)
 
         #expect(snapshot.stats.count == 2)
-        #expect(snapshot.stats[.saveRecord] != nil)
-        #expect(snapshot.stats[.recordsSaved] != nil)
+        #expect(snapshot.stats[.saveEntity] != nil)
+        #expect(snapshot.stats[.entitiesSaved] != nil)
     }
 
     @Test("Snapshot difference calculation")
     func snapshotDifference() {
         let timer = StoreTimer(emitMetrics: false)
 
-        timer.record(.saveRecord, duration: 1_000_000)
+        timer.record(.saveEntity, duration: 1_000_000)
         let snapshot1 = StoreTimerSnapshot(from: timer)
 
-        timer.record(.saveRecord, duration: 2_000_000)
+        timer.record(.saveEntity, duration: 2_000_000)
         let snapshot2 = StoreTimerSnapshot(from: timer)
 
         let diff = snapshot2.difference(from: snapshot1)
 
-        #expect(diff[.saveRecord] != nil)
-        #expect(diff[.saveRecord]?.count == 1)
-        #expect(diff[.saveRecord]?.totalNanos == 2_000_000)
+        #expect(diff[.saveEntity] != nil)
+        #expect(diff[.saveEntity]?.count == 1)
+        #expect(diff[.saveEntity]?.totalNanos == 2_000_000)
     }
 }
 #endif

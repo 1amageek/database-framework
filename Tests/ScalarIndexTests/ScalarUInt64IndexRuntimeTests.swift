@@ -14,18 +14,18 @@ struct ScalarUInt64IndexRuntimeTests {
             UInt64(Int64.max) + 1,
             UInt64.max,
         ]
-        let kind = ScalarIndexKind<UnsignedScalarRecord>(fields: [\.value])
+        let kind = ScalarIndexKind<UnsignedScalarEntity>(fields: [\.value])
         let index = Index(
-            name: "UnsignedScalarRecord_value",
+            name: "UnsignedScalarEntity_value",
             kind: kind,
             rootExpression: FieldKeyExpression(fieldName: "value"),
-            subspaceKey: "UnsignedScalarRecord_value",
-            itemTypes: [UnsignedScalarRecord.persistableType]
+            subspaceKey: "UnsignedScalarEntity_value",
+            itemTypes: [UnsignedScalarEntity.persistableType]
         )
         let indexSubspace = Subspace(
             prefix: Tuple("scalar-uint64-runtime").pack()
         )
-        let maintainer: any IndexMaintainer<UnsignedScalarRecord> = try ScalarIndexMaintainerProvider()
+        let maintainer: any IndexMaintainer<UnsignedScalarEntity> = try ScalarIndexMaintainerProvider()
             .makeIndexMaintainer(
                 index: index,
                 subspace: indexSubspace,
@@ -36,13 +36,13 @@ struct ScalarUInt64IndexRuntimeTests {
         var keys: [Bytes] = []
         keys.reserveCapacity(values.count)
         for (offset, value) in values.enumerated() {
-            let record = UnsignedScalarRecord(
-                id: "record-\(offset)",
+            let entity = UnsignedScalarEntity(
+                id: "entity-\(offset)",
                 value: value
             )
             let computed = try await maintainer.computeIndexKeys(
-                for: record,
-                id: Tuple(record.id)
+                for: entity,
+                id: Tuple(entity.id)
             )
             #expect(computed.count == 1)
             let key = try #require(computed.first)
@@ -61,13 +61,13 @@ struct ScalarUInt64IndexRuntimeTests {
     }
 }
 
-private struct UnsignedScalarRecord: Persistable {
+private struct UnsignedScalarEntity: Persistable {
     typealias ID = String
 
     let id: String
     let value: UInt64
 
-    static var persistableType: String { "UnsignedScalarRecord" }
+    static var persistableType: String { "UnsignedScalarEntity" }
     static var allFields: [String] { ["id", "value"] }
     static var indexDescriptors: [IndexDescriptor] { [] }
 
@@ -83,27 +83,27 @@ private struct UnsignedScalarRecord: Persistable {
     }
 
     static func fieldName<Value>(
-        for keyPath: KeyPath<UnsignedScalarRecord, Value>
+        for keyPath: KeyPath<UnsignedScalarEntity, Value>
     ) -> String {
         switch keyPath {
-        case \UnsignedScalarRecord.id: "id"
-        case \UnsignedScalarRecord.value: "value"
+        case \UnsignedScalarEntity.id: "id"
+        case \UnsignedScalarEntity.value: "value"
         default: "\(keyPath)"
         }
     }
 
     static func fieldName(
-        for keyPath: PartialKeyPath<UnsignedScalarRecord>
+        for keyPath: PartialKeyPath<UnsignedScalarEntity>
     ) -> String {
         switch keyPath {
-        case \UnsignedScalarRecord.id: "id"
-        case \UnsignedScalarRecord.value: "value"
+        case \UnsignedScalarEntity.id: "id"
+        case \UnsignedScalarEntity.value: "value"
         default: "\(keyPath)"
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<UnsignedScalarRecord> else {
+        guard let keyPath = keyPath as? PartialKeyPath<UnsignedScalarEntity> else {
             return "\(keyPath)"
         }
         return fieldName(for: keyPath)

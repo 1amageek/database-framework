@@ -100,24 +100,24 @@ struct CachePolicyTests {
 
     @Test("Query.cachePolicy defaults to .server")
     func queryDefaultCachePolicy() {
-        let query = Query<CachePolicyRecord>()
+        let query = Query<CachePolicyEntity>()
         #expect(query.cachePolicy == .server)
     }
 
     @Test("Query.cachePolicy() fluent method sets policy")
     func queryCachePolicyFluent() {
-        let query = Query<CachePolicyRecord>()
+        let query = Query<CachePolicyEntity>()
             .cachePolicy(.server)
         #expect(query.cachePolicy == .server)
 
-        let query2 = Query<CachePolicyRecord>()
+        let query2 = Query<CachePolicyEntity>()
             .cachePolicy(.stale(60))
         #expect(query2.cachePolicy == .stale(60))
     }
 
     @Test("Query.cachePolicy() can be chained with other methods")
     func queryCachePolicyChaining() {
-        let query = Query<CachePolicyRecord>()
+        let query = Query<CachePolicyEntity>()
             .cachePolicy(.server)
             .limit(10)
             .offset(5)
@@ -134,14 +134,14 @@ struct CachePolicyTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema(
-            [CachePolicyRecord.self],
+            [CachePolicyEntity.self],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Create executor with cache policy
-        let executor = context.fetch(CachePolicyRecord.self)
+        let executor = context.fetch(CachePolicyEntity.self)
             .cachePolicy(.server)
 
         // Verify the underlying query has the cache policy set
@@ -154,14 +154,14 @@ struct CachePolicyTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
         let schema = Schema(
-            [CachePolicyRecord.self],
+            [CachePolicyEntity.self],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
         let context = container.newContext()
 
         // Chain cache policy with other query methods
-        let executor = context.fetch(CachePolicyRecord.self)
+        let executor = context.fetch(CachePolicyEntity.self)
             .where(\.value > 10)
             .cachePolicy(.stale(30))
             .orderBy(\.value)
@@ -179,7 +179,7 @@ struct CachePolicyTests {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyRecord.self],
+                [CachePolicyEntity.self],
                 version: Schema.Version(1, 0, 0)
             )
             let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
@@ -187,12 +187,12 @@ struct CachePolicyTests {
 
             // Insert test data
             let testId = "cache-test-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyRecord(id: testId, value: 42)
+            let model = CachePolicyEntity(id: testId, value: 42)
             try context.insert(model)
             try await context.save()
 
             // First fetch with .cached - should populate cache
-            _ = try await context.fetch(CachePolicyRecord.self)
+            _ = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.cached)
                 .execute()
 
@@ -201,7 +201,7 @@ struct CachePolicyTests {
             #expect(cacheInfo1 != nil)
 
             // Second fetch with .cached - should use cached version
-            _ = try await context.fetch(CachePolicyRecord.self)
+            _ = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.cached)
                 .execute()
 
@@ -217,7 +217,7 @@ struct CachePolicyTests {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyRecord.self],
+                [CachePolicyEntity.self],
                 version: Schema.Version(1, 0, 0)
             )
             let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
@@ -225,12 +225,12 @@ struct CachePolicyTests {
 
             // Insert test data
             let testId = "server-test-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyRecord(id: testId, value: 100)
+            let model = CachePolicyEntity(id: testId, value: 100)
             try context.insert(model)
             try await context.save()
 
             // First fetch with .server
-            let results = try await context.fetch(CachePolicyRecord.self)
+            let results = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.server)
                 .where(\.id == testId)
                 .execute()
@@ -250,7 +250,7 @@ struct CachePolicyTests {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyRecord.self],
+                [CachePolicyEntity.self],
                 version: Schema.Version(1, 0, 0)
             )
             let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
@@ -258,12 +258,12 @@ struct CachePolicyTests {
 
             // Insert test data
             let testId = "count-test-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyRecord(id: testId, value: 200)
+            let model = CachePolicyEntity(id: testId, value: 200)
             try context.insert(model)
             try await context.save()
 
             // Count with .cached policy
-            let count = try await context.fetch(CachePolicyRecord.self)
+            let count = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.cached)
                 .where(\.id == testId)
                 .count()
@@ -275,7 +275,7 @@ struct CachePolicyTests {
     @Test("default cachePolicy is .server for new queries")
     func defaultCachePolicyIsServer() {
         // Query default
-        let query = Query<CachePolicyRecord>()
+        let query = Query<CachePolicyEntity>()
         #expect(query.cachePolicy == .server)
     }
 
@@ -285,7 +285,7 @@ struct CachePolicyTests {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyRecord.self],
+                [CachePolicyEntity.self],
                 version: Schema.Version(1, 0, 0)
             )
             let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
@@ -293,26 +293,26 @@ struct CachePolicyTests {
 
             // Insert test data
             let testId = "all-policies-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyRecord(id: testId, value: 300)
+            let model = CachePolicyEntity(id: testId, value: 300)
             try context.insert(model)
             try await context.save()
 
             // Test .server
-            let serverResults = try await context.fetch(CachePolicyRecord.self)
+            let serverResults = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.server)
                 .where(\.id == testId)
                 .execute()
             #expect(serverResults.count == 1)
 
             // Test .cached
-            let cachedResults = try await context.fetch(CachePolicyRecord.self)
+            let cachedResults = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.cached)
                 .where(\.id == testId)
                 .execute()
             #expect(cachedResults.count == 1)
 
             // Test .stale(60)
-            let staleResults = try await context.fetch(CachePolicyRecord.self)
+            let staleResults = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.stale(60))
                 .where(\.id == testId)
                 .execute()
@@ -328,7 +328,7 @@ struct CachePolicyTests {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyRecord.self],
+                [CachePolicyEntity.self],
                 version: Schema.Version(1, 0, 0)
             )
             let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
@@ -336,12 +336,12 @@ struct CachePolicyTests {
 
             // Insert test data
             let testId = "model-default-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyRecord(id: testId, value: 500)
+            let model = CachePolicyEntity(id: testId, value: 500)
             try context.insert(model)
             try await context.save()
 
             // model(for:as:) with default should work
-            let result = try await context.model(for: testId, as: CachePolicyRecord.self)
+            let result = try await context.model(for: testId, as: CachePolicyEntity.self)
             #expect(result != nil)
             #expect(result?.value == 500)
         }
@@ -353,7 +353,7 @@ struct CachePolicyTests {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyRecord.self],
+                [CachePolicyEntity.self],
                 version: Schema.Version(1, 0, 0)
             )
             let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
@@ -361,14 +361,14 @@ struct CachePolicyTests {
 
             // Insert test data
             let testId = "model-cached-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyRecord(id: testId, value: 600)
+            let model = CachePolicyEntity(id: testId, value: 600)
             try context.insert(model)
             try await context.save()
 
             // First fetch with .cached
             let result1 = try await context.model(
                 for: testId,
-                as: CachePolicyRecord.self,
+                as: CachePolicyEntity.self,
                 cachePolicy: .cached
             )
             #expect(result1 != nil)
@@ -380,7 +380,7 @@ struct CachePolicyTests {
             // Second fetch with .cached should use cached version
             let result2 = try await context.model(
                 for: testId,
-                as: CachePolicyRecord.self,
+                as: CachePolicyEntity.self,
                 cachePolicy: .cached
             )
             #expect(result2 != nil)
@@ -394,7 +394,7 @@ struct CachePolicyTests {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyRecord.self],
+                [CachePolicyEntity.self],
                 version: Schema.Version(1, 0, 0)
             )
             let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
@@ -402,14 +402,14 @@ struct CachePolicyTests {
 
             // Insert test data
             let testId = "model-stale-\(UUID().uuidString.prefix(8))"
-            let model = CachePolicyRecord(id: testId, value: 700)
+            let model = CachePolicyEntity(id: testId, value: 700)
             try context.insert(model)
             try await context.save()
 
             // Fetch with .stale(60) - should work within 60 second window
             let result = try await context.model(
                 for: testId,
-                as: CachePolicyRecord.self,
+                as: CachePolicyEntity.self,
                 cachePolicy: .stale(60)
             )
             #expect(result != nil)
@@ -423,19 +423,19 @@ struct CachePolicyTests {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             let schema = Schema(
-                [CachePolicyRecord.self],
+                [CachePolicyEntity.self],
                 version: Schema.Version(1, 0, 0)
             )
             let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
             let context = container.newContext()
 
             // Try to fetch non-existent ID with various cache policies
-            let result1 = try await context.model(for: "non-existent-id", as: CachePolicyRecord.self)
+            let result1 = try await context.model(for: "non-existent-id", as: CachePolicyEntity.self)
             #expect(result1 == nil)
 
             let result2 = try await context.model(
                 for: "non-existent-id",
-                as: CachePolicyRecord.self,
+                as: CachePolicyEntity.self,
                 cachePolicy: .cached
             )
             #expect(result2 == nil)
@@ -445,8 +445,8 @@ struct CachePolicyTests {
     // MARK: - Test Model
 
     @Persistable
-    struct CachePolicyRecord {
-        #Directory<CachePolicyRecord>("test", "cachepolicy")
+    struct CachePolicyEntity {
+        #Directory<CachePolicyEntity>("test", "cachepolicy")
 
         var id: String = ULID().ulidString
         var value: Int = 0
@@ -456,7 +456,7 @@ struct CachePolicyTests {
             self.value = value
         }
 
-        #Index(ScalarIndexKind<CachePolicyRecord>(fields: [\.value]))
+        #Index(ScalarIndexKind<CachePolicyEntity>(fields: [\.value]))
     }
 }
 #endif

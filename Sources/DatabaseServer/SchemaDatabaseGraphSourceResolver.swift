@@ -165,7 +165,7 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
             return
         case .defaultGraph:
             switch coverage {
-            case .defaultGraph, .recordField:
+            case .defaultGraph, .entityField:
                 return
             case .fixed:
                 throw DatabaseGraphAlgorithmError
@@ -173,7 +173,7 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
             }
         case .named(let requestedGraph):
             switch coverage {
-            case .recordField:
+            case .entityField:
                 return
             case .fixed(let fixedGraph) where fixedGraph == requestedGraph:
                 return

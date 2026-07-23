@@ -42,13 +42,13 @@ struct DatabaseMutationStateStoreTests {
     @Test("An empty response round-trips without a chunk")
     func roundTripsEmptyResponse() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "empty")
-        let record = makeRecord(responsePayload: [])
+        let entity = makeEntity(responsePayload: [])
 
-        try await store(record, in: storeContext)
+        try await store(entity, in: storeContext)
 
         let stored = try await load(from: storeContext)
         let loaded = try #require(stored)
-        #expect(loaded == record)
+        #expect(loaded == entity)
         #expect(try await storedChunks(in: storeContext).isEmpty)
     }
 
@@ -56,16 +56,16 @@ struct DatabaseMutationStateStoreTests {
     func roundTripsResponseLargerThanFDBValue() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "fdb-value-limit")
         let payload = makePayload(count: 100_001)
-        let record = makeRecord(responsePayload: payload)
+        let entity = makeEntity(responsePayload: payload)
 
-        try await store(record, in: storeContext)
+        try await store(entity, in: storeContext)
 
         let chunks = try await storedChunks(in: storeContext)
         try #require(chunks.count == 2)
         #expect(chunks[0].1.count == 90_000)
         #expect(chunks[1].1.count == 10_001)
         #expect(chunks.allSatisfy { $0.1.count <= 90_000 })
-        #expect(try await load(from: storeContext) == record)
+        #expect(try await load(from: storeContext) == entity)
     }
 
     @Test("Chunk writes retain borrowed response slices without materializing them")
@@ -74,12 +74,12 @@ struct DatabaseMutationStateStoreTests {
         let owner = BorrowCountingDatabaseByteOwner(
             Array(repeating: 0xA5, count: 100_001)
         )
-        let record = makeRecord(
+        let entity = makeEntity(
             responsePayload: DatabaseBytes(retaining: owner)
         )
         let borrowCountBeforeStore = owner.borrowCount
 
-        try await store(record, in: storeContext)
+        try await store(entity, in: storeContext)
 
         #expect(owner.borrowCount == borrowCountBeforeStore)
         _ = try await load(from: storeContext)
@@ -92,9 +92,9 @@ struct DatabaseMutationStateStoreTests {
         let payload = makePayload(
             count: DatabaseWireLimits.default.maximumFrameBytes
         )
-        let record = makeRecord(responsePayload: payload)
+        let entity = makeEntity(responsePayload: payload)
 
-        try await store(record, in: storeContext)
+        try await store(entity, in: storeContext)
 
         let stored = try await load(from: storeContext)
         let loaded = try #require(stored)
@@ -111,11 +111,11 @@ struct DatabaseMutationStateStoreTests {
     func replacementRemovesOrphanedChunks() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "replacement-cleanup")
         try await store(
-            makeRecord(responsePayload: makePayload(count: 180_001)),
+            makeEntity(responsePayload: makePayload(count: 180_001)),
             in: storeContext
         )
         #expect(try await storedChunks(in: storeContext).count == 3)
-        let replacement = makeRecord(responsePayload: [])
+        let replacement = makeEntity(responsePayload: [])
 
         try await store(replacement, in: storeContext)
 
@@ -126,8 +126,8 @@ struct DatabaseMutationStateStoreTests {
     @Test("A metadata-only non-empty response is rejected as corrupted")
     func rejectsMetadataWithoutRequiredChunks() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "metadata-only")
-        let record = makeRecord(responsePayload: makePayload(count: 1))
-        let metadata = try record.manifest(limits: .default).encode(
+        let entity = makeEntity(responsePayload: makePayload(count: 1))
+        let metadata = try entity.manifest(limits: .default).encode(
             limits: .default
         )
         try await storeContext.container.engine.withTransaction { transaction in
@@ -140,7 +140,7 @@ struct DatabaseMutationStateStoreTests {
         await expectCorruption(storeContext)
     }
 
-    @Test("A chunk-only idempotency record is rejected as corrupted")
+    @Test("A chunk-only idempotency entry is rejected as corrupted")
     func rejectsChunkWithoutMetadata() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "chunk-only")
         try await storeContext.container.engine.withTransaction { transaction in
@@ -157,7 +157,7 @@ struct DatabaseMutationStateStoreTests {
     func rejectsMissingChunk() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "missing-chunk")
         try await store(
-            makeRecord(responsePayload: makePayload(count: 100_001)),
+            makeEntity(responsePayload: makePayload(count: 100_001)),
             in: storeContext
         )
         try await storeContext.container.engine.withTransaction { transaction in
@@ -171,7 +171,7 @@ struct DatabaseMutationStateStoreTests {
     func rejectsExtraChunk() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "extra-chunk")
         try await store(
-            makeRecord(responsePayload: makePayload(count: 100_001)),
+            makeEntity(responsePayload: makePayload(count: 100_001)),
             in: storeContext
         )
         try await storeContext.container.engine.withTransaction { transaction in
@@ -188,7 +188,7 @@ struct DatabaseMutationStateStoreTests {
     func rejectsTruncatedChunk() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "truncated-chunk")
         try await store(
-            makeRecord(responsePayload: makePayload(count: 100_001)),
+            makeEntity(responsePayload: makePayload(count: 100_001)),
             in: storeContext
         )
         try await storeContext.container.engine.withTransaction { transaction in
@@ -205,7 +205,7 @@ struct DatabaseMutationStateStoreTests {
     func rejectsNonCanonicalChunkIndex() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "chunk-order")
         try await store(
-            makeRecord(responsePayload: makePayload(count: 1)),
+            makeEntity(responsePayload: makePayload(count: 1)),
             in: storeContext
         )
         try await storeContext.container.engine.withTransaction { transaction in
@@ -223,7 +223,7 @@ struct DatabaseMutationStateStoreTests {
     func rejectsResponseDigestMismatch() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "response-digest")
         try await store(
-            makeRecord(responsePayload: makePayload(count: 100_001)),
+            makeEntity(responsePayload: makePayload(count: 100_001)),
             in: storeContext
         )
         try await storeContext.container.engine.withTransaction { transaction in
@@ -254,10 +254,10 @@ struct DatabaseMutationStateStoreTests {
     @Test("Metadata with a non-canonical chunk size is rejected")
     func rejectsInvalidChunkSize() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "chunk-size")
-        let record = makeRecord(responsePayload: [])
+        let entity = makeEntity(responsePayload: [])
         let metadata = try encodeUncheckedManifest(
-            requestDigest: record.requestDigest,
-            responseDigest: record.responseDigest,
+            requestDigest: entity.requestDigest,
+            responseDigest: entity.responseDigest,
             totalResponseBytes: 0,
             chunkByteCount: 100_000,
             chunkCount: 0
@@ -270,10 +270,10 @@ struct DatabaseMutationStateStoreTests {
     @Test("Metadata with a chunk count inconsistent with its total is rejected")
     func rejectsInvalidChunkCount() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "chunk-count")
-        let record = makeRecord(responsePayload: makePayload(count: 1))
+        let entity = makeEntity(responsePayload: makePayload(count: 1))
         let metadata = try encodeUncheckedManifest(
-            requestDigest: record.requestDigest,
-            responseDigest: record.responseDigest,
+            requestDigest: entity.requestDigest,
+            responseDigest: entity.responseDigest,
             totalResponseBytes: 1,
             chunkByteCount: 90_000,
             chunkCount: 2
@@ -287,10 +287,10 @@ struct DatabaseMutationStateStoreTests {
     func rejectsChunkCountAboveConfiguredLimit() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "collection-count")
         let payload = makePayload(count: 100_001)
-        let record = makeRecord(responsePayload: payload)
+        let entity = makeEntity(responsePayload: payload)
         let metadata = try encodeUncheckedManifest(
-            requestDigest: record.requestDigest,
-            responseDigest: record.responseDigest,
+            requestDigest: entity.requestDigest,
+            responseDigest: entity.responseDigest,
             totalResponseBytes: 100_001,
             chunkByteCount: 90_000,
             chunkCount: 2
@@ -311,7 +311,7 @@ struct DatabaseMutationStateStoreTests {
     @Test("Metadata exceeding the wire frame size is rejected before allocation")
     func rejectsInvalidTotalResponseBytes() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "response-total")
-        let record = makeRecord(responsePayload: [])
+        let entity = makeEntity(responsePayload: [])
         let oversizedTotal = UInt64(
             DatabaseWireLimits.default.maximumFrameBytes
         ) + 1
@@ -321,8 +321,8 @@ struct DatabaseMutationStateStoreTests {
             )
         )
         let metadata = try encodeUncheckedManifest(
-            requestDigest: record.requestDigest,
-            responseDigest: record.responseDigest,
+            requestDigest: entity.requestDigest,
+            responseDigest: entity.responseDigest,
             totalResponseBytes: oversizedTotal,
             chunkByteCount: 90_000,
             chunkCount: chunkCount
@@ -337,7 +337,7 @@ struct DatabaseMutationStateStoreTests {
     ) async throws -> MutationStateStoreContext {
         let container = try await DBContainer.open(
             for: Schema(
-                [DatabaseEndpointRecord.self],
+                [DatabaseEndpointEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
@@ -358,7 +358,7 @@ struct DatabaseMutationStateStoreTests {
             container: container,
             stateStore: stateStore,
             key: key,
-            record: root.subspace("idempotency").subspace(key)
+            entity: root.subspace("idempotency").subspace(key)
         )
     }
 
@@ -370,11 +370,11 @@ struct DatabaseMutationStateStoreTests {
         }
     }
 
-    private func makeRecord(
+    private func makeEntity(
         responsePayload: DatabaseBytes
-    ) -> DatabaseIdempotencyRecord {
+    ) -> DatabaseIdempotencyEntry {
         let requestPayload: DatabaseBytes = [0xA5]
-        return DatabaseIdempotencyRecord(
+        return DatabaseIdempotencyEntry(
             operation: .mutationExecute,
             requestDigest: DatabaseRequestDigest.compute(
                 operation: .mutationExecute,
@@ -389,12 +389,12 @@ struct DatabaseMutationStateStoreTests {
     }
 
     private func store(
-        _ record: DatabaseIdempotencyRecord,
+        _ entity: DatabaseIdempotencyEntry,
         in storeContext: MutationStateStoreContext
     ) async throws {
         try await storeContext.container.engine.withTransaction { transaction in
             try storeContext.stateStore.store(
-                record,
+                entity,
                 for: storeContext.key,
                 transaction: transaction,
                 limits: .default
@@ -405,11 +405,11 @@ struct DatabaseMutationStateStoreTests {
     private func load(
         from storeContext: MutationStateStoreContext,
         limits: DatabaseWireLimits = .default
-    ) async throws -> DatabaseIdempotencyRecord? {
+    ) async throws -> DatabaseIdempotencyEntry? {
         try await storeContext.container.engine.withTransaction(
             configuration: .readOnly
         ) { transaction in
-            try await storeContext.stateStore.idempotencyRecord(
+            try await storeContext.stateStore.idempotencyEntry(
                 for: storeContext.key,
                 transaction: transaction,
                 limits: limits
@@ -469,11 +469,11 @@ struct DatabaseMutationStateStoreTests {
     ) async {
         do {
             _ = try await load(from: storeContext, limits: limits)
-            Issue.record("Expected the idempotency record to be corrupted")
-        } catch DatabaseMutationError.idempotencyRecordCorrupted {
+            Issue.record("Expected the idempotency entry to be corrupted")
+        } catch DatabaseMutationError.idempotencyEntryCorrupted {
             return
         } catch {
-            Issue.record("Expected idempotencyRecordCorrupted, got \(error)")
+            Issue.record("Expected idempotencyEntryCorrupted, got \(error)")
         }
     }
 
@@ -481,14 +481,14 @@ struct DatabaseMutationStateStoreTests {
         let container: DBContainer
         let stateStore: DatabaseMutationStateStore
         let key: String
-        let record: Subspace
+        let entity: Subspace
 
         var metadataKey: Bytes {
-            record.pack(Tuple("metadata"))
+            entity.pack(Tuple("metadata"))
         }
 
         var chunks: Subspace {
-            record.subspace("chunks")
+            entity.subspace("chunks")
         }
 
         func chunkKey(index: UInt32) -> Bytes {

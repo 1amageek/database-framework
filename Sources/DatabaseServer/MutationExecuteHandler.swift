@@ -44,15 +44,15 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
         try runtimeLimits.validate(request.budget)
         let requestPayload = context.requestPayload
 
-        let recordExecutor = DatabaseRecordMutationExecutor(
+        let entityMutationExecutor = DatabaseEntityMutationExecutor(
             container: context.container,
             runtimeLimits: runtimeLimits
         )
         switch request.input {
-        case .records(let changes):
+        case .entities(let changes):
             guard request.graphPartitions.isEmpty else {
                 throw DatabaseMutationError.invalidGraphPartitions(
-                    "record mutations do not consume graph partitions"
+                    "entity mutations do not consume graph partitions"
                 )
             }
             return try await coordinator.executeStaged(
@@ -62,19 +62,19 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
                 timeoutMilliseconds: request.budget.timeoutMilliseconds,
                 prepare: {
                     let workMeter = DatabaseWorkMeter(budget: request.budget)
-                    let preparedChanges = try recordExecutor.prepare(
+                    let preparedChanges = try entityMutationExecutor.prepare(
                         changes,
                         preconditions: request.preconditions,
                         workMeter: workMeter
                     )
-                    return PreparedRecordMutation(
+                    return PreparedEntityMutation(
                         changes: preparedChanges,
                         workMeter: workMeter
                     )
                 },
                 body: { prepared, transactionContext in
-                    MutationExecuteOperation.Result.records(
-                        try await recordExecutor.execute(
+                    MutationExecuteOperation.Result.entities(
+                        try await entityMutationExecutor.execute(
                             prepared.changes,
                             preconditions: request.preconditions,
                             workMeter: prepared.workMeter,
@@ -137,7 +137,7 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
     }
 }
 
-private struct PreparedRecordMutation: Sendable {
-    let changes: [DatabaseRecordMutationExecutor.PreparedChange]
+private struct PreparedEntityMutation: Sendable {
+    let changes: [DatabaseEntityMutationExecutor.PreparedChange]
     let workMeter: DatabaseWorkMeter
 }

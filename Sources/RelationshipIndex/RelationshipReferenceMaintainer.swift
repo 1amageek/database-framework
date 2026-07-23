@@ -161,7 +161,7 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
         context: borrowing PersistableValidationContext
     ) async throws {
         let resolver = RelationshipReferenceResolver(schema: context.schema)
-        var validated = Set<RecordIdentity>()
+        var validated = Set<PersistableIdentity>()
 
         for model in models {
             for descriptor in type(of: model).relationshipDescriptors {
@@ -170,7 +170,7 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
                     descriptor: descriptor
                 ) where validated.insert(target).inserted {
                     guard try await context.fetch(target) != nil else {
-                        throw RelationshipReferenceError.targetRecordMissing(target)
+                        throw RelationshipReferenceError.targetEntityMissing(target)
                     }
                 }
             }

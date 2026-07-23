@@ -3,7 +3,7 @@ import Graph
 
 package enum RDFDatasetGraphScope: Sendable, Equatable {
     case defaultGraph
-    case recordField(String)
+    case entityField(String)
     case fixed(DatabaseRDFTerm)
 
     package var sourceCoverage: RDFDatasetSourceCoverage {
@@ -11,7 +11,7 @@ package enum RDFDatasetGraphScope: Sendable, Equatable {
             switch self {
             case .defaultGraph:
                 return .defaultGraph
-            case .recordField:
+            case .entityField:
                 return .dataset
             case .fixed(let graph):
                 return .namedGraph(try RDFGraphName(graph))
@@ -19,11 +19,11 @@ package enum RDFDatasetGraphScope: Sendable, Equatable {
         }
     }
 
-    package var recordGraphFieldName: String? {
+    package var entityGraphFieldName: String? {
         switch self {
         case .defaultGraph:
             return nil
-        case .recordField(let fieldName):
+        case .entityField(let fieldName):
             return fieldName
         case .fixed:
             return "graph"

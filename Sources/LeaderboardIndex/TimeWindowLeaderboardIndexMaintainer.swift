@@ -51,7 +51,7 @@ public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConver
 /// Key: [indexSubspace]["meta"]["start"][windowId]
 /// Value: Int64 (Unix timestamp)
 ///
-/// // Record's current window position (for updates)
+/// // Entity's current window position (for updates)
 /// Key: [indexSubspace]["pos"][primaryKey]
 /// Value: Tuple(windowId, score)
 /// ```
@@ -64,7 +64,7 @@ public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConver
 /// Windows are identified by `floor(timestamp / windowDuration)`.
 /// For daily windows, this gives sequential day numbers since epoch.
 public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
-    private struct PositionRecord {
+    private struct PositionEntry {
         let windowId: Int64
         let score: Int64
         let grouping: [any TupleElement]
@@ -174,7 +174,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             let newPKBytes = newPK.pack()
 
             if oldPKBytes == newPKBytes {
-                // Same record
+                // Same entity
                 if let newScore = newScore, let newGrouping = newGroup, let item = newItem {
                     try await updateEntry(
                         pk: oldPK,
@@ -379,7 +379,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         try await ensureWindowMetadata(windowId: windowId, transaction: transaction)
     }
 
-    private func decodePosition(_ bytes: Bytes, pk: Tuple) throws -> PositionRecord {
+    private func decodePosition(_ bytes: Bytes, pk: Tuple) throws -> PositionEntry {
         let posElements: [any TupleElement]
         do {
             posElements = try Tuple.unpack(from: bytes)
@@ -406,7 +406,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             grouping.append(posElements[index])
         }
 
-        return PositionRecord(windowId: windowId, score: score, grouping: grouping)
+        return PositionEntry(windowId: windowId, score: score, grouping: grouping)
     }
 
     private func corruptedPositionError(pk: Tuple) -> TimeWindowLeaderboardIndexError {
@@ -606,10 +606,10 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         return results
     }
 
-    /// Get rank of a specific record in current window
+    /// Get rank of a specific entity in current window
     ///
     /// - Parameters:
-    ///   - pk: Primary key of the record
+    ///   - pk: Primary key of the entity
     ///   - grouping: Optional grouping filter
     ///   - transaction: The transaction to use
     /// - Returns: Rank (1-based) or nil if not found
@@ -915,7 +915,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         case dense
     }
 
-    /// Get rank of a specific record using dense ranking
+    /// Get rank of a specific entity using dense ranking
     ///
     /// Dense ranking counts unique scores higher than the target.
     /// Ties receive the same rank, but the next rank is incremented by 1.
@@ -928,7 +928,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     /// - Score 70: Dense rank = 4
     ///
     /// - Parameters:
-    ///   - pk: Primary key of the record
+    ///   - pk: Primary key of the entity
     ///   - grouping: Optional grouping filter
     ///   - transaction: The transaction to use
     /// - Returns: Dense rank (1-based) or nil if not found
@@ -963,7 +963,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     /// Get rank using specified ranking strategy
     ///
     /// - Parameters:
-    ///   - pk: Primary key of the record
+    ///   - pk: Primary key of the entity
     ///   - strategy: Ranking strategy (competition or dense)
     ///   - grouping: Optional grouping filter
     ///   - transaction: The transaction to use

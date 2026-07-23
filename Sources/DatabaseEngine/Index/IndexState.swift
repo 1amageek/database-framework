@@ -32,14 +32,14 @@ public enum IndexState: UInt8, Sendable, CustomStringConvertible {
     /// Fully operational (can be queried)
     ///
     /// **Behavior**:
-    /// - Maintained on record save/delete
+    /// - Maintained on entity save/delete
     /// - Can be used in queries
     case readable = 0
 
     /// Not maintained (not usable)
     ///
     /// **Behavior**:
-    /// - Not maintained on record save/delete
+    /// - Not maintained on entity save/delete
     /// - Cannot be used in queries
     /// - Initial state when index is first defined
     case disabled = 1
@@ -47,12 +47,12 @@ public enum IndexState: UInt8, Sendable, CustomStringConvertible {
     /// Maintained but not queryable (under construction)
     ///
     /// **Behavior**:
-    /// - Maintained on record save/delete
+    /// - Maintained on entity save/delete
     /// - Cannot be used in queries
     /// - State during online index construction
     case writeOnly = 2
 
-    /// Whether index should be maintained on record changes
+    /// Whether index should be maintained on entity changes
     ///
     /// **Examples**:
     /// ```swift

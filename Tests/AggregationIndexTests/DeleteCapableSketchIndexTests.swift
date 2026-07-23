@@ -194,13 +194,13 @@ struct DeleteCapableSketchIndexTests {
         let maintainer = makeDistinctMaintainer(
             subspace: Subspace(prefix: Tuple("distinct-delete").pack())
         )
-        let signed = SketchIndexRecord(
+        let signed = SketchIndexEntity(
             id: "signed",
             group: "calendar",
             distinctValue: .int64(1),
             numericValue: 10
         )
-        let floating = SketchIndexRecord(
+        let floating = SketchIndexEntity(
             id: "floating",
             group: "calendar",
             distinctValue: .double(1),
@@ -261,14 +261,14 @@ struct DeleteCapableSketchIndexTests {
         let maintainer = makeDistinctMaintainer(
             subspace: Subspace(prefix: Tuple("distinct-update").pack())
         )
-        let old = SketchIndexRecord(
-            id: "record",
+        let old = SketchIndexEntity(
+            id: "entity",
             group: "old",
             distinctValue: .string("first"),
             numericValue: 10
         )
-        let updated = SketchIndexRecord(
-            id: "record",
+        let updated = SketchIndexEntity(
+            id: "entity",
             group: "new",
             distinctValue: .string("second"),
             numericValue: 10
@@ -310,8 +310,8 @@ struct DeleteCapableSketchIndexTests {
             subspace: Subspace(prefix: Tuple("distinct-precision").pack()),
             precision: 18
         )
-        let record = SketchIndexRecord(
-            id: "record",
+        let entity = SketchIndexEntity(
+            id: "entity",
             group: "calendar",
             distinctValue: .string("value"),
             numericValue: 10
@@ -321,7 +321,7 @@ struct DeleteCapableSketchIndexTests {
             try await engine.withTransaction { transaction in
                 try await maintainer.updateIndex(
                     oldItem: nil,
-                    newItem: record,
+                    newItem: entity,
                     transaction: transaction
                 )
             }
@@ -338,8 +338,8 @@ struct DeleteCapableSketchIndexTests {
         let summaryKey = subspace
             .subspace(Int64(1))
             .pack(Tuple("calendar"))
-        let record = SketchIndexRecord(
-            id: "record",
+        let entity = SketchIndexEntity(
+            id: "entity",
             group: "calendar",
             distinctValue: .string("value"),
             numericValue: 10
@@ -347,8 +347,8 @@ struct DeleteCapableSketchIndexTests {
 
         try await engine.withTransaction { transaction in
             try await maintainer.scanItem(
-                record,
-                id: Tuple(record.id),
+                entity,
+                id: Tuple(entity.id),
                 transaction: transaction
             )
             try transaction.setValue([0x00, 0x01], for: summaryKey)
@@ -370,8 +370,8 @@ struct DeleteCapableSketchIndexTests {
             prefix: Tuple("distinct-missing-summary").pack()
         )
         let maintainer = makeDistinctMaintainer(subspace: subspace)
-        let record = SketchIndexRecord(
-            id: "record",
+        let entity = SketchIndexEntity(
+            id: "entity",
             group: "calendar",
             distinctValue: .string("value"),
             numericValue: 10
@@ -382,8 +382,8 @@ struct DeleteCapableSketchIndexTests {
 
         try await engine.withTransaction { transaction in
             try await maintainer.scanItem(
-                record,
-                id: Tuple(record.id),
+                entity,
+                id: Tuple(entity.id),
                 transaction: transaction
             )
             try transaction.clear(key: summaryKey)
@@ -404,7 +404,7 @@ struct DeleteCapableSketchIndexTests {
             }
         }
 
-        let replacement = SketchIndexRecord(
+        let replacement = SketchIndexEntity(
             id: "replacement",
             group: "calendar",
             distinctValue: .string("replacement"),
@@ -439,19 +439,19 @@ struct DeleteCapableSketchIndexTests {
         let maintainer = makePercentileMaintainer(
             subspace: Subspace(prefix: Tuple("percentile-delete").pack())
         )
-        let first = SketchIndexRecord(
+        let first = SketchIndexEntity(
             id: "first",
             group: "calendar",
             distinctValue: .string("first"),
             numericValue: 10
         )
-        let duplicate = SketchIndexRecord(
+        let duplicate = SketchIndexEntity(
             id: "duplicate",
             group: "calendar",
             distinctValue: .string("duplicate"),
             numericValue: 10
         )
-        let high = SketchIndexRecord(
+        let high = SketchIndexEntity(
             id: "high",
             group: "calendar",
             distinctValue: .string("high"),
@@ -492,7 +492,7 @@ struct DeleteCapableSketchIndexTests {
         #expect(statistics?.count == 2)
         #expect(statistics?.min == 10)
 
-        let updated = SketchIndexRecord(
+        let updated = SketchIndexEntity(
             id: duplicate.id,
             group: duplicate.group,
             distinctValue: duplicate.distinctValue,
@@ -541,8 +541,8 @@ struct DeleteCapableSketchIndexTests {
             prefix: Tuple("percentile-missing-summary").pack()
         )
         let maintainer = makePercentileMaintainer(subspace: subspace)
-        let record = SketchIndexRecord(
-            id: "record",
+        let entity = SketchIndexEntity(
+            id: "entity",
             group: "calendar",
             distinctValue: .string("value"),
             numericValue: 10
@@ -553,8 +553,8 @@ struct DeleteCapableSketchIndexTests {
 
         try await engine.withTransaction { transaction in
             try await maintainer.scanItem(
-                record,
-                id: Tuple(record.id),
+                entity,
+                id: Tuple(entity.id),
                 transaction: transaction
             )
             try transaction.clear(key: summaryKey)
@@ -576,7 +576,7 @@ struct DeleteCapableSketchIndexTests {
             }
         }
 
-        let replacement = SketchIndexRecord(
+        let replacement = SketchIndexEntity(
             id: "replacement",
             group: "calendar",
             distinctValue: .string("replacement"),
@@ -645,7 +645,7 @@ struct DeleteCapableSketchIndexTests {
             }
         }
 
-        let invalid = SketchIndexRecord(
+        let invalid = SketchIndexEntity(
             id: "invalid",
             group: "calendar",
             distinctValue: .string("invalid"),
@@ -679,10 +679,10 @@ struct DeleteCapableSketchIndexTests {
 private func makeDistinctMaintainer(
     subspace: Subspace,
     precision: Int = 14
-) -> DistinctIndexMaintainer<SketchIndexRecord> {
+) -> DistinctIndexMaintainer<SketchIndexEntity> {
     let index = Index(
         name: "distinct",
-        kind: DistinctIndexKind<SketchIndexRecord>(
+        kind: DistinctIndexKind<SketchIndexEntity>(
             groupBy: [\.group],
             value: \.distinctValue,
             precision: precision
@@ -692,7 +692,7 @@ private func makeDistinctMaintainer(
             FieldKeyExpression(fieldName: "distinctValue"),
         ]),
         subspaceKey: "distinct",
-        itemTypes: [SketchIndexRecord.persistableType]
+        itemTypes: [SketchIndexEntity.persistableType]
     )
     return DistinctIndexMaintainer(
         index: index,
@@ -704,10 +704,10 @@ private func makeDistinctMaintainer(
 
 private func makePercentileMaintainer(
     subspace: Subspace
-) -> PercentileIndexMaintainer<SketchIndexRecord> {
+) -> PercentileIndexMaintainer<SketchIndexEntity> {
     let index = Index(
         name: "percentile",
-        kind: PercentileIndexKind<SketchIndexRecord, Double>(
+        kind: PercentileIndexKind<SketchIndexEntity, Double>(
             groupBy: [\.group],
             value: \.numericValue
         ),
@@ -716,7 +716,7 @@ private func makePercentileMaintainer(
             FieldKeyExpression(fieldName: "numericValue"),
         ]),
         subspaceKey: "percentile",
-        itemTypes: [SketchIndexRecord.persistableType]
+        itemTypes: [SketchIndexEntity.persistableType]
     )
     return PercentileIndexMaintainer(
         index: index,
@@ -727,7 +727,7 @@ private func makePercentileMaintainer(
 }
 
 private func distinctCount(
-    _ maintainer: DistinctIndexMaintainer<SketchIndexRecord>,
+    _ maintainer: DistinctIndexMaintainer<SketchIndexEntity>,
     group: String,
     engine: InMemoryEngine
 ) async throws -> (estimated: Int64, errorRate: Double) {
@@ -740,7 +740,7 @@ private func distinctCount(
 }
 
 private func percentileStatistics(
-    _ maintainer: PercentileIndexMaintainer<SketchIndexRecord>,
+    _ maintainer: PercentileIndexMaintainer<SketchIndexEntity>,
     group: String,
     engine: InMemoryEngine
 ) async throws -> (
@@ -757,7 +757,7 @@ private func percentileStatistics(
     }
 }
 
-private struct SketchIndexRecord: Persistable {
+private struct SketchIndexEntity: Persistable {
     typealias ID = String
 
     let id: String
@@ -765,7 +765,7 @@ private struct SketchIndexRecord: Persistable {
     let distinctValue: FieldValue
     let numericValue: Double
 
-    static let persistableType = "SketchIndexRecord"
+    static let persistableType = "SketchIndexEntity"
     static let allFields = [
         "id",
         "group",
@@ -788,25 +788,25 @@ private struct SketchIndexRecord: Persistable {
     }
 
     static func fieldName<Value>(
-        for keyPath: KeyPath<SketchIndexRecord, Value>
+        for keyPath: KeyPath<SketchIndexEntity, Value>
     ) -> String {
-        fieldName(for: keyPath as PartialKeyPath<SketchIndexRecord>)
+        fieldName(for: keyPath as PartialKeyPath<SketchIndexEntity>)
     }
 
     static func fieldName(
-        for keyPath: PartialKeyPath<SketchIndexRecord>
+        for keyPath: PartialKeyPath<SketchIndexEntity>
     ) -> String {
         switch keyPath {
-        case \SketchIndexRecord.id: "id"
-        case \SketchIndexRecord.group: "group"
-        case \SketchIndexRecord.distinctValue: "distinctValue"
-        case \SketchIndexRecord.numericValue: "numericValue"
+        case \SketchIndexEntity.id: "id"
+        case \SketchIndexEntity.group: "group"
+        case \SketchIndexEntity.distinctValue: "distinctValue"
+        case \SketchIndexEntity.numericValue: "numericValue"
         default: String(describing: keyPath)
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<SketchIndexRecord> else {
+        guard let keyPath = keyPath as? PartialKeyPath<SketchIndexEntity> else {
             return String(describing: keyPath)
         }
         return fieldName(for: keyPath)

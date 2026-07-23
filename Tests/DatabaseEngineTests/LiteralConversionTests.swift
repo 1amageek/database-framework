@@ -8,8 +8,8 @@ import Testing
 @Suite("Literal bridge contracts")
 struct LiteralConversionTests {
     @Persistable
-    struct Record {
-        #Directory<Record>("tests", "literal-bridge")
+    struct Entity {
+        #Directory<Entity>("tests", "literal-bridge")
 
         var id: String = ""
         var value: Int64 = 0
@@ -222,7 +222,7 @@ struct LiteralConversionTests {
         let expected = LiteralConversionError.fieldValueUnsupported(kind: .decimal)
 
         #expect(throws: expected) {
-            let _: Predicate<Record>? = try expression.toPredicate(for: Record.self)
+            let _: Predicate<Entity>? = try expression.toPredicate(for: Entity.self)
         }
         #expect(throws: expected) {
             _ = try PredicateExpr(expression)
@@ -235,8 +235,8 @@ struct LiteralConversionTests {
             .column(QueryIR.ColumnRef(column: "value")),
             .literal(.int(42))
         )
-        let predicate: Predicate<Record>? = try expression.toPredicate(
-            for: Record.self
+        let predicate: Predicate<Entity>? = try expression.toPredicate(
+            for: Entity.self
         )
         guard case .comparison(let comparison) = predicate else {
             Issue.record("Expected a field comparison")
@@ -244,8 +244,8 @@ struct LiteralConversionTests {
         }
 
         #expect(comparison.fieldName == "value")
-        #expect(comparison.evaluate(on: Record(value: 42)))
-        #expect(!comparison.evaluate(on: Record(value: 7)))
+        #expect(comparison.evaluate(on: Entity(value: 42)))
+        #expect(!comparison.evaluate(on: Entity(value: 7)))
         #expect(comparison.toExpression() == expression)
     }
 
@@ -255,8 +255,8 @@ struct LiteralConversionTests {
             .column(QueryIR.ColumnRef(column: "value")),
             values: [.literal(.int(1)), .literal(.int(2))]
         )
-        let predicate: Predicate<Record>? = try expression.toPredicate(
-            for: Record.self
+        let predicate: Predicate<Entity>? = try expression.toPredicate(
+            for: Entity.self
         )
         guard case .comparison(let comparison) = predicate else {
             Issue.record("Expected a field comparison")
@@ -264,8 +264,8 @@ struct LiteralConversionTests {
         }
 
         #expect(comparison.op == .notIn)
-        #expect(!comparison.evaluate(on: Record(value: 1)))
-        #expect(comparison.evaluate(on: Record(value: 3)))
+        #expect(!comparison.evaluate(on: Entity(value: 1)))
+        #expect(comparison.evaluate(on: Entity(value: 3)))
         #expect(comparison.toExpression() == expression)
     }
 
@@ -301,11 +301,11 @@ struct LiteralConversionTests {
     @Test("Empty logical groups retain their boolean identities")
     func emptyLogicalGroupsRetainBooleanIdentities() throws {
         #expect(
-            Predicate<Record>.and([]).toExpression()
+            Predicate<Entity>.and([]).toExpression()
                 == .literal(.bool(true))
         )
         #expect(
-            Predicate<Record>.or([]).toExpression()
+            Predicate<Entity>.or([]).toExpression()
                 == .literal(.bool(false))
         )
         #expect(

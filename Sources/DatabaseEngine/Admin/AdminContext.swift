@@ -351,7 +351,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     /// Update statistics for a specific type
     ///
     /// Implements PostgreSQL ANALYZE-style statistics collection:
-    /// 1. Sample records using reservoir sampling
+    /// 1. Sample entities using reservoir sampling
     /// 2. Build MCV (Most Common Values) list
     /// 3. Build histogram excluding MCV values
     /// 4. Estimate cardinality using HyperLogLog++
@@ -445,7 +445,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             planType: planType,
             selectedIndex: selectedIndex,
             estimatedCost: plan.estimatedCost.totalCost,
-            estimatedRows: Int64(plan.estimatedCost.recordFetches),
+            estimatedRows: Int64(plan.estimatedCost.entityFetches),
             indexConditions: extractIndexConditions(plan.rootOperator),
             filterConditions: extractFilterConditions(plan.rootOperator),
             sortRequired: plan.estimatedCost.requiresSort,

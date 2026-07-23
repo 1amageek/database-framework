@@ -182,13 +182,13 @@ struct DatabaseMaintenanceOperationServiceTests {
     @Test("Index status pages every registered dynamic partition")
     func indexStatusPagesDynamicPartitions() async throws {
         let maintenanceContext = try await makeMaintenanceServiceContext(engine: InMemoryEngine())
-        try await insertRecord(
+        try await insertEntity(
             id: "first",
             tenant: "tenant-a",
             value: "alpha",
             into: maintenanceContext.container
         )
-        try await insertRecord(
+        try await insertEntity(
             id: "second",
             tenant: "tenant-b",
             value: "beta",
@@ -250,13 +250,13 @@ struct DatabaseMaintenanceOperationServiceTests {
     @Test("Index status continuation is bound to its filters")
     func indexStatusContinuationRejectsDifferentFilters() async throws {
         let maintenanceContext = try await makeMaintenanceServiceContext(engine: InMemoryEngine())
-        try await insertRecord(
+        try await insertEntity(
             id: "first",
             tenant: "tenant-a",
             value: "alpha",
             into: maintenanceContext.container
         )
-        try await insertRecord(
+        try await insertEntity(
             id: "second",
             tenant: "tenant-b",
             value: "beta",
@@ -274,7 +274,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         let first = try await service.execute(
             MaintenanceExecuteOperation.Request(
                 invocation: .indexStatus(
-                    entity: CatalogPartitionedRecord.persistableType,
+                    entity: CatalogPartitionedEntity.persistableType,
                     index: nil,
                     partitions: []
                 ),
@@ -292,7 +292,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             try await service.execute(
                 MaintenanceExecuteOperation.Request(
                     invocation: .indexStatus(
-                        entity: CatalogPartitionedRecord.persistableType,
+                        entity: CatalogPartitionedEntity.persistableType,
                         index: "catalog_value",
                         partitions: []
                     ),
@@ -308,7 +308,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     func directIndexRebuildResumes() async throws {
         let engine = InMemoryEngine()
         let initialMaintenanceContext = try await makeMaintenanceServiceContext(engine: engine)
-        try await insertRecords(into: initialMaintenanceContext.container)
+        try await insertEntities(into: initialMaintenanceContext.container)
         let partitions = [try tenantPartition("tenant-a")]
         let identifiers = FixedIdentifierGenerator()
         let firstService = DatabaseMaintenanceOperationService(
@@ -337,7 +337,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             partitions: partitions
         )
         #expect(building.state == .building)
-        #expect(building.indexedRecordCount == 1)
+        #expect(building.indexedEntityCount == 1)
 
         let recreatedMaintenanceContext = try await makeMaintenanceServiceContext(engine: engine)
         let recreatedService = DatabaseMaintenanceOperationService(
@@ -369,14 +369,14 @@ struct DatabaseMaintenanceOperationServiceTests {
             partitions: partitions
         )
         #expect(completed.state == .ready)
-        #expect(completed.indexedRecordCount == 2)
+        #expect(completed.indexedEntityCount == 2)
     }
 
     @Test("Persistent maintenance job resumes the real index runtime")
     func persistentIndexRebuildJobResumes() async throws {
         let engine = InMemoryEngine()
         let maintenanceContext = try await makeMaintenanceServiceContext(engine: engine)
-        try await insertRecords(into: maintenanceContext.container)
+        try await insertEntities(into: maintenanceContext.container)
         let partitions = [try tenantPartition("tenant-a")]
         let nestedRequest = rebuildRequest(partitions: partitions)
         let nestedPayload = try DatabaseEnvelopeCodec.encode(nestedRequest)
@@ -468,7 +468,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             partitions: partitions
         )
         #expect(completed.state == .ready)
-        #expect(completed.indexedRecordCount == 2)
+        #expect(completed.indexedEntityCount == 2)
     }
 
     @Test("Direct compaction requires the persistent job boundary")
@@ -671,10 +671,10 @@ struct DatabaseMaintenanceOperationServiceTests {
         #expect(marker == nil)
     }
 
-    @Test("Cancelling a partial rebuild records a terminal failed index state")
+    @Test("Cancelling a partial rebuild entities a terminal failed index state")
     func cancellationMarksPartialRebuildFailed() async throws {
         let maintenanceContext = try await makeMaintenanceServiceContext(engine: InMemoryEngine())
-        try await insertRecords(into: maintenanceContext.container)
+        try await insertEntities(into: maintenanceContext.container)
         let partitions = [try tenantPartition("tenant-a")]
         let nestedPayload = try DatabaseEnvelopeCodec.encode(
             rebuildRequest(partitions: partitions)
@@ -745,7 +745,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             partitions: partitions
         )
         #expect(status.state == .failed)
-        #expect(status.indexedRecordCount == 1)
+        #expect(status.indexedEntityCount == 1)
         #expect(status.detail == "cancelled")
     }
 
@@ -755,7 +755,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     ) async throws -> MaintenanceServiceContext {
         let container = try await DBContainer.open(
             for: Schema(
-                [CatalogPartitionedRecord.self],
+                [CatalogPartitionedEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .init(backend: .custom(engine)),
@@ -820,13 +820,13 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
     }
 
-    private func insertRecords(into container: DBContainer) async throws {
+    private func insertEntities(into container: DBContainer) async throws {
         let context = container.newContext()
-        var first = CatalogPartitionedRecord()
+        var first = CatalogPartitionedEntity()
         first.id = "first"
         first.tenantID = "tenant-a"
         first.value = "alpha"
-        var second = CatalogPartitionedRecord()
+        var second = CatalogPartitionedEntity()
         second.id = "second"
         second.tenantID = "tenant-a"
         second.value = "beta"
@@ -835,18 +835,18 @@ struct DatabaseMaintenanceOperationServiceTests {
         try await context.save()
     }
 
-    private func insertRecord(
+    private func insertEntity(
         id: String,
         tenant: String,
         value: String,
         into container: DBContainer
     ) async throws {
         let context = container.newContext()
-        var record = CatalogPartitionedRecord()
-        record.id = id
-        record.tenantID = tenant
-        record.value = value
-        try context.insert(record)
+        var entity = CatalogPartitionedEntity()
+        entity.id = id
+        entity.tenantID = tenant
+        entity.value = value
+        try context.insert(entity)
         try await context.save()
     }
 
@@ -855,7 +855,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     ) -> MaintenanceExecuteOperation.Request {
         MaintenanceExecuteOperation.Request(
             invocation: .rebuildIndex(
-                entity: CatalogPartitionedRecord.persistableType,
+                entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
                 batchSize: 1
@@ -895,7 +895,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     private func tenantPartition(
         _ tenant: String
     ) throws -> DatabaseObjectField {
-        let schema = try #require(CatalogPartitionedRecord.fieldSchemas.first {
+        let schema = try #require(CatalogPartitionedEntity.fieldSchemas.first {
             $0.name == "tenantID"
         })
         let number = try #require(UInt32(exactly: schema.fieldNumber))
@@ -950,7 +950,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         let response = try await service.execute(
             MaintenanceExecuteOperation.Request(
                 invocation: .indexStatus(
-                    entity: CatalogPartitionedRecord.persistableType,
+                    entity: CatalogPartitionedEntity.persistableType,
                     index: "catalog_value",
                     partitions: partitions
                 ),
@@ -1014,21 +1014,21 @@ struct DatabaseMaintenanceOperationServiceTests {
 private enum MaintenanceSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
     static let models: [any Persistable.Type] = [
-        CatalogPartitionedRecord.self,
+        CatalogPartitionedEntity.self,
     ]
 }
 
 private enum MaintenanceSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
     static let models: [any Persistable.Type] = [
-        CatalogPartitionedRecord.self,
+        CatalogPartitionedEntity.self,
     ]
 }
 
 private enum MaintenanceSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
     static let models: [any Persistable.Type] = [
-        CatalogPartitionedRecord.self,
+        CatalogPartitionedEntity.self,
     ]
 }
 

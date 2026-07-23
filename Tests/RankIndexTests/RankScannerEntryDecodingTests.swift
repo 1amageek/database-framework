@@ -7,7 +7,7 @@ struct RankScannerEntryDecodingTests {
     @Test("Valid entries preserve composite primary keys")
     func decodesCompositePrimaryKey() throws {
         let subspace = Subspace(prefix: Tuple("rank", "scores").pack())
-        let key = subspace.pack(Tuple(Int64(10), "tenant", "record"))
+        let key = subspace.pack(Tuple(Int64(10), "tenant", "entity"))
 
         let entry = try RankScanner.decodeEntry(
             key: key,
@@ -15,7 +15,7 @@ struct RankScannerEntryDecodingTests {
         )
 
         #expect(entry.scoreElement as? Int64 == 10)
-        #expect(entry.primaryKey == Tuple("tenant", "record"))
+        #expect(entry.primaryKey == Tuple("tenant", "entity"))
     }
 
     @Test("Entries without a primary key fail explicitly")
@@ -32,7 +32,7 @@ struct RankScannerEntryDecodingTests {
     func rejectsOutsideKey() {
         let subspace = Subspace(prefix: Tuple("rank", "scores").pack())
         let outside = Subspace(prefix: Tuple("other").pack())
-            .pack(Tuple(Int64(10), "record"))
+            .pack(Tuple(Int64(10), "entity"))
 
         #expect(throws: RankScannerError.keyOutsideScoresSubspace) {
             try RankScanner.decodeEntry(key: outside, scoresSubspace: subspace)

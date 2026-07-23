@@ -237,7 +237,7 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
     case cyclicMigrationPath(from: Schema.Version, to: Schema.Version)
 
     /// Rows exist even though no committed schema version owns them.
-    case unversionedStoreContainsRecords(entity: String)
+    case unversionedStoreContainsEntities(entity: String)
 
     /// The requested target differs from the schema compiled into this runtime.
     case targetVersionDoesNotMatchCompiledSchema(
@@ -295,8 +295,8 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
         case .cyclicMigrationPath(let from, let to):
             return "Cyclic migration path detected from \(from) to \(to)"
 
-        case .unversionedStoreContainsRecords(let entity):
-            return "Entity '\(entity)' contains records but the database has no committed schema version"
+        case .unversionedStoreContainsEntities(let entity):
+            return "Entity '\(entity)' contains entities but the database has no committed schema version"
 
         case .targetVersionDoesNotMatchCompiledSchema(
             let requested,

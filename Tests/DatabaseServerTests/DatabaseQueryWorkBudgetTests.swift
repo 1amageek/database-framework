@@ -18,7 +18,7 @@ struct DatabaseQueryWorkBudgetTests {
                 ProjectionItem(.column(ColumnRef("id"))),
                 ProjectionItem(.column(ColumnRef("title"))),
             ]),
-            source: .table(TableRef(DatabaseEndpointRecord.persistableType))
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
         )
         let request = QueryExecuteOperation.Request(
             input: .ir(.select(query)),
@@ -65,7 +65,7 @@ struct DatabaseQueryWorkBudgetTests {
             projection: .items([
                 ProjectionItem(.parameter(.position(1)), alias: "value"),
             ]),
-            source: .table(TableRef(DatabaseEndpointRecord.persistableType))
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
         )
         let request = QueryExecuteOperation.Request(
             input: .ir(.select(query)),
@@ -110,7 +110,7 @@ struct DatabaseQueryWorkBudgetTests {
         let request = QueryExecuteOperation.Request(
             input: .text(
                 language: .sql,
-                statement: "SELECT id, title FROM DatabaseEndpointRecord"
+                statement: "SELECT id, title FROM DatabaseEndpointEntity"
             ),
             page: QueryExecuteOperation.Page(limit: 1)
         )
@@ -282,7 +282,7 @@ struct DatabaseQueryWorkBudgetTests {
     private func makeContainer() async throws -> DBContainer {
         let container = try await DBContainer.open(
             for: Schema(
-                [DatabaseEndpointRecord.self],
+                [DatabaseEndpointEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(
@@ -293,11 +293,11 @@ struct DatabaseQueryWorkBudgetTests {
         )
         let context = container.newContext()
         for index in 0..<3 {
-            var record = DatabaseEndpointRecord()
-            record.id = "record-\(index)"
-            record.title = "Title \(index)"
-            record.priority = index
-            try context.insert(record)
+            var entity = DatabaseEndpointEntity()
+            entity.id = "entity-\(index)"
+            entity.title = "Title \(index)"
+            entity.priority = index
+            try context.insert(entity)
         }
         try await context.save()
         return container
@@ -315,7 +315,7 @@ struct DatabaseQueryWorkBudgetTests {
                         projection: .all,
                         source: .table(
                             TableRef(
-                                DatabaseEndpointRecord.persistableType
+                                DatabaseEndpointEntity.persistableType
                             )
                         )
                     )

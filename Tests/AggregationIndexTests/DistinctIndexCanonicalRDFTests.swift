@@ -13,7 +13,7 @@ struct DistinctIndexCanonicalRDFTests {
         let subspace = Subspace(prefix: Tuple("distinct-rdf").pack())
         let index = Index(
             name: "rdf_distinct",
-            kind: DistinctIndexKind<RDFDistinctRecord>(
+            kind: DistinctIndexKind<RDFDistinctEntity>(
                 groupBy: [\.group],
                 value: \.value
             ),
@@ -22,16 +22,16 @@ struct DistinctIndexCanonicalRDFTests {
                 FieldKeyExpression(fieldName: "value"),
             ]),
             subspaceKey: "rdf_distinct",
-            itemTypes: [RDFDistinctRecord.persistableType]
+            itemTypes: [RDFDistinctEntity.persistableType]
         )
-        let maintainer = DistinctIndexMaintainer<RDFDistinctRecord>(
+        let maintainer = DistinctIndexMaintainer<RDFDistinctEntity>(
             index: index,
             subspace: subspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
             precision: 14
         )
         let transaction = try engine.createTransaction()
-        let record = RDFDistinctRecord(
+        let entity = RDFDistinctEntity(
             id: "invalid",
             group: "calendar",
             value: .rdfTerm(.iri("relative"))
@@ -44,7 +44,7 @@ struct DistinctIndexCanonicalRDFTests {
         ) {
             try await maintainer.updateIndex(
                 oldItem: nil,
-                newItem: record,
+                newItem: entity,
                 transaction: transaction
             )
         }
@@ -58,14 +58,14 @@ struct DistinctIndexCanonicalRDFTests {
     }
 }
 
-private struct RDFDistinctRecord: Persistable {
+private struct RDFDistinctEntity: Persistable {
     typealias ID = String
 
     let id: String
     let group: String
     let value: FieldValue
 
-    static let persistableType = "RDFDistinctRecord"
+    static let persistableType = "RDFDistinctEntity"
     static let allFields = ["id", "group", "value"]
     static let indexDescriptors: [IndexDescriptor] = []
 
@@ -82,24 +82,24 @@ private struct RDFDistinctRecord: Persistable {
     }
 
     static func fieldName<Value>(
-        for keyPath: KeyPath<RDFDistinctRecord, Value>
+        for keyPath: KeyPath<RDFDistinctEntity, Value>
     ) -> String {
-        fieldName(for: keyPath as PartialKeyPath<RDFDistinctRecord>)
+        fieldName(for: keyPath as PartialKeyPath<RDFDistinctEntity>)
     }
 
     static func fieldName(
-        for keyPath: PartialKeyPath<RDFDistinctRecord>
+        for keyPath: PartialKeyPath<RDFDistinctEntity>
     ) -> String {
         switch keyPath {
-        case \RDFDistinctRecord.id: "id"
-        case \RDFDistinctRecord.group: "group"
-        case \RDFDistinctRecord.value: "value"
+        case \RDFDistinctEntity.id: "id"
+        case \RDFDistinctEntity.group: "group"
+        case \RDFDistinctEntity.value: "value"
         default: String(describing: keyPath)
         }
     }
 
     static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<RDFDistinctRecord> else {
+        guard let keyPath = keyPath as? PartialKeyPath<RDFDistinctEntity> else {
             return String(describing: keyPath)
         }
         return fieldName(for: keyPath)

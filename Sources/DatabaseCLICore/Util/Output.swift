@@ -42,14 +42,14 @@ public struct OutputFormatter: Sendable {
         }
     }
 
-    /// Print a table of records
-    public func table(_ records: [(id: String, values: [String: Any])], fields: [String]? = nil) {
-        if records.isEmpty {
+    /// Print a table of rows
+    public func table(_ rows: [(id: String, values: [String: Any])], fields: [String]? = nil) {
+        if rows.isEmpty {
             info("(no results)")
             return
         }
 
-        for (id, values) in records {
+        for (id, values) in rows {
             var displayValues = values
             displayValues["id"] = id
             json(displayValues)

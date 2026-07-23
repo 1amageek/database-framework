@@ -28,7 +28,7 @@ import StorageKit
 ///
 /// **Storage Optimization**:
 /// Permuted indexes store only the permuted key ordering pointing to the primary key.
-/// The actual record data is stored once in the main record storage, not duplicated.
+/// The actual entity data is stored once in the main entity storage, not duplicated.
 ///
 /// **Example**:
 /// For a compound index on (country, city, name) with permutation [1, 0, 2]:

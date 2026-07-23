@@ -11,13 +11,13 @@ private struct CanonicalSourceRow: Sendable {
     let fields: [String: DatabaseValue]
     let scopedFields: [String: [String: DatabaseValue]]
     let annotations: [String: DatabaseValue]
-    let version: RecordVersionToken?
+    let version: PersistableVersionToken?
 
     init(
         fields: [String: DatabaseValue],
         scopedFields: [String: [String: DatabaseValue]] = [:],
         annotations: [String: DatabaseValue] = [:],
-        version: RecordVersionToken? = nil
+        version: PersistableVersionToken? = nil
     ) {
         self.fields = fields
         self.scopedFields = scopedFields
@@ -29,7 +29,7 @@ private struct CanonicalSourceRow: Sendable {
         _ fields: [String: DatabaseValue],
         sourceName: String?,
         annotations: [String: DatabaseValue] = [:],
-        version: RecordVersionToken? = nil
+        version: PersistableVersionToken? = nil
     ) -> CanonicalSourceRow {
         guard let sourceName else {
             return CanonicalSourceRow(fields: fields, annotations: annotations, version: version)
@@ -577,7 +577,7 @@ extension DatabaseContext {
             requested: options.consistency,
             default: .serializable
         )
-        let records = try await scanPolymorphicItems(
+        let entities = try await scanPolymorphicItems(
             group: group,
             configuration: execution.transactionConfiguration,
             limit: selectQuery.limit,
@@ -585,13 +585,13 @@ extension DatabaseContext {
             orderBy: canonicalOrderByFields(selectQuery.orderBy)
         )
 
-        let sourceRows = try records.map { record in
+        let sourceRows = try entities.map { entity in
             try options.workMeter.consume(at: .resultMaterialization)
             let row = try QueryRowCodec.encodeAny(
-                record.item,
+                entity.item,
                 annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(record.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
+                    PolymorphicRowAnnotation.typeName: .string(entity.typeName),
+                    PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
                 ]
             )
             return CanonicalSourceRow.fromBaseFields(
@@ -707,17 +707,17 @@ extension DatabaseContext {
                 requested: options.consistency,
                 default: .serializable
             )
-            let records = try await scanPolymorphicItems(
+            let entities = try await scanPolymorphicItems(
                 group: group,
                 configuration: execution.transactionConfiguration
             )
             let sourceName = logicalSource.alias ?? logicalSource.effectiveName
-            return try records.map { record in
+            return try entities.map { entity in
                 let row = try QueryRowCodec.encodeAny(
-                    record.item,
+                    entity.item,
                     annotations: [
-                        PolymorphicRowAnnotation.typeName: .string(record.typeName),
-                        PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
+                        PolymorphicRowAnnotation.typeName: .string(entity.typeName),
+                        PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
                     ]
                 )
                 return CanonicalSourceRow.fromBaseFields(

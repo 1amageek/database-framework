@@ -2,14 +2,14 @@ import Core
 import StorageKit
 
 public struct RelationshipPage<Owner: Persistable>: Sendable {
-    public let records: [Owner]
+    public let entities: [Owner]
     public let continuation: Bytes?
 
     public init(
-        records: [Owner],
+        entities: [Owner],
         continuation: Bytes?
     ) {
-        self.records = records
+        self.entities = entities
         self.continuation = continuation
     }
 }

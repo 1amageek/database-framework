@@ -121,7 +121,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result {
-        let records = DatabaseRecordMutationExecutor(
+        let entities = DatabaseEntityMutationExecutor(
             container: context.container,
             runtimeLimits: runtimeLimits
         )
@@ -141,7 +141,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     preconditions: preconditions,
                     context: context,
                     transaction: transaction,
-                    records: records,
+                    entities: entities,
                     workMeter: workMeter
                 )
             )
@@ -152,7 +152,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 graphPartitions: graphPartitions,
                 context: context,
                 transaction: transaction,
-                records: records,
+                entities: entities,
                 workMeter: workMeter
             )
         }
@@ -164,42 +164,42 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         graphPartitions: [DatabaseObjectField],
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction,
-        records: DatabaseRecordMutationExecutor,
+        entities: DatabaseEntityMutationExecutor,
         workMeter: DatabaseWorkMeter
     ) async throws -> MutationExecuteOperation.Result {
         switch statement {
         case .insert(let query):
             try requireNoGraphPartitions(graphPartitions)
-            return .records(
+            return .entities(
                 try await executeInsert(
                     query,
                     context: context,
                     transaction: transaction,
-                    records: records,
+                    entities: entities,
                     preconditions: preconditions,
                     workMeter: workMeter
                 )
             )
         case .update(let query):
             try requireNoGraphPartitions(graphPartitions)
-            return .records(
+            return .entities(
                 try await executeUpdate(
                     query,
                     context: context,
                     transaction: transaction,
-                    records: records,
+                    entities: entities,
                     preconditions: preconditions,
                     workMeter: workMeter
                 )
             )
         case .delete(let query):
             try requireNoGraphPartitions(graphPartitions)
-            return .records(
+            return .entities(
                 try await executeDelete(
                     query,
                     context: context,
                     transaction: transaction,
-                    records: records,
+                    entities: entities,
                     preconditions: preconditions,
                     workMeter: workMeter
                 )
@@ -322,7 +322,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
     ) throws {
         guard graphPartitions.isEmpty else {
             throw DatabaseMutationError.invalidGraphPartitions(
-                "authoritative RDF graph mutations do not consume record partitions"
+                "authoritative RDF graph mutations do not consume entity partitions"
             )
         }
     }
@@ -331,10 +331,10 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         _ query: InsertQuery,
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction,
-        records: DatabaseRecordMutationExecutor,
+        entities: DatabaseEntityMutationExecutor,
         preconditions: [MutationExecuteOperation.Precondition],
         workMeter: DatabaseWorkMeter
-    ) async throws -> [MutationExecuteOperation.RecordEffect] {
+    ) async throws -> [MutationExecuteOperation.EntityEffect] {
         guard query.returning == nil else {
             throw DatabaseMutationError.unsupportedStatement(
                 "INSERT RETURNING is not representable by mutation effects"
@@ -390,15 +390,15 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 }
             }
 
-            let candidate = try entity.type.decodeDatabaseRecord(suppliedFields)
-            let candidateFields = try DatabaseRecordProjection.fields(for: candidate)
-            let candidateIdentity = try DatabaseRecordProjection.identity(for: candidate)
-            let targetIdentity = RecordIdentity(
+            let candidate = try entity.type.decodePersistedFields(suppliedFields)
+            let candidateFields = try DatabaseEntityProjection.fields(for: candidate)
+            let candidateIdentity = try DatabaseEntityProjection.identity(for: candidate)
+            let targetIdentity = PersistableIdentity(
                 entity: candidateIdentity.entity,
                 id: candidateIdentity.id,
                 partitions: query.target.partitions
             )
-            let resolved = try DatabaseResolvedRecordIdentity.resolve(
+            let resolved = try DatabaseResolvedPersistableIdentity.resolve(
                 targetIdentity,
                 container: context.container,
                 model: candidate
@@ -421,7 +421,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             case (.some(.doNothing), .some):
                 continue
             case (.some(.doUpdate(let assignments, let filter)), .some(let model)):
-                let originalFields = try DatabaseRecordProjection.fields(for: model)
+                let originalFields = try DatabaseEntityProjection.fields(for: model)
                 let evaluation = evaluationFields(
                     originalFields,
                     table: query.target
@@ -436,26 +436,26 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     evaluationFields: evaluation,
                     entity: entity
                 )
-                let updated = try entity.type.decodeDatabaseRecord(updatedFields)
+                let updated = try entity.type.decodePersistedFields(updatedFields)
                 changes.append(
                     MutationExecuteOperation.Change(
                         kind: .update,
-                        identity: try DatabaseRecordProjection.identity(for: model),
-                        fields: try DatabaseRecordProjection.fields(for: updated)
+                        identity: try DatabaseEntityProjection.identity(for: model),
+                        fields: try DatabaseEntityProjection.fields(for: updated)
                     )
                 )
             }
         }
 
         guard !changes.isEmpty else {
-            try await records.validate(
+            try await entities.validate(
                 preconditions,
                 transaction: transaction,
                 workMeter: workMeter
             )
             return []
         }
-        return try await records.execute(
+        return try await entities.execute(
             changes,
             preconditions: preconditions,
             workMeter: workMeter,
@@ -467,10 +467,10 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         _ query: UpdateQuery,
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction,
-        records: DatabaseRecordMutationExecutor,
+        entities: DatabaseEntityMutationExecutor,
         preconditions: [MutationExecuteOperation.Precondition],
         workMeter: DatabaseWorkMeter
-    ) async throws -> [MutationExecuteOperation.RecordEffect] {
+    ) async throws -> [MutationExecuteOperation.EntityEffect] {
         guard query.from == nil else {
             throw DatabaseMutationError.unsupportedStatement(
                 "UPDATE FROM requires a transaction-scoped join executor"
@@ -493,7 +493,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         var changes: [MutationExecuteOperation.Change] = []
         for model in models {
             try workMeter.consume(at: .mutationPlanning)
-            let originalFields = try DatabaseRecordProjection.fields(for: model)
+            let originalFields = try DatabaseEntityProjection.fields(for: model)
             let evaluation = evaluationFields(originalFields, table: query.target)
             if let filter = query.filter,
                try !DatabaseExpressionEvaluator(fields: evaluation).predicate(filter) {
@@ -505,12 +505,12 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 evaluationFields: evaluation,
                 entity: entity
             )
-            let updated = try entity.type.decodeDatabaseRecord(updatedFields)
+            let updated = try entity.type.decodePersistedFields(updatedFields)
             changes.append(
                 MutationExecuteOperation.Change(
                     kind: .update,
-                    identity: try DatabaseRecordProjection.identity(for: model),
-                    fields: try DatabaseRecordProjection.fields(for: updated)
+                    identity: try DatabaseEntityProjection.identity(for: model),
+                    fields: try DatabaseEntityProjection.fields(for: updated)
                 )
             )
             guard changes.count <= runtimeLimits.maximumMutations else {
@@ -521,14 +521,14 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             }
         }
         guard !changes.isEmpty else {
-            try await records.validate(
+            try await entities.validate(
                 preconditions,
                 transaction: transaction,
                 workMeter: workMeter
             )
             return []
         }
-        return try await records.execute(
+        return try await entities.execute(
             changes,
             preconditions: preconditions,
             workMeter: workMeter,
@@ -540,10 +540,10 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         _ query: DeleteQuery,
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction,
-        records: DatabaseRecordMutationExecutor,
+        entities: DatabaseEntityMutationExecutor,
         preconditions: [MutationExecuteOperation.Precondition],
         workMeter: DatabaseWorkMeter
-    ) async throws -> [MutationExecuteOperation.RecordEffect] {
+    ) async throws -> [MutationExecuteOperation.EntityEffect] {
         guard query.using == nil else {
             throw DatabaseMutationError.unsupportedStatement(
                 "DELETE USING requires a transaction-scoped join executor"
@@ -563,7 +563,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         var changes: [MutationExecuteOperation.Change] = []
         for model in models {
             try workMeter.consume(at: .mutationPlanning)
-            let fields = try DatabaseRecordProjection.fields(for: model)
+            let fields = try DatabaseEntityProjection.fields(for: model)
             if let filter = query.filter,
                try !DatabaseExpressionEvaluator(
                     fields: evaluationFields(fields, table: query.target)
@@ -573,7 +573,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             changes.append(
                 MutationExecuteOperation.Change(
                     kind: .delete,
-                    identity: try DatabaseRecordProjection.identity(for: model)
+                    identity: try DatabaseEntityProjection.identity(for: model)
                 )
             )
             guard changes.count <= runtimeLimits.maximumMutations else {
@@ -584,14 +584,14 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             }
         }
         guard !changes.isEmpty else {
-            try await records.validate(
+            try await entities.validate(
                 preconditions,
                 transaction: transaction,
                 workMeter: workMeter
             )
             return []
         }
-        return try await records.execute(
+        return try await entities.execute(
             changes,
             preconditions: preconditions,
             workMeter: workMeter,

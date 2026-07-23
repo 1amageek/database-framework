@@ -6,5 +6,5 @@ package struct DatabaseIndexMaintenanceStatus: Sendable {
     package let index: String
     package let partitions: [DatabaseObjectField]
     package let indexState: IndexState
-    package let rebuildRecord: DatabaseIndexRebuildRecord?
+    package let rebuildState: DatabaseIndexRebuildState?
 }

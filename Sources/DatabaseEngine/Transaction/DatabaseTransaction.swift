@@ -30,12 +30,12 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     private var state: State = .open
     private var nextOperationID: UInt64 = 1
     private var subspaceCache: [DatabaseStoreCacheKey: ResolvedSubspaces] = [:]
-    private var scheduledDeletions = Set<RecordIdentity>()
-    private var scheduledWrites = Set<RecordIdentity>()
-    private var activeMutationIdentities = Set<RecordIdentity>()
-    private var mutationOrder: [RecordIdentity] = []
-    private var orderedMutationIdentities = Set<RecordIdentity>()
-    private var mutationJournal: [RecordIdentity: MutationJournalEntry] = [:]
+    private var scheduledDeletions = Set<PersistableIdentity>()
+    private var scheduledWrites = Set<PersistableIdentity>()
+    private var activeMutationIdentities = Set<PersistableIdentity>()
+    private var mutationOrder: [PersistableIdentity] = []
+    private var orderedMutationIdentities = Set<PersistableIdentity>()
+    private var mutationJournal: [PersistableIdentity: MutationJournalEntry] = [:]
 
     private struct ResolvedSubspaces {
         let items: Subspace
@@ -252,9 +252,9 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         identifiedBy id: Model.ID
     ) async throws {
         try await performOperation { operationID in
-            let identity = RecordIdentity(
+            let identity = PersistableIdentity(
                 entity: Model.persistableType,
-                id: id.recordIdentifierValue
+                id: id.persistableIdentifierValue
             )
             guard let subspaces = try await openSubspaces(for: type),
                   let model = try await fetchModel(
@@ -282,9 +282,9 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         in partition: DirectoryPath<Model>
     ) async throws {
         try await performOperation { operationID in
-            let identity = RecordIdentity(
+            let identity = PersistableIdentity(
                 entity: Model.persistableType,
-                id: id.recordIdentifierValue,
+                id: id.persistableIdentifierValue,
                 partitions: try AnyDirectoryPath(partition)
                     .canonicalPartitions()
             )
@@ -327,7 +327,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func fetchPersistedModel(
-        identifiedBy identity: RecordIdentity
+        identifiedBy identity: PersistableIdentity
     ) async throws -> (any Persistable)? {
         try await performOperation { _ in
             let resolved = try resolve(identity)
@@ -427,7 +427,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func fetchPersistedModel(
-        identifiedBy identity: RecordIdentity,
+        identifiedBy identity: PersistableIdentity,
         within operationID: UInt64
     ) async throws -> (any Persistable)? {
         do {
@@ -483,7 +483,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func isDeletionScheduled(
-        for identity: RecordIdentity,
+        for identity: PersistableIdentity,
         within operationID: UInt64
     ) throws -> Bool {
         try ensureActive(operationID, permitsMutation: false)
@@ -538,7 +538,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         _ mutations: [PersistableMutation],
         operationID: UInt64
     ) async throws {
-        var identities = Set<RecordIdentity>()
+        var identities = Set<PersistableIdentity>()
         identities.reserveCapacity(mutations.count)
 
         for mutation in mutations {
@@ -636,7 +636,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             throw error
         }
         try ensureActive(operationID, permitsMutation: true)
-        recordMutation(
+        updateMutationJournal(
             identity: identity,
             previousModel: write.previousModel,
             currentModel: model
@@ -699,7 +699,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             throw error
         }
         try ensureActive(operationID, permitsMutation: true)
-        recordMutation(
+        updateMutationJournal(
             identity: identity,
             previousModel: persistedModel,
             currentModel: nil
@@ -707,7 +707,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     private func reserveMutationIdentity(
-        _ identity: RecordIdentity
+        _ identity: PersistableIdentity
     ) {
         guard orderedMutationIdentities.insert(identity).inserted else {
             return
@@ -715,8 +715,8 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         mutationOrder.append(identity)
     }
 
-    private func recordMutation(
-        identity: RecordIdentity,
+    private func updateMutationJournal(
+        identity: PersistableIdentity,
         previousModel: (any Persistable)?,
         currentModel: (any Persistable)?
     ) {
@@ -963,7 +963,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     ) async throws -> Model? {
         let key = subspaces.items
             .subspace(Model.persistableType)
-            .pack(try RecordIdentifierKeyCodec.tuple(for: id))
+            .pack(try PersistableIdentifierKeyCodec.tuple(for: id))
         let storage = container.itemStorageFactory.make(
             transaction: storageAccess,
             blobsSubspace: subspaces.blobs
@@ -992,13 +992,13 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     private func resolve(
-        _ identity: RecordIdentity
+        _ identity: PersistableIdentity
     ) throws -> (id: Tuple, partition: AnyDirectoryPath?) {
         let type = try persistableType(named: identity.entity)
         do {
-            let id = try RecordIdentifierKeyCodec.tuple(
+            let id = try PersistableIdentifierKeyCodec.tuple(
                 for: identity,
-                expectedType: type.recordIdentifierType
+                expectedType: type.persistableIdentifierType
             )
             let partition = try CanonicalPartitionBinding.makeAnyBinding(
                 for: type,
@@ -1061,7 +1061,7 @@ public enum DatabaseTransactionError: Error, Sendable, Equatable {
     case unknownEntity(String)
     case entityHasNoPersistableType(String)
     case invalidIdentity(entity: String, reason: String)
-    case persistedModelNotFound(RecordIdentity)
-    case duplicateMutation(RecordIdentity)
-    case conflictingDerivedMutation(RecordIdentity)
+    case persistedModelNotFound(PersistableIdentity)
+    case duplicateMutation(PersistableIdentity)
+    case conflictingDerivedMutation(PersistableIdentity)
 }

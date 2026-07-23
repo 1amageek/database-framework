@@ -15,9 +15,9 @@ struct DatabaseSchemaBootstrapTests {
 
         #expect(try await container.getCurrentSchemaVersion() == Schema.Version(1, 0, 0))
         let entities = try await SchemaRegistry(database: engine).loadAll()
-        #expect(entities.map(\.name).contains(BootstrapIndexedRecord.persistableType))
+        #expect(entities.map(\.name).contains(BootstrapIndexedEntity.persistableType))
         let subspace = try await container.resolveDirectory(
-            for: BootstrapIndexedRecord.self
+            for: BootstrapIndexedEntity.self
         )
         let state = try await IndexLifecycleStore(
             container: container,
@@ -31,7 +31,7 @@ struct DatabaseSchemaBootstrapTests {
         let engine = InMemoryEngine()
         let unversioned = try await DBContainer.open(
             for: Schema(
-                [BootstrapIndexedRecord.self],
+                [BootstrapIndexedEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .init(backend: .custom(engine)),
@@ -39,10 +39,10 @@ struct DatabaseSchemaBootstrapTests {
             security: .disabled
         )
         let context = unversioned.newContext()
-        var record = BootstrapIndexedRecord()
-        record.id = "orphan"
-        record.value = "value"
-        try context.insert(record)
+        var entity = BootstrapIndexedEntity()
+        entity.id = "orphan"
+        entity.value = "value"
+        try context.insert(entity)
         try await context.save()
 
         let versioned = try await makeVersionedContainer(engine: engine)
@@ -60,7 +60,7 @@ struct DatabaseSchemaBootstrapTests {
 
         let divergent = try await DBContainer.open(
             for: Schema(
-                [DatabaseEndpointRecord.self],
+                [DatabaseEndpointEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             migrationPlan: BootstrapMigrationPlan.self,
@@ -92,7 +92,7 @@ struct DatabaseSchemaBootstrapTests {
     private enum BootstrapSchema: VersionedSchema {
         static let versionIdentifier = Schema.Version(1, 0, 0)
         static let models: [any Persistable.Type] = [
-            BootstrapIndexedRecord.self,
+            BootstrapIndexedEntity.self,
         ]
     }
 

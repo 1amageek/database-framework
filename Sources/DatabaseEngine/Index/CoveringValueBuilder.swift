@@ -28,7 +28,7 @@ public enum CoveringValueBuilder {
     ///
     /// Non-covering indexes without stored fields retain an empty value. A fully
     /// covering index always stores a DBIX frame, including key-only indexes, so
-    /// decoding never has to infer record values from tuple encodings.
+    /// decoding never has to infer entity values from tuple encodings.
     public static func build<Item: Persistable>(
         for item: Item,
         index: Index
@@ -51,7 +51,7 @@ public enum CoveringValueBuilder {
             return []
         }
 
-        let encodedFields = try DatabaseRecordEncoder.encode(item)
+        let encodedFields = try PersistableFieldEncoder.encode(item)
         let fieldsByName = Dictionary(
             uniqueKeysWithValues: encodedFields.map { ($0.name, $0) }
         )
@@ -65,7 +65,7 @@ public enum CoveringValueBuilder {
             return field
         }.sorted { $0.number < $1.number }
 
-        let bytes = try DatabaseRecordFieldFrameCodec.encode(
+        let bytes = try PersistableFieldFrameCodec.encode(
             magic: magic,
             version: formatVersion,
             entity: Item.persistableType,
@@ -87,7 +87,7 @@ public enum CoveringValueBuilder {
         }
 
         let rootFieldNames = Set(storedFieldNames.map(rootFieldName))
-        let frame = try DatabaseRecordFieldFrameCodec.decodeSelected(
+        let frame = try PersistableFieldFrameCodec.decodeSelected(
             bytes,
             magic: magic,
             version: formatVersion,
@@ -112,11 +112,11 @@ public enum CoveringValueBuilder {
     package static func decodeFields(
         _ bytes: Bytes,
         expectedEntity: String
-    ) throws -> [DatabaseRecordField] {
+    ) throws -> [PersistableField] {
         guard !bytes.isEmpty else {
             throw CanonicalIndexProjectionError.missingProjection(index: "unknown")
         }
-        return try DatabaseRecordFieldFrameCodec.decode(
+        return try PersistableFieldFrameCodec.decode(
             bytes,
             magic: magic,
             version: formatVersion,

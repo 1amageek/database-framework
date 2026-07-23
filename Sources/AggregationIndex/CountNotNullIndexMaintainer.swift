@@ -16,7 +16,7 @@ import StorageKit
 /// Maintainer for COUNT_NOT_NULL indexes
 ///
 /// **Functionality**:
-/// - Count records where a specific field is not null
+/// - Count entities where a specific field is not null
 /// - Group counts by other fields
 /// - Checked increment/decrement operations in the caller's transaction
 ///

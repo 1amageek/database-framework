@@ -2,11 +2,11 @@ import DatabaseValue
 import StorageKit
 
 public struct RelationshipReferenceIdentityPage: Sendable {
-    public let identities: [RecordIdentity]
+    public let identities: [PersistableIdentity]
     public let continuation: Bytes?
 
     public init(
-        identities: [RecordIdentity],
+        identities: [PersistableIdentity],
         continuation: Bytes?
     ) {
         self.identities = identities

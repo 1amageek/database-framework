@@ -30,7 +30,7 @@ extension DatabaseContext {
     /// )
     /// for violation in violations {
     ///     print("Duplicate value: \(violation.valueDescription)")
-    ///     print("Conflicting records: \(violation.primaryKeys.count)")
+    ///     print("Conflicting entities: \(violation.primaryKeys.count)")
     /// }
     /// ```
     ///
@@ -129,7 +129,7 @@ extension DatabaseContext {
 
     /// Get a summary of uniqueness violations for an index
     ///
-    /// Returns violation count and total conflicting records without loading
+    /// Returns violation count and total conflicting entities without loading
     /// all violation details.
     ///
     /// **Usage**:
@@ -140,7 +140,7 @@ extension DatabaseContext {
     /// )
     /// if summary.hasViolations {
     ///     print("\(summary.violationCount) duplicate values")
-    ///     print("\(summary.totalConflictingRecords) total conflicting records")
+    ///     print("\(summary.totalConflictingEntities) total conflicting entities")
     /// }
     /// ```
     ///
@@ -177,7 +177,7 @@ extension DatabaseContext {
     /// Clear a resolved uniqueness violation
     ///
     /// Call this after confirming the violation has been resolved by
-    /// deleting or updating the duplicate records.
+    /// deleting or updating the duplicate entities.
     ///
     /// **Usage**:
     /// ```swift

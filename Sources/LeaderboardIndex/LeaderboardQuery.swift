@@ -166,7 +166,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
         for result in results {
             let pkBytes = result.pk.pack()
             for item in items {
-                let itemPKBytes = try item.recordIdentifierTuple().pack()
+                let itemPKBytes = try item.persistableIdentifierTuple().pack()
                 if pkBytes == itemPKBytes {
                     finalResults.append((item: item, score: result.score))
                     break
@@ -219,7 +219,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
         for result in results {
             let pkBytes = result.pk.pack()
             for item in items {
-                let itemPKBytes = try item.recordIdentifierTuple().pack()
+                let itemPKBytes = try item.persistableIdentifierTuple().pack()
                 if pkBytes == itemPKBytes {
                     finalResults.append((item: item, score: result.score))
                     break

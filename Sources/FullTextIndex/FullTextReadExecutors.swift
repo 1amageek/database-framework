@@ -284,12 +284,12 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 indexSubspace: indexSubspace,
                 execution: execution
             )
-            let rows = try result.items.map { record in
+            let rows = try result.items.map { entity in
                 try IndexReadRow.materializing(
-                    any: record.item,
+                    any: entity.item,
                     annotations: [
-                        PolymorphicRowAnnotation.typeName: .string(record.typeName),
-                        PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
+                        PolymorphicRowAnnotation.typeName: .string(entity.typeName),
+                        PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
                     ]
                 )
             }
@@ -318,10 +318,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
             let rows = try results.map { result in
                 try IndexReadRow.materializing(
-                    any: result.record.item,
+                    any: result.entity.item,
                     annotations: [
-                        PolymorphicRowAnnotation.typeName: .string(result.record.typeName),
-                        PolymorphicRowAnnotation.typeCode: .int64(result.record.typeCode),
+                        PolymorphicRowAnnotation.typeName: .string(result.entity.typeName),
+                        PolymorphicRowAnnotation.typeCode: .int64(result.entity.typeCode),
                         "score": .double(result.score)
                     ]
                 )
@@ -341,12 +341,12 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             indexSubspace: indexSubspace,
             execution: execution
         )
-        let rows = try results.map { record in
+        let rows = try results.map { entity in
             try IndexReadRow.materializing(
-                any: record.item,
+                any: entity.item,
                 annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(record.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
+                    PolymorphicRowAnnotation.typeName: .string(entity.typeName),
+                    PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
                 ]
             )
         }
@@ -393,7 +393,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         limit: Int?,
         indexSubspace: Subspace,
         execution: CanonicalReadExecution
-    ) async throws -> [PolymorphicRecord] {
+    ) async throws -> [PolymorphicEntity] {
         let matchingIDs = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction in
@@ -416,16 +416,16 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
         }
 
-        var records = try await context.fetchPolymorphicItems(
+        var entities = try await context.fetchPolymorphicItems(
             group: group,
             ids: matchingIDs,
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        if let limit, records.count > limit {
-            records = Array(records.prefix(limit))
+        if let limit, entities.count > limit {
+            entities = Array(entities.prefix(limit))
         }
-        return records
+        return entities
     }
 
     private func executeScoredSearch(
@@ -440,7 +440,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         bm25Params: BM25Parameters,
         indexSubspace: Subspace,
         execution: CanonicalReadExecution
-    ) async throws -> [(record: PolymorphicRecord, score: Double)] {
+    ) async throws -> [(entity: PolymorphicEntity, score: Double)] {
         let scoredResults = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction in
@@ -467,30 +467,30 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
         }
 
-        let records = try await context.fetchPolymorphicItems(
+        let entities = try await context.fetchPolymorphicItems(
             group: group,
             ids: scoredResults.map { $0.id },
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        var recordByID: [String: PolymorphicRecord] = [:]
-        recordByID.reserveCapacity(records.count)
-        for record in records {
-            let identifier = try record.item.recordIdentifierTuple()
+        var entityByID: [String: PolymorphicEntity] = [:]
+        entityByID.reserveCapacity(entities.count)
+        for entity in entities {
+            let identifier = try entity.item.persistableIdentifierTuple()
             let key = stableKey(
-                Tuple(record.typeCode).appending(identifier)
+                Tuple(entity.typeCode).appending(identifier)
             )
-            recordByID[key] = record
+            entityByID[key] = entity
         }
 
-        var combined: [(record: PolymorphicRecord, score: Double)] = []
+        var combined: [(entity: PolymorphicEntity, score: Double)] = []
         combined.reserveCapacity(scoredResults.count)
         for result in scoredResults {
             let key = stableKey(result.id)
-            guard let record = recordByID[key] else {
+            guard let entity = entityByID[key] else {
                 continue
             }
-            combined.append((record: record, score: result.score))
+            combined.append((entity: entity, score: result.score))
         }
         return combined
     }
@@ -508,7 +508,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         facetLimit: Int,
         indexSubspace: Subspace,
         execution: CanonicalReadExecution
-    ) async throws -> (items: [PolymorphicRecord], facets: [String: [(value: String, count: Int64)]], totalCount: Int) {
+    ) async throws -> (items: [PolymorphicEntity], facets: [String: [(value: String, count: Int64)]], totalCount: Int) {
         let matchingIDs = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction in
@@ -531,19 +531,19 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
         }
 
-        let allRecords = try await context.fetchPolymorphicItems(
+        let allEntities = try await context.fetchPolymorphicItems(
             group: group,
             ids: matchingIDs,
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        let totalCount = allRecords.count
+        let totalCount = allEntities.count
 
         var facets: [String: [(value: String, count: Int64)]] = [:]
         for field in facetFields {
             var counts: [String: Int64] = [:]
-            for record in allRecords {
-                let values = facetValues(fieldName: field, from: record.item)
+            for entity in allEntities {
+                let values = facetValues(fieldName: field, from: entity.item)
                 for value in values where !value.isEmpty {
                     counts[value, default: 0] += 1
                 }
@@ -560,11 +560,11 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 .map { $0 }
         }
 
-        let items: [PolymorphicRecord]
-        if let limit, allRecords.count > limit {
-            items = Array(allRecords.prefix(limit))
+        let items: [PolymorphicEntity]
+        if let limit, allEntities.count > limit {
+            items = Array(allEntities.prefix(limit))
         } else {
-            items = allRecords
+            items = allEntities
         }
         return (items: items, facets: facets, totalCount: totalCount)
     }

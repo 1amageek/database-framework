@@ -147,7 +147,7 @@ public enum DistanceUnit: Sendable {
 /// - `count` returns `0` for empty groups
 /// - `sum`/`avg` return `nil` when every input is null or the group is empty
 ///
-/// A record count is not implicit metadata. Callers request `count` as an
+/// An entity count is not implicit metadata. Callers request `count` as an
 /// aggregate and read its `FieldValue.int64` result like every other aggregate.
 public struct AggregateResult<T: Persistable>: Sendable {
     /// Group key values (field name → typed value)

@@ -91,8 +91,8 @@ public struct TransactionMetrics: Sendable, CustomStringConvertible {
 
     /// Export metrics to StoreTimer
     public func export(to timer: StoreTimer) {
-        timer.increment(.recordsLoaded, by: readCount)
-        timer.increment(.recordsSaved, by: writeCount)
+        timer.increment(.entitiesLoaded, by: readCount)
+        timer.increment(.entitiesSaved, by: writeCount)
         timer.recordSize(.bytesDeserialized, bytes: bytesRead)
         timer.recordSize(.bytesSerialized, bytes: bytesWritten)
         timer.increment(.rangesScanned, by: rangeScanCount)
@@ -187,7 +187,7 @@ public final class InstrumentedTransaction: Sendable {
             }
         }
 
-        timer?.record(.loadRecord, duration: elapsed)
+        timer?.record(.loadEntity, duration: elapsed)
         return result
     }
 

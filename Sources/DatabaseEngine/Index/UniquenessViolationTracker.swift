@@ -22,7 +22,7 @@ import Core
 ///
 /// **Storage Format**:
 /// ```
-/// [metadataSubspace]/_violations/[indexName]/[valueKey] → ViolationRecord (binary)
+/// [metadataSubspace]/_violations/[indexName]/[valueKey] → ViolationEntry (binary)
 /// ```
 ///
 /// **Lifecycle**:
@@ -30,7 +30,7 @@ import Core
 /// 2. After indexing: `scanViolations()` retrieves all violations
 /// 3. User resolves conflicts (deletes duplicates or updates values)
 /// 4. Call `verifyResolution()` to confirm fix
-/// 5. Call `clearViolation()` to remove the violation record
+/// 5. Call `clearViolation()` to remove the violation entry
 ///
 /// **Usage**:
 /// ```swift
@@ -61,7 +61,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// FDB Container for transaction execution
     let container: DBContainer
 
-    /// Metadata subspace containing violation records
+    /// Metadata subspace containing violation entries
     private let metadataSubspace: Subspace
 
     /// Database event logger selected by the container configuration.
@@ -104,13 +104,13 @@ public final class UniquenessViolationTracker: Sendable {
     ///
     /// Called during online indexing when a duplicate is detected.
     /// If a violation for the same value already exists, the new primary key
-    /// is added to the existing violation record.
+    /// is added to the existing violation entry.
     ///
     /// - Parameters:
     ///   - indexName: Name of the violated index
     ///   - persistableType: Type name of the affected model
     ///   - valueKey: The duplicate index value (packed tuple)
-    ///   - primaryKey: Primary key of the conflicting record
+    ///   - primaryKey: Primary key of the conflicting entity
     ///   - transaction: Current transaction
     public func recordViolation(
         indexName: String,
@@ -153,7 +153,7 @@ public final class UniquenessViolationTracker: Sendable {
                 )
             }
         } else {
-            // Create new violation record
+            // Create new violation entry
             // We need at least 2 primary keys for a violation, but we might be
             // called with just the second conflicting key. The first key is
             // already in the index, so we need to find it.
@@ -186,8 +186,8 @@ public final class UniquenessViolationTracker: Sendable {
     ///   - indexName: Name of the violated index
     ///   - persistableType: Type name of the affected model
     ///   - valueKey: The duplicate index value (packed tuple)
-    ///   - existingPrimaryKey: Primary key of the existing record
-    ///   - newPrimaryKey: Primary key of the new conflicting record
+    ///   - existingPrimaryKey: Primary key of the existing entity
+    ///   - newPrimaryKey: Primary key of the new conflicting entity
     ///   - transaction: Current transaction
     public func recordViolation(
         indexName: String,
@@ -377,7 +377,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// Count violations for an index
     ///
     /// - Parameter indexName: Name of the index
-    /// - Returns: Number of distinct value violations (not total conflicting records)
+    /// - Returns: Number of distinct value violations (not total conflicting entities)
     public func countViolations(indexName: String) async throws -> Int {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.countViolations(indexName: indexName, transaction: transaction)
@@ -435,7 +435,7 @@ public final class UniquenessViolationTracker: Sendable {
         indexSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> ViolationResolution {
-        // Check violation record
+        // Check violation entry
         let violationSubspace = indexViolationsSubspace(indexName: indexName)
         let violationKey = violationSubspace.pack(Tuple(valueKey))
 
@@ -477,7 +477,7 @@ public final class UniquenessViolationTracker: Sendable {
         }
     }
 
-    /// Clear a violation record
+    /// Clear a violation entry
     ///
     /// Call this after confirming the violation has been resolved.
     ///
@@ -497,7 +497,7 @@ public final class UniquenessViolationTracker: Sendable {
         }
     }
 
-    /// Clear a violation record within a transaction
+    /// Clear a violation entry within a transaction
     public func clearViolation(
         indexName: String,
         valueKey: Bytes,
@@ -508,7 +508,7 @@ public final class UniquenessViolationTracker: Sendable {
         try transaction.clear(key: key)
 
         logger.info(
-            "Cleared violation record",
+            "Cleared violation entry",
             metadata: ["indexName": "\(indexName)"]
         )
     }
@@ -550,8 +550,8 @@ public struct ViolationSummary: Sendable {
     /// Number of distinct duplicate values
     public let violationCount: Int
 
-    /// Total number of conflicting records
-    public let totalConflictingRecords: Int
+    /// Total number of conflicting entities
+    public let totalConflictingEntities: Int
 
     /// Whether violations exist
     public var hasViolations: Bool {
@@ -564,12 +564,12 @@ extension UniquenessViolationTracker {
     public func violationSummary(indexName: String) async throws -> ViolationSummary {
         let violations = try await scanViolations(indexName: indexName)
 
-        let totalRecords = violations.reduce(0) { $0 + $1.primaryKeys.count }
+        let totalEntities = violations.reduce(0) { $0 + $1.primaryKeys.count }
 
         return ViolationSummary(
             indexName: indexName,
             violationCount: violations.count,
-            totalConflictingRecords: totalRecords
+            totalConflictingEntities: totalEntities
         )
     }
 }

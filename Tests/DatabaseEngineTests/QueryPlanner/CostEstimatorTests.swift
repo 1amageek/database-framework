@@ -22,24 +22,24 @@ struct CostEstimatorTests {
         let model = CostModel.default
 
         #expect(model.indexReadWeight > 0)
-        #expect(model.recordFetchWeight > 0)
+        #expect(model.entityFetchWeight > 0)
         #expect(model.postFilterWeight > 0)
         #expect(model.sortWeight > 0)
-        #expect(model.recordFetchWeight > model.indexReadWeight) // Record fetch should cost more
+        #expect(model.entityFetchWeight > model.indexReadWeight) // Entity fetch should cost more
     }
 
     @Test("Custom cost model can be created")
     func testCustomCostModel() {
         let customModel = CostModel(
             indexReadWeight: 0.5,
-            recordFetchWeight: 2.0,
+            entityFetchWeight: 2.0,
             postFilterWeight: 0.1,
             sortWeight: 0.05,
             rangeInitiationWeight: 10.0
         )
 
         #expect(customModel.indexReadWeight == 0.5)
-        #expect(customModel.recordFetchWeight == 2.0)
+        #expect(customModel.entityFetchWeight == 2.0)
         #expect(customModel.rangeInitiationWeight == 10.0)
     }
 
@@ -49,8 +49,8 @@ struct CostEstimatorTests {
         let favorIndexes = CostModel.favorIndexes
         let distributed = CostModel.distributed
 
-        // favorIndexes should penalize record fetches more
-        #expect(favorIndexes.recordFetchWeight > _default.recordFetchWeight)
+        // favorIndexes should penalize entity fetches more
+        #expect(favorIndexes.entityFetchWeight > _default.entityFetchWeight)
 
         // distributed should have higher range initiation cost
         #expect(distributed.rangeInitiationWeight > _default.rangeInitiationWeight)
@@ -73,20 +73,20 @@ struct CostEstimatorTests {
     func testFetchCostCalculation() {
         let model = CostModel.default
 
-        let cost = model.fetchCost(records: 50)
+        let cost = model.fetchCost(entities: 50)
 
-        #expect(cost == 50 * model.recordFetchWeight)
+        #expect(cost == 50 * model.entityFetchWeight)
     }
 
     @Test("Sort cost calculation")
     func testSortCostCalculation() {
         let model = CostModel.default
 
-        let cost = model.sortCost(records: 100)
+        let cost = model.sortCost(entities: 100)
 
         #expect(cost > 0)
         // Sort cost grows with n log n
-        let costDouble = model.sortCost(records: 200)
+        let costDouble = model.sortCost(entities: 200)
         #expect(costDouble > cost * 2) // More than linear growth
     }
 

@@ -135,8 +135,8 @@ struct MigrationTests {
     }
 
     @Persistable
-    struct BatchMigrationRecord {
-        #Directory<BatchMigrationRecord>("test", "migration", "batch")
+    struct BatchMigrationEntity {
+        #Directory<BatchMigrationEntity>("test", "migration", "batch")
 
         var id: String = ULID().ulidString
         var name: String
@@ -177,7 +177,7 @@ struct MigrationTests {
         let database = try await makeSystemPriorityEngine()
 
         // Use Schema([Type.self]) to properly register types
-        let schema = Schema([BatchMigrationRecord.self], version: Schema.Version(1, 0, 0))
+        let schema = Schema([BatchMigrationEntity.self], version: Schema.Version(1, 0, 0))
 
         return try await DBContainer.open(
             for: schema,
@@ -216,20 +216,20 @@ struct MigrationTests {
         }
     }
 
-    private func insertTestRecords(
+    private func insertTestEntities(
         container: DBContainer,
-        records: [BatchMigrationRecord]
+        entities: [BatchMigrationEntity]
     ) async throws {
         let encoder = ProtobufEncoder()
-        let subspace = try await container.resolveDirectory(for: BatchMigrationRecord.self)
-        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationRecord.persistableType)
+        let subspace = try await container.resolveDirectory(for: BatchMigrationEntity.self)
+        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationEntity.persistableType)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         try await container.engine.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
-            for record in records {
-                let data = try encoder.encode(record)
-                let identifier = try record.recordIdentifierTuple()
+            for entity in entities {
+                let data = try encoder.encode(entity)
+                let identifier = try entity.persistableIdentifierTuple()
                 let itemKey = itemSubspace.pack(identifier)
                 try await storage.write(Bytes(data), for: itemKey)
             }
@@ -531,18 +531,18 @@ struct MigrationTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            // Create test records with known IDs
-            let records = (1...5).map { BatchMigrationRecord(name: "User \($0)", status: "active") }
-            try await insertTestRecords(container: container, records: records)
+            // Create test entities with known IDs
+            let entities = (1...5).map { BatchMigrationEntity(name: "User \($0)", status: "active") }
+            try await insertTestEntities(container: container, entities: entities)
 
             // Setup MigrationContext
-            let subspace = try await container.resolveDirectory(for: BatchMigrationRecord.self)
+            let subspace = try await container.resolveDirectory(for: BatchMigrationEntity.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),
                 blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
-            let storeRegistry = [BatchMigrationRecord.persistableType: storeInfo]
+            let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
 
             let metadataSubspace = try await container.engine.createOrOpenDirectory(path: ["_metadata"])
 
@@ -553,27 +553,27 @@ struct MigrationTests {
                 storeRegistry: storeRegistry
             )
 
-            // Batch update records
-            let updatedRecords = records.map {
-                BatchMigrationRecord(id: $0.id, name: $0.name, status: "migrated")
+            // Batch update entities
+            let updatedEntities = entities.map {
+                BatchMigrationEntity(id: $0.id, name: $0.name, status: "migrated")
             }
-            try await context.batchUpdate(updatedRecords, batchSize: 2)
+            try await context.batchUpdate(updatedEntities, batchSize: 2)
 
             // Verify updates
-            let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationRecord.persistableType)
+            let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationEntity.persistableType)
 
-            for record in records {
-                let identifier = try record.recordIdentifierTuple()
+            for entity in entities {
+                let identifier = try entity.persistableIdentifierTuple()
                 let key = itemSubspace.pack(identifier)
                 let data: Bytes? = try await container.engine.withTransaction { tx in
                     let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
                     return try await storage.read(for: key, snapshot: false)
                 }
                 guard let data = data else {
-                    Issue.record("Record with id \(record.id) not found after batchUpdate")
+                    Issue.record("Entity with id \(entity.id) not found after batchUpdate")
                     continue
                 }
-                let decoded: BatchMigrationRecord = try DataAccess.deserialize(data)
+                let decoded: BatchMigrationEntity = try DataAccess.deserialize(data)
                 #expect(decoded.status == "migrated", "Expected status 'migrated' but got '\(decoded.status)'")
             }
         }
@@ -586,18 +586,18 @@ struct MigrationTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            // Insert test records
-            let records = (1...7).map { BatchMigrationRecord(name: "User \($0)") }
-            try await insertTestRecords(container: container, records: records)
+            // Insert test entities
+            let entities = (1...7).map { BatchMigrationEntity(name: "User \($0)") }
+            try await insertTestEntities(container: container, entities: entities)
 
             // Setup MigrationContext
-            let subspace = try await container.resolveDirectory(for: BatchMigrationRecord.self)
+            let subspace = try await container.resolveDirectory(for: BatchMigrationEntity.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),
                 blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
-            let storeRegistry = [BatchMigrationRecord.persistableType: storeInfo]
+            let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
 
             let metadataSubspace = try await container.engine.createOrOpenDirectory(path: ["_metadata"])
 
@@ -608,7 +608,7 @@ struct MigrationTests {
                 storeRegistry: storeRegistry
             )
 
-            let count = try await context.count(BatchMigrationRecord.self)
+            let count = try await context.count(BatchMigrationEntity.self)
             #expect(count == 7)
         }
     }
@@ -620,19 +620,19 @@ struct MigrationTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            // Create test records
-            let updateRecord = BatchMigrationRecord(name: "ToUpdate", status: "active")
-            let deleteRecord = BatchMigrationRecord(name: "ToDelete", status: "active")
-            try await insertTestRecords(container: container, records: [updateRecord, deleteRecord])
+            // Create test entities
+            let updateEntity = BatchMigrationEntity(name: "ToUpdate", status: "active")
+            let deleteEntity = BatchMigrationEntity(name: "ToDelete", status: "active")
+            try await insertTestEntities(container: container, entities: [updateEntity, deleteEntity])
 
             // Setup MigrationContext
-            let subspace = try await container.resolveDirectory(for: BatchMigrationRecord.self)
+            let subspace = try await container.resolveDirectory(for: BatchMigrationEntity.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),
                 blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
-            let storeRegistry = [BatchMigrationRecord.persistableType: storeInfo]
+            let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
 
             let metadataSubspace = try await container.engine.createOrOpenDirectory(path: ["_metadata"])
 
@@ -644,17 +644,17 @@ struct MigrationTests {
             )
 
             // Single update
-            let updated = BatchMigrationRecord(id: updateRecord.id, name: "ToUpdate", status: "updated")
+            let updated = BatchMigrationEntity(id: updateEntity.id, name: "ToUpdate", status: "updated")
             try await context.update(updated)
 
             // Single delete
-            try await context.delete(deleteRecord)
+            try await context.delete(deleteEntity)
 
             // Verify
-            let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationRecord.persistableType)
+            let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationEntity.persistableType)
 
             // Check update
-            let updateIdentifier = try updateRecord.recordIdentifierTuple()
+            let updateIdentifier = try updateEntity.persistableIdentifierTuple()
             let updateKey = itemSubspace.pack(updateIdentifier)
             let updateData: Bytes? = try await container.engine.withTransaction { tx in
                 let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
@@ -662,12 +662,12 @@ struct MigrationTests {
             }
             #expect(updateData != nil, "Updated item not found")
             if let updateData = updateData {
-                let decoded: BatchMigrationRecord = try DataAccess.deserialize(updateData)
+                let decoded: BatchMigrationEntity = try DataAccess.deserialize(updateData)
                 #expect(decoded.status == "updated", "Expected status 'updated' but got '\(decoded.status)'")
             }
 
             // Check delete
-            let deleteIdentifier = try deleteRecord.recordIdentifierTuple()
+            let deleteIdentifier = try deleteEntity.persistableIdentifierTuple()
             let deleteKey = itemSubspace.pack(deleteIdentifier)
             let deleteData: Bytes? = try await container.engine.withTransaction { tx in
                 let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)

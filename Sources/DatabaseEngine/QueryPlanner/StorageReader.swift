@@ -73,7 +73,7 @@ extension StorageReader {
 
 /// Represents an entry returned from an index search
 ///
-/// This design follows fdb-record-layer's approach where:
+/// This design follows the FDB Record Layer approach where:
 /// - Index key contains: [indexedValues...][primaryKey...]
 /// - Index value contains: canonical DBIX projection bytes
 ///
@@ -86,7 +86,7 @@ extension StorageReader {
 /// **Usage**:
 /// ```swift
 /// // For covering indexes, coveringValue contains the complete typed projection.
-/// // For non-covering indexes, coveringValue is empty and record fetch is needed.
+/// // For non-covering indexes, coveringValue is empty and entity fetch is needed.
 /// ```
 public struct IndexEntry: Sendable {
     /// The item ID as a Tuple (supports composite keys)

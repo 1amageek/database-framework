@@ -205,7 +205,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
 
     /// Get the bitmap directly (for advanced operations)
     ///
-    /// - Returns: RoaringBitmap of matching record IDs
+    /// - Returns: RoaringBitmap of matching entity IDs
     public func getBitmap() async throws -> RoaringBitmap {
         try await getBitmapDirect(configuration: .readOnly)
     }

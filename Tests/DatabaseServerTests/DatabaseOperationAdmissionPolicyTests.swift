@@ -60,7 +60,7 @@ struct DatabaseOperationAdmissionPolicyTests {
     private func makeContainer() async throws -> DBContainer {
         try await DBContainer.open(
             for: Schema(
-                [DatabaseEndpointRecord.self],
+                [DatabaseEndpointEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(

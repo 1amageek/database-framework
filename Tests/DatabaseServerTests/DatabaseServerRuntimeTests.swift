@@ -80,7 +80,7 @@ struct DatabaseServerRuntimeTests {
         )
         let storedCount = try await container.newContext().model(
             for: command.stateID,
-            as: DatabaseEndpointRecord.self
+            as: DatabaseEndpointEntity.self
         )
 
         #expect(first.output == CountingCommandOutput(count: 1))
@@ -179,7 +179,7 @@ struct DatabaseServerRuntimeTests {
         )
         let commandState = try await container.newContext().model(
             for: command.stateID,
-            as: DatabaseEndpointRecord.self
+            as: DatabaseEndpointEntity.self
         )
         let mutationState = try await container.engine.withTransaction(
             configuration: .readOnly
@@ -188,7 +188,7 @@ struct DatabaseServerRuntimeTests {
                 try await stateStore.currentLogicalVersion(
                     transaction: transaction
                 ),
-                try await stateStore.idempotencyRecord(
+                try await stateStore.idempotencyEntry(
                     for: "oversized-response",
                     transaction: transaction,
                     limits: limits
@@ -203,7 +203,7 @@ struct DatabaseServerRuntimeTests {
     private func makeContainer() async throws -> DBContainer {
         try await DBContainer.open(
             for: Schema(
-                [DatabaseEndpointRecord.self],
+                [DatabaseEndpointEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
@@ -347,7 +347,7 @@ struct DatabaseServerRuntimeTests {
             context: DatabaseWriteCommandContext
         ) async throws -> DatabaseCommandResult<CountingCommandOutput> {
             let stored = try await context.transaction.fetch(
-                DatabaseEndpointRecord.self,
+                DatabaseEndpointEntity.self,
                 identifiedBy: stateID
             )
             let current = stored?.priority ?? 0
@@ -355,7 +355,7 @@ struct DatabaseServerRuntimeTests {
                 throw CountingCommandError.overflow
             }
             let next = current + 1
-            var nextState = DatabaseEndpointRecord()
+            var nextState = DatabaseEndpointEntity()
             nextState.id = stateID
             nextState.title = input.value
             nextState.priority = next
@@ -416,7 +416,7 @@ struct DatabaseServerRuntimeTests {
             context: DatabaseWriteCommandContext
         ) async throws -> DatabaseCommandResult<OversizedResponseOutput> {
             _ = input
-            var state = DatabaseEndpointRecord()
+            var state = DatabaseEndpointEntity()
             state.id = stateID
             state.title = "must-roll-back"
             state.priority = 1

@@ -60,7 +60,7 @@ public final class StatisticsStorage: Sendable {
     /// Save table statistics
     public func saveTableStatistics(typeName: String, stats: TableStatisticsData) async throws {
         let key = statsSubspace.subspace("table").pack(Tuple([typeName]))
-        let data = try StatisticsRecordCodec.encode(stats)
+        let data = try StatisticsEntryCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setValue(data, for: key)
@@ -75,7 +75,7 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try StatisticsRecordCodec.decodeTable(data)
+            return try StatisticsEntryCodec.decodeTable(data)
         }
     }
 
@@ -98,7 +98,7 @@ public final class StatisticsStorage: Sendable {
                 guard let typeName = try keyTuple.element(at: 0) as? String else {
                     throw StatisticsStorageError.malformedKeyElement
                 }
-                results[typeName] = try StatisticsRecordCodec.decodeTable(value)
+                results[typeName] = try StatisticsEntryCodec.decodeTable(value)
             }
 
             return results
@@ -110,7 +110,7 @@ public final class StatisticsStorage: Sendable {
     /// Save field statistics
     public func saveFieldStatistics(typeName: String, fieldName: String, stats: FieldStatisticsData) async throws {
         let key = statsSubspace.subspace("field").subspace(typeName).pack(Tuple([fieldName]))
-        let data = try StatisticsRecordCodec.encode(stats)
+        let data = try StatisticsEntryCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setValue(data, for: key)
@@ -125,7 +125,7 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try StatisticsRecordCodec.decodeField(data)
+            return try StatisticsEntryCodec.decodeField(data)
         }
     }
 
@@ -148,7 +148,7 @@ public final class StatisticsStorage: Sendable {
                 guard let fieldName = try keyTuple.element(at: 0) as? String else {
                     throw StatisticsStorageError.malformedKeyElement
                 }
-                results[fieldName] = try StatisticsRecordCodec.decodeField(value)
+                results[fieldName] = try StatisticsEntryCodec.decodeField(value)
             }
 
             return results
@@ -160,7 +160,7 @@ public final class StatisticsStorage: Sendable {
     /// Save index statistics
     public func saveIndexStatistics(indexName: String, stats: IndexStatisticsData) async throws {
         let key = statsSubspace.subspace("index").pack(Tuple([indexName]))
-        let data = try StatisticsRecordCodec.encode(stats)
+        let data = try StatisticsEntryCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setValue(data, for: key)
@@ -175,7 +175,7 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try StatisticsRecordCodec.decodeIndex(data)
+            return try StatisticsEntryCodec.decodeIndex(data)
         }
     }
 
@@ -184,7 +184,7 @@ public final class StatisticsStorage: Sendable {
     /// Save vector index statistics
     public func saveVectorStatistics(indexName: String, stats: VectorStatisticsData) async throws {
         let key = statsSubspace.subspace("search").subspace("vector").pack(Tuple([indexName]))
-        let data = try StatisticsRecordCodec.encode(stats)
+        let data = try StatisticsEntryCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setValue(data, for: key)
@@ -199,14 +199,14 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try StatisticsRecordCodec.decodeVector(data)
+            return try StatisticsEntryCodec.decodeVector(data)
         }
     }
 
     /// Save full-text index statistics
     public func saveFullTextStatistics(indexName: String, stats: FullTextStatisticsData) async throws {
         let key = statsSubspace.subspace("search").subspace("fulltext").pack(Tuple([indexName]))
-        let data = try StatisticsRecordCodec.encode(stats)
+        let data = try StatisticsEntryCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setValue(data, for: key)
@@ -221,14 +221,14 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try StatisticsRecordCodec.decodeFullText(data)
+            return try StatisticsEntryCodec.decodeFullText(data)
         }
     }
 
     /// Save spatial index statistics
     public func saveSpatialStatistics(indexName: String, stats: SpatialStatisticsData) async throws {
         let key = statsSubspace.subspace("search").subspace("spatial").pack(Tuple([indexName]))
-        let data = try StatisticsRecordCodec.encode(stats)
+        let data = try StatisticsEntryCodec.encode(stats)
 
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setValue(data, for: key)
@@ -243,7 +243,7 @@ public final class StatisticsStorage: Sendable {
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
-            return try StatisticsRecordCodec.decodeSpatial(data)
+            return try StatisticsEntryCodec.decodeSpatial(data)
         }
     }
 

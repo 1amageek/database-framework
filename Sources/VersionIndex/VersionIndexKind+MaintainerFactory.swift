@@ -14,7 +14,7 @@ import StorageKit
 
 // MARK: - Version Struct (FDB Versionstamp)
 
-/// Represents a record version (FDB Versionstamp)
+/// Represents an entity version (FDB Versionstamp)
 ///
 /// A Version is a 10-byte value assigned by FoundationDB at commit time.
 /// This is the native 80-bit versionstamp used by SET_VERSIONSTAMPED_KEY.

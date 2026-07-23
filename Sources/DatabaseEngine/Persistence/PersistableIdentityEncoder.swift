@@ -5,13 +5,13 @@ import DatabaseValue
 public enum PersistableIdentityEncoder {
     public static func encode(
         _ model: any Persistable
-    ) throws -> RecordIdentity {
+    ) throws -> PersistableIdentity {
         let modelType = type(of: model)
-        let identifier = model.recordIdentifierValue
+        let identifier = model.persistableIdentifierValue
         do {
-            try RecordIdentifierKeyCodec.validate(
+            try PersistableIdentifierKeyCodec.validate(
                 identifier,
-                expectedType: modelType.recordIdentifierType
+                expectedType: modelType.persistableIdentifierType
             )
         } catch {
             throw PersistableIdentityEncodingError.identifierNotRepresentable(
@@ -37,7 +37,7 @@ public enum PersistableIdentityEncoder {
                     reason: "dynamic partition field '\(name)' has no value"
                 )
             }
-            let encodedValue = try DatabaseRecordEncoder.encodeValue(
+            let encodedValue = try PersistableFieldEncoder.encodeValue(
                 value,
                 schema: schema,
                 entity: modelType.persistableType
@@ -57,7 +57,7 @@ public enum PersistableIdentityEncoder {
             )
         }
 
-        return RecordIdentity(
+        return PersistableIdentity(
             entity: modelType.persistableType,
             id: identifier,
             partitions: partitions

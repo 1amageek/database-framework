@@ -418,7 +418,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
 
     // MARK: - Empty Result Test
 
-    @Test("Empty result: filter excludes all records")
+    @Test("Empty result: filter excludes all entities")
     func testEmptyResult() async throws {
         let container = try await setupContainer()
         let context = DatabaseContext(container: container)

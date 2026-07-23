@@ -19,7 +19,7 @@ struct CanonicalStatementMutationExecutorTests {
         )
         let statement = QueryStatement.insert(
             InsertQuery(
-                target: TableRef(DatabaseEndpointRecord.persistableType),
+                target: TableRef(DatabaseEndpointEntity.persistableType),
                 columns: ["id", "title"],
                 source: .defaultValues
             )
@@ -57,7 +57,7 @@ struct CanonicalStatementMutationExecutorTests {
         )
         let statement = QueryStatement.insert(
             InsertQuery(
-                target: TableRef(DatabaseEndpointRecord.persistableType),
+                target: TableRef(DatabaseEndpointEntity.persistableType),
                 columns: ["title"],
                 source: .values([[.parameter(.position(1))]])
             )
@@ -84,7 +84,7 @@ struct CanonicalStatementMutationExecutorTests {
         }
     }
 
-    @Test("INSERT UPDATE and DELETE share the canonical record mutation path")
+    @Test("INSERT UPDATE and DELETE share the canonical entity mutation path")
     func sqlDataModificationLifecycle() async throws {
         let container = try await makeContainer()
         let context = DatabaseOperationContext(
@@ -94,7 +94,7 @@ struct CanonicalStatementMutationExecutorTests {
             requestPayload: []
         )
         let executor = CanonicalDatabaseStatementMutationExecutor()
-        let entity = DatabaseEndpointRecord.persistableType
+        let entity = DatabaseEndpointEntity.persistableType
 
         let insert = InsertQuery(
             target: TableRef(entity),
@@ -161,7 +161,7 @@ struct CanonicalStatementMutationExecutorTests {
         #expect(try await load("event-1", container: container) == nil)
     }
 
-    @Test("Statement mutations enforce record preconditions in the mutation transaction")
+    @Test("Statement mutations enforce entity preconditions in the mutation transaction")
     func statementPreconditionsAreEnforced() async throws {
         let container = try await makeContainer()
         let context = DatabaseOperationContext(
@@ -171,8 +171,8 @@ struct CanonicalStatementMutationExecutorTests {
             requestPayload: []
         )
         let executor = CanonicalDatabaseStatementMutationExecutor()
-        let entity = DatabaseEndpointRecord.persistableType
-        let identity = RecordIdentity(entity: entity, id: .string("event-2"))
+        let entity = DatabaseEndpointEntity.persistableType
+        let identity = PersistableIdentity(entity: entity, id: .string("event-2"))
 
         _ = try await execute(
             .insert(InsertQuery(
@@ -202,13 +202,13 @@ struct CanonicalStatementMutationExecutorTests {
                 context: context
             )
             Issue.record("Expected the statement precondition to reject the update")
-        } catch DatabaseMutationError.recordAlreadyExists(let rejectedIdentity) {
+        } catch DatabaseMutationError.entityAlreadyExists(let rejectedIdentity) {
             #expect(rejectedIdentity == identity)
         }
 
         #expect(try await load("event-2", container: container)?.title == "Original")
 
-        let missingIdentity = RecordIdentity(entity: entity, id: .string("missing"))
+        let missingIdentity = PersistableIdentity(entity: entity, id: .string("missing"))
         do {
             _ = try await execute(
                 .update(UpdateQuery(
@@ -221,8 +221,8 @@ struct CanonicalStatementMutationExecutorTests {
                 executor: executor,
                 context: context
             )
-            Issue.record("Expected preconditions to run when a statement matches no records")
-        } catch DatabaseMutationError.recordNotFound(let rejectedIdentity) {
+            Issue.record("Expected preconditions to run when a statement matches no entities")
+        } catch DatabaseMutationError.entityNotFound(let rejectedIdentity) {
             #expect(rejectedIdentity == missingIdentity)
         }
     }
@@ -230,7 +230,7 @@ struct CanonicalStatementMutationExecutorTests {
     private func makeContainer() async throws -> DBContainer {
         try await DBContainer.open(
             for: Schema(
-                [DatabaseEndpointRecord.self],
+                [DatabaseEndpointEntity.self],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
@@ -245,7 +245,7 @@ struct CanonicalStatementMutationExecutorTests {
         preconditions: [MutationExecuteOperation.Precondition] = [],
         executor: CanonicalDatabaseStatementMutationExecutor,
         context: DatabaseOperationContext
-    ) async throws -> [MutationExecuteOperation.RecordEffect] {
+    ) async throws -> [MutationExecuteOperation.EntityEffect] {
         let statement = try DatabaseStatementAdmission(
             structuralLimits: .default
         ).admit(
@@ -266,9 +266,9 @@ struct CanonicalStatementMutationExecutorTests {
                 transaction: transaction
             )
         }
-        guard case .records(let effects) = result else {
+        guard case .entities(let effects) = result else {
             throw DatabaseMutationError.unsupportedStatement(
-                "Expected a record mutation result"
+                "Expected an entity mutation result"
             )
         }
         return effects
@@ -277,14 +277,14 @@ struct CanonicalStatementMutationExecutorTests {
     private func load(
         _ id: String,
         container: DBContainer
-    ) async throws -> DatabaseEndpointRecord? {
+    ) async throws -> DatabaseEndpointEntity? {
         let database = container.newContext()
         return try await database.withTransaction { transaction in
             try await transaction.loadPersistedModel(
-                entity: DatabaseEndpointRecord.persistableType,
+                entity: DatabaseEndpointEntity.persistableType,
                 id: Tuple(id),
                 partition: nil
-            ) as? DatabaseEndpointRecord
+            ) as? DatabaseEndpointEntity
         }
     }
 }

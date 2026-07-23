@@ -123,7 +123,7 @@ extension ContinuationToken: CustomStringConvertible {
 public enum NoNextReason: Sendable, Hashable, CustomStringConvertible {
     /// All data has been exhausted
     ///
-    /// The query has returned all matching records.
+    /// The query has returned all matching entities.
     case sourceExhausted
 
     /// Return limit was reached
@@ -146,7 +146,7 @@ public enum NoNextReason: Sendable, Hashable, CustomStringConvertible {
 
     /// Scan count limit reached
     ///
-    /// Maximum number of records scanned (for cost control).
+    /// Maximum number of entities scanned (for cost control).
     case scanLimitReached
 
     public var description: String {

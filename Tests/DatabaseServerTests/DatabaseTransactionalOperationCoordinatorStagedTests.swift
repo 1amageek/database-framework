@@ -105,7 +105,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 try await mutationContext.stateStore.currentLogicalVersion(
                     transaction: transaction
                 ),
-                try await mutationContext.stateStore.idempotencyRecord(
+                try await mutationContext.stateStore.idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
                     transaction: transaction,
                     limits: .default
@@ -154,7 +154,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 try await mutationContext.stateStore.currentLogicalVersion(
                     transaction: transaction
                 ),
-                try await mutationContext.stateStore.idempotencyRecord(
+                try await mutationContext.stateStore.idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
                     transaction: transaction,
                     limits: .default
@@ -200,7 +200,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 try await mutationContext.stateStore.currentLogicalVersion(
                     transaction: transaction
                 ),
-                try await mutationContext.stateStore.idempotencyRecord(
+                try await mutationContext.stateStore.idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
                     transaction: transaction,
                     limits: .default
@@ -253,7 +253,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 try await mutationContext.stateStore.currentLogicalVersion(
                     transaction: transaction
                 ),
-                try await mutationContext.stateStore.idempotencyRecord(
+                try await mutationContext.stateStore.idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
                     transaction: transaction,
                     limits: .default
@@ -310,7 +310,7 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
         ) async throws {
             let container = try await DBContainer.open(
                 for: Schema(
-                    [DatabaseEndpointRecord.self],
+                    [DatabaseEndpointEntity.self],
                     version: Schema.Version(1, 0, 0)
                 ),
                 configuration: DBConfiguration(
