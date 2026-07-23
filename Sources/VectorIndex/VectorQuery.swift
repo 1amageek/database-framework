@@ -442,7 +442,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     /// Count vectors in the index for auto algorithm selection
     private func countVectors(
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int {
         let (begin, end) = indexSubspace.range()
         let sequence = try await transaction.collectRange(
@@ -535,7 +535,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             )
 
             // Create fetch function for ACORN
-            let fetchItem: @Sendable (Tuple, any Transaction) async throws -> T? = { primaryKey, tx in
+            let fetchItem: @Sendable (Tuple, any TransactionAccess) async throws -> T? = { primaryKey, tx in
                 // Fetch item using IndexQueryContext
                 let items = try await self.queryContext.fetchItems(
                     ids: [primaryKey],

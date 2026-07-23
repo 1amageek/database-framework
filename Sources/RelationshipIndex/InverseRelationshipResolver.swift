@@ -95,7 +95,7 @@ public struct InverseRelationshipResolver: Sendable {
                 descriptor: descriptor,
                 continuation: continuation,
                 limit: limit,
-                transaction: transaction.storageTransaction
+                transaction: transaction.storageAccess
             )
             var records: [Owner] = []
             records.reserveCapacity(page.identities.count)

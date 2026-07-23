@@ -238,7 +238,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         grouping: [any TupleElement]?,
         windowId: Int64?,
         windowDurationSeconds: Int64,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Calculate current window ID if not specified
         let effectiveWindowId = windowId ?? {

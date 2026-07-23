@@ -401,7 +401,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///   - transaction: Transaction to use
     private func saveProgress(
         _ rangeSet: RangeSet,
-        _ transaction: any Transaction
+        _ transaction: any TransactionAccess
     ) throws {
         try transaction.setValue(try RangeSetCodec.encode(rangeSet), for: progressKey)
     }
@@ -936,7 +936,7 @@ internal final class ParallelBuildProgress: Sendable {
         chunkIndex: Int,
         status: ChunkStatus,
         lastKey: Bytes?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let key = progressSubspace.pack(Tuple(chunkIndex))
         let value = encodeProgress(status: status, lastKey: lastKey)

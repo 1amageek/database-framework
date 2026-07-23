@@ -22,7 +22,7 @@ import Core
 ///     func updateIndex(
 ///         oldItem: Item?,
 ///         newItem: Item?,
-///         transaction: any Transaction
+///         transaction: any TransactionAccess
 ///     ) async throws {
 ///         // Remove old index entries
 ///         if let old = oldItem {
@@ -40,7 +40,7 @@ import Core
 ///     func scanItem(
 ///         _ item: Item,
 ///         id: Tuple,
-///         transaction: any Transaction
+///         transaction: any TransactionAccess
 ///     ) async throws {
 ///         // Build index entries for this item
 ///         let values = try DataAccess.evaluate(item: item, expression: index.rootExpression)
@@ -68,7 +68,7 @@ public protocol IndexMaintainer<Item>: Sendable {
     func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws
 
     /// Scan and build index entries for an item
@@ -86,7 +86,7 @@ public protocol IndexMaintainer<Item>: Sendable {
     func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws
 
     /// Scan and build index entries for a batch of items
@@ -102,7 +102,7 @@ public protocol IndexMaintainer<Item>: Sendable {
     /// - Throws: Error if index building fails
     func scanItems(
         _ items: [(item: Item, id: Tuple)],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws
 
     /// Optional custom build strategy for this index
@@ -170,7 +170,7 @@ public protocol IndexMaintainer<Item>: Sendable {
     func computeIndexKeys(
         for item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Bytes]
 }
 
@@ -180,7 +180,7 @@ extension IndexMaintainer {
     /// Default: preserve the existing scanItem-based behavior.
     public func scanItems(
         _ items: [(item: Item, id: Tuple)],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         for entry in items {
             try await scanItem(entry.item, id: entry.id, transaction: transaction)
@@ -209,7 +209,7 @@ extension IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Bytes] {
         return try await computeIndexKeys(for: item, id: id)
     }

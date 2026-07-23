@@ -24,7 +24,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     public func replace(
         _ document: OntologyExecuteOperation.Document,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
         _ = try sourceOntology(
@@ -66,7 +66,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     public func delete(
         ontology: String,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
         let identifiers = try await ontologyStore.listOntologies(
@@ -99,7 +99,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         profile: OntologyExecuteOperation.ReasoningProfile,
         page: QueryExecuteOperation.Page,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> OntologyExecuteOperation.InferencePage {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
         let entailmentClosure = try await loadEntailmentClosure(
@@ -186,7 +186,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         maximumDepth: UInt32,
         page: QueryExecuteOperation.Page,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> OntologyExecuteOperation.HierarchyPage {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
         let entailmentClosure = try await loadEntailmentClosure(
@@ -276,7 +276,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         ontology: String,
         page: QueryExecuteOperation.Page,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseValidationReport {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
         let entailmentClosure = try await loadEntailmentClosure(
@@ -357,7 +357,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
 
     private func rebuild(
         ontology: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         work: inout WorkBudget
     ) async throws {
         let entailmentClosure = try await loadEntailmentClosure(
@@ -374,7 +374,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
 
     private func validateImportGraph(
         root: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         work: inout WorkBudget
     ) async throws {
         var visited = Set<String>()
@@ -391,7 +391,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         _ ontology: String,
         path: [String],
         visited: inout Set<String>,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         work: inout WorkBudget
     ) async throws {
         if let cycleStart = path.firstIndex(of: ontology) {
@@ -422,7 +422,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     private func depends(
         ontology: String,
         on dependency: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         visited: Set<String>
     ) async throws -> Bool {
         guard ontology != dependency else { return true }
@@ -449,7 +449,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
 
     private func loadEntailmentClosure(
         root: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         work: inout WorkBudget
     ) async throws -> EntailmentClosureSnapshot {
         var documents: [DocumentSnapshot] = []
@@ -484,7 +484,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     private func loadDocument(
         _ identifier: String,
         root: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         maximumQuadCount: UInt64
     ) async throws -> DocumentSnapshot {
         guard maximumQuadCount > 0,

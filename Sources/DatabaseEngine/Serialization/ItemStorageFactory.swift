@@ -9,7 +9,7 @@ public struct ItemStorageFactory: Sendable {
     }
 
     public func make(
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         blobsSubspace: Subspace
     ) -> ItemStorage {
         ItemStorage(

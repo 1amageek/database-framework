@@ -34,7 +34,7 @@ public struct CanonicalPropertyGraphDefinitionCatalog:
 
     public func definition(
         named graphName: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> CreateGraphStatement? {
         let key = try codec.key(for: graphName)
@@ -51,7 +51,7 @@ public struct CanonicalPropertyGraphDefinitionCatalog:
     @discardableResult
     public func create(
         _ definition: CreateGraphStatement,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> PropertyGraphDefinitionCreation {
         let canonicalDefinition = CreateGraphStatement(
@@ -86,7 +86,7 @@ public struct CanonicalPropertyGraphDefinitionCatalog:
 
     public func dropDefinition(
         named graphName: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws {
         let key = try codec.key(for: graphName)

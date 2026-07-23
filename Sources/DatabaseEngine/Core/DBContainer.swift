@@ -360,7 +360,7 @@ public final class DBContainer: Sendable {
     package func resolveDirectory(
         for type: any Persistable.Type,
         path: AnyDirectoryPath? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Subspace {
         let directoryPath: AnyDirectoryPath
         if let path {
@@ -392,7 +392,7 @@ public final class DBContainer: Sendable {
     package func openDirectory(
         for type: any Persistable.Type,
         path: AnyDirectoryPath? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Subspace {
         let directoryPath: AnyDirectoryPath
         if let path {
@@ -416,7 +416,7 @@ public final class DBContainer: Sendable {
         named indexName: String,
         for type: any Persistable.Type,
         path: AnyDirectoryPath? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Subspace? {
         let directoryPath: AnyDirectoryPath
         if let path {
@@ -546,7 +546,7 @@ public final class DBContainer: Sendable {
     internal func fdbStore(
         for type: any Persistable.Type,
         path: AnyDirectoryPath? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> FDBDataStore {
         let subspace = try await resolveDirectory(
             for: type,
@@ -587,7 +587,7 @@ public final class DBContainer: Sendable {
     private func ensureIndexesReady(
         for type: any Persistable.Type,
         subspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let indexNames = type.indexDescriptors.map(\.name)
         guard !indexNames.isEmpty else { return }
@@ -706,7 +706,7 @@ public final class DBContainer: Sendable {
     /// transaction so namespace creation and projected writes commit atomically.
     package func resolvePolymorphicDirectory(
         for identifier: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Subspace {
         let group = try polymorphicGroup(identifier: identifier)
         return try await engine.directoryService.createOrOpen(
@@ -719,7 +719,7 @@ public final class DBContainer: Sendable {
     /// metadata. An absent directory represents an empty projection.
     package func openPolymorphicDirectory(
         for identifier: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Subspace? {
         let group = try polymorphicGroup(identifier: identifier)
         let path = try group.resolvedDirectoryPath()
@@ -788,7 +788,7 @@ extension DBContainer {
     }
 
     package func getCurrentSchemaVersion(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Schema.Version? {
         let versionKey = metadataSubspace
             .subspace("schema")
@@ -841,7 +841,7 @@ extension DBContainer {
     private static func setCurrentSchemaSnapshot(
         _ schema: Schema,
         metadataSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let versionKey = metadataSubspace
             .subspace("schema")
@@ -926,7 +926,7 @@ extension DBContainer {
     /// Resolves migration status in a caller-owned transaction.
     package func migrationStatus(
         targetVersion requestedTarget: Schema.Version? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseMigrationStatus {
         let targetVersion = try migrationTarget(requestedTarget)
         let currentVersion = try await getCurrentSchemaVersion(
@@ -1094,7 +1094,7 @@ extension DBContainer {
 
     private func validatePersistedSchemaFingerprint(
         _ expectedSchema: Schema,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let fingerprintKey = metadataSubspace
             .subspace("schema")

@@ -7,7 +7,7 @@ import Synchronization
 /// This wrapper can:
 /// - Count `collectRange` calls
 /// - Fail if more than `maxCollectCalls` calls are performed
-public final class LimitingTransaction: Transaction, Sendable {
+public final class LimitingTransaction: TransactionAccess, Sendable {
 
     public var capabilities: TransactionCapabilities {
         underlying.capabilities
@@ -16,11 +16,12 @@ public final class LimitingTransaction: Transaction, Sendable {
     // MARK: - Associated Type
 
     /// Delegates to the underlying transaction's RangeResult via type erasure.
-    /// Since LimitingTransaction wraps `any Transaction`, we eagerly collect via collectRange.
+    /// Since LimitingTransaction wraps type-erased storage access, range
+    /// collection is deferred to the iterator.
     public struct RangeResult: TransactionRangeResult {
         public typealias Element = (Bytes, Bytes)
 
-        private let underlying: (any Transaction)?
+        private let underlying: (any TransactionAccess)?
         private let begin: KeySelector
         private let end: KeySelector
         private let limit: Int
@@ -56,7 +57,7 @@ public final class LimitingTransaction: Transaction, Sendable {
 
         /// Create from underlying transaction parameters (lazy collection).
         init(
-            underlying: any Transaction,
+            underlying: any TransactionAccess,
             begin: KeySelector, end: KeySelector,
             limit: Int, reverse: Bool,
             snapshot: Bool, streamingMode: StreamingMode
@@ -86,7 +87,7 @@ public final class LimitingTransaction: Transaction, Sendable {
         }
 
         public struct AsyncIterator: TransactionRangeIterator {
-            private let underlying: (any Transaction)?
+            private let underlying: (any TransactionAccess)?
             private let begin: KeySelector
             private let end: KeySelector
             private let limit: Int
@@ -98,7 +99,7 @@ public final class LimitingTransaction: Transaction, Sendable {
             private let error: LimitingError?
 
             init(
-                underlying: (any Transaction)?,
+                underlying: (any TransactionAccess)?,
                 begin: KeySelector, end: KeySelector,
                 limit: Int, reverse: Bool,
                 snapshot: Bool, streamingMode: StreamingMode,
@@ -158,12 +159,12 @@ public final class LimitingTransaction: Transaction, Sendable {
 
     // MARK: - Properties
 
-    private let underlying: any Transaction
+    private let underlying: any TransactionAccess
     private let maxCollectCalls: Int
     private let callCount: Mutex<Int>
 
     public init(
-        wrapping underlying: any Transaction,
+        wrapping underlying: any TransactionAccess,
         maxCollectCalls: Int = Int.max
     ) {
         self.underlying = underlying
@@ -242,16 +243,6 @@ public final class LimitingTransaction: Transaction, Sendable {
         )
     }
 
-    // MARK: - Transaction Control
-
-    public func commit() async throws {
-        try await underlying.commit()
-    }
-
-    public func cancel() async throws {
-        try await underlying.cancel()
-    }
-
     // MARK: - Version
 
     public func setReadVersion(_ version: Int64) throws {
@@ -260,10 +251,6 @@ public final class LimitingTransaction: Transaction, Sendable {
 
     public func getReadVersion() async throws -> Int64 {
         try await underlying.getReadVersion()
-    }
-
-    public func getCommittedVersion() throws -> Int64 {
-        try underlying.getCommittedVersion()
     }
 
     // MARK: - Options

@@ -661,7 +661,7 @@ public struct MigrationContext: Sendable {
     /// - Returns: Operation result
     /// - Throws: Any error from the operation
     public func executeOperation<T: Sendable>(
-        _ operation: @escaping @Sendable (any Transaction) async throws -> T
+        _ operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
         return try await container.engine.withTransaction(configuration: .default) { transaction in
             try await operation(transaction)

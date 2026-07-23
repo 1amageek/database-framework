@@ -286,7 +286,7 @@ public struct GraphQueryExecutor: Sendable {
     private func scanIndex(
         ordering: GraphIndexOrdering,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [GraphEdge] {
         var results: [GraphEdge] = []
         let orderingSubspace = subspaceForOrdering(ordering, base: indexSubspace)

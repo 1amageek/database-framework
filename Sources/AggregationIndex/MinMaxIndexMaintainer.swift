@@ -84,7 +84,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Extract both sides before mutating Layer 1.
         let oldContribution = try oldItem.flatMap {
@@ -133,7 +133,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         guard let contribution = try contribution(for: item, id: id) else {
             return
@@ -171,7 +171,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     /// **Performance**: O(1) - Direct read from Layer 2
     public func getMin(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Value {
         let expectedGroupingCount = index.rootExpression.columnCount - 1
         guard groupingValues.count == expectedGroupingCount else {
@@ -199,7 +199,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     /// - `min`: Minimum value for the group
     /// - `itemId`: Primary key of the item with minimum value
     public func getAllMins(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], min: Value, itemId: Tuple)] {
         var results: [(grouping: [any TupleElement], min: Value, itemId: Tuple)] = []
         guard index.rootExpression.columnCount >= 1 else {
@@ -342,7 +342,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     /// 3. If not found (group is empty), clear Layer 2 entry
     private func updateAggregateForGroup(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Find MIN value from Layer 1
         let individualGroupSpace = Subspace(
@@ -441,7 +441,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let oldContribution = try oldItem.flatMap {
             try contribution(for: $0)
@@ -489,7 +489,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         guard let contribution = try contribution(for: item, id: id) else {
             return
@@ -527,7 +527,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     /// **Performance**: O(1) - Direct read from Layer 2
     public func getMax(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Value {
         let expectedGroupingCount = index.rootExpression.columnCount - 1
         guard groupingValues.count == expectedGroupingCount else {
@@ -555,7 +555,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     /// - `max`: Maximum value for the group
     /// - `itemId`: Primary key of the item with maximum value
     public func getAllMaxs(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], max: Value, itemId: Tuple)] {
         var results: [(grouping: [any TupleElement], max: Value, itemId: Tuple)] = []
         guard index.rootExpression.columnCount >= 1 else {
@@ -698,7 +698,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     /// 3. If not found (group is empty), clear Layer 2 entry
     private func updateAggregateForGroup(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Find MAX value from Layer 1
         let individualGroupSpace = Subspace(

@@ -19,7 +19,7 @@ struct RDFDatasetScanReservationTests {
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             let reservation = try workMeter.reserveIntermediate(
@@ -37,7 +37,7 @@ struct RDFDatasetScanReservationTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> [RDFGraphName] {
             []
@@ -46,7 +46,7 @@ struct RDFDatasetScanReservationTests {
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false

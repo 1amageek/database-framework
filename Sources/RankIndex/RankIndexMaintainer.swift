@@ -86,7 +86,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         if let oldItem = oldItem {
             if let oldKey = try buildScoreKey(for: oldItem) {
@@ -110,7 +110,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         if let scoreKey = try buildScoreKey(for: item, id: id) {
             let value = try CoveringValueBuilder.build(for: item, index: index)
@@ -145,7 +145,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     /// - Returns: Array of (score, primaryKey) tuples, sorted by score descending
     public func getTopK(
         k: Int,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
         guard k > 0 else { return [] }
 
@@ -182,7 +182,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     /// - Returns: Rank (0-based, 0 = highest)
     public func getRank(
         score: Score,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         // Count entries with score strictly greater than target.
         // Key structure: [scoresSubspace][score][pk]
@@ -224,7 +224,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     /// - Parameter transaction: FDB transaction
     /// - Returns: Total number of entries
     public func getCount(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         guard let bytes = try await transaction.getValue(for: countKey, snapshot: true) else {
             return 0
@@ -247,7 +247,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     /// - Returns: Score at the given percentile, or nil if empty
     public func getPercentile(
         _ percentile: Double,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Score? {
         guard percentile >= 0.0 && percentile <= 1.0 else {
             throw RankIndexError.invalidScore("Percentile must be between 0.0 and 1.0")

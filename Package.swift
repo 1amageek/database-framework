@@ -54,14 +54,7 @@ let package = Package(
     dependencies: [
         .package(path: "../database-kit"),
         .package(path: "../swift-hnsw"),
-        .package(
-            path: "../storage-kit",
-            traits: [
-                .trait(name: "FoundationDB", condition: .when(traits: ["FoundationDB"])),
-                .trait(name: "SQLite", condition: .when(traits: ["SQLite"])),
-                .trait(name: "PostgreSQL", condition: .when(traits: ["PostgreSQL"])),
-            ]
-        ),
+        .package(path: "../storage-kit"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),

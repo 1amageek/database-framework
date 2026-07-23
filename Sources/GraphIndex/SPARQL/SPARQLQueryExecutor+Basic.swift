@@ -13,7 +13,7 @@ import StorageKit
 extension SPARQLQueryExecutor {
     func evaluateBasic(
         patterns: [ExecutionTriple],
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression? = nil,
         seed: VariableBinding,

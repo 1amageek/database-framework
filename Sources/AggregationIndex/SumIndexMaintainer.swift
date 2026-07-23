@@ -68,7 +68,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let oldData = try extractAggregationData(from: oldItem)
         let newData = try extractAggregationData(from: newItem)
@@ -79,7 +79,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         guard let data = try extractAggregationData(from: item) else {
             return
@@ -119,7 +119,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     /// - Returns: The exact sum, or `nil` when the group has no indexed values.
     public func getSum(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> FieldValue? {
         let sumKey = try buildSumKey(groupingValues: groupingValues)
         let countKey = try buildCountKey(groupingValues: groupingValues)
@@ -149,7 +149,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     /// Get a lossless Double view of the sum for a specific grouping.
     public func getSumAsDouble(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Double? {
         guard let sum = try await getSum(
             groupingValues: groupingValues,
@@ -170,7 +170,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of (groupingValues, sum) tuples
     public func getAllSumsAsDouble(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], sum: Double)] {
         let exactResults = try await getAllSums(transaction: transaction)
         var results: [(grouping: [any TupleElement], sum: Double)] = []
@@ -185,7 +185,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     }
 
     public func getAllSums(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], sum: FieldValue)] {
         var groupingByIdentity: [Bytes: [any TupleElement]] = [:]
         var sums: [Bytes: FieldValue] = [:]
@@ -293,7 +293,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     private func applyDelta(
         oldData: AggregationData?,
         newData: AggregationData?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         switch (oldData, newData) {
         case let (.some(old), .some(new))
@@ -328,7 +328,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
 
     private func insert(
         _ data: AggregationData,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try await mutateNumericAggregate(
             sumKey: data.sumKey,
@@ -341,7 +341,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
 
     private func remove(
         _ data: AggregationData,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try await mutateNumericAggregate(
             sumKey: data.sumKey,

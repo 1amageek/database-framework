@@ -34,7 +34,7 @@ struct SPARQLSubSelectExecutionTests {
         }
 
         func record(
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) {
             state.withLock {
@@ -57,7 +57,7 @@ struct SPARQLSubSelectExecutionTests {
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             observations.record(
@@ -79,7 +79,7 @@ struct SPARQLSubSelectExecutionTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> [RDFGraphName] {
             []
@@ -88,7 +88,7 @@ struct SPARQLSubSelectExecutionTests {
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
@@ -98,7 +98,7 @@ struct SPARQLSubSelectExecutionTests {
     private struct RetryScanObservationState: Sendable {
         var innerScanCount = 0
         var rightScanCount = 0
-        var transactions: [ObjectIdentifier: any Transaction] = [:]
+        var transactions: [ObjectIdentifier: any TransactionAccess] = [:]
         var workMeterIdentifiers: Set<ObjectIdentifier> = []
     }
 
@@ -123,7 +123,7 @@ struct SPARQLSubSelectExecutionTests {
 
         func record(
             predicate: String,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) -> Int {
             state.withLock { state in
@@ -156,7 +156,7 @@ struct SPARQLSubSelectExecutionTests {
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             guard case .iri(let predicateIRI) = predicate else {
@@ -213,7 +213,7 @@ struct SPARQLSubSelectExecutionTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> [RDFGraphName] {
             []
@@ -222,7 +222,7 @@ struct SPARQLSubSelectExecutionTests {
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
@@ -237,7 +237,7 @@ struct SPARQLSubSelectExecutionTests {
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             guard case .iri(let predicateIRI) = predicate else {
@@ -275,7 +275,7 @@ struct SPARQLSubSelectExecutionTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> [RDFGraphName] {
             []
@@ -284,7 +284,7 @@ struct SPARQLSubSelectExecutionTests {
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false

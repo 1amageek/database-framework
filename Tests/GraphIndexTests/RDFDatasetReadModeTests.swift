@@ -268,7 +268,7 @@ struct RDFDatasetReadModeTests {
     private func writePhysicalQuad(
         _ quad: RDFQuad,
         root: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let codec = RDFQuadIndexPhysicalCodec(
             baseSubspace: root.subspace(Int64(1))
@@ -312,7 +312,7 @@ struct RDFDatasetReadModeTests {
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             observations.record(.scan(readMode))
@@ -322,7 +322,7 @@ struct RDFDatasetReadModeTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> [RDFGraphName] {
             observations.record(.namedGraphs(readMode))
@@ -332,7 +332,7 @@ struct RDFDatasetReadModeTests {
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             observations.record(.containsNamedGraph(readMode))
@@ -380,7 +380,7 @@ struct RDFDatasetReadModeTests {
         }
     }
 
-    private final class RecordingTransaction: Transaction, Sendable {
+    private final class RecordingTransaction: TransactionAccess, Sendable {
         struct RangeResult: TransactionRangeResult {
             typealias Element = (Bytes, Bytes)
 
@@ -405,11 +405,11 @@ struct RDFDatasetReadModeTests {
             }
         }
 
-        let underlying: any Transaction
+        let underlying: any TransactionAccess
         let observations: ReadObservations
 
         init(
-            underlying: any Transaction,
+            underlying: any TransactionAccess,
             observations: ReadObservations
         ) {
             self.underlying = underlying
@@ -476,24 +476,12 @@ struct RDFDatasetReadModeTests {
             )
         }
 
-        func commit() async throws {
-            try await underlying.commit()
-        }
-
-        func cancel() async throws {
-            try await underlying.cancel()
-        }
-
         func setReadVersion(_ version: Int64) throws {
             try underlying.setReadVersion(version)
         }
 
         func getReadVersion() async throws -> Int64 {
             try await underlying.getReadVersion()
-        }
-
-        func getCommittedVersion() throws -> Int64 {
-            try underlying.getCommittedVersion()
         }
 
         func setOption(forOption option: TransactionOption) throws {

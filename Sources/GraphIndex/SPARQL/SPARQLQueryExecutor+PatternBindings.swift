@@ -14,7 +14,7 @@ extension SPARQLQueryExecutor {
     func evaluateUnionPattern(
         left: ExecutionPattern,
         right: ExecutionPattern,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression?,
         seed: VariableBinding,

@@ -19,7 +19,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             guard limit == 1 else {
@@ -47,7 +47,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> [RDFGraphName] {
             []
@@ -56,7 +56,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any Transaction,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false

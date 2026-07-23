@@ -361,7 +361,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchPhrase(
         indexName: String,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let (indexDescriptor, kind) = try resolveFullTextIndex(named: indexName)
 
@@ -394,7 +394,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         matchMode: TextMatchMode,
         kind: FullTextIndexKind<T>,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let termsSubspace = indexSubspace.subspace("terms")
 
@@ -440,7 +440,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchTermsAND(
         _ terms: [String],
         termsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -482,7 +482,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchTermsOR(
         _ terms: [String],
         termsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -508,7 +508,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchTerm(
         _ term: String,
         termsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()

@@ -30,7 +30,7 @@ public protocol SPARQLSourceExecutor: Sendable {
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> QueryResponse
 
     func executeAskInTransaction(
@@ -38,7 +38,7 @@ public protocol SPARQLSourceExecutor: Sendable {
         askQuery: AskQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Bool
 
     func executeConstructInTransaction(
@@ -47,7 +47,7 @@ public protocol SPARQLSourceExecutor: Sendable {
         resultScope: DatabaseGraphResultScope,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph
 
     func executeDescribeInTransaction(
@@ -55,7 +55,7 @@ public protocol SPARQLSourceExecutor: Sendable {
         describeQuery: DescribeQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph
 }
 

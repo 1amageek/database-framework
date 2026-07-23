@@ -75,7 +75,7 @@ public final class IndexLifecycleStore: Sendable {
     ///   - transaction: The transaction to use
     /// - Returns: Current IndexState (defaults to .disabled if not found)
     /// - Throws: Error if state value is invalid
-    public func state(of indexName: String, transaction: any Transaction) async throws -> IndexState {
+    public func state(of indexName: String, transaction: any TransactionAccess) async throws -> IndexState {
         let stateKey = makeStateKey(for: indexName)
 
         guard let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
@@ -148,7 +148,7 @@ public final class IndexLifecycleStore: Sendable {
     /// Make an index readable within an existing transaction.
     public func makeReadable(
         _ indexName: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let stateKey = makeStateKey(for: indexName)
         let currentState: IndexState
@@ -209,7 +209,7 @@ public final class IndexLifecycleStore: Sendable {
     public func ensureReadable(
         _ indexNames: [String],
         recordRange: (begin: Bytes, end: Bytes),
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let sourceRows = try await transaction.collectRange(
             from: .firstGreaterOrEqual(recordRange.begin),
@@ -258,7 +258,7 @@ public final class IndexLifecycleStore: Sendable {
     func validateReadableForRead(
         _ indexNames: [String],
         recordRange: (begin: Bytes, end: Bytes),
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         var sourceIsEmpty: Bool?
         for indexName in indexNames {
@@ -317,7 +317,7 @@ public final class IndexLifecycleStore: Sendable {
     /// - Parameters:
     ///   - indexName: Name of the index
     ///   - transaction: The transaction to use
-    public func disable(_ indexName: String, transaction: any Transaction) async throws {
+    public func disable(_ indexName: String, transaction: any TransactionAccess) async throws {
         let stateKey = makeStateKey(for: indexName)
 
         // Read current state within transaction (for logging)
@@ -344,7 +344,7 @@ public final class IndexLifecycleStore: Sendable {
     ///   - indexName: Name of the index
     ///   - transaction: The transaction to use
     /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
-    public func enable(_ indexName: String, transaction: any Transaction) async throws {
+    public func enable(_ indexName: String, transaction: any TransactionAccess) async throws {
         let stateKey = makeStateKey(for: indexName)
 
         // Read current state within transaction
@@ -409,7 +409,7 @@ public final class IndexLifecycleStore: Sendable {
     ///   - indexNames: List of index names
     ///   - transaction: The transaction to use
     /// - Returns: Dictionary mapping index names to states
-    public func states(of indexNames: [String], transaction: any Transaction) async throws -> [String: IndexState] {
+    public func states(of indexNames: [String], transaction: any TransactionAccess) async throws -> [String: IndexState] {
         var states: [String: IndexState] = [:]
 
         for indexName in indexNames {

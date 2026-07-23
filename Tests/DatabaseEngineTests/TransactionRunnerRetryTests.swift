@@ -790,6 +790,9 @@ private final class RecordingTransaction: Transaction, Sendable {
 
     var capabilities: TransactionCapabilities { underlying.capabilities }
     var mutationByteLimit: Int? { underlying.mutationByteLimit }
+    var transactionDomain: StorageTransactionDomain {
+        underlying.transactionDomain
+    }
 
     init(
         underlying: InMemoryTransaction,

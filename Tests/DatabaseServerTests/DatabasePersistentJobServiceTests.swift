@@ -877,7 +877,7 @@ struct DatabasePersistentJobServiceTests {
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
-            let transaction = transactionContext.storageTransaction
+            let transaction = transactionContext.storageAccess
             guard let snapshot = try await store.load(
                 job.jobID,
                 transaction: transaction
@@ -938,7 +938,7 @@ struct DatabasePersistentJobServiceTests {
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
-            let transaction = transactionContext.storageTransaction
+            let transaction = transactionContext.storageAccess
             guard let snapshot = try await store.load(
                 job.jobID,
                 transaction: transaction
@@ -1548,7 +1548,7 @@ struct DatabasePersistentJobServiceTests {
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
-            let transaction = transactionContext.storageTransaction
+            let transaction = transactionContext.storageAccess
             guard let snapshot = try await store.load(
                 started.jobID,
                 transaction: transaction
@@ -1644,7 +1644,7 @@ struct DatabasePersistentJobServiceTests {
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
-            let transaction = transactionContext.storageTransaction
+            let transaction = transactionContext.storageAccess
             guard let snapshot = try await store.load(
                 started.jobID,
                 transaction: transaction

@@ -129,7 +129,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 requestID: 1,
                 prepare: { 1 },
                 body: { value, context in
-                    try context.storageTransaction.setValue(
+                    try context.storageAccess.setValue(
                         Bytes(repeating: 0, count: 64),
                         for: key
                     )
@@ -178,7 +178,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 prepare: { 1 },
                 body: { value, context in
                     try await ContinuousClock().sleep(for: .milliseconds(100))
-                    try context.storageTransaction.setValue(
+                    try context.storageAccess.setValue(
                         [UInt8(value)],
                         for: [0xF1]
                     )

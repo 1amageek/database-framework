@@ -47,7 +47,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> QueryResponse {
         try validate(selectQuery)
         let runtime = try await makeRuntime(
@@ -70,7 +70,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         askQuery: AskQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         let scanner = try await makeRuntime(
             context: context,
@@ -95,7 +95,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         resultScope: DatabaseGraphResultScope,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph {
         let scanner = try await makeRuntime(
             context: context,
@@ -120,7 +120,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         describeQuery: DescribeQuery,
         options: ReadExecutionContext,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph {
         let scanner = try await makeRuntime(
             context: context,
@@ -161,7 +161,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     private func makeRuntime(
         context: FDBContext,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (
         scanner: CanonicalRDFDatasetScanner,
         storedFieldNames: [String]
@@ -194,7 +194,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         context: FDBContext,
         resolution: RDFDatasetReadResolution,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> RDFDatasetSource? {
         guard let type = resolution.entity.persistableType else {
             throw CanonicalReadError.unsupportedSource(
@@ -217,7 +217,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         type: T.Type,
         resolution: RDFDatasetReadResolution,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> RDFDatasetSource? {
         let queryContext = try context.indexQueryContext.withPartitions(
             partitions,
@@ -259,7 +259,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         options: ReadExecutionContext,
         storedFieldNames: [String],
         datasetScanner: any RDFDatasetScanner,
-        transaction: (any Transaction)?
+        transaction: (any TransactionAccess)?
     ) async throws -> QueryResponse {
         let selectPlan = try SPARQLSelectPlanCompiler
             .compileForCanonicalPagination(

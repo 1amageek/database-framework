@@ -240,7 +240,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         level: Int,
         encoding: SpatialEncoding,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let plan = try SpatialScanPlanner.plan(for: constraint, encoding: encoding, level: level)
         let scanner = SpatialCellScanner(indexSubspace: indexSubspace, encoding: encoding, level: level)

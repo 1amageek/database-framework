@@ -8,6 +8,6 @@ public protocol DatabaseSHACLDataSourceResolver: Sendable {
         focus: SHACLExecuteOperation.Focus,
         entailment: SHACLExecuteOperation.Entailment,
         workBudget: SHACLValidationWorkBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseSHACLResolvedDataSource
 }

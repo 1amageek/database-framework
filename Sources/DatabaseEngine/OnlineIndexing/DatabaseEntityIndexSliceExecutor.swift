@@ -15,7 +15,7 @@ enum DatabaseEntityIndexSliceExecutor {
         index: Index,
         lastProcessedKey: Bytes?,
         maximumWorkUnits: Int,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Result {
         func execute<T: Persistable>(_: T.Type) async throws -> Result {
             let maintainer: any IndexMaintainer<T> = try container.runtimeConfiguration

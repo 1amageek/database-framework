@@ -14,19 +14,19 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
     private let transaction: DatabaseTransaction
     private let operationID: UInt64
     private let scope: DatabaseTransactionScope
-    package let storageTransaction: any Transaction
+    package let storageAccess: any TransactionAccess
 
     package init(
         schema: Schema,
         transaction: DatabaseTransaction,
         operationID: UInt64,
-        storageTransaction: any Transaction
+        storageAccess: any TransactionAccess
     ) {
         self.schema = schema
         self.transaction = transaction
         self.operationID = operationID
         self.scope = DatabaseTransactionScope()
-        self.storageTransaction = storageTransaction
+        self.storageAccess = storageAccess
     }
 
     deinit {}

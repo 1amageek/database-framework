@@ -75,7 +75,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let oldKey = try contributionKey(from: oldItem)
         let newKey = try contributionKey(from: newItem)
@@ -98,7 +98,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         guard let key = try contributionKey(from: item) else { return }
         try await incrementCount(key: key, transaction: transaction)
@@ -117,14 +117,14 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     /// Get the non-null count for a specific grouping
     public func getCount(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         try await getCountValue(groupingValues: groupingValues, transaction: transaction)
     }
 
     /// Get all non-null counts in this index
     public func getAllCounts(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], count: Int64)] {
         try await scanAllCounts(transaction: transaction)
     }

@@ -148,7 +148,7 @@ private struct CRUDBenchmarkContext: Sendable {
     func rawWrite(id: String) async throws {
         let value = Bytes(repeating: 0x42, count: 72)
         let key = rawSubspace.pack(Tuple([id]))
-        try await engine.withAutoCommit { transaction in
+        try await engine.withTransaction { transaction in
             try transaction.setValue(value, for: key)
         }
     }
@@ -157,7 +157,7 @@ private struct CRUDBenchmarkContext: Sendable {
         let layout = try await frameworkLayout()
         let key = layout.itemSubspace.pack(Tuple([record.id]))
         let data = try DataAccess.serialize(record)
-        try await engine.withAutoCommit { transaction in
+        try await engine.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: layout.blobsSubspace, configuration: .v1)
             try await storage.write(data, for: key)
         }
@@ -166,7 +166,7 @@ private struct CRUDBenchmarkContext: Sendable {
     func rawFrameworkKeyRead(id: String) async throws -> Bool {
         let layout = try await frameworkLayout()
         let key = layout.itemSubspace.pack(Tuple([id]))
-        return try await engine.withAutoCommit { transaction in
+        return try await engine.withTransaction { transaction in
             try await transaction.getValue(for: key, snapshot: false) != nil
         }
     }
@@ -174,7 +174,7 @@ private struct CRUDBenchmarkContext: Sendable {
     func frameworkLayoutRead(id: String) async throws -> CRUDBenchmarkRecord? {
         let layout = try await frameworkLayout()
         let key = layout.itemSubspace.pack(Tuple([id]))
-        return try await engine.withAutoCommit { transaction in
+        return try await engine.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: layout.blobsSubspace, configuration: .v1)
             guard let data = try await storage.read(for: key, snapshot: false) else {
                 return nil

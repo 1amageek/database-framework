@@ -94,7 +94,7 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
     public func updateAutocomplete(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Remove old autocomplete entries
         if let oldItem = oldItem {
@@ -119,7 +119,7 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
         field: String,
         prefix: String,
         limit: Int = 10,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [AutocompleteSuggestion] {
         let normalizedPrefix = normalizeText(prefix)
         guard normalizedPrefix.count >= minPrefixLength else {
@@ -168,7 +168,7 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
     public func getPopularTerms(
         field: String,
         limit: Int = 100,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [AutocompleteSuggestion] {
         let fieldSubspace = termsSubspace.subspace(field)
         let (begin, end) = fieldSubspace.range()
@@ -204,7 +204,7 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
     /// Add autocomplete entries for an item
     private func addAutocomplete(
         item: Item,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         for field in autocompleteFields {
             let terms = extractTerms(from: item, field: field)
@@ -227,7 +227,7 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
     /// Remove autocomplete entries for an item
     private func removeAutocomplete(
         item: Item,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         for field in autocompleteFields {
             let terms = extractTerms(from: item, field: field)

@@ -23,7 +23,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
         graphScope: RDFGraphScanScope,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         throw ConflictInjectionStoreError.unexpectedOperation
@@ -32,7 +32,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [RDFGraphName] {
         throw ConflictInjectionStoreError.unexpectedOperation
@@ -41,7 +41,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     func containsGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         throw ConflictInjectionStoreError.unexpectedOperation
@@ -49,7 +49,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
 
     func createGraph(
         _ graph: RDFGraphName,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws {
         throw ConflictInjectionStoreError.unexpectedOperation
@@ -57,7 +57,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
 
     func insert(
         _ quad: RDFQuad,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFGraphInsertResult {
         let attempt = insertionAttempts.withLock { count in
@@ -75,7 +75,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
 
     func delete(
         _ quad: RDFQuad,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         throw ConflictInjectionStoreError.unexpectedOperation
@@ -83,7 +83,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
 
     func clear(
         _ scope: RDFGraphMutationScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         throw ConflictInjectionStoreError.unexpectedOperation
@@ -91,7 +91,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
 
     func drop(
         _ scope: RDFGraphMutationScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         throw ConflictInjectionStoreError.unexpectedOperation

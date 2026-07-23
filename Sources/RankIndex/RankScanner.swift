@@ -44,9 +44,9 @@ enum RankScannerError: Error, Sendable, Equatable {
 /// - `rangeDescending(from:to:)` returns [from, to) from the top (rank 0 = highest)
 struct RankScanner {
     let scoresSubspace: Subspace
-    let transaction: any Transaction
+    let transaction: any TransactionAccess
 
-    init(scoresSubspace: Subspace, transaction: any Transaction) {
+    init(scoresSubspace: Subspace, transaction: any TransactionAccess) {
         self.scoresSubspace = scoresSubspace
         self.transaction = transaction
     }

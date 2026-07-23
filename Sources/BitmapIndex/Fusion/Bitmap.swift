@@ -222,7 +222,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     private func readBitmapPrimaryKeys(
         fieldValues: [any TupleElement],
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let dataSubspace = indexSubspace.subspace("data")
         let idsSubspace = indexSubspace.subspace("ids")

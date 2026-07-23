@@ -171,7 +171,7 @@ public struct GraphPropertyScanner: Sendable {
         to target: GraphIdentity?,
         scope: GraphScanScope = .all,
         propertyFilters: [PropertyFilter]?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) -> GraphPropertySequence {
         let scanner: GraphEdgeScanner
         if let snapshot {

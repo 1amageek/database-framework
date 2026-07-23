@@ -14,7 +14,7 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
 
     func update(
         _ write: PersistableWriteResult,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let modelType = type(of: write.model)
         guard let polymorphicType = modelType as? any Polymorphable.Type,
@@ -78,7 +78,7 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
 
     func remove(
         _ model: any Persistable,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let modelType = type(of: model)
         guard let polymorphicType = modelType as? any Polymorphable.Type,
@@ -138,7 +138,7 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
 
     private func resolveProjection(
         polymorphicType: any Polymorphable.Type,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Projection {
         let group = try container.polymorphicGroup(
             identifier: polymorphicType.polymorphableType

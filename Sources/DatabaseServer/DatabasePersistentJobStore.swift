@@ -49,7 +49,7 @@ struct DatabasePersistentJobStore: Sendable {
         specification preparedSpecification: PreparedSpecification,
         plan: DatabasePersistentJobPlan,
         state: DatabasePersistentJobState,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let specification = preparedSpecification.value
         let jobID = specification.jobID
@@ -125,7 +125,7 @@ struct DatabasePersistentJobStore: Sendable {
 
     func load(
         _ jobID: DatabaseUUID,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         snapshot: Bool = false
     ) async throws -> DatabasePersistentJobSnapshot? {
         let specificationValue = try await transaction.getValue(
@@ -200,7 +200,7 @@ struct DatabasePersistentJobStore: Sendable {
     func loadState(
         _ jobID: DatabaseUUID,
         specificationDigest: DatabaseBytes,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabasePersistentJobState {
         guard let value = try await transaction.getValue(
             for: stateKey(jobID),
@@ -219,7 +219,7 @@ struct DatabasePersistentJobStore: Sendable {
     func storeState(
         _ state: DatabasePersistentJobState,
         replacing previous: DatabasePersistentJobState,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let expectedRevision = previous.revision.addingReportingOverflow(1)
         guard !expectedRevision.overflow,
@@ -246,7 +246,7 @@ struct DatabasePersistentJobStore: Sendable {
         _ responsePayload: DatabaseBytes,
         snapshot: DatabasePersistentJobSnapshot,
         completedAt: DatabaseTimestamp,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseJobResultDigest {
         let count = responsePayload.count
         guard count <= storageLimits.maximumResultBytes else {
@@ -598,7 +598,7 @@ struct DatabasePersistentJobStore: Sendable {
 
     private func writeDueEntry(
         for state: DatabasePersistentJobState,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         guard let scheduledAt = state.scheduledAt else { return }
         let value = try DatabaseEnvelopeCodec.encode(

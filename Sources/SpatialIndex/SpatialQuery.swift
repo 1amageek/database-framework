@@ -378,7 +378,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         level: Int,
         encoding: SpatialEncoding,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> SpatialScanResult {
         let plan = try SpatialScanPlanner.plan(
             for: constraint,

@@ -2,12 +2,12 @@ import Core
 import DatabaseValue
 import StorageKit
 
-/// Owns every persisted-model operation performed by one physical transaction
-/// attempt.
+/// Owns database semantics performed within one storage transaction attempt.
 ///
 /// Public operations reject overlapping entry. Derived mutation maintainers
 /// receive an operation-scoped capability that permits recursive persistence
-/// while preserving this owner, the physical transaction, and final validation.
+/// while preserving this owner, shared storage access, and final validation.
+/// `TransactionRunner` alone owns commit, cancellation, and retry lifecycle.
 public actor DatabaseTransaction: DatabaseTransactionWriting {
     private enum State: Sendable, Equatable {
         case open
@@ -21,7 +21,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         case derived
     }
 
-    nonisolated package let storageTransaction: any Transaction
+    nonisolated package let storageAccess: any TransactionAccess
 
     private let container: DBContainer
     private let mutationMaintenanceService: PersistableMutationMaintenanceService
@@ -49,10 +49,10 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package init(
-        transaction: any Transaction,
+        storageAccess: any TransactionAccess,
         container: DBContainer
     ) {
-        self.storageTransaction = transaction
+        self.storageAccess = storageAccess
         self.container = container
         self.mutationMaintenanceService =
             PersistableMutationMaintenanceService(
@@ -172,7 +172,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
                 beginSelector = .firstGreaterOrEqual(begin)
             }
 
-            var entries = try await storageTransaction.collectRange(
+            var entries = try await storageAccess.collectRange(
                 from: beginSelector,
                 to: .firstGreaterOrEqual(end),
                 limit: limit + 1,
@@ -186,7 +186,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             }
 
             let storage = container.itemStorageFactory.make(
-                transaction: storageTransaction,
+                transaction: storageAccess,
                 blobsSubspace: subspaces.blobs
             )
             var models: [Model] = []
@@ -610,18 +610,18 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         let store = try await container.fdbStore(
             for: modelType,
             path: partition,
-            transaction: storageTransaction
+            transaction: storageAccess
         )
         let write = try await store.save(
             model,
             precondition: precondition,
-            transaction: storageTransaction
+            transaction: storageAccess
         )
         try await PolymorphicProjectionMaintainer(
             container: container
         ).update(
             write,
-            transaction: storageTransaction
+            transaction: storageAccess
         )
         let mutationContext = makeMutationContext(operationID: operationID)
         do {
@@ -671,12 +671,12 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         let store = try await container.fdbStore(
             for: modelType,
             path: partition,
-            transaction: storageTransaction
+            transaction: storageAccess
         )
         guard let persistedModel = try await store.delete(
             model,
             precondition: precondition,
-            transaction: storageTransaction
+            transaction: storageAccess
         ) else {
             return
         }
@@ -684,7 +684,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             container: container
         ).remove(
             persistedModel,
-            transaction: storageTransaction
+            transaction: storageAccess
         )
         let mutationContext = makeMutationContext(operationID: operationID)
         do {
@@ -751,7 +751,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         }
         let key = subspaces.items.subspace(entity).pack(id)
         let storage = container.itemStorageFactory.make(
-            transaction: storageTransaction,
+            transaction: storageAccess,
             blobsSubspace: subspaces.blobs
         )
         guard let data = try await storage.read(for: key) else {
@@ -791,7 +791,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         }
         let (begin, end) = subspaces.items.subspace(entity).range()
         let storage = container.itemStorageFactory.make(
-            transaction: storageTransaction,
+            transaction: storageAccess,
             blobsSubspace: subspaces.blobs
         )
         var models: [any Persistable] = []
@@ -890,7 +890,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             schema: container.schema,
             transaction: self,
             operationID: operationID,
-            storageTransaction: storageTransaction
+            storageAccess: storageAccess
         )
     }
 
@@ -937,14 +937,14 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         }
         guard try await container.engine.directoryService.exists(
             path: partitionPath,
-            transaction: storageTransaction
+            transaction: storageAccess
         ) else {
             return nil
         }
         let root = try await container.openDirectory(
             for: type,
             path: path,
-            transaction: storageTransaction
+            transaction: storageAccess
         )
         let resolved = ResolvedSubspaces(
             items: root.subspace(SubspaceKey.items),
@@ -965,7 +965,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             .subspace(Model.persistableType)
             .pack(try RecordIdentifierKeyCodec.tuple(for: id))
         let storage = container.itemStorageFactory.make(
-            transaction: storageTransaction,
+            transaction: storageAccess,
             blobsSubspace: subspaces.blobs
         )
         guard let bytes = try await storage.read(

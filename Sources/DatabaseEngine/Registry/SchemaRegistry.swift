@@ -47,7 +47,7 @@ public struct SchemaRegistry: Sendable {
     func persist(
         _ schema: Schema,
         mode: SchemaRegistryPersistMode = .strict,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let entities = schema.entities
         try await validateCompatibility(
@@ -85,7 +85,7 @@ public struct SchemaRegistry: Sendable {
     /// caller, which holds the schema-version conflict key in the same transaction.
     func persistInitialSchema(
         _ schema: Schema,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let targetNames = Set(schema.entities.map(\.name))
         let catalogRange = Subspace(prefix: Tuple([Self.catalogPrefix]).pack())
@@ -222,7 +222,7 @@ public struct SchemaRegistry: Sendable {
     private func validateCompatibility(
         of entities: [Schema.Entity],
         mode: SchemaRegistryPersistMode,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let names = Set(entities.map(\.name))
         var existingByName: [String: Schema.Entity] = [:]

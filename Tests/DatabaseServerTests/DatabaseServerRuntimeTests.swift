@@ -128,7 +128,7 @@ struct DatabaseServerRuntimeTests {
             Issue.record("Expected an idempotency conflict")
         case .failure(let error):
             #expect(error.category == .conflict)
-            #expect(error.code == "MUTATION_CONFLICT")
+            #expect(error.code == "IDEMPOTENCY_KEY_CONFLICT")
         }
     }
 

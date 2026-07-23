@@ -252,7 +252,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         queryVector: [Float],
         k: Int,
         context: FDBContext,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let index = Index(
             name: indexName,
@@ -456,7 +456,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
     private func countVectors(
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int {
         let (begin, end) = indexSubspace.range()
         let sequence = try await transaction.collectRange(

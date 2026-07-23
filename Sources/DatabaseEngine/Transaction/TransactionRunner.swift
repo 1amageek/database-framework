@@ -186,10 +186,10 @@ internal struct TransactionRunner: Sendable {
         onRetry: (@Sendable (_ attempt: Int, _ error: StorageError) -> Void)? = nil,
         onCancel: (@Sendable (_ transaction: any Transaction) -> Void)? = nil,
         onCommitSuccess: (@Sendable (_ transaction: any Transaction, _ commitNanos: UInt64) -> Void)? = nil,
-        operation: @escaping @Sendable (any Transaction) async throws -> T
+        operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
         try configuration.validate()
-        guard ActiveTransactionScope.current == nil else {
+        guard !ActiveTransactionScope.isActive else {
             throw StorageError.invalidOperation(
                 "Nested transaction runners are not supported; pass the active transaction to the nested operation"
             )
@@ -397,11 +397,13 @@ internal struct TransactionRunner: Sendable {
         transaction: any Transaction,
         deadline: EffectiveTransactionDeadline?,
         cancellationGate: TransactionCancellationGate,
-        operation: @escaping @Sendable (any Transaction) async throws -> T
+        operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
         guard let deadline else {
-            return try await ActiveTransactionScope.$current.withValue(transaction) {
-                try await operation(transaction)
+            return try await ActiveTransactionScope.withActiveTransaction(
+                transaction
+            ) { access in
+                try await operation(access)
             }
         }
 
@@ -414,8 +416,9 @@ internal struct TransactionRunner: Sendable {
         ) { group in
             group.addTask {
                 do {
-                    let value = try await ActiveTransactionScope.$current.withValue(transaction) {
-                        try await operation(transaction)
+                    let value = try await ActiveTransactionScope
+                        .withActiveTransaction(transaction) { access in
+                            try await operation(access)
                     }
                     guard raceState.selectOperation() else { return .lostRace }
                     return .value(value)
@@ -545,7 +548,7 @@ internal struct TransactionRunner: Sendable {
     /// Only called on first attempt. On retry, we use fresh version to avoid
     /// repeating `transaction_too_old` errors from stale cached versions.
     private func applyCachedReadVersion(
-        to transaction: any Transaction,
+        to transaction: any TransactionAccess,
         configuration: TransactionConfiguration,
         cache: ReadVersionCache?
     ) throws {
@@ -568,7 +571,7 @@ internal struct TransactionRunner: Sendable {
     }
 
     private func captureReadVersionForCache(
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         cache: ReadVersionCache?
     ) async -> Int64? {
         guard let cache, transaction.capabilities.readVersion else { return nil }

@@ -117,7 +117,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -217,7 +217,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Sparse index: if score field is nil, skip indexing
         let score: Int64
@@ -357,7 +357,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         grouping: [any TupleElement],
         windowId: Int64,
         item: Item,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Create window entry
         let entryKey = try makeWindowEntryKey(
@@ -419,7 +419,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     /// Delete an entry
     private func deleteEntry(
         pk: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Get current position
         let posKey = posSubspace.pack(pk)
@@ -449,7 +449,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         newGrouping: [any TupleElement],
         currentWindowId: Int64,
         item: Item,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Get current position
         let posKey = posSubspace.pack(pk)
@@ -478,7 +478,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     /// Ensure window metadata exists
     private func ensureWindowMetadata(
         windowId: Int64,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let startKey = metaSubspace.subspace("start").pack(Tuple(windowId))
         if try await transaction.getValue(for: startKey) == nil {
@@ -493,7 +493,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     /// This avoids issues with early `break` from async sequences conflicting with commit.
     private func cleanupOldWindows(
         currentWindowId: Int64,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let oldestAllowedWindow = currentWindowId - Int64(windowCount)
 
@@ -519,7 +519,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     public func getTopK(
         k: Int,
         grouping: [any TupleElement]? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -544,7 +544,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         k: Int,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Build range for this window (optionally with grouping)
         var prefixElements: [any TupleElement] = [windowId]
@@ -616,7 +616,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     public func getRank(
         pk: Tuple,
         grouping: [any TupleElement]? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int? {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -665,7 +665,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of window IDs (newest first)
     public func getAvailableWindows(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Int64] {
         let range = metaSubspace.subspace("start").range()
         var windowIds: [Int64] = []
@@ -702,7 +702,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     public func getBottomK(
         k: Int,
         grouping: [any TupleElement]? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -731,7 +731,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         k: Int,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Build range for this window (optionally with grouping)
         var prefixElements: [any TupleElement] = [windowId]
@@ -808,7 +808,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     public func getPercentile(
         _ percentile: Double,
         grouping: [any TupleElement]? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64? {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -833,7 +833,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         _ percentile: Double,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64? {
         guard percentile >= 0 && percentile <= 1 else {
             return nil
@@ -873,7 +873,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     private func getTotalCount(
         windowId: Int64,
         grouping: [any TupleElement]?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int {
         var prefixElements: [any TupleElement] = [windowId]
         if let g = grouping {
@@ -935,7 +935,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     public func getRankDense(
         pk: Tuple,
         grouping: [any TupleElement]? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int? {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -972,7 +972,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         pk: Tuple,
         strategy: RankingStrategy,
         grouping: [any TupleElement]? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int? {
         switch strategy {
         case .competition:
@@ -987,7 +987,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         score: Int64,
         windowId: Int64,
         grouping: [any TupleElement]?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int {
         var prefixElements: [any TupleElement] = [windowId]
         if let g = grouping {

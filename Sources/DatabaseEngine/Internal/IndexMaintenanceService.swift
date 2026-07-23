@@ -79,7 +79,7 @@ internal final class IndexMaintenanceService: Sendable {
         oldModel: T?,
         newModel: T?,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let indexDescriptors = T.indexDescriptors
         logger.trace("updateIndexes<\(T.persistableType)>: indexDescriptors.count=\(indexDescriptors.count)")
@@ -150,7 +150,7 @@ internal final class IndexMaintenanceService: Sendable {
         oldModel: (any Persistable)?,
         newModel: (any Persistable)?,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try await updateIndexesUntyped(
             oldModel: oldModel,
@@ -168,7 +168,7 @@ internal final class IndexMaintenanceService: Sendable {
         id: Tuple,
         descriptors: [IndexDescriptor]?,
         logicalTypeName: String?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Determine which model type we're working with
         let modelType: any Persistable.Type
@@ -268,7 +268,7 @@ internal final class IndexMaintenanceService: Sendable {
         configurations: [any IndexConfiguration],
         oldModel: (any Persistable)?,
         newModel: (any Persistable)?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Determine the concrete model type
         let modelType: any Persistable.Type
@@ -315,7 +315,7 @@ internal final class IndexMaintenanceService: Sendable {
         oldModel: (any Persistable)?,
         state: IndexState,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let modelType = type(of: model)
 
@@ -435,7 +435,7 @@ internal final class IndexMaintenanceService: Sendable {
         oldModel: T?,
         state: IndexState,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Extract index values from the new model
         let values = try Self.extractIndexValues(
@@ -493,7 +493,7 @@ internal final class IndexMaintenanceService: Sendable {
         oldModel: T?,
         state: IndexState,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Build the index key (without ID suffix) to check for existing entries
         // Note: We use pack() to get the key prefix, not subspace() which creates a nested tuple

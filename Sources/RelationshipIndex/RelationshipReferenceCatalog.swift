@@ -12,7 +12,7 @@ public enum RelationshipReferenceCatalog {
         target: RecordIdentity,
         owner: RecordIdentity,
         descriptor: RelationshipDescriptor,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let ownerBytes = try RelationshipIdentityCodec.encode(owner)
         try transaction.setValue(
@@ -29,7 +29,7 @@ public enum RelationshipReferenceCatalog {
         target: RecordIdentity,
         owner: RecordIdentity,
         descriptor: RelationshipDescriptor,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let ownerBytes = try RelationshipIdentityCodec.encode(owner)
         try transaction.clear(
@@ -45,7 +45,7 @@ public enum RelationshipReferenceCatalog {
         of target: RecordIdentity,
         descriptor: RelationshipDescriptor,
         limit: Int,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [RecordIdentity] {
         guard limit > 0 else {
             throw RelationshipReferenceError.invalidScanLimit(limit)
@@ -75,7 +75,7 @@ public enum RelationshipReferenceCatalog {
         descriptor: RelationshipDescriptor,
         continuation: Bytes?,
         limit: Int,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> RelationshipReferenceIdentityPage {
         guard limit > 0, limit <= 256 else {
             throw RelationshipReferenceError.invalidScanLimit(limit)

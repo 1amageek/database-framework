@@ -39,6 +39,9 @@ final class CommitOutcomeUnknownEngine: StorageEngine, Sendable {
         var mutationByteLimit: Int? {
             underlying.mutationByteLimit
         }
+        var transactionDomain: StorageTransactionDomain {
+            underlying.transactionDomain
+        }
 
         fileprivate init(
             underlying: InMemoryTransaction,

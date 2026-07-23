@@ -13,7 +13,7 @@ import StorageKit
 extension SPARQLQueryExecutor {
     func evaluateSubquery(
         _ plan: SPARQLSubqueryExecutionPlan,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         outerSeed: VariableBinding,
         filter: FilterExpression?

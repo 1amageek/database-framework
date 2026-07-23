@@ -15,7 +15,7 @@ extension SPARQLQueryExecutor {
         innerPattern: ExecutionPattern,
         variable: String,
         expression: SPARQLExpressionPlan,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         seed: VariableBinding,
         resultLimit: Int?,

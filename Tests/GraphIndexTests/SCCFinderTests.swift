@@ -424,7 +424,7 @@ struct GraphEdgeScannerBatchTests {
         scanner: GraphEdgeScanner,
         sources: [GraphIdentity],
         edgeLabel: GraphIdentity?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [GraphIdentity: [EdgeInfo]] {
         var grouped: [GraphIdentity: [EdgeInfo]] = [:]
         for source in Set(sources) {
@@ -444,7 +444,7 @@ struct GraphEdgeScannerBatchTests {
         scanner: GraphEdgeScanner,
         targets: [GraphIdentity],
         edgeLabel: GraphIdentity?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [GraphIdentity: [EdgeInfo]] {
         var grouped: [GraphIdentity: [EdgeInfo]] = [:]
         for target in Set(targets) {

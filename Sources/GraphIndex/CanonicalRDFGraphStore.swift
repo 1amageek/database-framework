@@ -67,7 +67,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
         graphScope: RDFGraphScanScope,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         try await scanner.scan(
@@ -85,7 +85,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     public func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [RDFGraphName] {
         if let limit, limit <= 0 { return [] }
@@ -118,7 +118,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     public func containsGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let key = try catalogCodec.key(for: graph)
@@ -135,7 +135,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     public func createGraph(
         _ graph: RDFGraphName,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws {
         let key = try catalogCodec.key(for: graph)
@@ -161,7 +161,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     @discardableResult
     public func insert(
         _ quad: RDFQuad,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFGraphInsertResult {
         let plan = try validatedPlan(for: quad, workMeter: workMeter)
@@ -214,7 +214,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     @discardableResult
     public func delete(
         _ quad: RDFQuad,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let plan = try validatedPlan(for: quad, workMeter: workMeter)
@@ -251,7 +251,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     @discardableResult
     public func clear(
         _ scope: RDFGraphMutationScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         try await validateNamedGraphExists(
@@ -269,7 +269,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     @discardableResult
     public func drop(
         _ scope: RDFGraphMutationScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         let catalogRemoval = try await catalogRemoval(
@@ -318,7 +318,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private func missingCatalogKeyAfterIntegrityCheck(
         for graph: RDFGraphName,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bytes? {
         let key = try catalogCodec.key(for: graph)
@@ -345,7 +345,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     /// graph when this exact protected range is empty.
     private func containsPhysicalQuad(
         in graph: RDFGraphName,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         try workMeter.consume(at: .indexScan)
@@ -366,7 +366,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private func validateNamedGraphExists(
         for scope: RDFGraphMutationScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws {
         guard case .named(let graph) = scope else { return }
@@ -381,7 +381,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private func catalogRemoval(
         for scope: RDFGraphMutationScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> CatalogRemoval {
         switch scope {
@@ -405,7 +405,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     private func write(
         _ plan: RDFQuadIndexWritePlan,
         reusingPrimaryKey primaryKey: Bytes,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         try plan.forEachEntry { entry in
             let key = entry.ordering == .spo
@@ -418,7 +418,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     private func clear(
         _ plan: RDFQuadIndexWritePlan,
         reusingPrimaryKey primaryKey: Bytes,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         try plan.forEachEntry { entry in
             let key = entry.ordering == .spo
@@ -430,7 +430,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private func clearPhysicalQuads(
         in scope: RDFGraphMutationScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         let scanRange = try physicalRange(for: scope, ordering: .gspo)
@@ -507,7 +507,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     private func clearPhysicalRanges(
         for scope: RDFGraphMutationScope,
         includingTermFirstIndexes: Bool,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) throws {
         try workMeter.consume(
@@ -551,7 +551,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     private func clearPhysicalRange(
         for scope: RDFGraphMutationScope,
         ordering: GraphIndexOrdering,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let range = try physicalRange(for: scope, ordering: ordering)
         try transaction.clearRange(

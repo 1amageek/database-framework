@@ -28,7 +28,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         focus: SHACLExecuteOperation.Focus,
         entailment: SHACLExecuteOperation.Entailment,
         workBudget: SHACLValidationWorkBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseSHACLResolvedDataSource {
         try validate(entailment: entailment)
         let resolved = try await resolveSource(
@@ -78,7 +78,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
 
     private func resolveSource(
         _ data: SHACLExecuteOperation.DataSource,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> ResolvedSource {
         guard let entity = container.schema.entity(named: data.entity) else {
             throw DatabaseSHACLDataSourceError.entityNotFound(data.entity)
@@ -175,7 +175,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         entity: Schema.Entity,
         selection: RDFDatasetIndexSelection,
         workBudget: SHACLValidationWorkBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [DatabaseRDFTerm]? {
         switch focus {
         case .targets:
@@ -200,7 +200,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                 )
             }
             let databaseTransaction = DatabaseTransaction(
-                transaction: transaction,
+                storageAccess: transaction,
                 container: container
             )
             var subjects = Set<DatabaseRDFTerm>()

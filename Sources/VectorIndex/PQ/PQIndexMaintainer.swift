@@ -105,7 +105,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Remove old entry
         if let oldItem = oldItem {
@@ -132,7 +132,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         do {
             let vector = try extractVector(from: item)
@@ -157,7 +157,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Should be called after inserting a representative sample of vectors.
     ///
     /// - Parameter transaction: FDB transaction
-    public func train(transaction: any Transaction) async throws {
+    public func train(transaction: any TransactionAccess) async throws {
         // Load all vectors from storage
         let storedVectors = try await loadAllVectorEntries(transaction: transaction)
         guard !storedVectors.isEmpty else {
@@ -189,7 +189,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Check if the index has been trained
-    public func isTrained(transaction: any Transaction) async throws -> Bool {
+    public func isTrained(transaction: any TransactionAccess) async throws -> Bool {
         guard let metadata = try await loadMetadata(transaction: transaction) else {
             return false
         }
@@ -213,7 +213,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func search(
         queryVector: [Float],
         k: Int,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(expected: dimensions, actual: queryVector.count)
@@ -282,7 +282,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Remove entry for a vector
     private func removeEntry(
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Remove codes
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
@@ -300,7 +300,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         vector: [Float],
         item: Item,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Store original vector (for retraining)
         let vectorsSubspace = subspace.subspace(SubspaceKey.vectors.rawValue)
@@ -321,7 +321,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func storeCodes(
         _ codes: [UInt8],
         for id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
         let key = codesSubspace.pack(id)
@@ -331,7 +331,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Store codebooks
     private func storeCodebooks(
         _ codebooks: [[[Float]]],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let codebooksSubspace = subspace.subspace(SubspaceKey.codebooks.rawValue)
 
@@ -350,7 +350,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Load codebooks
     private func loadCodebooks(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[[Float]]] {
         let codebooksSubspace = subspace.subspace(SubspaceKey.codebooks.rawValue)
         let (begin, end) = codebooksSubspace.range()
@@ -381,7 +381,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Load all vectors and primary keys for training.
     private func loadAllVectorEntries(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [StoredVector] {
         let vectorsSubspace = subspace.subspace(SubspaceKey.vectors.rawValue)
         let (begin, end) = vectorsSubspace.range()
@@ -406,7 +406,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Store metadata
     private func storeMetadata(
         _ metadata: PQMetadata,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
         let encoder = JSONEncoder()
@@ -416,7 +416,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Load metadata
     private func loadMetadata(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> PQMetadata? {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
         guard let data = try await transaction.getValue(for: metadataKey) else {

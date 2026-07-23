@@ -60,7 +60,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         if let oldItem = oldItem {
             if let oldKey = try buildIndexKey(for: oldItem) {
@@ -79,7 +79,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         if let indexKey = try buildIndexKey(for: item, id: id) {
             let value = try CoveringValueBuilder.build(for: item, index: index)
@@ -112,7 +112,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         longitude: Double,
         radiusMeters: Double,
         limit: Int? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> SpatialScanResult {
         let plan = try SpatialScanPlanner.plan(
             for: SpatialConstraint(
@@ -156,7 +156,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         maxLat: Double,
         maxLon: Double,
         limit: Int? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> SpatialScanResult {
         let plan = try SpatialScanPlanner.plan(
             for: SpatialConstraint(

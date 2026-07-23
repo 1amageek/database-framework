@@ -602,7 +602,7 @@ public final class FDBContext: Sendable {
         return try await self.withTransaction(configuration: config) { transaction in
             let models = try await store.fetchInTransaction(
                 query,
-                transaction: transaction.storageTransaction
+                transaction: transaction.storageAccess
             )
             return try await operation(models, transaction)
         }
@@ -642,7 +642,7 @@ public final class FDBContext: Sendable {
         let config = TransactionConfiguration(cachePolicy: query.cachePolicy)
 
         // Execute count within transaction (uses ReadVersionCache)
-        return try await self.withRawTransaction(configuration: config) { transaction in
+        return try await self.withStorageAccess(configuration: config) { transaction in
             guard let fdbStore = store as? FDBDataStore else {
                 // Fall back to original behavior if not FDBDataStore
                 return try await store.fetchCount(query)
@@ -711,13 +711,13 @@ public final class FDBContext: Sendable {
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type)
-            return try await container.engine.withAutoCommit { transaction in
+            return try await container.engine.withTransaction { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
             let store = try await cachedStore(for: type)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
-            return try await self.withRawTransaction(configuration: config) { transaction in
+            return try await self.withStorageAccess(configuration: config) { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         }
@@ -763,7 +763,7 @@ public final class FDBContext: Sendable {
 
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type)
-            return try await container.engine.withAutoCommit { transaction in
+            return try await container.engine.withTransaction { transaction in
                 try await store.fetchByIdentifierTupleInTransaction(
                     type,
                     identifier: identifierTuple,
@@ -774,7 +774,7 @@ public final class FDBContext: Sendable {
 
         let store = try await cachedStore(for: type)
         let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
-        return try await withRawTransaction(configuration: configuration) { transaction in
+        return try await withStorageAccess(configuration: configuration) { transaction in
             try await store.fetchByIdentifierTupleInTransaction(
                 type,
                 identifier: identifierTuple,
@@ -832,13 +832,13 @@ public final class FDBContext: Sendable {
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type, path: path)
-            return try await container.engine.withAutoCommit { transaction in
+            return try await container.engine.withTransaction { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
             let store = try await cachedStore(for: type, path: path)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
-            return try await self.withRawTransaction(configuration: config) { transaction in
+            return try await self.withStorageAccess(configuration: config) { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         }
@@ -874,7 +874,7 @@ public final class FDBContext: Sendable {
 
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type, path: path)
-            return try await container.engine.withAutoCommit { transaction in
+            return try await container.engine.withTransaction { transaction in
                 try await store.fetchByIdentifierTupleInTransaction(
                     type,
                     identifier: identifierTuple,
@@ -885,7 +885,7 @@ public final class FDBContext: Sendable {
 
         let store = try await cachedStore(for: type, path: path)
         let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
-        return try await withRawTransaction(configuration: configuration) { transaction in
+        return try await withStorageAccess(configuration: configuration) { transaction in
             try await store.fetchByIdentifierTupleInTransaction(
                 type,
                 identifier: identifierTuple,
@@ -1283,7 +1283,7 @@ extension FDBContext {
             operationDescription: "FDBContext.withTransaction"
         ) { transaction in
             let transaction = DatabaseTransaction(
-                transaction: transaction,
+                storageAccess: transaction,
                 container: self.container
             )
             do {
@@ -1297,27 +1297,28 @@ extension FDBContext {
         }
     }
 
-    /// Execute a raw transaction with configurable retry and timeout (internal use only)
+    /// Execute an operation with storage access and runner-owned lifecycle.
     ///
     /// **Design Intent**:
-    /// This is an internal API for FDBContext's own operations (clearAll, fetchPolymorphic, etc.)
-    /// that need direct Transaction access for low-level operations like `clearRange`.
+    /// This is an internal API for FDBContext operations that need key-value
+    /// capabilities such as `clearRange` without receiving commit or
+    /// cancellation authority.
     ///
     /// Uses the context's ReadVersionCache for weak read semantics optimization.
     ///
     /// **For public API users**:
     /// - Use `withTransaction(_:)` for high-level DatabaseTransaction API
-    /// - Use `container.engine.withTransaction(_:)` if raw access is truly needed (no cache)
+    /// - Use `container.engine.withTransaction(_:)` for storage-level work
     ///
     /// - Parameters:
     ///   - configuration: Transaction configuration (timeout, retry, priority)
     ///   - operation: The operation to execute within the transaction
     /// - Returns: The result of the operation
     /// - Throws: Error if the transaction cannot be committed after retries
-    internal func withRawTransaction<T: Sendable>(
+    internal func withStorageAccess<T: Sendable>(
         configuration: TransactionConfiguration = .default,
         executionDeadline: TransactionExecutionDeadline? = nil,
-        _ operation: @Sendable @escaping (any Transaction) async throws -> T
+        _ operation: @Sendable @escaping (any TransactionAccess) async throws -> T
     ) async throws -> T {
         try ensureUsable()
 
@@ -1326,7 +1327,7 @@ extension FDBContext {
             configuration: configuration,
             executionDeadline: executionDeadline,
             readVersionCache: readVersionCache,
-            operationDescription: "FDBContext.withRawTransaction",
+            operationDescription: "FDBContext.withStorageAccess",
             operation: operation
         )
     }
@@ -1450,7 +1451,7 @@ extension FDBContext {
             )
         }
 
-        let results: [any Persistable] = try await self.withRawTransaction(configuration: .default) { transaction in
+        let results: [any Persistable] = try await self.withStorageAccess(configuration: .default) { transaction in
             guard let subspace = try await self.container
                 .openPolymorphicDirectory(
                     for: P.polymorphableType,
@@ -1521,7 +1522,7 @@ extension FDBContext {
         let idTuple = Tuple([id])
 
         // Search all type subspaces for this ID
-        let result: (any Persistable)? = try await self.withRawTransaction(configuration: .default) { transaction in
+        let result: (any Persistable)? = try await self.withStorageAccess(configuration: .default) { transaction in
             guard let subspace = try await self.container
                 .openPolymorphicDirectory(
                     for: P.polymorphableType,

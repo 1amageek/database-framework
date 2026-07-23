@@ -38,6 +38,7 @@ final class ControlledCompactionStorageEngine: StorageEngine, Sendable {
     }
 
     final class ControlledCompactionTransaction:
+        Transaction,
         DatabaseStorageCompactionTransaction,
         Sendable {
         typealias RangeResult = KeyValueRangeResult
@@ -52,6 +53,9 @@ final class ControlledCompactionStorageEngine: StorageEngine, Sendable {
 
         var mutationByteLimit: Int? {
             underlying.mutationByteLimit
+        }
+        var transactionDomain: StorageTransactionDomain {
+            underlying.transactionDomain
         }
 
         private let underlying: InMemoryTransaction

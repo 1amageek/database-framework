@@ -559,7 +559,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         aggregation: AggregationSpec,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         let metadata = try AggregationIndexMetadata(canonical: index.kind)
         switch aggregation.type {
@@ -669,7 +669,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         switch valueType {
         case .int:
@@ -706,7 +706,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         let maintainer = SumIndexMaintainer<T, Value>(
             index: index,
@@ -728,7 +728,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         switch valueType {
         case .int:
@@ -765,7 +765,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         let maintainer = AverageIndexMaintainer<T, Value>(
             index: index,
@@ -789,7 +789,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         switch valueType {
         case .int:
@@ -828,7 +828,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         let maintainer = MinIndexMaintainer<T, Value>(
             index: index,
@@ -850,7 +850,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         switch valueType {
         case .int:
@@ -889,7 +889,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         let maintainer = MaxIndexMaintainer<T, Value>(
             index: index,

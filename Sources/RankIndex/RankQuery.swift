@@ -185,7 +185,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// Execute query using the rank index
     private func executeWithIndex(
         indexSubspace: Subspace,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         let scoresSubspace = indexSubspace.subspace("scores")
@@ -267,7 +267,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         scanner: RankScanner,
         indexSubspace: Subspace,
         p: Double,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         let countKey = indexSubspace.pack(Tuple("_count"))

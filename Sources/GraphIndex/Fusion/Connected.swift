@@ -291,7 +291,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         node: String,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [String] {
         guard strategy != .quadStore else {
             throw GraphIndexError.unsupportedQueryPattern(

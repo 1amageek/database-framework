@@ -39,7 +39,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         seed: consuming VariableBinding,
         resultLimit: Int?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> SPARQLPropertyPathExecutionResult {
         try validateConfiguration()
         guard resultLimit.map({ $0 >= 0 }) ?? true else {
@@ -151,7 +151,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: DatabaseRDFTerm?,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> MatchResult {
         try workMeter.consume(at: .pathExpansion)
         switch path {
@@ -270,7 +270,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: DatabaseRDFTerm?,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> MatchResult {
         guard repetitions <= configuration.maximumTraversalDepth else {
             throw SPARQLQueryError.propertyPathTraversalDepthLimitExceeded(
@@ -324,7 +324,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: DatabaseRDFTerm?,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> MatchResult {
         var builder = try makeMatchBuilder()
         var seen = try SPARQLPropertyPathMatchSet.make(
@@ -382,7 +382,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: DatabaseRDFTerm?,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         builder: inout SPARQLPropertyPathMatchBuilder,
         seen: inout SPARQLPropertyPathMatchSet,
         statistics: inout ExecutionStatistics
@@ -418,7 +418,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: DatabaseRDFTerm?,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> MatchResult {
         var builder = try makeMatchBuilder()
         var statistics = ExecutionStatistics(patternsEvaluated: 1)
@@ -466,7 +466,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: DatabaseRDFTerm?,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         builder: inout SPARQLPropertyPathMatchBuilder,
         seen: inout SPARQLPropertyPathMatchSet,
         statistics: inout ExecutionStatistics
@@ -515,7 +515,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: DatabaseRDFTerm?,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> MatchResult {
         let leftResult = try await evaluate(
             left,
@@ -563,7 +563,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: DatabaseRDFTerm?,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> MatchResult {
         let leftResult = try await evaluate(
             left,
@@ -599,7 +599,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: DatabaseRDFTerm?,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> MatchResult {
         var statistics = ExecutionStatistics(patternsEvaluated: 1)
         if let startConstraint, let endConstraint,
@@ -661,7 +661,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: DatabaseRDFTerm?,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> MatchResult {
         guard minimum <= configuration.maximumTraversalDepth,
               (maximum ?? minimum) <= configuration.maximumTraversalDepth else {
@@ -835,7 +835,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         _ frontier: borrowing SPARQLPropertyPathMatches,
         through path: ExecutionPropertyPath,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> MatchResult {
         var builder = try makeMatchBuilder()
         var seen = try SPARQLPropertyPathMatchSet.make(
@@ -882,7 +882,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         through path: ExecutionPropertyPath,
         endConstraint: DatabaseRDFTerm?,
         graphScope: RDFGraphScanScope,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> MatchResult {
         var builder = try makeMatchBuilder()
         var statistics = ExecutionStatistics()

@@ -575,7 +575,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         fieldName: String,
         terms: [String],
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let index = Index(
             name: indexName,
@@ -601,7 +601,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         matchMode: TextMatchMode,
         kind: FullTextIndexKind<PolymorphicFullTextPlaceholder>,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let termsSubspace = indexSubspace.subspace("terms")
         let termGroups = normalizeQueryTermGroups(terms, kind: kind)
@@ -668,7 +668,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     private func searchTermsAND(
         _ terms: [String],
         termsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -709,7 +709,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     private func searchTermsOR(
         _ terms: [String],
         termsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -730,7 +730,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     private func searchTerm(
         _ term: String,
         termsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()

@@ -86,7 +86,7 @@ public struct OWL2RLMaterializer: Sendable {
     public func materializeOnWrite(
         triple: ReasoningTriple,
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> InferenceResult {
         var result = InferenceResult()
         let clock = ContinuousClock()
@@ -183,7 +183,7 @@ public struct OWL2RLMaterializer: Sendable {
         classIRI: String,
         ontologyIRI: String,
         baseTriple: ReasoningTriple,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         result: inout InferenceResult
     ) async throws {
         result.statistics.ruleApplications += 1
@@ -257,7 +257,7 @@ public struct OWL2RLMaterializer: Sendable {
         superClass: String,
         ontologyIRI: String,
         baseTriple: ReasoningTriple,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         result: inout InferenceResult
     ) async throws {
         // scm-sco: Transitivity of subClassOf
@@ -304,7 +304,7 @@ public struct OWL2RLMaterializer: Sendable {
         superProperty: String,
         ontologyIRI: String,
         baseTriple: ReasoningTriple,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         result: inout InferenceResult
     ) async throws {
         // scm-spo: Transitivity of subPropertyOf
@@ -349,7 +349,7 @@ public struct OWL2RLMaterializer: Sendable {
         object: DatabaseRDFTerm,
         ontologyIRI: String,
         baseTriple: ReasoningTriple,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         result: inout InferenceResult
     ) async throws {
         let predicateIRI = predicate.rawValue

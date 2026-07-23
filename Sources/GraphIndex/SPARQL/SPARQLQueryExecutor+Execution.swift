@@ -55,7 +55,7 @@ extension SPARQLQueryExecutor {
     /// snapshot. `offset`/`limit` behave identically to `execute(pattern:limit:offset:)`.
     public func executeInTransaction(
         pattern: ExecutionPattern,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         limit: Int?,
         offset: Int,
         workMeter: DatabaseWorkMeter
@@ -85,7 +85,7 @@ extension SPARQLQueryExecutor {
 
     func evaluateOrderedInTransaction(
         plan: SPARQLOrderedSolutionPlan,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> EvaluationResult {
         let executor = try scoped(to: plan.datasetScope)
@@ -104,7 +104,7 @@ extension SPARQLQueryExecutor {
 
     func evaluateSlicedSolutionFormInTransaction(
         plan: SPARQLSolutionFormExecutionPlan,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> EvaluationResult {
         let executor = try scoped(to: plan.ordered.datasetScope)
@@ -157,7 +157,7 @@ extension SPARQLQueryExecutor {
 
     package func executeInTransaction(
         selectPlan: SPARQLSelectExecutionPlan,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         let executor = try scoped(to: selectPlan.ordered.datasetScope)

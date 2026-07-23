@@ -461,7 +461,7 @@ struct ItemStorageTests {
             try await storage.write(testData, for: dataKey)
 
             // Index entry - uses underlying directly (empty value)
-            try storage.underlying.setValue(Bytes(), for: indexKey)
+            try storage.storageAccess.setValue(Bytes(), for: indexKey)
         }
 
         // Verify both exist

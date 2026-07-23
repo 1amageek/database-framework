@@ -113,9 +113,10 @@ public struct TransactionMetrics: Sendable, CustomStringConvertible {
 
 // MARK: - InstrumentedTransaction
 
-/// Transaction wrapper that collects detailed metrics
+/// Transaction-access observer that collects detailed metrics.
 ///
-/// Wraps a `Transaction` and intercepts all operations to track:
+/// Intercepts storage operations without receiving commit, cancellation, or
+/// retry authority:
 /// - Read/write counts and bytes
 /// - Range scan statistics
 /// - Commit/rollback status
@@ -136,8 +137,8 @@ public struct TransactionMetrics: Sendable, CustomStringConvertible {
 public final class InstrumentedTransaction: Sendable {
     // MARK: - Properties
 
-    /// The underlying transaction
-    private let transaction: any Transaction
+    /// The observed storage access.
+    private let transaction: any TransactionAccess
 
     /// Collected metrics (thread-safe access)
     private let state: Mutex<TransactionMetrics>
@@ -154,12 +155,12 @@ public final class InstrumentedTransaction: Sendable {
 
     // MARK: - Initialization
 
-    /// Create an instrumented transaction wrapper
+    /// Creates instrumented storage access.
     ///
     /// - Parameters:
-    ///   - transaction: The underlying transaction to wrap
+    ///   - transaction: The storage access to observe.
     ///   - timer: Optional StoreTimer to export metrics on commit
-    public init(wrapping transaction: any Transaction, timer: StoreTimer? = nil) {
+    public init(wrapping transaction: any TransactionAccess, timer: StoreTimer? = nil) {
         self.transaction = transaction
         self.timer = timer
         self.state = Mutex(TransactionMetrics())
@@ -192,7 +193,7 @@ public final class InstrumentedTransaction: Sendable {
 
     /// Collect a range of values and record metrics
     ///
-    /// Uses the underlying transaction's collectRange method.
+    /// Uses the observed storage access's `collectRange` operation.
     public func collectRange(
         from begin: KeySelector,
         to end: KeySelector,
@@ -282,40 +283,6 @@ public final class InstrumentedTransaction: Sendable {
         }
     }
 
-    // MARK: - Transaction Control
-
-    /// Commit the transaction and finalize metrics
-    public func commit() async throws {
-        let startTime = MonotonicClock.now()
-
-        do {
-            try await transaction.commit()
-            let elapsed = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-
-            // Finalize metrics on successful commit
-            let pending = pendingWrites.withLock { $0 }
-
-            state.withLock { state in
-                state.committed = true
-                state.endTime = Date()
-                state.commitNanos = elapsed
-                state.writeCount += pending.count
-                state.bytesWritten += pending.bytes
-            }
-
-            // Export to timer
-            if let timer = timer {
-                metrics.export(to: timer)
-            }
-        } catch {
-            state.withLock { state in
-                state.rolledBack = true
-                state.endTime = Date()
-            }
-            throw error
-        }
-    }
-
     /// Finalize metrics after an external transaction runner committed the
     /// wrapped transaction.
     ///
@@ -373,11 +340,6 @@ public final class InstrumentedTransaction: Sendable {
         try transaction.setReadVersion(version)
     }
 
-    /// Get committed version
-    public func getCommittedVersion() throws -> Int64 {
-        try transaction.getCommittedVersion()
-    }
-
     // MARK: - Options
 
     /// Set transaction option
@@ -395,10 +357,8 @@ public final class InstrumentedTransaction: Sendable {
         try transaction.setOption(to: value, forOption: option)
     }
 
-    // MARK: - Access to Underlying Transaction
-
-    /// Get the underlying transaction for operations not yet wrapped
-    public var underlying: any Transaction {
+    /// Storage capability for operations that do not require dedicated metrics.
+    public var storageAccess: any TransactionAccess {
         transaction
     }
 }

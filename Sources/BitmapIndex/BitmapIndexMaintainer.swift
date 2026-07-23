@@ -117,7 +117,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Get primary keys
         let oldPK: Tuple? = try oldItem.map { try DataAccess.extractId(from: $0, using: idExpression) }
@@ -222,7 +222,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Sparse index: if field value is nil, skip indexing
         let fieldValues: [any TupleElement]
@@ -266,7 +266,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// Get or create a sequential ID for a primary key
     private func getOrCreateSequentialId(
         for pk: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> UInt32 {
         // Check if already exists
         let pkKey = pksSubspace.pack(pk)
@@ -308,7 +308,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// Get sequential ID for a primary key (if exists)
     private func getSequentialId(
         for pk: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> UInt32? {
         let pkKey = pksSubspace.pack(pk)
         guard let bytes = try await transaction.getValue(for: pkKey) else {
@@ -325,7 +325,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     private func removeSequentialId(
         pk: Tuple,
         seqId: UInt32,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let pkKey = pksSubspace.pack(pk)
         let idKey = idsSubspace.pack(Tuple(Int(seqId)))
@@ -337,7 +337,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     private func addToBitmap(
         fieldValues: [any TupleElement],
         sequentialId: UInt32,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let key = dataSubspace.pack(Tuple(fieldValues))
 
@@ -357,7 +357,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     private func removeFromBitmap(
         fieldValues: [any TupleElement],
         sequentialId: UInt32,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let key = dataSubspace.pack(Tuple(fieldValues))
 
@@ -396,7 +396,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// - Returns: RoaringBitmap of matching record IDs
     public func getBitmap(
         for fieldValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
         let key = dataSubspace.pack(Tuple(fieldValues))
 
@@ -415,7 +415,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// - Returns: Number of records with this value
     public func getCount(
         for fieldValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int {
         let bitmap = try await getBitmap(for: fieldValues, transaction: transaction)
         return bitmap.cardinality
@@ -429,7 +429,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// - Returns: Bitmap of records matching ALL values
     public func andQuery(
         values: [[any TupleElement]],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
         guard !values.isEmpty else { return RoaringBitmap() }
 
@@ -449,7 +449,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// - Returns: Bitmap of records matching ANY value
     public func orQuery(
         values: [[any TupleElement]],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
         guard !values.isEmpty else { return RoaringBitmap() }
 
@@ -469,7 +469,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// - Returns: Array of primary key tuples
     public func getPrimaryKeys(
         from bitmap: RoaringBitmap,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let ids = bitmap.toArray()
         var results: [Tuple] = []
@@ -490,7 +490,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of distinct field values
     public func getAllDistinctValues(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let range = dataSubspace.range()
         var results: [[any TupleElement]] = []

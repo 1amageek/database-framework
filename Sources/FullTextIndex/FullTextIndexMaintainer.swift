@@ -109,7 +109,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Remove old index entries and update BM25 statistics
         // Sparse index: if text field was nil, the document was never indexed
@@ -204,7 +204,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Sparse index: if text field is nil, skip indexing
         let text: String
@@ -304,7 +304,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Returns: Array of primary keys
     public func searchTerm(
         _ term: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let normalizedTerms = normalizeQueryTerms([term])
         return try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
@@ -322,7 +322,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Returns: Array of primary keys that contain all terms
     public func searchTermsAND(
         _ terms: [String],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let normalizedTerms = normalizeQueryTerms(terms)
         return try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
@@ -331,7 +331,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Search for already-normalized terms using AND semantics.
     private func searchNormalizedTermsAND(
         _ terms: [String],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -380,7 +380,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Returns: Array of primary keys that contain any of the terms
     public func searchTermsOR(
         _ terms: [String],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let termGroups = normalizeQueryTermGroups(terms)
         guard !termGroups.isEmpty else { return [] }
@@ -412,7 +412,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Returns: Array of primary keys that contain the phrase
     public func searchPhrase(
         _ phrase: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard storePositions else {
             throw FullTextIndexError.invalidQuery("Phrase search requires storePositions=true")
@@ -512,7 +512,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Search for an exact already-normalized term.
     private func searchNormalizedTerm(
         _ term: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()
@@ -624,7 +624,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Parameter transaction: FDB transaction
     /// - Returns: BM25 statistics (N, totalLength, avgDL)
     public func getBM25Statistics(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> BM25Statistics {
         // Read N (total document count)
         let nValue = try await transaction.getValue(for: statsNKey, snapshot: true)
@@ -659,7 +659,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Returns: Number of documents containing the term
     public func getDocumentFrequency(
         term: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         // Tokenize the term using the same pipeline as indexing
         let tokens = tokenize(term)
@@ -678,7 +678,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Returns: Number of documents containing the term
     private func getDocumentFrequencyForNormalizedTerm(
         _ normalizedTerm: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         let dfKey = dfSubspace.pack(Tuple(normalizedTerm))
         let value = try await transaction.getValue(for: dfKey, snapshot: true)
@@ -694,7 +694,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Returns: Tuple of (uniqueTermCount, docLength), or nil if not found
     public func getDocumentMetadata(
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (uniqueTermCount: Int64, docLength: Int64)? {
         let docKey = docsSubspace.pack(id)
         guard let value = try await transaction.getValue(for: docKey, snapshot: true) else {
@@ -731,7 +731,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         terms: [String],
         matchMode: TextMatchMode = .all,
         bm25Params: BM25Parameters = .default,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         limit: Int? = nil
     ) async throws -> [(id: Tuple, score: Double)] {
         guard !terms.isEmpty else { return [] }

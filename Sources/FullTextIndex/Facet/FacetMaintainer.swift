@@ -81,7 +81,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
     public func updateFacets(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Remove old facet values
         if let oldItem = oldItem {
@@ -106,7 +106,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
     public func getFacetCounts(
         fields: [String]? = nil,
         limit: Int = 10,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [String: [(value: String, count: Int64)]] {
         let fieldsToFetch = fields ?? facetFields
         var result: [String: [(value: String, count: Int64)]] = [:]
@@ -137,7 +137,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
         fields: [String],
         matchingIds: [Tuple],
         limit: Int = 10,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [String: [(value: String, count: Int64)]] {
         var fieldCounts: [String: [String: Int64]] = [:]
 
@@ -176,7 +176,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
     private func addFacets(
         for id: Tuple,
         item: Item,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         for field in facetFields {
             let values = extractFieldValues(from: item, field: field)
@@ -198,7 +198,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
     private func removeFacets(
         for id: Tuple,
         item: Item,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         for field in facetFields {
             let values = extractFieldValues(from: item, field: field)
@@ -219,7 +219,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
     private func getFacetsForField(
         field: String,
         limit: Int,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(value: String, count: Int64)] {
         let fieldSubspace = facetsSubspace.subspace(field)
         let (begin, end) = fieldSubspace.range()
@@ -249,7 +249,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
     private func getDocumentFacetValues(
         docId: Tuple,
         field: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [String] {
         let docFacetKey = docFacetsSubspace.subspace(field).pack(docId)
         guard let value = try await transaction.getValue(for: docFacetKey, snapshot: true) else {

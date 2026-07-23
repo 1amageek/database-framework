@@ -132,7 +132,7 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
                         target: target,
                         owner: owner,
                         descriptor: descriptor,
-                        transaction: context.storageTransaction
+                        transaction: context.storageAccess
                     )
                 }
             }
@@ -149,7 +149,7 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
                         target: target,
                         owner: owner,
                         descriptor: descriptor,
-                        transaction: context.storageTransaction
+                        transaction: context.storageAccess
                     )
                 }
             }

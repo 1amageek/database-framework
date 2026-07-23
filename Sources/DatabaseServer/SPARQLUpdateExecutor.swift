@@ -38,7 +38,7 @@ struct SPARQLUpdateExecutor: Sendable {
             transaction: transaction,
             workMeter: workMeter
         )
-        let storageTransaction = transaction.storageTransaction
+        let storageAccess = transaction.storageAccess
         let mutationMeter = SPARQLMutationMeter(
             maximum: runtimeLimits.maximumMutations,
             workMeter: workMeter
@@ -49,7 +49,7 @@ struct SPARQLUpdateExecutor: Sendable {
                 request.operation(at: index),
                 operationOrdinal: UInt64(index),
                 context: context,
-                transaction: storageTransaction,
+                transaction: storageAccess,
                 workMeter: workMeter,
                 mutationMeter: mutationMeter
             )
@@ -62,7 +62,7 @@ struct SPARQLUpdateExecutor: Sendable {
         _ operation: PreparedSPARQLUpdateOperation,
         operationOrdinal: UInt64,
         context: DatabaseOperationContext,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
@@ -143,7 +143,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
     private func executeLoad(
         _ prepared: PreparedSPARQLLoad,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
@@ -201,7 +201,7 @@ struct SPARQLUpdateExecutor: Sendable {
         _ query: InsertDataQuery,
         operationOrdinal: UInt64,
         context: DatabaseOperationContext,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
@@ -244,7 +244,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
     private func deleteData(
         _ query: DeleteDataQuery,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
@@ -276,7 +276,7 @@ struct SPARQLUpdateExecutor: Sendable {
         _ query: SPARQLModifyOperation,
         operationOrdinal: UInt64,
         context: DatabaseOperationContext,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
@@ -372,7 +372,7 @@ struct SPARQLUpdateExecutor: Sendable {
     private func solutionRows(
         for query: SPARQLModifyOperation,
         context: DatabaseOperationContext,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [VariableBinding] {
         let dataset: SPARQLDataset
@@ -399,7 +399,7 @@ struct SPARQLUpdateExecutor: Sendable {
         pattern: GraphPattern,
         dataset: SPARQLDataset,
         context: DatabaseOperationContext,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [VariableBinding] {
         let detectionLimit = try mutationDetectionLimit()
@@ -432,7 +432,7 @@ struct SPARQLUpdateExecutor: Sendable {
     private func deleteWhere(
         _ query: DeleteWhereQuery,
         context: DatabaseOperationContext,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
@@ -471,7 +471,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
     private func clear(
         _ query: ClearQuery,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
@@ -504,7 +504,7 @@ struct SPARQLUpdateExecutor: Sendable {
     private func createGraph(
         iri: String,
         silent: Bool,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
@@ -527,7 +527,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
     private func drop(
         _ query: DropQuery,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
@@ -566,7 +566,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
     private func transfer(
         _ query: GraphTransferQuery,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
@@ -672,7 +672,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
     private func droppedGraphCount(
         _ target: SPARQLGraphTarget,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         switch target {
@@ -699,7 +699,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
     private func transferSourceQuads(
         _ endpoint: SPARQLGraphTransferEndpoint,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         let graphScope: RDFGraphScanScope
@@ -730,7 +730,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
     private func clearTransferDestination(
         _ endpoint: SPARQLGraphTransferEndpoint,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         switch endpoint {
@@ -760,7 +760,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
     private func ensureTransferDestination(
         _ endpoint: SPARQLGraphTransferEndpoint,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         guard case .graph(let iri) = endpoint else { return false }
@@ -783,7 +783,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
     private func removeTransferSource(
         _ endpoint: SPARQLGraphTransferEndpoint,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
         switch endpoint {

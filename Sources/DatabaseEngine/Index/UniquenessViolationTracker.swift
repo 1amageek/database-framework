@@ -115,7 +115,7 @@ public final class UniquenessViolationTracker: Sendable {
         persistableType: String,
         valueKey: Bytes,
         primaryKey: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let key = subspace.pack(Tuple(valueKey))
@@ -193,7 +193,7 @@ public final class UniquenessViolationTracker: Sendable {
         valueKey: Bytes,
         existingPrimaryKey: Tuple,
         newPrimaryKey: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let key = subspace.pack(Tuple(valueKey))
@@ -283,7 +283,7 @@ public final class UniquenessViolationTracker: Sendable {
     public func scanViolations(
         indexName: String,
         limit: Int? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [UniquenessViolation] {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
@@ -321,7 +321,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// Scan all violations across all indexes within a transaction
     public func scanAllViolations(
         limit: Int? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [String: [UniquenessViolation]] {
         let (begin, end) = violationsSubspace.range()
 
@@ -358,7 +358,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// Check if an index has any violations within a transaction
     public func hasViolations(
         indexName: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
@@ -385,7 +385,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// Count violations for an index within a transaction
     public func countViolations(
         indexName: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
@@ -431,7 +431,7 @@ public final class UniquenessViolationTracker: Sendable {
         indexName: String,
         valueKey: Bytes,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> ViolationResolution {
         // Check violation record
         let violationSubspace = indexViolationsSubspace(indexName: indexName)
@@ -499,7 +499,7 @@ public final class UniquenessViolationTracker: Sendable {
     public func clearViolation(
         indexName: String,
         valueKey: Bytes,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let key = subspace.pack(Tuple(valueKey))
@@ -525,7 +525,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// Clear all violations for an index within a transaction
     public func clearAllViolations(
         indexName: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()

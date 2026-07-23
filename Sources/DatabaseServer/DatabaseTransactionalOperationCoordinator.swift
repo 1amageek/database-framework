@@ -142,7 +142,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 configuration: configuration,
                 executionDeadline: deadline.transactionExecutionDeadline
             ) { transactionContext in
-                let transaction = transactionContext.storageTransaction
+                let transaction = transactionContext.storageAccess
                 if let stored = try await stateStore.idempotencyRecord(
                     for: idempotencyKey,
                     transaction: transaction,
@@ -330,7 +330,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 configuration: .readOnly.replacing(timeout: nil),
                 executionDeadline: deadline.transactionExecutionDeadline
             ) { transactionContext in
-                let transaction = transactionContext.storageTransaction
+                let transaction = transactionContext.storageAccess
                 guard let stored = try await stateStore.idempotencyRecord(
                     for: idempotencyKey,
                     transaction: transaction,

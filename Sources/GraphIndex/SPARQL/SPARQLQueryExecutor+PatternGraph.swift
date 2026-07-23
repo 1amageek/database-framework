@@ -14,7 +14,7 @@ extension SPARQLQueryExecutor {
     func evaluateGraphPattern(
         selector: ExecutionGraphSelector,
         innerPattern: ExecutionPattern,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         filter: FilterExpression?,
         seed: VariableBinding,
         resultLimit: Int?,

@@ -14,7 +14,7 @@ extension SPARQLQueryExecutor {
     func evaluateOptionalBatchedSingleTriple(
         leftBindings: borrowing SPARQLRetainedBindings,
         rightTriple: ExecutionTriple,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         resultLimit: Int?
     ) async throws -> EvaluationResult {

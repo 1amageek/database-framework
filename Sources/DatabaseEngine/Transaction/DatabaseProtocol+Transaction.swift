@@ -42,7 +42,7 @@ extension StorageEngine {
     public func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration,
         executionDeadline: TransactionExecutionDeadline? = nil,
-        _ operation: @escaping @Sendable (any Transaction) async throws -> T
+        _ operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
         let runner = TransactionRunner(database: self)
         return try await runner.run(

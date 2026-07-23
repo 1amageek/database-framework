@@ -7,13 +7,13 @@ public protocol DatabaseSHACLProcessor: Sendable {
         graph: String,
         quads: [DatabaseRDFQuad],
         workBudget: SHACLValidationWorkBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws
 
     func delete(
         graph: String,
         workBudget: SHACLValidationWorkBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws
 
     func validate(
@@ -23,6 +23,6 @@ public protocol DatabaseSHACLProcessor: Sendable {
         entailment: SHACLExecuteOperation.Entailment,
         page: QueryExecuteOperation.Page,
         workBudget: SHACLValidationWorkBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseValidationReport
 }

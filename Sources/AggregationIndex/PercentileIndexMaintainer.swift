@@ -79,7 +79,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try validateConfiguration()
 
@@ -157,7 +157,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try validateConfiguration()
         guard let contribution = try contribution(for: item) else {
@@ -185,7 +185,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     /// Builds a batch with one digest decode/encode per affected group.
     public func scanItems(
         _ items: [(item: Item, id: Tuple)],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try validateConfiguration()
         guard items.count <= maximumItemsPerBatch else {
@@ -280,7 +280,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     public func getPercentile(
         percentile: Double,
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Double? {
         try validatePercentiles(CollectionOfOne(percentile))
         guard var digest = try await digest(
@@ -295,7 +295,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     public func getPercentiles(
         percentiles: [Double],
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Double: Double] {
         try validatePercentiles(percentiles)
         guard var digest = try await digest(
@@ -310,7 +310,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     public func getCDF(
         value: Double,
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Double? {
         try validateConfiguration()
         guard value.isFinite else {
@@ -329,7 +329,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
 
     public func getStatistics(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (
         count: Int64,
         min: Double,
@@ -353,7 +353,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
 
     public func getAllPercentiles(
         percentiles: [Double],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(
         grouping: [any TupleElement],
         values: [Double: Double]
@@ -572,7 +572,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
 
     private func digest(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> TDigest? {
         let group = try makeGroup(groupingValues: groupingValues)
         let membershipMetadata = try await storedMembershipMetadata(
@@ -602,7 +602,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
 
     private func storedMembershipMetadata(
         for group: PercentileIndexGroup,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         snapshot: Bool
     ) async throws -> AggregationMembershipMetadata? {
         guard let bytes = try await transaction.getValue(
@@ -639,7 +639,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
         values: Values,
         group: PercentileIndexGroup,
         initializeIfAbsent: Bool,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws where Values.Element == Double {
         let stored = try await transaction.getValue(
             for: group.summaryKey
@@ -675,7 +675,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     /// decodable summary. No mutation path repairs an orphaned component.
     private func validateStoredGroup(
         _ group: PercentileIndexGroup,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         let membershipMetadata = try await storedMembershipMetadata(
             for: group,
@@ -701,7 +701,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
 
     private func rebuildSummary(
         for group: PercentileIndexGroup,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         var digest = try TDigest(compression: compression)
         var memberCount = 0

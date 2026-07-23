@@ -219,7 +219,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         with step: Step,
         scanner: GraphPropertyScanner,
         strategy: GraphIndexStrategy,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [MatchState] {
         var nextStates: [MatchState] = []
         for state in states {
@@ -240,7 +240,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         state: MatchState,
         scanner: GraphPropertyScanner,
         strategy: GraphIndexStrategy,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [MatchState] {
         let leftResolution = try resolveIdentity(for: step.left, bindings: state.bindings)
         let rightResolution = try resolveIdentity(for: step.right, bindings: state.bindings)

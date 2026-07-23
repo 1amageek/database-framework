@@ -26,13 +26,13 @@ import DatabaseEngine
 public struct SHACLTargetResolver: Sendable {
 
     private let executor: SPARQLQueryExecutor
-    private let transaction: any Transaction
+    private let transaction: any TransactionAccess
     private let graphScope: SHACLDataGraphScope
     private let budget: SHACLValidationWorkBudget
 
     public init(
         executor: SPARQLQueryExecutor,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         graphScope: SHACLDataGraphScope,
         budget: SHACLValidationWorkBudget
     ) {

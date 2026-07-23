@@ -252,7 +252,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         queryVector: [Float],
         k: Int,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(pk: Tuple, distance: Double)] {
         let (begin, end) = indexSubspace.range()
         let sequence = try await transaction.collectRange(

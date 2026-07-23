@@ -416,7 +416,7 @@ extension NumericAggregationMutationSupport {
         countKey: Bytes,
         removing oldValue: AggregationNumericValue?,
         adding newValue: AggregationNumericValue?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try validateStorageKind(of: oldValue)
         try validateStorageKind(of: newValue)
@@ -753,7 +753,7 @@ extension CountAggregationMaintainer {
     /// Increment count for a grouping key
     public func incrementCount(
         key: Bytes,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let current: Int64
         if let bytes = try await transaction.getValue(for: key) {
@@ -768,7 +768,7 @@ extension CountAggregationMaintainer {
     /// Decrement count for a grouping key
     public func decrementCount(
         key: Bytes,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         guard let bytes = try await transaction.getValue(for: key) else {
             throw AggregationStorageError.negativeCount(-1)
@@ -798,7 +798,7 @@ extension CountAggregationMaintainer {
     /// Get count for a specific grouping
     public func getCountValue(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         guard groupingValues.count == groupingFieldCount else {
             throw IndexError.invalidArgument(
@@ -819,7 +819,7 @@ extension CountAggregationMaintainer {
     ///
     /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
     public func scanAllCounts(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], count: Int64)] {
         // An empty tuple packs to the subspace prefix itself. Subspace range
         // scans intentionally begin after that prefix, so a global count must

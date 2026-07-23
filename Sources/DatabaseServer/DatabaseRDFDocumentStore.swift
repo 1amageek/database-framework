@@ -27,7 +27,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         identifier: String,
         offset: Int,
         limit: Int,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRDFStoredDocumentPage? {
         try validate(identifier: identifier)
         guard offset >= 0, limit > 0 else {
@@ -79,7 +79,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         auxiliaryIdentifiers: [String],
         quads: [DatabaseRDFQuad],
         expectedRevision: UInt64?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> UInt64 {
         try validate(identifier: identifier)
         let current = try await metadata(
@@ -129,7 +129,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
     public func delete(
         identifier: String,
         expectedRevision: UInt64?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> UInt64 {
         try validate(identifier: identifier)
         guard let current = try await metadata(
@@ -166,7 +166,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
 
     private func metadata(
         identifier: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Metadata? {
         guard let bytes = try await transaction.getValue(
             for: metadataKey(identifier)
@@ -197,7 +197,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
     private func readAuxiliaryIdentifiers(
         identifier: String,
         count: Int,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [String] {
         guard count > 0 else { return [] }
         let range = documentSubspace(identifier).subspace("auxiliary").range()
@@ -228,7 +228,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         offset: Int,
         limit: Int,
         totalCount: Int,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [DatabaseRDFQuad] {
         guard offset < totalCount else { return [] }
         guard let encodedOffset = Int64(exactly: offset) else {
@@ -331,7 +331,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
 
     private func clear(
         _ subspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let range = subspace.range()
         try transaction.clearRange(beginKey: range.begin, endKey: range.end)

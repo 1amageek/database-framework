@@ -45,7 +45,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         graphScope: RDFGraphScanScope,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         if let limit, limit <= 0 {
@@ -217,7 +217,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
     public func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [RDFGraphName] {
         if let limit, limit <= 0 { return [] }
@@ -255,7 +255,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
     public func containsNamedGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         for source in sources {
@@ -285,7 +285,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
     private func collectNamedGraphs(
         from source: RDFDatasetSource,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter,
         into seen: inout Set<RDFGraphName>
     ) async throws {

@@ -242,7 +242,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         matchMode: TextMatchMode,
         kind: FullTextIndexKind<T>,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(id: Tuple, score: Double)] {
         let termsSubspace = indexSubspace.subspace("terms")
         let docsSubspace = indexSubspace.subspace("docs")
@@ -351,7 +351,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     private func searchTermsAND(
         _ terms: [String],
         termsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -393,7 +393,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     private func searchTermsOR(
         _ terms: [String],
         termsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -419,7 +419,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     private func searchTerm(
         _ term: String,
         termsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()
@@ -453,7 +453,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     /// `FullTextIndexError.invalidQuery` otherwise.
     private func searchPhraseIds(
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard let descriptor = findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
@@ -498,7 +498,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
 
     private func getBM25Statistics(
         statsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> BM25Stats {
         let nKey = statsSubspace.pack(Tuple("N"))
         let lengthKey = statsSubspace.pack(Tuple("totalLength"))
@@ -525,7 +525,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     private func getDocumentFrequency(
         term: String,
         dfSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         let dfKey = dfSubspace.pack(Tuple(term))
         let value = try await transaction.getValue(for: dfKey, snapshot: true)
@@ -536,7 +536,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     private func getDocumentMetadata(
         id: Tuple,
         docsSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (uniqueTermCount: Int64, docLength: Int64)? {
         let docKey = docsSubspace.pack(id)
         guard let value = try await transaction.getValue(for: docKey, snapshot: true) else {

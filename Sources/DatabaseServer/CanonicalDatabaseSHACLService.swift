@@ -148,7 +148,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
-                let transaction = transactionContext.storageTransaction
+                let transaction = transactionContext.storageAccess
                 let revision = try await store.replace(
                     identifier: graph,
                     auxiliaryIdentifiers: [],
@@ -187,7 +187,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
-                let transaction = transactionContext.storageTransaction
+                let transaction = transactionContext.storageAccess
                 let revision = try await store.delete(
                     identifier: graph,
                     expectedRevision: expectedRevision,
@@ -212,7 +212,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
 
     private func read<Value: Sendable>(
         context: DatabaseOperationContext,
-        body: @Sendable @escaping (any Transaction) async throws -> Value
+        body: @Sendable @escaping (any TransactionAccess) async throws -> Value
     ) async throws -> Value {
         try await context.container.engine.withTransaction(
             configuration: .readOnly,

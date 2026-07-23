@@ -104,7 +104,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Remove old index entries
         if let oldItem = oldItem {
@@ -133,7 +133,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let keys = try buildIndexKeys(for: item, id: id)
         let value = try CoveringValueBuilder.build(for: item, index: index)

@@ -20,7 +20,7 @@ func incrementAggregationMembership(
     metadataKey: Bytes,
     maximumMembers: Int,
     maximumScanBytes: Int,
-    transaction: any Transaction
+    transaction: any TransactionAccess
 ) async throws -> Bool {
     let storedMember = try await transaction.getValue(for: key)
     let storedMetadata = try await transaction.getValue(for: metadataKey)
@@ -101,7 +101,7 @@ func decrementAggregationMembership(
     metadataKey: Bytes,
     maximumMembers: Int,
     maximumScanBytes: Int,
-    transaction: any Transaction
+    transaction: any TransactionAccess
 ) async throws -> Bool {
     let storedMember = try await transaction.getValue(for: key)
     let storedMetadata = try await transaction.getValue(for: metadataKey)

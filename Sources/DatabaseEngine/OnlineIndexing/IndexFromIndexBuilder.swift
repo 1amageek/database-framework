@@ -537,7 +537,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     }
 
     /// Build a target index entry
-    private func buildTargetEntry(pk: Tuple, fieldValues: [any TupleElement], transaction: any Transaction) async throws {
+    private func buildTargetEntry(pk: Tuple, fieldValues: [any TupleElement], transaction: any TransactionAccess) async throws {
         // This is a simplified implementation
         // In reality, we would need to map source fields to target fields
         let targetSubspace = indexSubspace.subspace(targetIndex.name)
@@ -565,7 +565,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         }
     }
 
-    private func saveProgress(_ rangeSet: RangeSet, transaction: any Transaction) throws {
+    private func saveProgress(_ rangeSet: RangeSet, transaction: any TransactionAccess) throws {
         try transaction.setValue(try RangeSetCodec.encode(rangeSet), for: progressKey)
     }
 

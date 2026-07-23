@@ -527,7 +527,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         value: FieldValue,
         indexedFieldCount: Int,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let tupleValue = try TupleEncoder.encode(value)
         let valueSubspace = indexSubspace.subspace(tupleValue)
@@ -565,7 +565,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         maxInclusive: Bool,
         indexedFieldCount: Int,
         indexSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         // Build range selectors
         let beginKey: Bytes

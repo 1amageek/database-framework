@@ -462,26 +462,13 @@ extension TransactionConfiguration {
     public var tags: Set<String> { tracing.tags }
 }
 
-// MARK: - Apply to Transaction
+// MARK: - Transaction Runner Configuration
 
 extension TransactionConfiguration {
-    /// Apply this configuration to a raw transaction
+    /// Applies this configuration before an owned transaction is exposed.
     ///
-    /// **Preferred**: Use `database.withTransaction(configuration:)` instead, which
-    /// automatically applies the configuration:
-    /// ```swift
-    /// try await database.withTransaction(configuration: .batch) { transaction in
-    ///     // ... batch operations
-    /// }
-    /// ```
-    ///
-    /// **Direct Usage** (when you need manual control):
-    /// ```swift
-    /// try await database.withTransaction { transaction in
-    ///     try TransactionConfiguration.batch.apply(to: transaction)
-    ///     // ... operations
-    /// }
-    /// ```
+    /// `TransactionRunner` is the lifecycle owner. Database operations receive
+    /// only `TransactionAccess` after this configuration is resolved.
     ///
     /// - Parameter transaction: The transaction to configure
     /// - Returns: The exact native and portable policy resolution.
@@ -490,7 +477,7 @@ extension TransactionConfiguration {
     /// **Note**: `maximumAttempts` is NOT applied to the FDB transaction here because
     /// TransactionRunner manages retries at a higher level. Applying maximumAttempts
     /// to both would cause double retry control and unexpected behavior.
-    public func apply(
+    package func apply(
         to transaction: any Transaction
     ) throws -> TransactionConfigurationResolution {
         try validate()

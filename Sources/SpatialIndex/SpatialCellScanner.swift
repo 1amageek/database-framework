@@ -82,7 +82,7 @@ public final class SpatialCellScanner: Sendable {
     public func scanCells(
         cellIds: [UInt64],
         limit: Int?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (keys: [Tuple], limitReason: LimitReason?) {
         var results: [Tuple] = []
         var seenIds: Set<Data> = []
@@ -139,7 +139,7 @@ public final class SpatialCellScanner: Sendable {
     internal func scan(
         plan: SpatialScanPlan,
         limit: Int?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (keys: [Tuple], limitReason: LimitReason?) {
         switch plan {
         case .cells(let cellIds):
@@ -158,7 +158,7 @@ public final class SpatialCellScanner: Sendable {
         minCode: UInt64,
         maxCode: UInt64,
         limit: Int?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (keys: [Tuple], limitReason: LimitReason?) {
         var results: [Tuple] = []
         var seenIds: Set<Data> = []
@@ -235,7 +235,7 @@ public final class SpatialCellScanner: Sendable {
         radiusMeters: Double,
         limit: Int?,
         coordinateExtractor: @escaping @Sendable (Tuple) -> GeoPoint?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (keys: [(key: Tuple, distance: Double)], limitReason: LimitReason?) {
         var results: [(key: Tuple, distance: Double)] = []
         var seenIds: Set<Data> = []
@@ -299,7 +299,7 @@ public final class SpatialCellScanner: Sendable {
     /// - Returns: Array of primary key tuples
     public func scanSingleCell(
         cellId: UInt64,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let cellTuple = Tuple(cellId)
         let cellSubspace = indexSubspace.subspace(cellTuple)

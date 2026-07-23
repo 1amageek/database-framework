@@ -37,7 +37,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             let status = try await context.operationContext.container
                 .migrationStatus(
                     targetVersion: targetVersion,
-                    transaction: context.databaseTransaction.storageTransaction
+                    transaction: context.databaseTransaction.storageAccess
                 )
             let maximumStagesPerSlice = min(
                 context.maximumSliceWorkUnits,
@@ -75,7 +75,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 entity: entity,
                 index: index,
                 partitions: partitions,
-                transaction: context.databaseTransaction.storageTransaction
+                transaction: context.databaseTransaction.storageAccess
             )
             let effectiveWorkUnits = min(
                 context.maximumSliceWorkUnits,
@@ -100,7 +100,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 value: .indexRebuild(started: false)
             )
         case .compact:
-            guard let compaction = context.databaseTransaction.storageTransaction
+            guard let compaction = context.databaseTransaction.storageAccess
                 as? any DatabaseStorageCompactionTransaction else {
                 throw DatabaseMaintenanceRuntimeError.compactionUnavailable
             }
@@ -259,7 +259,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 generation: context.jobID,
                 mode: started ? .resume : .start,
                 maximumWorkUnits: effectiveWorkUnits,
-                transaction: context.databaseTransaction.storageTransaction
+                transaction: context.databaseTransaction.storageAccess
             )
             guard slice.completedWorkUnits <= effectiveWorkUnits else {
                 throw DatabaseJobRuntimeError.sliceExceededBudget(
@@ -294,7 +294,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             .compaction(planWorkUnits),
             .compaction(backendContinuation)
         ):
-            guard let compaction = context.databaseTransaction.storageTransaction
+            guard let compaction = context.databaseTransaction.storageAccess
                 as? any DatabaseStorageCompactionTransaction else {
                 throw DatabaseMaintenanceRuntimeError.compactionUnavailable
             }
@@ -389,7 +389,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 partitions: partitions,
                 generation: context.jobID,
                 detail: detail,
-                transaction: context.databaseTransaction.storageTransaction
+                transaction: context.databaseTransaction.storageAccess
             )
         case (.compaction, .compaction):
             return

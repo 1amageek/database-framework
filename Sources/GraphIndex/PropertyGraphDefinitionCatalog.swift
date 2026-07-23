@@ -9,20 +9,20 @@ import StorageKit
 public protocol PropertyGraphDefinitionCatalog: Sendable {
     func definition(
         named graphName: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> CreateGraphStatement?
 
     @discardableResult
     func create(
         _ definition: CreateGraphStatement,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> PropertyGraphDefinitionCreation
 
     func dropDefinition(
         named graphName: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws
 }

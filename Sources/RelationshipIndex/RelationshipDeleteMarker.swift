@@ -8,7 +8,7 @@ package enum RelationshipDeleteMarker {
 
     package static func isMarked(
         _ identity: RecordIdentity,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         try await transaction.getValue(
             for: key(identity),
@@ -18,14 +18,14 @@ package enum RelationshipDeleteMarker {
 
     package static func mark(
         _ identity: RecordIdentity,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         try transaction.setValue([], for: try key(identity))
     }
 
     package static func clear(
         _ identity: RecordIdentity,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         try transaction.clear(key: try key(identity))
     }

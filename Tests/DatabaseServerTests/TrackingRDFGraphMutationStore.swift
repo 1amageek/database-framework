@@ -48,7 +48,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
         graphScope: RDFGraphScanScope,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         state.withLock { state in
@@ -75,7 +75,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [RDFGraphName] {
         try await base.namedGraphs(
@@ -89,7 +89,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     func containsGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         try await base.containsGraph(
@@ -102,7 +102,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
 
     func createGraph(
         _ graph: RDFGraphName,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws {
         try await base.createGraph(
@@ -114,7 +114,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
 
     func insert(
         _ quad: RDFQuad,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFGraphInsertResult {
         state.withLock { state in
@@ -131,7 +131,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
 
     func delete(
         _ quad: RDFQuad,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         try await base.delete(
@@ -143,7 +143,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
 
     func clear(
         _ scope: RDFGraphMutationScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         let deleted = try await base.clear(
@@ -161,7 +161,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
 
     func drop(
         _ scope: RDFGraphMutationScope,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         try await base.drop(

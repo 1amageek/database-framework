@@ -226,7 +226,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     /// `execute()`, `count()`, and `getBitmap()`.
     private func withResolvedBitmap<R: Sendable>(
         configuration: TransactionConfiguration,
-        _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexMaintainer<T>, any Transaction) async throws -> R
+        _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexMaintainer<T>, any TransactionAccess) async throws -> R
     ) async throws -> R {
         guard let op = operation else {
             throw BitmapQueryError.noOperation

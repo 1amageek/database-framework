@@ -65,7 +65,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let oldData = try extractAggregationData(from: oldItem)
         let newData = try extractAggregationData(from: newItem)
@@ -76,7 +76,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         guard let data = try extractAggregationData(from: item) else {
             return
@@ -111,7 +111,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     /// Get the canonical typed average for a specific grouping.
     public func getAverage(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (count: Int64, average: FieldValue) {
         let sumKey = try buildSumKey(groupingValues: groupingValues)
         let countKey = try buildCountKey(groupingValues: groupingValues)
@@ -140,7 +140,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     /// Get a lossless Double view of the average for a specific grouping.
     public func getAverageAsDouble(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (count: Int64, average: Double) {
         let exact = try await getAverage(
             groupingValues: groupingValues,
@@ -159,7 +159,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     ///
     /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
     public func getAllAveragesAsDouble(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(
         grouping: [any TupleElement],
         count: Int64,
@@ -183,7 +183,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     }
 
     public func getAllAverages(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(
         grouping: [any TupleElement],
         count: Int64,
@@ -345,7 +345,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     private func applyDelta(
         oldData: AggregationData?,
         newData: AggregationData?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         switch (oldData, newData) {
         case let (.some(old), .some(new))
@@ -380,7 +380,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
 
     private func insert(
         _ data: AggregationData,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try await mutateNumericAggregate(
             sumKey: data.sumKey,
@@ -393,7 +393,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
 
     private func remove(
         _ data: AggregationData,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try await mutateNumericAggregate(
             sumKey: data.sumKey,

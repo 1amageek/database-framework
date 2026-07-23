@@ -214,7 +214,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
 
     private func scanRanked(
         indexSubspace: Subspace,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         parameters: [String: QueryParameterValue]
     ) async throws -> [(primaryKey: Tuple, rank: Int)] {
         let scoresSubspace = indexSubspace.subspace("scores")

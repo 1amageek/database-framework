@@ -7,12 +7,12 @@ import StorageKit
 /// slices to the transaction and external reads allocate exactly one final
 /// assembly buffer.
 public struct ItemStorage: Sendable {
-    private let transaction: any Transaction
+    private let transaction: any TransactionAccess
     private let blobsSubspace: Subspace
     public let configuration: ItemStorageConfiguration
 
     public init(
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         blobsSubspace: Subspace,
         configuration: ItemStorageConfiguration
     ) {
@@ -131,8 +131,8 @@ public struct ItemStorage: Sendable {
         )
     }
 
-    /// Direct transaction access for non-item keys in the same atomic unit.
-    public var underlying: any Transaction {
+    /// Storage capability for non-item keys in the same atomic unit.
+    public var storageAccess: any TransactionAccess {
         transaction
     }
 
@@ -383,7 +383,7 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         }
         return AsyncIterator(
             storage: storage,
-            cursor: storage.underlying.rangeCursor(
+            cursor: storage.storageAccess.rangeCursor(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 limit: limit,

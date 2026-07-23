@@ -31,7 +31,7 @@ public func executeSPARQLString(
     _ sparql: String,
     database: any StorageEngine,
     sources: [RDFDatasetSource],
-    transaction: (any Transaction)? = nil,
+    transaction: (any TransactionAccess)? = nil,
     budget: DatabaseExecutionBudget
 ) async throws -> SPARQLResult {
     let workMeter = DatabaseWorkMeter(budget: budget)
@@ -58,7 +58,7 @@ func _executeSPARQLString(
     _ sparql: String,
     database: any StorageEngine,
     sources: [RDFDatasetSource],
-    transaction: (any Transaction)? = nil,
+    transaction: (any TransactionAccess)? = nil,
     workMeter: DatabaseWorkMeter
 ) async throws -> SPARQLResult {
     let statement = try SPARQLParser().parse(sparql)

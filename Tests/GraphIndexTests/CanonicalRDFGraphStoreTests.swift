@@ -864,7 +864,7 @@ struct CanonicalRDFGraphStoreTests {
     private func writePhysicalQuad(
         _ quad: RDFQuad,
         root: Subspace,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let codec = RDFQuadIndexPhysicalCodec(
             baseSubspace: root.subspace(Int64(1))

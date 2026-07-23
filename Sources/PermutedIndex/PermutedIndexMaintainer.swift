@@ -74,7 +74,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Remove old permuted entry
         if let oldItem = oldItem {
@@ -96,7 +96,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         if let key = try buildPermutedKey(for: item, id: id) {
             let value = try CoveringValueBuilder.build(for: item, index: index)
@@ -129,7 +129,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// - Returns: Array of primary keys matching the prefix
     public func scanByPrefix(
         prefixValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let prefixSubspace: Subspace
         if prefixValues.isEmpty {
@@ -186,7 +186,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// - Returns: Array of primary keys with exact match
     public func scanByExactMatch(
         values: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard values.count == permutation.size else {
             throw PermutedIndexError.fieldCountMismatch(
@@ -231,7 +231,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// - Parameter transaction: FDB transaction
     /// - Returns: Array of (permutedFields, primaryKey) tuples
     public func scanAll(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(permutedFields: [any TupleElement], primaryKey: [any TupleElement])] {
         let (begin, end) = subspace.range()
 

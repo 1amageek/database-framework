@@ -13,7 +13,7 @@ import StorageKit
 extension SPARQLQueryExecutor {
     func evaluateOrderedSolutionPlan(
         _ plan: SPARQLOrderedSolutionPlan,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         seed: VariableBinding
     ) async throws -> EvaluationResult {
@@ -56,7 +56,7 @@ extension SPARQLQueryExecutor {
 
     func evaluateSelectPlan(
         _ plan: SPARQLSelectExecutionPlan,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         seed: VariableBinding
     ) async throws -> EvaluationResult {

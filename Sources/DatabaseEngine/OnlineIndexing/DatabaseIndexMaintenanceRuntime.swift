@@ -21,7 +21,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         entity: String,
         index: String,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [DatabaseObjectField] {
         let target = try await resolveTarget(
             entity: entity,
@@ -36,7 +36,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         entity: String,
         index: String,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseIndexMaintenanceStatus {
         let target = try await resolveTarget(
             entity: entity,
@@ -72,7 +72,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         generation: DatabaseUUID,
         mode: DatabaseIndexRebuildSliceMode,
         maximumWorkUnits: UInt64,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseIndexRebuildSlice {
         guard maximumWorkUnits > 0,
               maximumWorkUnits <= Self.maximumSliceWorkUnits,
@@ -207,7 +207,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         partitions: [DatabaseObjectField],
         generation: DatabaseUUID,
         detail: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let target = try await resolveTarget(
             entity: entity,
@@ -250,7 +250,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         target: Target,
         generation: DatabaseUUID,
         lifecycleStore: IndexLifecycleStore,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try await lifecycleStore.disable(
             target.descriptor.name,
@@ -301,7 +301,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         key: Bytes,
         entity: String,
         index: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseIndexRebuildRecord? {
         guard let bytes = try await transaction.getValue(
             for: key,
@@ -377,8 +377,8 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
     }
 
     private enum DirectoryAccess: Sendable {
-        case create(any Transaction)
-        case open(any Transaction)
+        case create(any TransactionAccess)
+        case open(any TransactionAccess)
     }
 
     private func recordKey(target: Target) -> Bytes {

@@ -77,7 +77,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Apply retention strategy FIRST (before setVersionstampedKey)
         // FDB constraint: cannot read keys written with setVersionstampedKey in same transaction
@@ -98,7 +98,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try await storeVersion(item: item, id: id, transaction: transaction)
     }
@@ -123,7 +123,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func getVersionHistory(
         primaryKey: [any TupleElement],
         limit: Int? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(version: Version, data: Bytes)] {
         let pkTuple = Tuple(primaryKey)
         let beginKey = subspace.pack(pkTuple)
@@ -190,7 +190,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// Get latest version of an item
     public func getLatestVersion(
         primaryKey: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Bytes? {
         let pkTuple = Tuple(primaryKey)
         let beginKey = subspace.pack(pkTuple)
@@ -226,7 +226,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     private func storeVersion(
         item: Item,
         id: Tuple? = nil,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Extract primary key using protocol method
         let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
@@ -264,7 +264,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// Store a deletion marker using FDB versionstamp
     private func storeDeletionMarker(
         item: Item,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let primaryKeyTuple = try resolveItemId(for: item, providedId: nil)
 
@@ -302,7 +302,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// Apply retention strategy to clean up old versions
     private func applyRetentionStrategy(
         item: Item,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         switch strategy {
         case .keepAll:
@@ -323,7 +323,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     private func applyKeepLastStrategy(
         item: Item,
         count: Int,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let (_, beginKey, endKey) = try getPrimaryKeySubspace(for: item)
 
@@ -353,7 +353,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     private func applyKeepForDurationStrategy(
         item: Item,
         duration: TimeInterval,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let (_, beginKey, endKey) = try getPrimaryKeySubspace(for: item)
         let cutoffTime = Date().timeIntervalSince1970 - duration

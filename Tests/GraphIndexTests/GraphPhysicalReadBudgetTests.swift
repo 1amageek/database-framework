@@ -584,11 +584,11 @@ struct GraphPhysicalReadBudgetTests {
         }
     }
 
-    private final class RecordingTransaction: Transaction, Sendable {
+    private final class RecordingTransaction: TransactionAccess, Sendable {
         struct RangeResult: TransactionRangeResult {
             typealias Element = (Bytes, Bytes)
 
-            let underlying: any Transaction
+            let underlying: any TransactionAccess
             let begin: KeySelector
             let end: KeySelector
             let limit: Int
@@ -631,11 +631,11 @@ struct GraphPhysicalReadBudgetTests {
             }
         }
 
-        let underlying: any Transaction
+        let underlying: any TransactionAccess
         let metrics: RangeMetrics
 
         init(
-            underlying: any Transaction,
+            underlying: any TransactionAccess,
             metrics: RangeMetrics
         ) {
             self.underlying = underlying
@@ -699,24 +699,12 @@ struct GraphPhysicalReadBudgetTests {
             )
         }
 
-        func commit() async throws {
-            try await underlying.commit()
-        }
-
-        func cancel() async throws {
-            try await underlying.cancel()
-        }
-
         func setReadVersion(_ version: Int64) throws {
             try underlying.setReadVersion(version)
         }
 
         func getReadVersion() async throws -> Int64 {
             try await underlying.getReadVersion()
-        }
-
-        func getCommittedVersion() throws -> Int64 {
-            try underlying.getCommittedVersion()
         }
 
         func setOption(forOption option: TransactionOption) throws {

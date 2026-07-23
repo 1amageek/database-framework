@@ -80,7 +80,7 @@ struct DatabaseGraphQueryService: Sendable {
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter,
         materialize: @escaping @Sendable (
-            _ transaction: any Transaction,
+            _ transaction: any TransactionAccess,
             _ requestFingerprint: DatabaseBytes
         ) async throws -> DatabaseRetainedRDFGraph
     ) async throws -> QueryExecuteOperation.GraphPage {

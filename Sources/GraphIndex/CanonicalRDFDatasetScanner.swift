@@ -30,7 +30,7 @@ public struct CanonicalRDFDatasetScanner: RDFDatasetScanner {
         graphScope: RDFGraphScanScope,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         try await indexedScanner.scan(
@@ -48,7 +48,7 @@ public struct CanonicalRDFDatasetScanner: RDFDatasetScanner {
     public func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [RDFGraphName] {
         if let limit, limit <= 0 { return [] }
@@ -95,7 +95,7 @@ public struct CanonicalRDFDatasetScanner: RDFDatasetScanner {
     public func containsNamedGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         if try await authoritativeStore.containsNamedGraph(

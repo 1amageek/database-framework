@@ -52,7 +52,7 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let oldKey = try oldItem.map { item in
             try buildGroupingKey(groupingValues(from: item))
@@ -87,7 +87,7 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let groupingValues = try groupingValues(from: item)
         let countKey = try buildGroupingKey(groupingValues)
@@ -107,14 +107,14 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
     /// Get the count for a specific grouping
     public func getCount(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         try await getCountValue(groupingValues: groupingValues, transaction: transaction)
     }
 
     /// Get all counts in this index
     public func getAllCounts(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], count: Int64)] {
         try await scanAllCounts(transaction: transaction)
     }

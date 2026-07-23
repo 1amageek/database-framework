@@ -5,13 +5,13 @@ public protocol DatabaseOntologyProcessor: Sendable {
     func replace(
         _ document: OntologyExecuteOperation.Document,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws
 
     func delete(
         ontology: String,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws
 
     func reason(
@@ -19,7 +19,7 @@ public protocol DatabaseOntologyProcessor: Sendable {
         profile: OntologyExecuteOperation.ReasoningProfile,
         page: QueryExecuteOperation.Page,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> OntologyExecuteOperation.InferencePage
 
     func hierarchy(
@@ -30,13 +30,13 @@ public protocol DatabaseOntologyProcessor: Sendable {
         maximumDepth: UInt32,
         page: QueryExecuteOperation.Page,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> OntologyExecuteOperation.HierarchyPage
 
     func validateSchema(
         ontology: String,
         page: QueryExecuteOperation.Page,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseValidationReport
 }

@@ -72,6 +72,9 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
 
         var capabilities: TransactionCapabilities { underlying.capabilities }
         var mutationByteLimit: Int? { underlying.mutationByteLimit }
+        var transactionDomain: StorageTransactionDomain {
+            underlying.transactionDomain
+        }
 
         fileprivate init(
             underlying: InMemoryTransaction,

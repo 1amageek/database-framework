@@ -101,7 +101,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
     public func findKNearest(
         k: Int,
         from queryPoint: GeoPoint,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(item: T, distance: Double)] {
         guard k > 0 else {
             return []
@@ -208,7 +208,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
     /// Scan a single cell for points
     private func scanCell(
         cellId: UInt64,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [PointInfo] {
         let scanner = SpatialCellScanner(
             indexSubspace: indexSubspace,

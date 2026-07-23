@@ -6,12 +6,12 @@ import StorageKit
 /// Algorithms never create nested transactions and therefore cannot mix read
 /// versions while traversing a graph.
 package struct GraphReadSnapshot: Sendable {
-    package let transaction: any Transaction
+    package let transaction: any TransactionAccess
     package let workBudget: GraphAlgorithmWorkBudget?
     package let identityPool: GraphIdentityPool
 
     package init(
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         workBudget: GraphAlgorithmWorkBudget? = nil
     ) {
         self.transaction = transaction

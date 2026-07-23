@@ -56,7 +56,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let oldKey = try oldItem.map { try packAndValidate(DataAccess.extractId(from: $0, using: idExpression)) }
         let newKey = try newItem.map { try packAndValidate(DataAccess.extractId(from: $0, using: idExpression)) }
@@ -104,7 +104,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let key = try packAndValidate(id)
         try transaction.setValue(ByteConversion.int64ToBytes(0), for: key)
@@ -122,7 +122,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
     /// Get the update count for a specific record
     public func getUpdateCount(
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int64? {
         let key = try packAndValidate(id)
         guard let bytes = try await transaction.getValue(for: key) else {
@@ -137,7 +137,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
 
     /// Get all update counts
     public func getAllUpdateCounts(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(id: Tuple, count: Int64)] {
         try await scanUpdateCounts(
             minimumCount: nil,
@@ -148,7 +148,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
     /// Get records with update count above threshold
     public func getFrequentlyUpdated(
         threshold: Int64,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(id: Tuple, count: Int64)] {
         try await scanUpdateCounts(
             minimumCount: threshold,
@@ -158,7 +158,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
 
     private func scanUpdateCounts(
         minimumCount: Int64?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(id: Tuple, count: Int64)] {
         let range = subspace.range()
         var results: [(id: Tuple, count: Int64)] = []

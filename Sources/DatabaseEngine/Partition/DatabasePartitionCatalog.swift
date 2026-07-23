@@ -38,7 +38,7 @@ package struct DatabasePartitionCatalog: Sendable {
     package func register(
         entity: String,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try validate(entity: entity, partitions: partitions)
         let entry = DatabasePartitionCatalogEntry(

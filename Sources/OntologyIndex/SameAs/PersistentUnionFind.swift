@@ -86,7 +86,7 @@ public struct PersistentUnionFind: Sendable {
     public func find(
         _ individual: String,
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> String {
         var current = individual
         var path: [String] = []
@@ -157,7 +157,7 @@ public struct PersistentUnionFind: Sendable {
         _ individual1: String,
         _ individual2: String,
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> String {
         // Find roots
         let root1 = try await find(individual1, ontologyIRI: ontologyIRI, transaction: transaction)
@@ -236,7 +236,7 @@ public struct PersistentUnionFind: Sendable {
     public func members(
         of individual: String,
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         // Find the representative first
         let representative = try await find(individual, ontologyIRI: ontologyIRI, transaction: transaction)
@@ -255,7 +255,7 @@ public struct PersistentUnionFind: Sendable {
         _ individual1: String,
         _ individual2: String,
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         let root1 = try await find(individual1, ontologyIRI: ontologyIRI, transaction: transaction)
         let root2 = try await find(individual2, ontologyIRI: ontologyIRI, transaction: transaction)
@@ -268,7 +268,7 @@ public struct PersistentUnionFind: Sendable {
     public func makeSet(
         _ individual: String,
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let parentKey = subspace.sameAsParentKey(ontologyIRI, individual: individual)
 
@@ -289,7 +289,7 @@ public struct PersistentUnionFind: Sendable {
     /// Returns a dictionary mapping representatives to their members.
     public func getAllEquivalenceClasses(
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [String: Set<String>] {
         let membersSubspace = subspace.sameAsMembers(ontologyIRI)
         let (beginKey, endKey) = membersSubspace.range()
@@ -325,7 +325,7 @@ public struct PersistentUnionFind: Sendable {
     /// Get the number of equivalence classes
     public func countEquivalenceClasses(
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int {
         let classes = try await getAllEquivalenceClasses(ontologyIRI: ontologyIRI, transaction: transaction)
         return classes.count
@@ -336,7 +336,7 @@ public struct PersistentUnionFind: Sendable {
     private func getRank(
         _ individual: String,
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Int {
         let rankKey = subspace.sameAsRankKey(ontologyIRI, individual: individual)
         guard let data = try await transaction.getValue(
@@ -363,7 +363,7 @@ public struct PersistentUnionFind: Sendable {
         _ individual: String,
         rank: Int,
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         guard rank >= 0, let encodedRank = Int64(exactly: rank) else {
             throw PersistentUnionFindError.invalidRankValue(
@@ -381,7 +381,7 @@ public struct PersistentUnionFind: Sendable {
     private func getMembersInternal(
         _ representative: String,
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         let representativeSubspace = subspace.sameAsMembers(ontologyIRI)
             .subspace(representative)
@@ -483,7 +483,7 @@ extension PersistentUnionFind {
     public func unionAll(
         _ pairs: [(String, String)],
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         for (ind1, ind2) in pairs {
             try await union(ind1, ind2, ontologyIRI: ontologyIRI, transaction: transaction)
@@ -502,7 +502,7 @@ extension PersistentUnionFind {
     public func expand(
         _ individuals: Set<String>,
         ontologyIRI: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         var expanded: Set<String> = []
 

@@ -15,7 +15,7 @@ extension SPARQLQueryExecutor {
         pattern: ExecutionTriple,
         leftBindings: borrowing SPARQLRetainedBindings,
         joinVariables: Set<String>,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression?,
         resultLimit: Int?

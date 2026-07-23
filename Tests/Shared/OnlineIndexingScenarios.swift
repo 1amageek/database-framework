@@ -44,7 +44,7 @@ public final class CountingIndexMaintainer<Item: Persistable>: IndexMaintainer, 
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Not used in online indexer tests
     }
@@ -52,7 +52,7 @@ public final class CountingIndexMaintainer<Item: Persistable>: IndexMaintainer, 
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Use stable binary encoding for ID string
         let idString = Data(id.pack()).base64EncodedString()
@@ -129,7 +129,7 @@ public final class BatchTrackingIndexMaintainer<Item: Persistable>: IndexMaintai
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Not used in online indexer tests
     }
@@ -137,7 +137,7 @@ public final class BatchTrackingIndexMaintainer<Item: Persistable>: IndexMaintai
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         state.withLock { state in
             state.scanItemCallCount += 1
@@ -147,7 +147,7 @@ public final class BatchTrackingIndexMaintainer<Item: Persistable>: IndexMaintai
 
     public func scanItems(
         _ items: [(item: Item, id: Tuple)],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         state.withLock { state in
             state.batchSizes.append(items.count)
@@ -172,7 +172,7 @@ public final class BatchTrackingIndexMaintainer<Item: Persistable>: IndexMaintai
 
     private func writeIndexEntry(
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let idString = Data(id.pack()).base64EncodedString()
         state.withLock { state in
@@ -330,7 +330,7 @@ public final class FailingIndexMaintainer<Item: Persistable>: IndexMaintainer, S
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         // Not used
     }
@@ -338,7 +338,7 @@ public final class FailingIndexMaintainer<Item: Persistable>: IndexMaintainer, S
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let count = processedCount.withLock { count in
             count += 1

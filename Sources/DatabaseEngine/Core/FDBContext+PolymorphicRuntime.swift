@@ -26,9 +26,9 @@ public struct PolymorphicRecord: Sendable {
 extension FDBContext {
     public func executeCanonicalRead<T: Sendable>(
         configuration: TransactionConfiguration = .default,
-        _ operation: @Sendable @escaping (any Transaction) async throws -> T
+        _ operation: @Sendable @escaping (any TransactionAccess) async throws -> T
     ) async throws -> T {
-        try await withRawTransaction(
+        try await withStorageAccess(
             configuration: configuration,
             operation
         )
@@ -53,7 +53,7 @@ extension FDBContext {
             orderBy: orderBy
         )
 
-        return try await withRawTransaction(configuration: configuration) { transaction in
+        return try await withStorageAccess(configuration: configuration) { transaction in
             let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
             let (begin, end) = itemSubspace.range()
             var records: [PolymorphicRecord] = []
@@ -91,7 +91,7 @@ extension FDBContext {
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let typeMap = polymorphicTypeMap(for: group)
 
-        return try await withRawTransaction(configuration: configuration) { transaction in
+        return try await withStorageAccess(configuration: configuration) { transaction in
             let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
             var items: [PolymorphicRecord] = []
 

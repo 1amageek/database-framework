@@ -16,7 +16,7 @@ public struct OWLClassRDFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         if let oldItem {
             for key in try buildAllKeys(for: oldItem) {
@@ -33,7 +33,7 @@ public struct OWLClassRDFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         for key in try buildAllKeys(for: item) {
             try transaction.setValue([], for: key)

@@ -60,7 +60,7 @@ struct SHACLShapesStore: Sendable {
     ///   - transaction: The FDB transaction
     func save(
         _ graph: SHACLShapesGraph,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let data = try JSONEncoder().encode(graph)
         let key = graphKey(graph.iri)
@@ -77,7 +77,7 @@ struct SHACLShapesStore: Sendable {
     /// - Returns: The shapes graph, or nil if not found
     func get(
         iri: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> SHACLShapesGraph? {
         let key = graphKey(iri)
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
@@ -93,7 +93,7 @@ struct SHACLShapesStore: Sendable {
     /// - Parameter transaction: The FDB transaction
     /// - Returns: Array of shapes graph IRIs
     func listGraphIRIs(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [String] {
         let (beginKey, endKey) = graphsSubspace.range()
         let stream = try await transaction.collectRange(
@@ -127,7 +127,7 @@ struct SHACLShapesStore: Sendable {
     ///   - transaction: The FDB transaction
     func delete(
         iri: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let key = graphKey(iri)
         try transaction.clear(key: key)
@@ -137,7 +137,7 @@ struct SHACLShapesStore: Sendable {
     ///
     /// - Parameter transaction: The FDB transaction
     func deleteAll(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         let (beginKey, endKey) = graphsSubspace.range()
         try transaction.clearRange(beginKey: beginKey, endKey: endKey)

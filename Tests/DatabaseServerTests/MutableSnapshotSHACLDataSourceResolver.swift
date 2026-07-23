@@ -28,7 +28,7 @@ actor MutableSnapshotSHACLDataSourceResolver: DatabaseSHACLDataSourceResolver {
         focus: SHACLExecuteOperation.Focus,
         entailment: SHACLExecuteOperation.Entailment,
         workBudget: SHACLValidationWorkBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseSHACLResolvedDataSource {
         _ = workBudget
         _ = transaction

@@ -24,7 +24,7 @@ public struct DatabaseMutationStateStore: Sendable {
     }
 
     func nextLogicalVersion(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> UInt64 {
         let current = try await logicalVersion(
             transaction: transaction,
@@ -39,13 +39,13 @@ public struct DatabaseMutationStateStore: Sendable {
     }
 
     func currentLogicalVersion(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> UInt64 {
         try await logicalVersion(transaction: transaction, snapshot: true)
     }
 
     private func logicalVersion(
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         snapshot: Bool
     ) async throws -> UInt64 {
         guard let bytes = try await transaction.getValue(
@@ -71,7 +71,7 @@ public struct DatabaseMutationStateStore: Sendable {
 
     func idempotencyRecord(
         for key: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         limits: DatabaseWireLimits
     ) async throws -> DatabaseIdempotencyRecord? {
         let record = idempotencySubspace.subspace(key)
@@ -179,7 +179,7 @@ public struct DatabaseMutationStateStore: Sendable {
     func store(
         _ record: DatabaseIdempotencyRecord,
         for key: String,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         limits: DatabaseWireLimits
     ) throws {
         let storage = idempotencySubspace.subspace(key)

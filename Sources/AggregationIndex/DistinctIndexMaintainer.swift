@@ -81,7 +81,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try validateConfiguration()
 
@@ -167,7 +167,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try validateConfiguration()
         guard let contribution = try contribution(for: item) else {
@@ -197,7 +197,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
     /// Builds a batch with one summary read/write per affected group.
     public func scanItems(
         _ items: [(item: Item, id: Tuple)],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try validateConfiguration()
         guard items.count <= maximumItemsPerBatch else {
@@ -298,7 +298,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
 
     public func getDistinctCount(
         groupingValues: [any TupleElement],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> (estimated: Int64, errorRate: Double) {
         try validateConfiguration()
         let group = try makeGroup(groupingValues: groupingValues)
@@ -311,7 +311,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
 
     private func storedDistinctCount(
         for group: DistinctIndexGroup,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         snapshot: Bool
     ) async throws -> (estimated: Int64, errorRate: Double)? {
         let membershipMetadata = try await storedMembershipMetadata(
@@ -343,7 +343,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
     }
 
     public func getAllDistinctCounts(
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [(
         grouping: [any TupleElement],
         estimated: Int64,
@@ -547,7 +547,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
         values: Values,
         group: DistinctIndexGroup,
         initializeIfAbsent: Bool,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws where Values.Element == FieldValue {
         let stored = try await transaction.getValue(
             for: group.summaryKey
@@ -586,7 +586,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
     /// decodable summary. No mutation path repairs an orphaned component.
     private func validateStoredGroup(
         _ group: DistinctIndexGroup,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         let membershipMetadata = try await storedMembershipMetadata(
             for: group,
@@ -613,7 +613,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
 
     private func storedMembershipMetadata(
         for group: DistinctIndexGroup,
-        transaction: any Transaction,
+        transaction: any TransactionAccess,
         snapshot: Bool
     ) async throws -> AggregationMembershipMetadata? {
         guard let bytes = try await transaction.getValue(
@@ -645,7 +645,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
 
     private func rebuildSummary(
         for group: DistinctIndexGroup,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         var estimator = try HyperLogLog(precision: precision)
         var memberCount = 0

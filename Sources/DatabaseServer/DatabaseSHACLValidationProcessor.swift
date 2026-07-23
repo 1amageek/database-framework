@@ -25,7 +25,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
         graph: String,
         quads: [DatabaseRDFQuad],
         workBudget: SHACLValidationWorkBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try Task.checkCancellation()
         try workBudget.consume(UInt64(quads.count), at: .storageRow)
@@ -35,7 +35,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
     public func delete(
         graph: String,
         workBudget: SHACLValidationWorkBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         try workBudget.consume(at: .storageRow)
         _ = graph
@@ -49,7 +49,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
         entailment: SHACLExecuteOperation.Entailment,
         page: QueryExecuteOperation.Page,
         workBudget: SHACLValidationWorkBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseValidationReport {
         let budget = workBudget.workMeter.budget
         let stored = try await loadShapes(
@@ -144,7 +144,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
     private func loadShapes(
         graph: String,
         budget: DatabaseExecutionBudget,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRDFStoredDocumentPage {
         guard budget.maximumWorkUnits > 0,
               let limit = Int(exactly: min(

@@ -416,7 +416,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         }
     }
 
-    private func saveProgress(_ rangeSet: RangeSet, key: Bytes, _ transaction: any Transaction) throws {
+    private func saveProgress(_ rangeSet: RangeSet, key: Bytes, _ transaction: any TransactionAccess) throws {
         try transaction.setValue(try RangeSetCodec.encode(rangeSet), for: key)
     }
 
@@ -516,7 +516,7 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
     public func storeRelationship(
         sourceId: String,
         targetId: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) throws {
         // Canonicalize: always store smaller ID first
         let (first, second) = sourceId < targetId ? (sourceId, targetId) : (targetId, sourceId)
@@ -534,7 +534,7 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
     /// Returns all entities connected to the given entity ID.
     public func queryRelationships(
         entityId: String,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [String] {
         var results: [String] = []
         let indexSpace = indexSubspace.subspace(config.forwardIndexName)

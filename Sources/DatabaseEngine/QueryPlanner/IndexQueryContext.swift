@@ -135,7 +135,7 @@ public struct IndexQueryContext: Sendable {
     public func readableIndexSubspace<T: Persistable>(
         named indexName: String,
         for type: T.Type,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Subspace? {
         guard type.indexDescriptors.contains(where: { $0.name == indexName }) else {
             throw IndexQueryContextError.indexNotFound(indexName)
@@ -161,7 +161,7 @@ public struct IndexQueryContext: Sendable {
         named indexName: String,
         forEntityName entityName: String,
         partitions: [DatabaseObjectField],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> Subspace? {
         guard let entity = schema.entitiesByName[entityName],
               let persistableType = entity.persistableType else {
@@ -268,16 +268,16 @@ public struct IndexQueryContext: Sendable {
 
     /// Execute a closure within a transaction
     ///
-    /// Uses `context.withRawTransaction()` internally to benefit from ReadVersionCache
-    /// while providing direct access to the raw Transaction.
+    /// Uses `context.withStorageAccess()` internally to benefit from
+    /// `ReadVersionCache` while withholding lifecycle authority.
     ///
     /// - Parameter body: Closure that takes a transaction
     /// - Returns: Result of the closure
     public func withTransaction<R: Sendable>(
         configuration: TransactionConfiguration = .default,
-        _ body: @Sendable @escaping (any Transaction) async throws -> R
+        _ body: @Sendable @escaping (any TransactionAccess) async throws -> R
     ) async throws -> R {
-        return try await context.withRawTransaction(configuration: configuration) { transaction in
+        return try await context.withStorageAccess(configuration: configuration) { transaction in
             try await body(transaction)
         }
     }
@@ -468,7 +468,7 @@ public struct IndexQueryContext: Sendable {
     public func fetchItem<T: Persistable>(
         id: Tuple,
         type: T.Type,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> T? {
         let store: any DataStore
         if let binding = partitionBinding(for: type) {
@@ -549,7 +549,7 @@ public struct IndexQueryContext: Sendable {
             configuration: configuration
         )
 
-        let items = try await context.withRawTransaction(configuration: .default) { transaction in
+        let items = try await context.withStorageAccess(configuration: .default) { transaction in
             try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
         }
 

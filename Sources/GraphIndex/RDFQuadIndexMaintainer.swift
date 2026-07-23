@@ -38,7 +38,7 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         if let oldItem {
             for key in try buildIndexKeys(for: oldItem) {
@@ -59,7 +59,7 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws {
         let value = try CoveringValueBuilder.build(
             for: item,

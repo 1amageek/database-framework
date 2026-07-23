@@ -170,7 +170,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// - Returns: The fetched items (in request order where found)
     public func fetch(
         primaryKeys: [Tuple],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> [Item] {
         guard !primaryKeys.isEmpty else { return [] }
 
@@ -254,7 +254,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// - Returns: A throwing stream of fetched items
     public func stream(
         primaryKeys: [Tuple],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) -> AsyncThrowingStream<Item, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -293,7 +293,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// - Returns: Fetch result with items and metadata
     public func fetchWithMetadata(
         primaryKeys: [Tuple],
-        transaction: any Transaction
+        transaction: any TransactionAccess
     ) async throws -> RemoteFetchResult<Item> {
         let startTime = MonotonicClock.now()
 

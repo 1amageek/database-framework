@@ -322,7 +322,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         }
     }
 
-    private func saveProgress(_ rangeSet: RangeSet, _ transaction: any Transaction) throws {
+    private func saveProgress(_ rangeSet: RangeSet, _ transaction: any TransactionAccess) throws {
         try transaction.setValue(try RangeSetCodec.encode(rangeSet), for: progressKey)
     }
 
