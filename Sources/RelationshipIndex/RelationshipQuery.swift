@@ -6,18 +6,18 @@ extension DatabaseContext {
     /// Loads an entity snapshot by its complete typed identity.
     public func get<Target: Persistable>(
         _ reference: DatabaseReference<Target>
-    ) async throws -> Snapshot<Target>? {
+    ) async throws -> RelationshipSnapshot<Target>? {
         guard let model = try await model(for: reference) else {
             return nil
         }
-        return Snapshot(item: model)
+        return RelationshipSnapshot(item: model)
     }
 
     /// Loads an owner and an optional to-one relationship at one read version.
     public func get<Owner: Persistable, Related: Persistable>(
         _ reference: DatabaseReference<Owner>,
         joining keyPath: KeyPath<Owner, DatabaseReference<Related>?>
-    ) async throws -> Snapshot<Owner>? {
+    ) async throws -> RelationshipSnapshot<Owner>? {
         let fieldName = Owner.fieldName(for: keyPath)
         let loaded: (owner: Owner, related: Related?)? =
             try await withTransaction { transaction in
@@ -41,7 +41,7 @@ extension DatabaseContext {
         guard let loaded else {
             return nil
         }
-        return Snapshot(item: loaded.owner).with(
+        return RelationshipSnapshot(item: loaded.owner).with(
             keyPath,
             loadedAs: loaded.related
         )
@@ -51,7 +51,7 @@ extension DatabaseContext {
     public func get<Owner: Persistable, Related: Persistable>(
         _ reference: DatabaseReference<Owner>,
         joining keyPath: KeyPath<Owner, DatabaseReference<Related>>
-    ) async throws -> Snapshot<Owner>? {
+    ) async throws -> RelationshipSnapshot<Owner>? {
         let fieldName = Owner.fieldName(for: keyPath)
         let loaded: (owner: Owner, related: Related?)? =
             try await withTransaction { transaction in
@@ -78,7 +78,7 @@ extension DatabaseContext {
         guard let loaded else {
             return nil
         }
-        return Snapshot(item: loaded.owner).with(
+        return RelationshipSnapshot(item: loaded.owner).with(
             keyPath,
             loadedAs: loaded.related
         )
@@ -88,7 +88,7 @@ extension DatabaseContext {
     public func get<Owner: Persistable, Related: Persistable>(
         _ reference: DatabaseReference<Owner>,
         joining keyPath: KeyPath<Owner, [DatabaseReference<Related>]>
-    ) async throws -> Snapshot<Owner>? {
+    ) async throws -> RelationshipSnapshot<Owner>? {
         let fieldName = Owner.fieldName(for: keyPath)
         let loaded: (owner: Owner, related: [Related])? =
             try await withTransaction { transaction in
@@ -120,7 +120,7 @@ extension DatabaseContext {
         guard let loaded else {
             return nil
         }
-        return Snapshot(item: loaded.owner).with(
+        return RelationshipSnapshot(item: loaded.owner).with(
             keyPath,
             loadedAs: loaded.related
         )

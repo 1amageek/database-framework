@@ -288,7 +288,7 @@ struct RelationshipIndexPerformanceTests {
         // Verify snapshots have loaded relations
         var loadedCount = 0
         for snapshot in snapshots {
-            if snapshot.ref(\.customer) != nil {
+            if try snapshot.ref(\.customer) != nil {
                 loadedCount += 1
             }
         }

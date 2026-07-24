@@ -81,6 +81,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
             cardinality: .optionalToOne
         ) { models in
             try castToOne(models, as: Related.self)
+                .map(LoadedRelationship.toOne) ?? .absentToOne
         }
     }
 
@@ -93,6 +94,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
             cardinality: .requiredToOne
         ) { models in
             try castToOne(models, as: Related.self)
+                .map(LoadedRelationship.toOne) ?? .absentToOne
         }
     }
 
@@ -115,18 +117,18 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
                 }
                 typed.append(related)
             }
-            return typed
+            return .toMany(typed)
         }
     }
 
-    public func execute() async throws -> [Snapshot<Model>] {
+    public func execute() async throws -> [RelationshipSnapshot<Model>] {
         let joins = self.joins
         let container = context.container
         return try await context.withFetchedModelsInTransaction(query) {
             models,
             transaction in
             guard !joins.isEmpty else {
-                return models.map { Snapshot(item: $0) }
+                return models.map { RelationshipSnapshot(item: $0) }
             }
 
             let resolver = RelationshipReferenceResolver(schema: container.schema)
@@ -161,19 +163,23 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
                 }
             }
 
-            var snapshots: [Snapshot<Model>] = []
+            var snapshots: [RelationshipSnapshot<Model>] = []
             snapshots.reserveCapacity(models.count)
             for (modelOffset, model) in models.enumerated() {
-                var relations: [String: any Sendable] = [:]
+                var loadedRelationships: [String: LoadedRelationship] = [:]
                 for (joinOffset, join) in joins.enumerated() {
                     let related = referencesByModel[modelOffset][joinOffset].compactMap {
                         loadedByIdentity[$0]
                     }
-                    if let value = try join.assemble(related) {
-                        relations[join.descriptor.propertyName] = value
-                    }
+                    loadedRelationships[join.descriptor.propertyName] =
+                        try join.assemble(related)
                 }
-                snapshots.append(Snapshot(item: model, relations: relations))
+                snapshots.append(
+                    RelationshipSnapshot(
+                        item: model,
+                        loadedRelationships: loadedRelationships
+                    )
+                )
             }
             return snapshots
         }
@@ -183,7 +189,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
         try await QueryExecutor(context: context, query: query).count()
     }
 
-    public func first() async throws -> Snapshot<Model>? {
+    public func first() async throws -> RelationshipSnapshot<Model>? {
         try await limit(1).execute().first
     }
 
@@ -223,7 +229,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
 
 private struct RelationshipJoin<Model: Persistable>: Sendable {
     let descriptor: RelationshipDescriptor
-    let assemble: @Sendable ([any Persistable]) throws -> (any Sendable)?
+    let assemble: @Sendable ([any Persistable]) throws -> LoadedRelationship
 }
 
 private func castToOne<Related: Persistable>(

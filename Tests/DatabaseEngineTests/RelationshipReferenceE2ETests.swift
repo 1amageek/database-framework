@@ -121,7 +121,7 @@ struct RelationshipReferenceE2ETests {
                 .fetch(RelationshipOptionalOwner.self)
                 .joining(\.target)
                 .execute()
-            let joinedIDs = Set(snapshots.compactMap { $0.ref(\.target)?.id })
+            let joinedIDs = Set(try snapshots.compactMap { try $0.ref(\.target)?.id })
             #expect(joinedIDs == [target.id])
 
             let resolver = context.inverseRelationshipResolver()

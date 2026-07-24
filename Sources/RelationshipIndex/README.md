@@ -1,507 +1,162 @@
 # RelationshipIndex
 
-Relationship management with FK indexes, eager loading, and delete rule enforcement.
+`RelationshipIndex` owns relationship execution for persisted models. The
+relationship declarations and `DatabaseReference` value live in
+`database-kit`; loading, join execution, reverse lookup, and delete-rule
+enforcement live in this target.
 
-## Overview
-
-RelationshipIndex provides type-safe relationship management between Persistable types using the `@Relationship` macro. It enables efficient cross-type queries, eager relationship loading via `joining()`, and automatic delete rule enforcement following established ORM patterns.
-
-**Features**:
-- **@Relationship Macro**: Declarative relationship definition with delete rules
-- **Automatic FK Indexing**: ScalarIndex generated for foreign key fields
-- **Eager Loading**: Load related items with `joining()` in single query
-- **Delete Rules**: cascade, nullify, deny, noAction enforcement
-- **Snapshot API**: Type-safe access to loaded relationships
-
-**Storage Layout**:
-```
-// FK Index (generated ScalarIndex)
-Key: [indexSubspace]["{Type}_{relationship}"][fkValue]/[primaryKey]
-Value: '' (empty)
-
-// Reverse Index for Delete Rule Enforcement
-Key: [indexSubspace]["{Type}_{relationship}"][relatedId]/[ownerId]
-Value: '' (empty)
-
-Example (Order.customerID -> Customer):
-  [I]/RTestOrder_customer/["C001"]/["O001"] = ''
-  [I]/RTestOrder_customer/["C001"]/["O002"] = ''
-
-Example (Customer.orderIDs -> Order, To-Many):
-  [I]/RTestCustomer_orders/["O001"]/["C001"] = ''
-  [I]/RTestCustomer_orders/["O002"]/["C001"] = ''
+```text
+database-kit/Relationship
+    declaration + reference value
+              |
+              v
+database-framework/RelationshipIndex
+    validation + loading + join + delete rules
 ```
 
-**Relationship Model**:
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Relationship Types                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  To-One (Single FK):                                             │
-│    @Relationship(Customer.self)                                  │
-│    var customerID: String?       // Optional FK                  │
-│                                                                  │
-│    @Relationship(Customer.self)                                  │
-│    var customerID: String        // Required FK                  │
-│                                                                  │
-│  To-Many (Array FK):                                             │
-│    @Relationship(Order.self)                                     │
-│    var orderIDs: [String] = []   // Array of FKs                │
-│                                                                  │
-│  Naming Convention:                                              │
-│    customerID  → "customer" relationship                         │
-│    orderIDs    → "orders" relationship                          │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+## Relationship declarations
 
-## Use Cases
-
-### 1. Basic To-One Relationship
-
-**Scenario**: Orders reference a single Customer.
+An application model declares typed references. The model stores only the
+reference; it does not store an eagerly loaded entity.
 
 ```swift
 @Persistable
 struct Customer {
-    var id: String = ULID().ulidString
-    var name: String = ""
-    var tier: String = "standard"
+    var name: String
 }
 
 @Persistable
 struct Order {
-    var id: String = ULID().ulidString
-    var total: Double = 0
-    var status: String = "pending"
+    var total: Double
 
-    // To-one relationship to Customer
-    @Relationship(Customer.self)
-    var customerID: String? = nil
-}
-
-// Create order with relationship
-var order = Order(total: 99.99)
-order.customerID = customer.id
-try context.insert(order)
-try await context.save()
-
-// Load related customer
-let loadedOrder = try await context.model(for: orderId, as: Order.self)!
-let customer = try await context.related(loadedOrder, \.customerID, as: Customer.self)
-print(customer?.name)  // "Alice"
-```
-
-**Performance**: O(1) - Direct ID lookup for related item.
-
-### 2. To-Many Relationship
-
-**Scenario**: Customer has many Orders.
-
-```swift
-@Persistable
-struct Customer {
-    var id: String = ULID().ulidString
-    var name: String = ""
-
-    // To-many relationship to Order
-    @Relationship(Order.self)
-    var orderIDs: [String] = []
-}
-
-// Create customer with multiple orders
-var customer = Customer(name: "Alice")
-customer.orderIDs = [order1.id, order2.id, order3.id]
-try context.insert(customer)
-try await context.save()
-
-// Load related orders
-let loadedCustomer = try await context.model(for: customerId, as: Customer.self)!
-let orders = try await context.related(loadedCustomer, \.orderIDs, as: Order.self)
-for order in orders {
-    print("Order: \(order.total)")
+    @Relationship
+    var customer: DatabaseReference<Customer>?
 }
 ```
 
-**Performance**: O(k) where k = number of related items.
+The schema macro emits the `RelationshipDescriptor` consumed by the runtime.
+The runtime validates that the declared owner, related type, cardinality, and
+delete rule match before executing relationship behavior.
 
-### 3. Eager Loading with joining()
+## Loading a relation
 
-**Scenario**: Load orders with customers in a single query.
+Use `related` when only the related entity is needed:
 
 ```swift
-// Fetch orders with customer data pre-loaded
-let snapshots = try await context.fetch(Order.self)
-    .where(\.status == "pending")
-    .joining(\.customerID, as: Customer.self)
+let customer = try await context.related(order, \.customer)
+```
+
+Use `joining` when the owner and its related entities must be read at the same
+transaction version:
+
+```swift
+let snapshots = try await context
+    .fetch(Order.self)
+    .joining(\.customer)
     .execute()
 
 for snapshot in snapshots {
-    // Access order properties directly
-    print("Order: \(snapshot.total)")
-
-    // Access related customer via ref()
-    let customer = snapshot.ref(Customer.self, \.customerID)
-    print("Customer: \(customer?.name ?? "N/A")")
+    let customer = try snapshot.ref(\.customer)
+    print(snapshot.total, customer?.name ?? "unassigned")
 }
 ```
 
-**Batch Loading**: FK values are collected and related items are batch-loaded to minimize round trips.
-
-### 4. To-Many Eager Loading
-
-**Scenario**: Load customers with their orders in a single query.
+A single owner can be loaded by its complete typed reference:
 
 ```swift
-// Fetch customers with orders pre-loaded
-let snapshots = try await context.fetch(Customer.self)
-    .joining(\.orderIDs, as: Order.self)
-    .execute()
-
-for snapshot in snapshots {
-    print("Customer: \(snapshot.name)")
-
-    // Access related orders via refs()
-    let orders = snapshot.refs(Order.self, \.orderIDs)
-    let total = orders.reduce(0) { $0 + $1.total }
-    print("Total orders value: \(total)")
-}
-```
-
-### 5. Get with Single Item Joining
-
-**Scenario**: Fetch single item with relationship loaded.
-
-```swift
-// Get order with customer joined
 let snapshot = try await context.get(
-    Order.self,
-    id: orderId,
-    joining: \.customerID,
-    as: Customer.self
+    orderReference,
+    joining: \.customer
 )
-
-if let order = snapshot {
-    print("Order total: \(order.total)")
-    let customer = order.ref(Customer.self, \.customerID)
-    print("Customer: \(customer?.name ?? "N/A")")
-}
-
-// Get customer with orders joined
-let customerSnapshot = try await context.get(
-    Customer.self,
-    id: customerId,
-    joining: \.orderIDs,
-    as: Order.self
-)
-
-if let customer = customerSnapshot {
-    let orders = customer.refs(Order.self, \.orderIDs)
-    print("Customer has \(orders.count) orders")
-}
 ```
 
-### 6. Delete Rule Enforcement
+## RelationshipSnapshot
 
-**Scenario**: Enforce referential integrity on delete.
+`RelationshipSnapshot<Model>` is an execution result owned by
+`RelationshipIndex`. It contains:
+
+- the persisted model in `item`;
+- only the relationships explicitly requested by the operation;
+- relationships read at the same transaction version as the model.
+
+Dynamic member lookup forwards model properties:
 
 ```swift
-@Persistable
-struct Customer {
-    var name: String = ""
-
-    @Relationship(Order.self, deleteRule: .cascade)
-    var orderIDs: [String] = []
-}
-
-@Persistable
-struct Order {
-    var total: Double = 0
-
-    @Relationship(Customer.self, deleteRule: .deny)
-    var customerID: String? = nil
-}
-
-// Cascade: Deleting customer also deletes all their orders
-try await context.deleteEnforcingRelationshipRules(customer)
-// Customer and all related orders are deleted
-
-// Deny: Cannot delete customer if orders reference them
-// Throws RelationshipError.deleteRuleDenied if orders exist
-
-// Nullify: Set FK to nil on referencing items
-@Relationship(Customer.self, deleteRule: .nullify)
-var customerID: String? = nil
-// Deleting customer sets order.customerID = nil
-
-// NoAction: Do nothing (may leave orphan references)
-@Relationship(Customer.self, deleteRule: .noAction)
-var customerID: String? = nil
+let total = snapshot.total
+let sameTotal = snapshot.item.total
 ```
 
-## Design Patterns
-
-### Delete Rules
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Delete Rules                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  .cascade                                                        │
-│    When: Deleting Customer                                       │
-│    Effect: All Orders referencing Customer are also deleted     │
-│    Use: Parent-child relationships (Order → LineItems)          │
-│    ⚠️ Be careful with bidirectional cascade                     │
-│                                                                  │
-│  .deny                                                           │
-│    When: Deleting Customer                                       │
-│    Effect: Throws error if any Orders reference Customer        │
-│    Use: Strong referential integrity (Department → Employees)   │
-│                                                                  │
-│  .nullify (default)                                              │
-│    When: Deleting Customer                                       │
-│    Effect: Set order.customerID = nil for all Orders            │
-│    Use: Optional relationships (Order → Customer)               │
-│                                                                  │
-│  .noAction                                                       │
-│    When: Deleting Customer                                       │
-│    Effect: Do nothing, may leave orphan FKs                     │
-│    Use: When cleanup is handled elsewhere                       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Snapshot API
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Snapshot<T> API                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Properties:                                                     │
-│    .item         → Access underlying T item                     │
-│    .relations    → Dictionary of loaded relationships           │
-│                                                                  │
-│  Dynamic Member:                                                 │
-│    snapshot.propertyName  → Same as snapshot.item.propertyName  │
-│                                                                  │
-│  To-One Access:                                                  │
-│    snapshot.ref(Type.self, \.fkField) -> Type?                  │
-│                                                                  │
-│  To-Many Access:                                                 │
-│    snapshot.refs(Type.self, \.fkArrayField) -> [Type]           │
-│                                                                  │
-│  Mutation (returns new Snapshot):                                │
-│    snapshot.with(\.fkField, loadedAs: item)                     │
-│    snapshot.with(\.fkArrayField, loadedAs: items)               │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Index Generation
-
-The `@Relationship` macro generates:
-
-1. **ScalarIndex** on the FK field for efficient reverse lookups
-2. **RelationshipDescriptor** for delete rule enforcement
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                  Macro-Generated Artifacts                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  @Persistable                                                    │
-│  struct Order {                                                  │
-│      @Relationship(Customer.self, deleteRule: .nullify)         │
-│      var customerID: String? = nil                              │
-│  }                                                               │
-│                                                                  │
-│  Generates:                                                      │
-│                                                                  │
-│  1. ScalarIndex named "Order_customer"                          │
-│     Key: [I]/Order_customer/[customerID]/[orderId]              │
-│                                                                  │
-│  2. RelationshipDescriptor:                                      │
-│     - name: "Order_customer"                                     │
-│     - propertyName: "customerID"                                │
-│     - relatedTypeName: "Customer"                               │
-│     - deleteRule: .nullify                                      │
-│     - isToMany: false                                           │
-│     - relationshipPropertyName: "customer"                      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Query Execution Flow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                 Eager Loading Flow                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  context.fetch(Order.self)                                      │
-│      .joining(\.customerID, as: Customer.self)                  │
-│      .execute()                                                  │
-│          │                                                       │
-│          ▼                                                       │
-│  1. Execute base query → [Order]                                │
-│          │                                                       │
-│          ▼                                                       │
-│  2. Collect FK values → Set<CustomerID>                         │
-│          │                                                       │
-│          ▼                                                       │
-│  3. Batch load customers → [CustomerID: Customer]               │
-│          │                                                       │
-│          ▼                                                       │
-│  4. Build Snapshots with relations                              │
-│          │                                                       │
-│          ▼                                                       │
-│  5. Return [Snapshot<Order>]                                    │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Orphan FK Handling
-
-Relationship indexes allow FKs to reference non-existent items:
+To-one and to-many accessors are typed:
 
 ```swift
-// FK pointing to non-existent customer (allowed)
-var order = Order(total: 99.99)
-order.customerID = "nonexistent-customer"
-try context.insert(order)
-try await context.save()  // Success
-
-// related() returns nil for non-existent FK target
-let customer = try await context.related(order, \.customerID, as: Customer.self)
-// customer == nil
-
-// Delete of referenced item leaves orphan FK
-try context.delete(customer)
-try await context.save()
-// order.customerID still contains the deleted customer ID
-// related() now returns nil
+let customer = try snapshot.ref(\.customer)
+let orders = try snapshot.refs(\.orders)
 ```
 
-## Error Handling
+The access contract distinguishes all relevant states:
 
-RelationshipIndex throws specific errors for invalid configurations or data:
+| State | Result |
+|---|---|
+| relationship was not joined | `RelationshipSnapshotError.relationNotLoaded` |
+| optional to-one was joined and has no reference | `nil` |
+| to-many was joined and is empty | `[]` |
+| stored cardinality does not match the key path | typed cardinality error |
+| loaded entity type does not match the key path | typed related-type error |
 
-```swift
-public enum RelationshipIndexError: Error {
-    /// Configuration not found for the index
-    case configurationNotFound(indexName: String, modelType: String)
+The loaded relationship map is not public. Callers cannot inject untyped
+values or make a snapshot claim a relationship was loaded when it was not.
 
-    /// FK field type is invalid (must be String or [String])
-    case invalidForeignKeyType(fieldName: String, expectedType: String, actualType: String)
+To-many results keep the exact `[Related]` value in type-erased storage.
+Reading it back uses the same copy-on-write array allocation; it does not
+materialize an intermediate entity array.
 
-    /// Related field value is nil - cannot create index entry
-    case relatedFieldIsNil(fieldName: String, relatedType: String)
+## Join execution
 
-    /// Field value cannot be converted to TupleElement
-    case fieldNotConvertibleToTupleElement(fieldName: String, relatedType: String, actualType: String)
-
-    /// Transaction is required for computing index keys
-    case transactionRequired(indexName: String)
-}
+```text
+base query
+    |
+    v
+collect ordered typed identities
+    |
+    v
+deduplicate identities
+    |
+    v
+load each identity in the active transaction
+    |
+    v
+assemble typed loaded relationships
+    |
+    v
+[RelationshipSnapshot<Model>]
 ```
 
-### Error Scenarios
+The complete operation executes in one transaction. Missing or invalid
+relationship descriptors, malformed stored references, and loaded type
+mismatches are failures; they are not converted to empty results.
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `invalidForeignKeyType` | FK field is not `String` (To-One) or `[String]` (To-Many) | Ensure FK field type matches relationship type |
-| `relatedFieldIsNil` | Related item exists but indexed field is nil | Ensure indexed fields are non-nil or use Optional |
-| `fieldNotConvertibleToTupleElement` | Field type cannot be used as index key | Use primitive types (String, Int, Double, etc.) |
-| `transactionRequired` | Internal: non-transaction computeIndexKeys called | Use transaction-aware version (internal only) |
+## Delete rules
 
-### Design Philosophy
+Relationship mutation and delete handling use the compiled relationship
+catalog. Supported declarations are:
 
-- **Fail Fast**: Invalid configurations throw errors at index maintenance time
-- **No Silent Failures**: Type mismatches and nil values cause explicit errors
-- **Orphan FKs Allowed**: FK pointing to non-existent item is valid (returns nil on load)
+- `cascade`
+- `nullify`
+- `deny`
+- `noAction`
 
-## Implementation Status
+Rule application, relationship index updates, and the owner mutation execute
+inside the same transaction. A failed rule or index update fails the mutation
+rather than leaving a partially updated relationship state.
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| @Relationship macro | ✅ Complete | To-One and To-Many support |
-| ScalarIndex generation | ✅ Complete | Automatic FK indexing |
-| RelationshipDescriptor | ✅ Complete | Delete rule metadata |
-| related() API | ✅ Complete | To-One and To-Many loading |
-| joining() API | ✅ Complete | Eager loading in queries |
-| Snapshot<T> wrapper | ✅ Complete | ref() and refs() access |
-| get() with joining | ✅ Complete | Single item with relation |
-| Delete rule: cascade | ✅ Complete | Recursive deletion |
-| Delete rule: nullify | ✅ Complete | FK set to nil |
-| Delete rule: deny | ✅ Complete | Error if references exist |
-| Delete rule: noAction | ✅ Complete | No enforcement |
-| Inverse relationships | ❌ Not implemented | Manual bidirectional setup |
-| Automatic FK sync | ❌ Not implemented | Manual consistency |
-| Cascade cycle detection | ❌ Not implemented | User responsibility |
+## Ownership boundary
 
-## Performance Characteristics
+This target does not own:
 
-| Operation | Time Complexity | Notes |
-|-----------|----------------|-------|
-| related() To-One | O(1) | Direct ID lookup |
-| related() To-Many | O(k) | k = number of related items |
-| joining() batch load | O(n + m) | n items, m unique FKs |
-| Delete with cascade | O(c) | c = cascaded items |
-| Delete with nullify | O(n) | n = referencing items |
-| Delete with deny | O(1) | Single range check |
-| Index update | O(1) | FK change |
-| To-Many index update | O(k) | k = array size |
+- `DatabaseReference`, `RelationshipDescriptor`, or declaration macros;
+- query language models or wire operations;
+- storage transaction primitives;
+- application schemas.
 
-### Storage Overhead
-
-| Component | Storage |
-|-----------|---------|
-| FK Index entry | ~20-40 bytes per FK |
-| To-Many index entries | ~20-40 bytes × array size |
-| RelationshipDescriptor | Metadata only (no FDB storage) |
-
-### FDB Considerations
-
-- **Transaction Size**: Large cascading deletes may approach 10MB limit
-- **Key Size**: FK values must fit within FDB's 10KB key limit
-- **Batch Loading**: FK values are deduplicated before batch loading
-- **Orphan FKs**: Allowed by default (no referential integrity enforcement on insert)
-
-## Benchmark Results
-
-Run with: `swift test --filter RelationshipIndexPerformanceTests`
-
-### Insert Performance
-
-| Records | Relationship Type | Insert Time | Throughput |
-|---------|-------------------|-------------|------------|
-| 100 | To-One | ~30ms | ~3,300/s |
-| 1,000 | To-One | ~300ms | ~3,300/s |
-| 100 | To-Many (5 items) | ~50ms | ~2,000/s |
-
-### Query Performance
-
-| Items | Operation | Latency (p50) |
-|-------|-----------|---------------|
-| 1,000 | related() To-One | ~1ms |
-| 1,000 | related() To-Many (5) | ~3ms |
-| 100 | fetch().joining() | ~10ms |
-| 1,000 | fetch().joining() | ~50ms |
-
-### Delete Rule Performance
-
-| Items | Delete Rule | Referencing Items | Latency (p50) |
-|-------|-------------|-------------------|---------------|
-| 1 | cascade | 10 | ~20ms |
-| 1 | cascade | 100 | ~100ms |
-| 1 | nullify | 10 | ~15ms |
-| 1 | deny (blocked) | 10 | ~5ms |
-
-*Benchmarks run on M1 Mac with local FoundationDB cluster.*
-
-## References
-
-- [FDB Record Layer Relationships](https://github.com/FoundationDB/fdb-record-layer) - Reference implementation
+Those remain in `database-kit`, `storage-kit`, or the application that owns
+the schema.
