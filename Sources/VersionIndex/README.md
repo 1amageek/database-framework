@@ -199,9 +199,9 @@ let hasChanges = try await context.versions(Document.self)
 import Core
 
 var options = DiffOptions()
-options.excludeFields = ["updatedAt", "modifiedBy"]  // Skip these fields
+options.excludedFields = ["updatedAt", "modifiedBy"]  // Skip these fields
 options.detailedArrayDiff = true                      // Element-level array diff
-options.includeUnchanged = false                      // Only show changes
+options.includesUnchangedFields = false               // Only show changes
 
 let diff = try await context.versions(Document.self)
     .forItem(documentId)

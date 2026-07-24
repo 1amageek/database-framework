@@ -8,6 +8,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
+import DatabaseTypes
 import Core
 
 // MARK: - ModelDiffBuilder
@@ -22,7 +23,7 @@ import Core
 /// **Usage**:
 /// ```swift
 /// var options = DiffOptions()
-/// options.excludeFields = ["updatedAt"]
+/// options.excludedFields = ["updatedAt"]
 /// options.detailedArrayDiff = true
 ///
 /// let diff = try ModelDiffBuilder.diff(old: oldUser, new: newUser, options: options)
@@ -33,7 +34,7 @@ import Core
 /// }
 ///
 /// // Custom comparator for timestamp tolerance
-/// options.customComparators["timestamp"] = { old, new in
+/// options.comparators["timestamp"] = { old, new in
 ///     guard let o = old.asDouble, let n = new.asDouble else { return old == new }
 ///     return abs(o - n) < 1.0  // Within 1 second
 /// }
@@ -67,7 +68,7 @@ public struct ModelDiffBuilder: Sendable {
 
         for fieldName in T.allFields {
             // Skip excluded fields
-            if options.excludeFields.contains(fieldName) {
+            if options.excludedFields.contains(fieldName) {
                 continue
             }
 
@@ -76,9 +77,9 @@ public struct ModelDiffBuilder: Sendable {
             let newValue = try extractFieldValue(from: new, fieldPath: fieldName)
 
             // Apply custom comparator if available
-            if let comparator = options.customComparators[fieldName] {
+            if let comparator = options.comparators[fieldName] {
                 let areEqual = comparator(oldValue, newValue)
-                if !areEqual || options.includeUnchanged {
+                if !areEqual || options.includesUnchangedFields {
                     // When custom comparator says "equal", override changeType to .unchanged
                     // This ensures changeType reflects the custom comparison result
                     let changeTypeOverride: ChangeType? = areEqual ? .unchanged : nil
@@ -106,7 +107,7 @@ public struct ModelDiffBuilder: Sendable {
             }
 
             // Standard comparison
-            if oldValue != newValue || options.includeUnchanged {
+            if oldValue != newValue || options.includesUnchangedFields {
                 changes.append(FieldChange(
                     fieldPath: fieldName,
                     oldValue: oldValue,
@@ -133,15 +134,15 @@ public struct ModelDiffBuilder: Sendable {
     /// - Parameters:
     ///   - old: The older model
     ///   - new: The newer model
-    ///   - excludeFields: Fields to exclude from comparison
+    ///   - excludedFields: Fields to exclude from comparison
     /// - Returns: True if any field differs
     public static func hasChanges<T: Persistable>(
         old: T,
         new: T,
-        excludeFields: Set<String> = []
+        excludedFields: Set<String> = []
     ) throws -> Bool {
         for fieldName in T.allFields {
-            if excludeFields.contains(fieldName) {
+            if excludedFields.contains(fieldName) {
                 continue
             }
 
@@ -160,17 +161,17 @@ public struct ModelDiffBuilder: Sendable {
     /// - Parameters:
     ///   - old: The older model
     ///   - new: The newer model
-    ///   - excludeFields: Fields to exclude from comparison
+    ///   - excludedFields: Fields to exclude from comparison
     /// - Returns: Array of field names that differ
     public static func changedFields<T: Persistable>(
         old: T,
         new: T,
-        excludeFields: Set<String> = []
+        excludedFields: Set<String> = []
     ) throws -> [String] {
         var changed: [String] = []
 
         for fieldName in T.allFields {
-            if excludeFields.contains(fieldName) {
+            if excludedFields.contains(fieldName) {
                 continue
             }
 
@@ -213,7 +214,7 @@ public struct ModelDiffBuilder: Sendable {
     ) -> [FieldChange] {
         // Skip if arrays are equal
         if old == new {
-            if options.includeUnchanged {
+            if options.includesUnchangedFields {
                 return [FieldChange(
                     fieldPath: fieldPath,
                     oldValue: .array(old),
@@ -227,8 +228,8 @@ public struct ModelDiffBuilder: Sendable {
         // 1. Element-level diff is disabled
         // 2. Arrays are too large
         let shouldUseWholeArray = !options.detailedArrayDiff ||
-            old.count > options.maxArrayDiffSize ||
-            new.count > options.maxArrayDiffSize
+            old.count > options.maximumDetailedArrayCount ||
+            new.count > options.maximumDetailedArrayCount
 
         if shouldUseWholeArray {
             return [FieldChange(
@@ -246,7 +247,7 @@ public struct ModelDiffBuilder: Sendable {
             let oldElement = i < old.count ? old[i] : .null
             let newElement = i < new.count ? new[i] : .null
 
-            if oldElement != newElement || options.includeUnchanged {
+            if oldElement != newElement || options.includesUnchangedFields {
                 changes.append(FieldChange(
                     fieldPath: "\(fieldPath).\(i)",
                     oldValue: oldElement,

@@ -278,7 +278,7 @@ extension VersionQueryBuilder {
         return try ModelDiffBuilder.hasChanges(
             old: oldItem,
             new: newItem,
-            excludeFields: excludeFields
+            excludedFields: excludeFields
         )
     }
 

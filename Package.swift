@@ -52,6 +52,10 @@ let package = Package(
         .trait(name: "PostgreSQL"),
     ],
     dependencies: [
+        .package(
+            url: "https://github.com/1amageek/database-types.git",
+            branch: "main"
+        ),
         .package(path: "../database-kit"),
         .package(path: "../swift-hnsw"),
         .package(path: "../storage-kit"),
@@ -66,6 +70,7 @@ let package = Package(
             name: "DatabaseEngine",
             dependencies: [
                 "DatabaseMath",
+                .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseDigest", package: "database-kit"),
                 .product(name: "DatabaseValue", package: "database-kit"),
                 .product(name: "DatabaseWire", package: "database-kit"),
