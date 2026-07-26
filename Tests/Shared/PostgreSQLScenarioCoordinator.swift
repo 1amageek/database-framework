@@ -21,7 +21,7 @@ import StorageKit
 import PostgreSQLStorage
 import DatabaseEngine
 import DatabaseRuntime
-import Core
+import DatabaseKit
 
 /// Coordinates PostgreSQL initialization and serialized scenario access.
 ///
@@ -54,12 +54,7 @@ public actor PostgreSQLScenarioCoordinator {
     }
 
     private var initializationState: InitializationState = .uninitialized
-
-    /// Access requests waiting for the current scenario to release exclusivity.
-    private var waitingAccessRequests: [CheckedContinuation<Void, Never>] = []
-
-    /// Whether one scenario currently holds exclusive database access.
-    private var isAccessHeld: Bool = false
+    private let serializedAccess = SerializedScenarioAccessGate()
 
     private init() {}
 
@@ -173,20 +168,8 @@ public actor PostgreSQLScenarioCoordinator {
     public func withSerializedAccess<T: Sendable>(
         _ operation: @Sendable () async throws -> T
     ) async throws -> T {
-        // Ensure PostgreSQL is initialized
         try await initialize()
-
-        // Wait for our turn (acquires lock)
-        await acquireAccess()
-
-        do {
-            let result = try await operation()
-            releaseAccess()
-            return result
-        } catch {
-            releaseAccess()
-            throw error
-        }
+        return try await serializedAccess.withAccess(operation)
     }
 
     /// Create a DBContainer using the PostgreSQL engine
@@ -213,24 +196,6 @@ public actor PostgreSQLScenarioCoordinator {
         }
     }
 
-    /// Acquire exclusive access for a test
-    private func acquireAccess() async {
-        while isAccessHeld {
-            await withCheckedContinuation { continuation in
-                waitingAccessRequests.append(continuation)
-            }
-        }
-        isAccessHeld = true
-    }
-
-    /// Release access and resume the next waiting request.
-    private func releaseAccess() {
-        isAccessHeld = false
-        if !waitingAccessRequests.isEmpty {
-            let nextRequest = waitingAccessRequests.removeFirst()
-            nextRequest.resume()
-        }
-    }
 }
 
 // MARK: - Error

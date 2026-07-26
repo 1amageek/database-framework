@@ -54,12 +54,7 @@ public actor FoundationDBScenarioCoordinator {
 
     private var initializationState: InitializationState = .uninitialized
     private var selectedClusterFilePath: String?
-
-    /// Access requests waiting for the current scenario to release exclusivity.
-    private var waitingAccessRequests: [CheckedContinuation<Void, Never>] = []
-
-    /// Whether one scenario currently holds exclusive database access.
-    private var isAccessHeld: Bool = false
+    private let serializedAccess = SerializedScenarioAccessGate()
 
     private init() {}
 
@@ -297,39 +292,8 @@ public actor FoundationDBScenarioCoordinator {
     public func withSerializedAccess<T: Sendable>(
         _ operation: @Sendable () async throws -> T
     ) async throws -> T {
-        // Ensure FDB is initialized
         try await initialize()
-
-        // Wait for our turn (acquires lock)
-        await acquireAccess()
-
-        do {
-            let result = try await operation()
-            releaseAccess()
-            return result
-        } catch {
-            releaseAccess()
-            throw error
-        }
-    }
-
-    /// Acquire exclusive access for a test
-    private func acquireAccess() async {
-        while isAccessHeld {
-            await withCheckedContinuation { continuation in
-                waitingAccessRequests.append(continuation)
-            }
-        }
-        isAccessHeld = true
-    }
-
-    /// Release access and resume the next waiting request.
-    private func releaseAccess() {
-        isAccessHeld = false
-        if !waitingAccessRequests.isEmpty {
-            let nextRequest = waitingAccessRequests.removeFirst()
-            nextRequest.resume()
-        }
+        return try await serializedAccess.withAccess(operation)
     }
 }
 #endif
