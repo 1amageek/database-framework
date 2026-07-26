@@ -15,12 +15,14 @@ extension DBContainer {
     public static func sqlite(
         for schema: Schema,
         path: String,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
         return try await DBContainer.open(
             for: schema,
             configuration: SQLiteStorageEngine.Configuration.file(path),
+            runtimeConfiguration: runtimeConfiguration,
             security: security,
             indexConfigurations: indexConfigurations
         )
@@ -34,12 +36,14 @@ extension DBContainer {
     /// - Returns: A DBContainer backed by in-memory SQLite
     public static func inMemory(
         for schema: Schema,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
         return try await DBContainer.open(
             for: schema,
             configuration: SQLiteStorageEngine.Configuration.inMemory,
+            runtimeConfiguration: runtimeConfiguration,
             security: security,
             indexConfigurations: indexConfigurations
         )

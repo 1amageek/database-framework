@@ -1,6 +1,5 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseRuntime
 
 /// Backend-specific container configuration used by the `Database` facade.
 ///
@@ -10,7 +9,7 @@ import DatabaseRuntime
 /// `PostgreSQLStorageEngine.Configuration` into that generic representation.
 public protocol DatabaseContainerConfiguration: Sendable {
     func makeDBConfiguration(
-        indexConfigurations: [any IndexConfiguration]
+        indexConfigurations: [any IndexRuntimeConfiguration]
     ) async throws -> DBConfiguration
 }
 
@@ -22,13 +21,13 @@ extension DBContainer {
     public static func open(
         for schema: Schema,
         configuration: any DatabaseContainerConfiguration,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
         let dbConfiguration = try await configuration.makeDBConfiguration(
             indexConfigurations: indexConfigurations
         )
-        let runtimeConfiguration = try DatabaseFrameworkRuntime.configuration()
         return try await open(
             for: schema,
             configuration: dbConfiguration,
@@ -45,13 +44,13 @@ extension DBContainer {
         for schema: S.Type,
         migrationPlan: P.Type,
         configuration: any DatabaseContainerConfiguration,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
         let dbConfiguration = try await configuration.makeDBConfiguration(
             indexConfigurations: indexConfigurations
         )
-        let runtimeConfiguration = try DatabaseFrameworkRuntime.configuration()
         return try await open(
             for: schema,
             migrationPlan: migrationPlan,

@@ -5,7 +5,7 @@ import SQLiteStorage
 
 extension SQLiteStorageEngine.Configuration: DatabaseContainerConfiguration {
     public func makeDBConfiguration(
-        indexConfigurations: [any IndexConfiguration]
+        indexConfigurations: [any IndexRuntimeConfiguration]
     ) async throws -> DBConfiguration {
         let engine = try SQLiteStorageEngine(configuration: self)
         return DBConfiguration(

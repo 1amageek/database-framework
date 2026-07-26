@@ -5,7 +5,7 @@ import FDBStorage
 
 extension FDBStorageEngine.Configuration: DatabaseContainerConfiguration {
     public func makeDBConfiguration(
-        indexConfigurations: [any IndexConfiguration]
+        indexConfigurations: [any IndexRuntimeConfiguration]
     ) async throws -> DBConfiguration {
         DBConfiguration(
             backend: .fdb(self),

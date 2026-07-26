@@ -5,7 +5,7 @@ import PostgreSQLStorage
 
 extension PostgreSQLStorageEngine.Configuration: DatabaseContainerConfiguration {
     public func makeDBConfiguration(
-        indexConfigurations: [any IndexConfiguration]
+        indexConfigurations: [any IndexRuntimeConfiguration]
     ) async throws -> DBConfiguration {
         let engine = try await PostgreSQLStorageEngine(configuration: self)
         return DBConfiguration(

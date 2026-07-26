@@ -7,12 +7,14 @@ extension DBContainer {
     /// Opens a container backed by the default FoundationDB configuration.
     public static func open(
         for schema: Schema,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
         try await open(
             for: schema,
             configuration: FDBStorageEngine.Configuration(),
+            runtimeConfiguration: runtimeConfiguration,
             security: security,
             indexConfigurations: indexConfigurations
         )
@@ -25,13 +27,15 @@ extension DBContainer {
     >(
         for schema: S.Type,
         migrationPlan: P.Type,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
         try await open(
             for: schema,
             migrationPlan: migrationPlan,
             configuration: FDBStorageEngine.Configuration(),
+            runtimeConfiguration: runtimeConfiguration,
             security: security,
             indexConfigurations: indexConfigurations
         )
