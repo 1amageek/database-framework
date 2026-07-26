@@ -13,7 +13,7 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 @testable import DatabaseEngine
 import DatabaseRuntime
 @testable import TestSupport
@@ -26,9 +26,9 @@ struct QueryCursorTests {
     @Persistable
     struct PaginatedUser {
         #Directory<PaginatedUser>("test", "cursor", "users")
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var name: String
-        var age: Int
+        var age: Int64
         var score: Double
     }
 
@@ -38,13 +38,22 @@ struct QueryCursorTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        let schema = Schema([PaginatedUser.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let schema = try Schema(entities: [try PaginatedUser.schemaEntity], version: Schema.Version(1, 0, 0))
+        return try await DBContainer.open(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [PaginatedUser.self]
+            ),
+            security: .disabled
+        )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        // Use DirectoryLayer to remove the whole directory (handles old format data too)
-        try? await container.engine.removeDirectory(path: ["test", "cursor", "users"])
+        let path = ["test", "cursor", "users"]
+        if try await container.engine.directoryExists(path: path) {
+            try await container.engine.removeDirectory(path: path)
+        }
     }
 
     private func seedUsers(context: DatabaseContext, count: Int) async throws -> [PaginatedUser] {
@@ -52,7 +61,7 @@ struct QueryCursorTests {
         for i in 0..<count {
             let user = PaginatedUser(
                 name: "User \(String(format: "%03d", i))",
-                age: 20 + (i % 50),
+                age: Int64(20 + (i % 50)),
                 score: Double(i) * 1.5
             )
             try context.insert(user)
@@ -215,27 +224,27 @@ struct QueryCursorTests {
                 .build()
 
             // Initial state
-            var stats = cursor.statistics
+            var stats = await cursor.statistics
             #expect(stats.itemsReturned == 0)
             #expect(stats.pagesReturned == 0)
             #expect(stats.isExhausted == false)
 
             // After first page
             _ = try await cursor.next()
-            stats = cursor.statistics
+            stats = await cursor.statistics
             #expect(stats.itemsReturned == 10)
             #expect(stats.pagesReturned == 1)
             #expect(stats.isExhausted == false)
 
             // After second page
             _ = try await cursor.next()
-            stats = cursor.statistics
+            stats = await cursor.statistics
             #expect(stats.itemsReturned == 20)
             #expect(stats.pagesReturned == 2)
 
             // After last page
             _ = try await cursor.next()
-            stats = cursor.statistics
+            stats = await cursor.statistics
             #expect(stats.itemsReturned == 25)
             #expect(stats.pagesReturned == 3)
             #expect(stats.isExhausted == true)
@@ -335,6 +344,130 @@ struct QueryCursorTests {
             let result = try await cursor.next()
             #expect(result.isEmpty == true)
             #expect(result.noNextReason == .returnLimitReached)
+        }
+    }
+
+    @Test("Continuation resumes at the next logical row")
+    func continuationResumesAtNextRow() async throws {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+
+            let context = container.newContext()
+            _ = try await seedUsers(context: context, count: 12)
+            let firstCursor = try context.cursor(PaginatedUser.self)
+                .orderBy(PaginatedUser.fields.name)
+                .batchSize(5)
+                .build()
+            let firstPage = try await firstCursor.next()
+            let token = try #require(firstPage.continuation)
+
+            let resumedCursor = try context.cursor(
+                PaginatedUser.self,
+                continuation: token
+            )
+            .orderBy(PaginatedUser.fields.name)
+            .batchSize(5)
+            .build()
+            let secondPage = try await resumedCursor.next()
+
+            #expect(firstPage.items.map(\.name) == [
+                "User 000", "User 001", "User 002", "User 003", "User 004"
+            ])
+            #expect(secondPage.items.map(\.name) == [
+                "User 005", "User 006", "User 007", "User 008", "User 009"
+            ])
+        }
+    }
+
+    @Test("Continuation rejects a different predicate")
+    func continuationRejectsDifferentPredicate() async throws {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+
+            let context = container.newContext()
+            _ = try await seedUsers(context: context, count: 12)
+            let firstPage = try await context.cursor(PaginatedUser.self)
+                .where(PaginatedUser.fields.age > 20)
+                .orderBy(PaginatedUser.fields.name)
+                .batchSize(5)
+                .next()
+            let token = try #require(firstPage.continuation)
+
+            #expect(throws: ContinuationError.self) {
+                _ = try context.cursor(
+                    PaginatedUser.self,
+                    continuation: token
+                )
+                .where(PaginatedUser.fields.age > 21)
+                .orderBy(PaginatedUser.fields.name)
+                .batchSize(5)
+                .build()
+            }
+        }
+    }
+
+    @Test("Concurrent next calls return disjoint pages")
+    func concurrentNextCallsAreSerialized() async throws {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+
+            let context = container.newContext()
+            _ = try await seedUsers(context: context, count: 15)
+            let cursor = try context.cursor(PaginatedUser.self)
+                .orderBy(PaginatedUser.fields.name)
+                .batchSize(5)
+                .build()
+
+            async let first = cursor.next()
+            async let second = cursor.next()
+            let pages = try await [first, second]
+            let names = pages.flatMap(\.items).map(\.name)
+
+            #expect(names.count == 10)
+            #expect(Set(names).count == 10)
+            #expect(Set(names) == Set((0..<10).map {
+                "User \(String(format: "%03d", $0))"
+            }))
+        }
+    }
+
+    @Test("Shutdown rejects subsequent reads")
+    func shutdownRejectsReads() async throws {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+
+            let cursor = try container.newContext()
+                .cursor(PaginatedUser.self)
+                .build()
+            await cursor.shutdown()
+
+            await #expect(throws: QueryCursorError.self) {
+                _ = try await cursor.next()
+            }
+        }
+    }
+
+    @Test("Batch size must be within the bounded range")
+    func batchSizeIsBounded() async throws {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+            let context = container.newContext()
+
+            #expect(throws: QueryCursorError.self) {
+                _ = try context.cursor(PaginatedUser.self)
+                    .batchSize(0)
+                    .build()
+            }
+            #expect(throws: QueryCursorError.self) {
+                _ = try context.cursor(PaginatedUser.self)
+                    .batchSize(10_001)
+                    .build()
+            }
         }
     }
 }

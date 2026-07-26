@@ -1,119 +1,104 @@
-import StorageKit
+import DatabaseKit
+import DatabaseTypes
+import DatabaseWire
 
+/// Canonical state required to resume one typed query.
+///
+/// `nextOffset` is the absolute logical offset in the original query result,
+/// including the query's initial offset. The query fingerprint binds that
+/// position to every result-affecting query input.
 internal struct ContinuationState: Sendable {
     let version: UInt8
-    let scanType: ScanType
-    let lastKey: Bytes
-    let reverse: Bool
-    let remainingLimit: Int?
-    let originalLimit: Int?
-    let planFingerprint: Bytes
-    let operatorState: OperatorContinuationState?
-
-    enum ScanType: UInt8, Sendable {
-        case tableScan = 0
-        case indexScan = 1
-        case indexSeek = 2
-        case indexOnlyScan = 3
-        case fullTextScan = 4
-        case vectorSearch = 5
-        case spatialScan = 6
-        case union = 7
-        case intersection = 8
-        case rankScan = 9
-
-        var name: String {
-            switch self {
-            case .tableScan: return "tableScan"
-            case .indexScan: return "indexScan"
-            case .indexSeek: return "indexSeek"
-            case .indexOnlyScan: return "indexOnlyScan"
-            case .fullTextScan: return "fullTextScan"
-            case .vectorSearch: return "vectorSearch"
-            case .spatialScan: return "spatialScan"
-            case .union: return "union"
-            case .intersection: return "intersection"
-            case .rankScan: return "rankScan"
-            }
-        }
-    }
+    let nextOffset: UInt64
+    let remainingLimit: UInt64?
+    let queryFingerprint: ByteString
 
     init(
         version: UInt8 = ContinuationToken.currentVersion,
-        scanType: ScanType,
-        lastKey: Bytes,
-        reverse: Bool = false,
-        remainingLimit: Int? = nil,
-        originalLimit: Int? = nil,
-        planFingerprint: Bytes,
-        operatorState: OperatorContinuationState? = nil
+        nextOffset: UInt64,
+        remainingLimit: UInt64?,
+        queryFingerprint: ByteString
     ) {
         self.version = version
-        self.scanType = scanType
-        self.lastKey = lastKey
-        self.reverse = reverse
+        self.nextOffset = nextOffset
         self.remainingLimit = remainingLimit
-        self.originalLimit = originalLimit
-        self.planFingerprint = planFingerprint
-        self.operatorState = operatorState
+        self.queryFingerprint = queryFingerprint
     }
 
-    func toToken() throws -> ContinuationToken {
-        ContinuationToken(data: try ContinuationStateCodec.encode(self))
+    func token() throws -> ContinuationToken {
+        try ContinuationToken(
+            data: ContinuationStateFormat.encode(self)
+        )
     }
 
-    static func fromToken(_ token: ContinuationToken) throws -> ContinuationState {
-        guard !token.isEndOfResults else {
-            throw ContinuationError.invalidTokenFormat
-        }
+    static func decode(
+        _ token: ContinuationToken
+    ) throws -> ContinuationState {
+        return try ContinuationStateFormat.decode(token.data)
+    }
+}
+
+internal enum QueryFingerprint {
+    private static let domain: UInt32 = 0x4355_5251
+
+    static func compute<T: Persistable>(
+        for query: Query<T>
+    ) throws -> ByteString {
+        let selectQuery = try query.toSelectQuery()
+        var digest = SHA256Accumulator()
+        append(domain, to: &digest)
         do {
-            return try ContinuationStateCodec.decode(token.data)
-        } catch let error as ContinuationError {
-            throw error
-        } catch {
-            throw ContinuationError.corruptedToken
+            try QueryIRWireFormat.emitCanonicalEncoding(
+                .select(selectQuery),
+                prepare: { byteCount in
+                    append(UInt64(byteCount), to: &digest)
+                },
+                consume: { bytes in
+                    digest.update(bytes)
+                }
+            )
+        } catch let error {
+            switch error {
+            case .encoding(let wireError):
+                throw wireError
+            case .destination:
+                preconditionFailure(
+                    "The query fingerprint destination cannot fail"
+                )
+            }
         }
+        append(query.cachePolicy, to: &digest)
+        return digest.finalize()
     }
 
-    var progress: Double? {
-        guard let original = originalLimit,
-              let remaining = remainingLimit,
-              original > 0 else {
-            return nil
-        }
-        return Double(original - remaining) / Double(original)
-    }
-}
-
-internal struct OperatorContinuationState: Sendable {
-    let unionChildIndex: Int?
-    let childContinuation: Bytes?
-    let exhaustedChildren: [Int]?
-    let intersectionIds: [Bytes]?
-
-    init(
-        unionChildIndex: Int? = nil,
-        childContinuation: Bytes? = nil,
-        exhaustedChildren: [Int]? = nil,
-        intersectionIds: [Bytes]? = nil
+    private static func append(
+        _ policy: CachePolicy,
+        to digest: inout SHA256Accumulator
     ) {
-        self.unionChildIndex = unionChildIndex
-        self.childContinuation = childContinuation
-        self.exhaustedChildren = exhaustedChildren
-        self.intersectionIds = intersectionIds
+        switch policy {
+        case .server:
+            digest.update(0)
+        case .cached:
+            digest.update(1)
+        case .stale(let duration):
+            digest.update(2)
+            append(duration.bitPattern, to: &digest)
+        }
     }
-}
 
-internal struct PlanFingerprint {
-    static func compute(
-        operatorDescription: String,
-        indexNames: [String],
-        sortFields: [String]
-    ) -> Bytes {
-        var hasher = DeterministicHasher()
-        hasher.combine(operatorDescription)
-        hasher.combine(indexNames.sorted())
-        hasher.combine(sortFields)
-        return hasher.finalizeToBytes()
+    private static func append(
+        _ value: UInt32,
+        to digest: inout SHA256Accumulator
+    ) {
+        var value = value.littleEndian
+        withUnsafeBytes(of: &value) { digest.update($0) }
+    }
+
+    private static func append(
+        _ value: UInt64,
+        to digest: inout SHA256Accumulator
+    ) {
+        var value = value.littleEndian
+        withUnsafeBytes(of: &value) { digest.update($0) }
     }
 }

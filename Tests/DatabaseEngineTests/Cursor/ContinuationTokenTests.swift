@@ -1,339 +1,165 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-// ContinuationTokenTests.swift
-// DatabaseEngine Tests - ContinuationToken serialization and deserialization tests
-
+import DatabaseKit
+import DatabaseTypes
+import Foundation
 import Testing
 import TestHeartbeat
-import Foundation
-import StorageKit
-import Core
-import DatabaseValue
 @testable import DatabaseEngine
 
 @Suite("ContinuationToken Tests", .serialized, .heartbeat)
 struct ContinuationTokenTests {
-
-    // MARK: - Token Creation Tests
-
-    @Test("Empty token represents end of results")
-    func emptyTokenIsEndOfResults() {
-        let token = ContinuationToken.endOfResults
-        #expect(token.isEndOfResults == true)
-        #expect(token.data.isEmpty)
+    @Test("Empty raw token is rejected")
+    func emptyTokenIsRejected() {
+        #expect(throws: ContinuationError.self) {
+            _ = try ContinuationToken(data: [])
+        }
+        #expect(throws: ContinuationError.self) {
+            _ = try ContinuationToken(base64URLString: "")
+        }
     }
 
-    @Test("Non-empty token is not end of results")
-    func nonEmptyTokenIsNotEndOfResults() {
-        let token = ContinuationToken(data: [1, 2, 3])
-        #expect(token.isEndOfResults == false)
+    @Test("Raw token storage is bounded")
+    func rawTokenStorageIsBounded() throws {
+        let token = try ContinuationToken(data: [1, 2, 3])
         #expect(token.byteCount == 3)
-    }
 
-    // MARK: - Base64 Encoding Tests
-
-    @Test("Base64 round-trip preserves data")
-    func base64RoundTrip() throws {
-        let originalData: Bytes = [0x01, 0x02, 0x03, 0x04, 0xFF, 0xFE]
-        let token = ContinuationToken(data: originalData)
-
-        let base64String = token.base64String
-        #expect(!base64String.isEmpty)
-
-        let decoded = try ContinuationToken.fromBase64(base64String)
-        #expect(decoded.data == originalData)
-    }
-
-    @Test("Invalid base64 throws error")
-    func invalidBase64ThrowsError() throws {
+        let oversized = ByteString(
+            [UInt8](
+                repeating: 0,
+                count: ContinuationStateFormat.maximumByteCount + 1
+            )
+        )
         #expect(throws: ContinuationError.self) {
-            _ = try ContinuationToken.fromBase64("not-valid-base64!!!")
+            _ = try ContinuationToken(data: oversized)
         }
     }
 
-    // MARK: - ContinuationState Tests
+    @Test("Base64url round trip preserves bytes without padding")
+    func base64URLRoundTrip() throws {
+        let original: ByteString = [0xfb, 0xff, 0xef, 0x01]
+        let token = try ContinuationToken(data: original)
 
-    @Test("ContinuationState serialization round-trip")
+        let encoded = token.base64URLString
+        #expect(!encoded.contains("+"))
+        #expect(!encoded.contains("/"))
+        #expect(!encoded.contains("="))
+        #expect(
+            try ContinuationToken(base64URLString: encoded).data == original
+        )
+    }
+
+    @Test("Invalid base64url is rejected")
+    func invalidBase64URLIsRejected() {
+        #expect(throws: ContinuationError.self) {
+            _ = try ContinuationToken(base64URLString: "not+base64")
+        }
+        #expect(throws: ContinuationError.self) {
+            _ = try ContinuationToken(base64URLString: "A")
+        }
+    }
+
+    @Test("Continuation state round trip preserves canonical position")
     func continuationStateRoundTrip() throws {
-        let fingerprint = PlanFingerprint.compute(
-            operatorDescription: "TestOperator",
-            indexNames: ["idx1", "idx2"],
-            sortFields: ["field1"]
+        let fingerprint = ByteString(
+            [UInt8](
+                repeating: 0x5a,
+                count: SHA256Accumulator.digestByteCount
+            )
+        )
+        let state = ContinuationState(
+            nextOffset: 42,
+            remainingLimit: 58,
+            queryFingerprint: fingerprint
         )
 
-        let originalState = ContinuationState(
-            scanType: .indexScan,
-            lastKey: [0x01, 0x02, 0x03],
-            reverse: true,
-            remainingLimit: 50,
-            originalLimit: 100,
-            planFingerprint: fingerprint
-        )
-
-        let token = try originalState.toToken()
-        #expect(!token.isEndOfResults)
-
-        let decodedState = try ContinuationState.fromToken(token)
-
-        #expect(decodedState.version == ContinuationToken.currentVersion)
-        #expect(decodedState.scanType == .indexScan)
-        #expect(decodedState.lastKey == [0x01, 0x02, 0x03])
-        #expect(decodedState.reverse == true)
-        #expect(decodedState.remainingLimit == 50)
-        #expect(decodedState.originalLimit == 100)
-        #expect(decodedState.planFingerprint == fingerprint)
+        let decoded = try ContinuationState.decode(state.token())
+        #expect(decoded.version == ContinuationToken.currentVersion)
+        #expect(decoded.nextOffset == 42)
+        #expect(decoded.remainingLimit == 58)
+        #expect(decoded.queryFingerprint == fingerprint)
     }
 
-    @Test("ContinuationState with nil limits")
-    func continuationStateWithNilLimits() throws {
-        let fingerprint = PlanFingerprint.compute(
-            operatorDescription: "Test",
-            indexNames: [],
-            sortFields: []
-        )
-
-        let originalState = ContinuationState(
-            scanType: .tableScan,
-            lastKey: [0xAA, 0xBB],
-            reverse: false,
+    @Test("Continuation without a query limit round trips")
+    func unlimitedContinuationRoundTrip() throws {
+        let state = ContinuationState(
+            nextOffset: 9,
             remainingLimit: nil,
-            originalLimit: nil,
-            planFingerprint: fingerprint
+            queryFingerprint: ByteString(
+                [UInt8](
+                    repeating: 1,
+                    count: SHA256Accumulator.digestByteCount
+                )
+            )
         )
 
-        let token = try originalState.toToken()
-        let decodedState = try ContinuationState.fromToken(token)
-
-        #expect(decodedState.remainingLimit == nil)
-        #expect(decodedState.originalLimit == nil)
+        let decoded = try ContinuationState.decode(state.token())
+        #expect(decoded.nextOffset == 9)
+        #expect(decoded.remainingLimit == nil)
     }
 
-    @Test("ContinuationState progress calculation")
-    func progressCalculation() {
-        let fingerprint: Bytes = []
-
-        // With limits
-        let state1 = ContinuationState(
-            scanType: .indexScan,
-            lastKey: [],
-            remainingLimit: 25,
-            originalLimit: 100,
-            planFingerprint: fingerprint
-        )
-        #expect(state1.progress == 0.75)
-
-        // Without limits
-        let state2 = ContinuationState(
-            scanType: .indexScan,
-            lastKey: [],
-            remainingLimit: nil,
-            originalLimit: nil,
-            planFingerprint: fingerprint
-        )
-        #expect(state2.progress == nil)
-    }
-
-    // MARK: - Error Cases
-
-    @Test("End of results token cannot be deserialized")
-    func endOfResultsCannotBeDeserialized() throws {
-        let token = ContinuationToken.endOfResults
+    @Test("Malformed continuation state is rejected")
+    func malformedContinuationIsRejected() throws {
+        let truncated = try ContinuationToken(data: [0x01, 0x02])
         #expect(throws: ContinuationError.self) {
-            _ = try ContinuationState.fromToken(token)
+            _ = try ContinuationState.decode(truncated)
         }
     }
 
-    @Test("Corrupted token throws error")
-    func corruptedTokenThrowsError() throws {
-        let corruptedToken = ContinuationToken(data: [0x01, 0x02])  // Too short
-        #expect(throws: ContinuationError.self) {
-            _ = try ContinuationState.fromToken(corruptedToken)
-        }
+    @Test("Canonical query fingerprint covers predicates and ordering")
+    func queryFingerprintCoversQuerySemantics() throws {
+        let ascending = Query<ContinuationCursorUser>()
+            .where(ContinuationCursorUser.fields.age > 20)
+            .orderBy(ContinuationCursorUser.fields.name, .ascending)
+        let same = Query<ContinuationCursorUser>()
+            .where(ContinuationCursorUser.fields.age > 20)
+            .orderBy(ContinuationCursorUser.fields.name, .ascending)
+        let differentValue = Query<ContinuationCursorUser>()
+            .where(ContinuationCursorUser.fields.age > 21)
+            .orderBy(ContinuationCursorUser.fields.name, .ascending)
+        let descending = Query<ContinuationCursorUser>()
+            .where(ContinuationCursorUser.fields.age > 20)
+            .orderBy(ContinuationCursorUser.fields.name, .descending)
+
+        let fingerprint = try QueryFingerprint.compute(for: ascending)
+        #expect(try QueryFingerprint.compute(for: same) == fingerprint)
+        #expect(
+            try QueryFingerprint.compute(for: differentValue) != fingerprint
+        )
+        #expect(try QueryFingerprint.compute(for: descending) != fingerprint)
     }
-
-    // MARK: - Operator State Tests
-
-    @Test("OperatorContinuationState serialization round-trip")
-    func operatorStateRoundTrip() throws {
-        let originalOpState = OperatorContinuationState(
-            unionChildIndex: 2,
-            childContinuation: [0x10, 0x20, 0x30],
-            exhaustedChildren: [0, 1]
-        )
-
-        let state = ContinuationState(
-            scanType: .union,
-            lastKey: [],
-            planFingerprint: [],
-            operatorState: originalOpState
-        )
-        let decodedState = try ContinuationState.fromToken(try state.toToken())
-        let decoded = try #require(decodedState.operatorState)
-
-        #expect(decoded.unionChildIndex == 2)
-        #expect(decoded.childContinuation == [0x10, 0x20, 0x30])
-        #expect(decoded.exhaustedChildren == [0, 1])
-    }
-
-    @Test("OperatorContinuationState with nil values")
-    func operatorStateWithNilValues() throws {
-        let originalOpState = OperatorContinuationState(
-            unionChildIndex: nil,
-            childContinuation: nil,
-            exhaustedChildren: nil
-        )
-
-        let state = ContinuationState(
-            scanType: .union,
-            lastKey: [],
-            planFingerprint: [],
-            operatorState: originalOpState
-        )
-        let decodedState = try ContinuationState.fromToken(try state.toToken())
-        let decoded = try #require(decodedState.operatorState)
-
-        #expect(decoded.unionChildIndex == nil)
-        #expect(decoded.childContinuation == nil)
-    }
-
-    // MARK: - Plan Fingerprint Tests
-
-    @Test("Same plan produces same fingerprint")
-    func samePlanSameFingerprint() {
-        let fp1 = PlanFingerprint.compute(
-            operatorDescription: "IndexScan",
-            indexNames: ["idx_a", "idx_b"],
-            sortFields: ["name", "age"]
-        )
-
-        let fp2 = PlanFingerprint.compute(
-            operatorDescription: "IndexScan",
-            indexNames: ["idx_a", "idx_b"],
-            sortFields: ["name", "age"]
-        )
-
-        #expect(fp1 == fp2)
-    }
-
-    @Test("Different plan produces different fingerprint")
-    func differentPlanDifferentFingerprint() {
-        let fp1 = PlanFingerprint.compute(
-            operatorDescription: "IndexScan",
-            indexNames: ["idx_a"],
-            sortFields: ["name"]
-        )
-
-        let fp2 = PlanFingerprint.compute(
-            operatorDescription: "TableScan",
-            indexNames: ["idx_a"],
-            sortFields: ["name"]
-        )
-
-        #expect(fp1 != fp2)
-    }
-
-    // MARK: - NoNextReason Tests
 
     @Test("NoNextReason descriptions are meaningful")
     func noNextReasonDescriptions() {
         #expect(NoNextReason.sourceExhausted.description == "Source exhausted")
         #expect(NoNextReason.returnLimitReached.description == "Return limit reached")
-        #expect(NoNextReason.timeLimitReached.description == "Time limit reached")
-        #expect(NoNextReason.transactionLimitReached.description == "Transaction limit reached")
-        #expect(NoNextReason.scanLimitReached.description == "Scan limit reached")
     }
 
-    // MARK: - CursorResult Tests
+    @Test("Cursor result reports continuation and completion")
+    func cursorResultReportsState() throws {
+        let token = try ContinuationToken(data: [1, 2, 3])
+        let more: CursorResult<ContinuationCursorUser> = .more(
+            items: [],
+            continuation: token
+        )
+        #expect(more.hasMore)
+        #expect(more.noNextReason == nil)
 
-    @Test("CursorResult.more has continuation")
-    func cursorResultMoreHasContinuation() {
-        let token = ContinuationToken(data: [1, 2, 3])
-        let result: CursorResult<ContinuationCursorUser> = .more(items: [], continuation: token)
-
-        #expect(result.hasMore == true)
-        #expect(result.continuation != nil)
-        #expect(result.noNextReason == nil)
-    }
-
-    @Test("CursorResult.done has no continuation")
-    func cursorResultDoneHasNoContinuation() {
-        let result: CursorResult<ContinuationCursorUser> = .done(items: [], reason: .sourceExhausted)
-
-        #expect(result.hasMore == false)
-        #expect(result.continuation == nil)
-        #expect(result.noNextReason == .sourceExhausted)
-    }
-
-    @Test("CursorResult.empty is empty")
-    func cursorResultEmptyIsEmpty() {
-        let result: CursorResult<ContinuationCursorUser> = .empty()
-
-        #expect(result.isEmpty == true)
-        #expect(result.count == 0)
-        #expect(result.hasMore == false)
+        let done: CursorResult<ContinuationCursorUser> = .done(
+            items: [],
+            reason: .sourceExhausted
+        )
+        #expect(!done.hasMore)
+        #expect(done.continuation == nil)
+        #expect(done.noNextReason == .sourceExhausted)
     }
 }
 
-// MARK: - Test Model
-
-/// Test user model for cursor tests
-fileprivate struct ContinuationCursorUser: Persistable {
-    typealias ID = String
-
-    var id: String
-    var name: String
-    var age: Int
-
-    init(id: String = UUID().uuidString, name: String, age: Int) {
-        self.id = id
-        self.name = name
-        self.age = age
-    }
-
-    static var persistableType: String { "ContinuationCursorUser" }
-
-    static var allFields: [String] { ["id", "name", "age"] }
-
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "age": return age
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<ContinuationCursorUser, Value>) -> String {
-        switch keyPath {
-        case \ContinuationCursorUser.id: return "id"
-        case \ContinuationCursorUser.name: return "name"
-        case \ContinuationCursorUser.age: return "age"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<ContinuationCursorUser>) -> String {
-        switch keyPath {
-        case \ContinuationCursorUser.id: return "id"
-        case \ContinuationCursorUser.name: return "name"
-        case \ContinuationCursorUser.age: return "age"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<ContinuationCursorUser> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+@Persistable
+private struct ContinuationCursorUser {
+    var id: String = UUID().uuidString
+    var name: String = ""
+    var age: Int64 = 0
 }
 #endif
-
 #endif

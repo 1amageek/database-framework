@@ -4,18 +4,18 @@
 // Reference: FDB Record Layer RecordCursorContinuation
 // Enables stateless pagination across transactions.
 
-import StorageKit
+import DatabaseTypes
 
 // MARK: - ContinuationToken
 
-/// Opaque continuation token for resuming queries
+/// Opaque, non-empty continuation token for resuming queries.
 ///
 /// Encapsulates all state needed to resume a query from where it left off.
 /// Tokens are serialized to bytes and can be stored/transmitted as base64 strings.
 ///
 /// **Key Properties**:
 /// - Opaque to clients (internal format may change)
-/// - Versioned for forward compatibility
+/// - Uses one strict protocol version
 /// - Contains plan fingerprint for validation
 ///
 /// **Usage**:
@@ -27,11 +27,11 @@ import StorageKit
 ///     .next()
 ///
 /// // Store continuation for next request
-/// let tokenString = result.continuation?.base64String
+/// let tokenString = result.continuation?.base64URLString
 ///
 /// // Resume from token
 /// if let tokenString = savedToken {
-///     let token = try ContinuationToken.fromBase64(tokenString)
+///     let token = try ContinuationToken(base64URLString: tokenString)
 ///     let nextResult = try await context.cursor(User.self, continuation: token).next()
 /// }
 /// ```
@@ -43,56 +43,55 @@ public struct ContinuationToken: Sendable, Hashable {
 
     /// Current token format version
     ///
-    /// Increment when making breaking changes to token format.
-    public static let currentVersion: UInt8 = 1
+    /// The runtime accepts exactly this version.
+    internal static let currentVersion: UInt8 = 1
 
     // MARK: - Properties
 
-    /// Raw serialized data (Tuple-encoded)
-    public let data: Bytes
+    /// Raw canonical token bytes.
+    internal let data: ByteString
 
     // MARK: - Initialization
 
-    /// Create from raw bytes
-    public init(data: Bytes) {
+    /// Creates a token from canonical runtime bytes.
+    internal init(data: ByteString) throws {
+        guard !data.isEmpty else {
+            throw ContinuationError.invalidTokenFormat
+        }
+        guard data.count <= ContinuationStateFormat.maximumByteCount else {
+            throw ContinuationError.tokenTooLarge(
+                actual: data.count,
+                maximum: ContinuationStateFormat.maximumByteCount
+            )
+        }
         self.data = data
     }
 
     // MARK: - Serialization
 
-    /// Serialize to base64 string for API transport
+    /// Serializes the token for URL-safe API transport.
     ///
     /// Base64 encoding is URL-safe and suitable for query parameters.
-    public var base64String: String {
-        DatabaseBase64Codec.encode(data)
+    public var base64URLString: String {
+        Base64URLFormat.encode(data)
     }
 
-    /// Parse from base64 string
+    /// Creates a token from its unpadded RFC 4648 base64url representation.
     ///
-    /// - Parameter string: Base64-encoded token
-    /// - Returns: Parsed continuation token
+    /// - Parameter base64URLString: URL-safe encoded token.
     /// - Throws: `ContinuationError.invalidTokenFormat` if parsing fails
-    public static func fromBase64(_ string: String) throws -> ContinuationToken {
-        let data: Bytes
+    public init(base64URLString: String) throws {
+        let data: ByteString
         do {
-            data = try DatabaseBase64Codec.decode(string)
+            data = try Base64URLFormat.decode(
+                base64URLString,
+                maximumDecodedByteCount:
+                    ContinuationStateFormat.maximumByteCount
+            )
         } catch {
             throw ContinuationError.invalidTokenFormat
         }
-        return ContinuationToken(data: data)
-    }
-
-    // MARK: - Special Tokens
-
-    /// Special token indicating end of results
-    ///
-    /// When a cursor reaches the end of data, it returns this token
-    /// to indicate no more results are available.
-    public static let endOfResults = ContinuationToken(data: [])
-
-    /// Check if this is end of results
-    public var isEndOfResults: Bool {
-        data.isEmpty
+        try self.init(data: data)
     }
 
     // MARK: - Debugging
@@ -107,9 +106,6 @@ public struct ContinuationToken: Sendable, Hashable {
 
 extension ContinuationToken: CustomStringConvertible {
     public var description: String {
-        if isEndOfResults {
-            return "ContinuationToken(endOfResults)"
-        }
         return "ContinuationToken(\(byteCount) bytes)"
     }
 }
@@ -128,26 +124,8 @@ public enum NoNextReason: Sendable, Hashable, CustomStringConvertible {
 
     /// Return limit was reached
     ///
-    /// The requested batch size or query limit was reached.
-    /// More data may be available.
+    /// The query's total result limit was reached.
     case returnLimitReached
-
-    /// Time limit exceeded (for long-running queries)
-    ///
-    /// The query took too long and was interrupted.
-    /// Can be resumed from continuation.
-    case timeLimitReached
-
-    /// Transaction size limit approached
-    ///
-    /// Approaching FDB's 10MB transaction limit.
-    /// Must commit and continue in a new transaction.
-    case transactionLimitReached
-
-    /// Scan count limit reached
-    ///
-    /// Maximum number of entities scanned (for cost control).
-    case scanLimitReached
 
     public var description: String {
         switch self {
@@ -155,12 +133,6 @@ public enum NoNextReason: Sendable, Hashable, CustomStringConvertible {
             return "Source exhausted"
         case .returnLimitReached:
             return "Return limit reached"
-        case .timeLimitReached:
-            return "Time limit reached"
-        case .transactionLimitReached:
-            return "Transaction limit reached"
-        case .scanLimitReached:
-            return "Scan limit reached"
         }
     }
 }
@@ -175,19 +147,16 @@ public enum ContinuationError: Error, CustomStringConvertible, Sendable {
     /// Token version doesn't match current version
     case versionMismatch(expected: UInt8, actual: UInt8)
 
-    /// Token data is corrupted (checksum failed, incomplete, etc.)
+    /// Token data is structurally invalid or incomplete.
     case corruptedToken
 
-    /// Token has expired (if expiration is implemented)
-    case tokenExpired
+    /// Token exceeds the bounded continuation frame size.
+    case tokenTooLarge(actual: Int, maximum: Int)
 
     /// Token was created for a different query
     ///
     /// Plan fingerprint doesn't match the current query.
     case planMismatch(String)
-
-    /// Token scan type doesn't match current operation
-    case scanTypeMismatch(expected: String, actual: String)
 
     public var description: String {
         switch self {
@@ -197,12 +166,10 @@ public enum ContinuationError: Error, CustomStringConvertible, Sendable {
             return "Token version mismatch: expected \(expected), got \(actual)"
         case .corruptedToken:
             return "Continuation token is corrupted"
-        case .tokenExpired:
-            return "Continuation token has expired"
+        case .tokenTooLarge(let actual, let maximum):
+            return "Continuation token has \(actual) bytes; maximum is \(maximum)"
         case .planMismatch(let reason):
             return "Plan mismatch: \(reason)"
-        case .scanTypeMismatch(let expected, let actual):
-            return "Scan type mismatch: expected \(expected), got \(actual)"
         }
     }
 }

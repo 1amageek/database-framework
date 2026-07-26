@@ -3,26 +3,29 @@
 //
 // Reference: FDB Record Layer RecordCursor
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import StorageKit
-import Core
-import Synchronization
+import DatabaseKit
+import DatabaseTypes
 
 // MARK: - QueryCursor
 
-/// A cursor for paginated query execution
+/// Failures raised by typed cursor lifecycle and bounds validation.
+public enum QueryCursorError: Error, Sendable, Equatable {
+    case invalidBatchSize(actual: Int, allowed: ClosedRange<Int>)
+    case closed
+    case positionOutOfRange(UInt64)
+    case positionOverflow
+}
+
+/// A serialized cursor for bounded typed-query pagination.
 ///
 /// Unlike `execute()` which returns all results, `QueryCursor` yields results
 /// in batches with continuation tokens for resuming.
 ///
-/// **Key Benefits**:
-/// - Efficient pagination without re-scanning from start
-/// - Stateless resumption across transactions/requests
-/// - Memory-efficient streaming for large result sets
+/// Continuations are stateless and bind their logical position to the complete
+/// canonical query. The current typed fetch pipeline applies that position as
+/// an offset. This gives correct cross-request resumption, but a backend may
+/// still scan preceding rows when its selected access path cannot push down
+/// the offset.
 ///
 /// **Usage**:
 /// ```swift
@@ -44,25 +47,40 @@ import Synchronization
 /// ```
 ///
 /// **Reference**: FDB Record Layer RecordCursor
-public final class QueryCursor<T: Persistable & Codable>: Sendable {
+public actor QueryCursor<T: Persistable> {
 
     // MARK: - Properties
+
+    public static var allowedBatchSizes: ClosedRange<Int> {
+        1...10_000
+    }
 
     private let context: DatabaseContext
     private let query: Query<T>
     private let batchSize: Int
-    private let state: Mutex<CursorState>
-
-    /// Plan fingerprint for token validation
-    private let planFingerprint: Bytes
+    private let baseOffset: UInt64
+    private let queryFingerprint: ByteString
+    private var state: CursorState
+    private var executionIsHeld = false
+    private var executionWaiters: [CheckedContinuation<Void, Never>] = []
 
     // MARK: - State
 
     private struct CursorState: Sendable {
-        var currentContinuation: ContinuationState?
+        var nextOffset: UInt64
+        var remainingLimit: UInt64?
         var exhausted: Bool = false
+        var closed: Bool = false
         var itemsReturned: Int = 0
         var pagesReturned: Int = 0
+    }
+
+    private struct PageExecution {
+        let items: [T]
+        let nextOffset: UInt64
+        let remainingLimit: UInt64?
+        let continuation: ContinuationToken?
+        let stopReason: NoNextReason?
     }
 
     // MARK: - Initialization
@@ -81,33 +99,42 @@ public final class QueryCursor<T: Persistable & Codable>: Sendable {
         batchSize: Int = 100,
         continuation: ContinuationToken? = nil
     ) throws {
+        guard Self.allowedBatchSizes.contains(batchSize) else {
+            throw QueryCursorError.invalidBatchSize(
+                actual: batchSize,
+                allowed: Self.allowedBatchSizes
+            )
+        }
         self.context = context
         self.query = query
         self.batchSize = batchSize
+        self.queryFingerprint = try QueryFingerprint.compute(for: query)
+        self.baseOffset = try Self.validatedBaseOffset(query.fetchOffset)
+        let queryLimit = try Self.validatedLimit(query.fetchLimit)
 
-        // Compute plan fingerprint
-        let sortFields = query.sortDescriptors.map(\.fieldName)
-        self.planFingerprint = PlanFingerprint.compute(
-            operatorDescription: String(describing: T.self),
-            indexNames: T.indexDescriptors.map { $0.name },
-            sortFields: sortFields
-        )
-
-        // Initialize state
-        var initialState = CursorState()
-        if let token = continuation, !token.isEndOfResults {
-            let contState = try ContinuationState.fromToken(token)
-
-            // Validate plan fingerprint matches
-            if contState.planFingerprint != planFingerprint {
+        if let continuation {
+            let continuationState = try ContinuationState.decode(continuation)
+            guard continuationState.queryFingerprint == queryFingerprint else {
                 throw ContinuationError.planMismatch(
                     "Continuation was created for a different query"
                 )
             }
-            initialState.currentContinuation = contState
+            let returned = try Self.validate(
+                continuationState,
+                baseOffset: baseOffset,
+                queryLimit: queryLimit
+            )
+            self.state = CursorState(
+                nextOffset: continuationState.nextOffset,
+                remainingLimit: continuationState.remainingLimit,
+                itemsReturned: returned
+            )
+        } else {
+            self.state = CursorState(
+                nextOffset: baseOffset,
+                remainingLimit: queryLimit
+            )
         }
-
-        self.state = Mutex(initialState)
     }
 
     // MARK: - Public API
@@ -117,35 +144,40 @@ public final class QueryCursor<T: Persistable & Codable>: Sendable {
     /// - Returns: CursorResult containing items and optional continuation
     /// - Throws: Database or continuation errors
     public func next() async throws -> CursorResult<T> {
-        let (isExhausted, currentCont) = state.withLock { state in
-            (state.exhausted, state.currentContinuation)
+        await acquireExecution()
+        defer { releaseExecution() }
+        try Task.checkCancellation()
+        guard !state.closed else {
+            throw QueryCursorError.closed
         }
-
-        if isExhausted {
+        guard !state.exhausted else {
             return .empty(reason: .sourceExhausted)
         }
 
-        // Execute with continuation
-        let (items, nextContinuation, stopReason) = try await executeWithContinuation(
-            continuation: currentCont
+        let execution = try await executePage(
+            offset: state.nextOffset,
+            remainingLimit: state.remainingLimit
         )
-
-        // Update state
-        state.withLock { state in
-            state.itemsReturned += items.count
-            state.pagesReturned += 1
-            if let nextCont = nextContinuation {
-                state.currentContinuation = nextCont
-            } else {
-                state.exhausted = true
-            }
+        try Task.checkCancellation()
+        guard !state.closed else {
+            throw QueryCursorError.closed
         }
+        state.nextOffset = execution.nextOffset
+        state.remainingLimit = execution.remainingLimit
+        state.itemsReturned += execution.items.count
+        state.pagesReturned += 1
+        state.exhausted = execution.continuation == nil
 
-        if let nextCont = nextContinuation {
-            return .more(items: items, continuation: try nextCont.toToken())
-        } else {
-            return .done(items: items, reason: stopReason ?? .sourceExhausted)
+        if let continuation = execution.continuation {
+            return .more(
+                items: execution.items,
+                continuation: continuation
+            )
         }
+        return .done(
+            items: execution.items,
+            reason: execution.stopReason ?? .sourceExhausted
+        )
     }
 
     /// Stream all remaining results as an async sequence
@@ -157,9 +189,9 @@ public final class QueryCursor<T: Persistable & Codable>: Sendable {
     ///     process(user)
     /// }
     /// ```
-    public func stream() -> AsyncThrowingStream<T, Error> {
+    public nonisolated func stream() -> AsyncThrowingStream<T, any Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
                     while true {
                         let result = try await self.next()
@@ -174,6 +206,9 @@ public final class QueryCursor<T: Persistable & Codable>: Sendable {
                 } catch {
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { _ in
+                producer.cancel()
             }
         }
     }
@@ -194,87 +229,165 @@ public final class QueryCursor<T: Persistable & Codable>: Sendable {
         return all
     }
 
+    /// Close the cursor and reject subsequent reads.
+    ///
+    /// An in-flight backend request is discarded when it returns. The task
+    /// performing that request remains responsible for cancellation of the
+    /// backend operation itself.
+    public func shutdown() {
+        state.closed = true
+        state.exhausted = true
+    }
+
     /// Get cursor statistics
     public var statistics: CursorStatistics {
-        state.withLock { state in
-            CursorStatistics(
-                itemsReturned: state.itemsReturned,
-                pagesReturned: state.pagesReturned,
-                isExhausted: state.exhausted
-            )
-        }
+        CursorStatistics(
+            itemsReturned: state.itemsReturned,
+            pagesReturned: state.pagesReturned,
+            isExhausted: state.exhausted
+        )
     }
 
     // MARK: - Private Implementation
 
-    /// Execute query with continuation support
-    private func executeWithContinuation(
-        continuation: ContinuationState?
-    ) async throws -> (items: [T], nextContinuation: ContinuationState?, stopReason: NoNextReason?) {
-        // Determine effective limit
+    private func acquireExecution() async {
+        guard executionIsHeld else {
+            executionIsHeld = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            executionWaiters.append(continuation)
+        }
+    }
+
+    private func releaseExecution() {
+        guard !executionWaiters.isEmpty else {
+            executionIsHeld = false
+            return
+        }
+        executionWaiters.removeFirst().resume()
+    }
+
+    private func executePage(
+        offset: UInt64,
+        remainingLimit: UInt64?
+    ) async throws -> PageExecution {
         let effectiveLimit: Int
-        if let remaining = continuation?.remainingLimit {
-            effectiveLimit = min(batchSize, remaining)
-        } else if let queryLimit = query.fetchLimit {
-            let returned = state.withLock { $0.itemsReturned }
-            effectiveLimit = min(batchSize, queryLimit - returned)
+        if let remainingLimit {
+            effectiveLimit = min(
+                batchSize,
+                Int(clamping: remainingLimit)
+            )
         } else {
             effectiveLimit = batchSize
         }
-
-        if effectiveLimit <= 0 {
-            return ([], nil, .returnLimitReached)
-        }
-
-        // Build modified query with continuation
-        var modifiedQuery = query
-
-        // If we have a continuation, we need to start after the last key
-        // For now, we use offset-based continuation (will be optimized to key-based)
-        if continuation != nil {
-            // Calculate offset based on items already returned
-            let itemsReturned = state.withLock { $0.itemsReturned }
-            modifiedQuery = modifiedQuery.offset(itemsReturned)
-        }
-
-        // Set limit to fetch one extra to detect if more exist
-        modifiedQuery = modifiedQuery.limit(effectiveLimit + 1)
-
-        // Execute query
-        let results = try await context.fetch(modifiedQuery)
-
-        // Check if there are more results
-        let hasMore = results.count > effectiveLimit
-        let returnedItems = hasMore ? Array(results.prefix(effectiveLimit)) : results
-
-        // Build next continuation if there are more results
-        let nextContinuation: ContinuationState?
-        if hasMore {
-            // Calculate remaining limit
-            let newRemaining: Int?
-            if let queryLimit = query.fetchLimit {
-                let totalReturned = state.withLock { $0.itemsReturned } + returnedItems.count
-                newRemaining = queryLimit - totalReturned
-                if newRemaining! <= 0 {
-                    return (returnedItems, nil, .returnLimitReached)
-                }
-            } else {
-                newRemaining = nil
-            }
-
-            nextContinuation = ContinuationState(
-                scanType: .tableScan,  // Will be determined by actual scan type
-                lastKey: [],  // Will be populated with actual last key
-                reverse: query.sortDescriptors.first?.order == .descending,
-                remainingLimit: newRemaining,
-                originalLimit: query.fetchLimit,
-                planFingerprint: planFingerprint
+        guard effectiveLimit > 0 else {
+            return PageExecution(
+                items: [],
+                nextOffset: offset,
+                remainingLimit: 0,
+                continuation: nil,
+                stopReason: .returnLimitReached
             )
-        } else {
-            nextContinuation = nil
         }
+        guard let integerOffset = Int(exactly: offset) else {
+            throw QueryCursorError.positionOutOfRange(offset)
+        }
+        var modifiedQuery = query.offset(integerOffset)
+        modifiedQuery = modifiedQuery.limit(effectiveLimit + 1)
+        let results = try await context.fetch(modifiedQuery)
+        let hasMore = results.count > effectiveLimit
+        // Detaching the bounded prefix is intentional: retaining the probe row
+        // would keep an oversized result allocation alive across API boundaries.
+        let returnedItems = hasMore ? Array(results.prefix(effectiveLimit)) : results
+        let returnedCount = UInt64(returnedItems.count)
+        let (nextOffset, offsetOverflow) =
+            offset.addingReportingOverflow(returnedCount)
+        guard !offsetOverflow else {
+            throw QueryCursorError.positionOverflow
+        }
+        let nextRemaining = remainingLimit.map {
+            $0 >= returnedCount ? $0 - returnedCount : 0
+        }
+        if nextRemaining == 0 {
+            return PageExecution(
+                items: returnedItems,
+                nextOffset: nextOffset,
+                remainingLimit: nextRemaining,
+                continuation: nil,
+                stopReason: .returnLimitReached
+            )
+        }
+        guard hasMore else {
+            return PageExecution(
+                items: returnedItems,
+                nextOffset: nextOffset,
+                remainingLimit: nextRemaining,
+                continuation: nil,
+                stopReason: .sourceExhausted
+            )
+        }
+        let continuation = try ContinuationState(
+            nextOffset: nextOffset,
+            remainingLimit: nextRemaining,
+            queryFingerprint: queryFingerprint
+        ).token()
+        return PageExecution(
+            items: returnedItems,
+            nextOffset: nextOffset,
+            remainingLimit: nextRemaining,
+            continuation: continuation,
+            stopReason: nil
+        )
+    }
 
-        return (returnedItems, nextContinuation, hasMore ? nil : .sourceExhausted)
+    private static func validatedBaseOffset(
+        _ offset: Int?
+    ) throws -> UInt64 {
+        guard let offset else {
+            return 0
+        }
+        guard let value = UInt64(exactly: offset) else {
+            throw QueryConversionError.negativeOffset(offset)
+        }
+        return value
+    }
+
+    private static func validatedLimit(
+        _ limit: Int?
+    ) throws -> UInt64? {
+        guard let limit else {
+            return nil
+        }
+        guard let value = UInt64(exactly: limit) else {
+            throw QueryConversionError.negativeLimit(limit)
+        }
+        return value
+    }
+
+    private static func validate(
+        _ continuation: ContinuationState,
+        baseOffset: UInt64,
+        queryLimit: UInt64?
+    ) throws -> Int {
+        guard continuation.nextOffset >= baseOffset else {
+            throw ContinuationError.corruptedToken
+        }
+        let returned = continuation.nextOffset - baseOffset
+        switch (queryLimit, continuation.remainingLimit) {
+        case let (.some(limit), .some(remaining)):
+            guard remaining <= limit, limit - remaining == returned else {
+                throw ContinuationError.corruptedToken
+            }
+        case (.none, .none):
+            break
+        case (.some, .none), (.none, .some):
+            throw ContinuationError.corruptedToken
+        }
+        guard let result = Int(exactly: returned) else {
+            throw ContinuationError.corruptedToken
+        }
+        return result
     }
 }
 
@@ -302,15 +415,15 @@ public struct CursorStatistics: Sendable {
 /// **Usage**:
 /// ```swift
 /// let cursor = try context.cursor(User.self)
-///     .where(\.isActive == true)
-///     .orderBy(\.name)
+///     .where(#field(\User.isActive) == true)
+///     .orderBy(#field(\User.name))
 ///     .limit(100)  // Total limit
 ///     .batchSize(20)  // Per-page limit
 ///     .build()
 ///
 /// let firstPage = try await cursor.next()
 /// ```
-public struct CursorQueryBuilder<T: Persistable & Codable>: Sendable {
+public struct CursorQueryBuilder<T: Persistable>: Sendable {
     private let context: DatabaseContext
     private let continuation: ContinuationToken?
     private var query: Query<T>
@@ -335,20 +448,20 @@ public struct CursorQueryBuilder<T: Persistable & Codable>: Sendable {
 
     /// Add sort order (ascending)
     public func orderBy<V: Comparable & Sendable>(
-        _ keyPath: KeyPath<T, V> & Sendable
+        _ field: Field<T, V>
     ) -> CursorQueryBuilder<T> {
         var copy = self
-        copy.query = query.orderBy(keyPath)
+        copy.query = query.orderBy(field)
         return copy
     }
 
     /// Add sort order with direction
     public func orderBy<V: Comparable & Sendable>(
-        _ keyPath: KeyPath<T, V> & Sendable,
+        _ field: Field<T, V>,
         _ order: SortOrder
     ) -> CursorQueryBuilder<T> {
         var copy = self
-        copy.query = query.orderBy(keyPath, order)
+        copy.query = query.orderBy(field, order)
         return copy
     }
 
@@ -369,22 +482,22 @@ public struct CursorQueryBuilder<T: Persistable & Codable>: Sendable {
     /// **Usage**:
     /// ```swift
     /// let cursor = try await context.cursor(Order.self)
-    ///     .partition(\.tenantID, equals: "tenant_123")
-    ///     .where(\.status == "open")
+    ///     .partition(#field(\Order.tenantID), equals: "tenant_123")
+    ///     .where(#field(\Order.status) == "open")
     ///     .batchSize(50)
     ///     .build()
     /// ```
     ///
     /// - Parameters:
-    ///   - keyPath: The partition field's keyPath
+    ///   - field: The compiled partition field
     ///   - value: The value for directory resolution
     /// - Returns: A new CursorQueryBuilder with the partition binding added
-    public func partition<V: Sendable & Equatable & FieldValueConvertible>(
-        _ keyPath: KeyPath<T, V> & Sendable,
+    public func partition<V: Sendable & Equatable & FieldValueRepresentable>(
+        _ field: Field<T, V>,
         equals value: V
     ) -> CursorQueryBuilder<T> {
         var copy = self
-        copy.query = query.partition(keyPath, equals: value)
+        copy.query = query.partition(field, equals: value)
         return copy
     }
 

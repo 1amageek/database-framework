@@ -1,15 +1,10 @@
 // QueryConversion.swift
-// DatabaseEngine - Conversion between Query<T> and QueryIR.SelectQuery
+// DatabaseEngine - Conversion between Query<T> and SelectQuery
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 
-// MARK: - Query<T> → SelectQuery (Forward: always succeeds)
+// MARK: - Query<T> → SelectQuery
 
 extension Query {
     /// Convert a type-safe Query to a QueryIR SelectQuery.
@@ -23,30 +18,86 @@ extension Query {
     ///
     /// The resulting SelectQuery is serializable and can be used for
     /// plan explanation, caching keys, or cross-module query execution.
-    public func toSelectQuery() -> QueryIR.SelectQuery {
-        let typeName = String(describing: T.self)
-
+    public func toSelectQuery() throws(QueryConversionError) -> SelectQuery {
         // Build filter from predicates
-        let filter: QueryIR.Expression? = {
-            guard !predicates.isEmpty else { return nil }
-            let expressions = predicates.map { $0.toExpression() }
-            return expressions.reduceExpressions(with: { .and($0, $1) })
-        }()
+        let filter: Expression?
+        if predicates.isEmpty {
+            filter = nil
+        } else {
+            var expressions: [Expression] = []
+            expressions.reserveCapacity(predicates.count)
+            for predicate in predicates {
+                do {
+                    expressions.append(try predicate.toExpression())
+                } catch let error {
+                    throw .literal(error)
+                }
+            }
+            filter = expressions.reduceExpressions(with: { .and($0, $1) })
+        }
 
         // Build orderBy from sortDescriptors
-        let orderBy: [QueryIR.SortKey]? = {
+        let orderBy: [SortKey]? = {
             guard !sortDescriptors.isEmpty else { return nil }
             return sortDescriptors.map { $0.toSortKey() }
         }()
 
-        return QueryIR.SelectQuery(
+        let limit: UInt64?
+        if let fetchLimit {
+            guard let value = UInt64(exactly: fetchLimit) else {
+                throw .negativeLimit(fetchLimit)
+            }
+            limit = value
+        } else {
+            limit = nil
+        }
+        let offset: UInt64?
+        if let fetchOffset {
+            guard let value = UInt64(exactly: fetchOffset) else {
+                throw .negativeOffset(fetchOffset)
+            }
+            offset = value
+        } else {
+            offset = nil
+        }
+
+        let partitions: FieldObject
+        if let partitionBinding {
+            do {
+                partitions = try partitionBinding.canonicalPartitions()
+            } catch let error as DirectoryPathError {
+                throw .directory(error)
+            } catch {
+                preconditionFailure(
+                    "DirectoryPath only emits DirectoryPathError"
+                )
+            }
+        } else {
+            partitions = FieldObject()
+        }
+
+        let accessPath = forcedIndex.map {
+            AccessPath.index(
+                IndexScanSource(
+                    indexName: $0.indexName,
+                    kindIdentifier: "scalar"
+                )
+            )
+        }
+
+        return SelectQuery(
             projection: .all,
-            source: .table(QueryIR.TableRef(table: typeName)),
-            accessPath: nil,
+            source: .table(
+                TableRef(
+                    table: T.persistableType,
+                    partitions: partitions
+                )
+            ),
+            accessPath: accessPath,
             filter: filter,
             orderBy: orderBy,
-            limit: fetchLimit,
-            offset: fetchOffset
+            limit: limit,
+            offset: offset
         )
     }
 }
@@ -55,9 +106,9 @@ extension Query {
 
 extension SortDescriptor {
     /// Convert a SortDescriptor to a QueryIR SortKey.
-    public func toSortKey() -> QueryIR.SortKey {
-        QueryIR.SortKey(
-            .column(QueryIR.ColumnRef(column: fieldName)),
+    public func toSortKey() -> SortKey {
+        SortKey(
+            .column(ColumnRef(column: fieldName)),
             direction: order.toSortDirection
         )
     }

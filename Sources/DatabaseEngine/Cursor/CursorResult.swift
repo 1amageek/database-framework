@@ -8,7 +8,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 
 // MARK: - CursorResult
 
@@ -48,10 +48,9 @@ public struct CursorResult<T: Persistable>: Sendable {
 
     /// Whether there are more results to fetch
     ///
-    /// True if a continuation token is available and it's not the end marker.
+    /// True if a continuation token is available.
     public var hasMore: Bool {
-        guard let token = continuation else { return false }
-        return !token.isEndOfResults
+        continuation != nil
     }
 
     /// Number of items in this result
