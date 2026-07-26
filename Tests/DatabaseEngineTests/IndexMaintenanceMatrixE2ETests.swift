@@ -233,14 +233,19 @@ struct IndexMaintenanceMatrixE2ETests {
         ["test", "index_matrix", "relationship_orders"],
     ]
 
-    private func setupContainer(_ types: [any Persistable.Type]) async throws -> DBContainer {
+    private func setupContainer(
+        _ entities: [Schema.Entity]
+    ) async throws -> DBContainer {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema(types, version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: entities,
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [MatrixScalarUser.self, MatrixVectorDocument.self, MatrixFullTextArticle.self, MatrixGraphEdge.self, MatrixSpatialPlace.self, MatrixRankPlayer.self, MatrixAggregationOrder.self, MatrixVersionDocument.self, MatrixBitmapItem.self, MatrixLeaderboardScore.self, MatrixPermutedLocation.self, MatrixRelationshipCustomer.self, MatrixRelationshipOrder.self]),
             security: .disabled
         )
         try await cleanup(container: container)

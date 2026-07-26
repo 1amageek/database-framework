@@ -131,7 +131,7 @@ struct OntologyIRIValidationTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [ValEmployee.self, ValAssignment.self, ValBadClass.self, ValBadRelation.self, ValDataPropAsObjectProp.self, ValBadDataProperty.self, ValObjPropAsDataProp.self]),
             security: .disabled,
         )
         return container.newContext()

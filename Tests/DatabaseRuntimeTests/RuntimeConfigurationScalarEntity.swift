@@ -1,15 +1,14 @@
-import Core
-import DatabaseValue
-import ScalarIndex
+import DatabaseKit
+import DatabaseTypes
 
 @Persistable
 struct RuntimeConfigurationScalarEntity {
     #Index(
-        ScalarIndexKind<RuntimeConfigurationScalarEntity>(
-            fields: [\.name]
-        ),
+        .scalar,
+        fields: [\RuntimeConfigurationScalarEntity.name],
         name: "RuntimeConfigurationScalarEntity_name"
     )
 
+    var id: String = ""
     var name: String
 }

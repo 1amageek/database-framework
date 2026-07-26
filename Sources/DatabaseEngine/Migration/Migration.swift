@@ -4,7 +4,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Core
+import DatabaseKit
 
 /// Migration Definition
 ///
@@ -131,7 +131,7 @@ public struct MigrationContext: Sendable {
     ///
     /// Maps index names to their runtime configurations (HNSW params, full-text settings, etc.)
     /// Used when building indexes via EntityIndexBuilder.
-    internal let indexConfigurations: [String: [any IndexConfiguration]]
+    internal let indexConfigurations: [String: [any IndexRuntimeConfiguration]]
 
     // MARK: - Initialization
 
@@ -142,7 +142,7 @@ public struct MigrationContext: Sendable {
         metadataSubspace: Subspace,
         sourceStoreRegistry: [String: MigrationStoreInfo],
         targetStoreRegistry: [String: MigrationStoreInfo],
-        indexConfigurations: [String: [any IndexConfiguration]] = [:]
+        indexConfigurations: [String: [any IndexRuntimeConfiguration]] = [:]
     ) {
         self.container = container
         self.schema = schema
@@ -160,7 +160,7 @@ public struct MigrationContext: Sendable {
         sourceSchema: Schema? = nil,
         metadataSubspace: Subspace,
         storeRegistry: [String: MigrationStoreInfo],
-        indexConfigurations: [String: [any IndexConfiguration]] = [:]
+        indexConfigurations: [String: [any IndexRuntimeConfiguration]] = [:]
     ) {
         self.init(
             container: container,
@@ -238,7 +238,6 @@ public struct MigrationContext: Sendable {
         // 3. Convert IndexDescriptor to Index with itemTypes
         let index = try convertDescriptorToIndex(
             indexDescriptor,
-            entity: targetEntity,
             itemTypes: Set([targetEntity.name])
         )
 
@@ -266,14 +265,15 @@ public struct MigrationContext: Sendable {
             break
         }
 
-        // 6. Build the index from the compiled type held by Schema.Entity.
+        // 6. Build the index from the container-scoped runtime type registry.
 
         // Get configurations for this index (HNSW params, full-text settings, etc.)
         let configs = indexConfigurations[index.name] ?? []
 
-        guard let persistableType = targetEntity.persistableType else {
+        guard let persistableType = container.runtimeConfiguration
+            .persistableTypes.type(named: targetEntity.name) else {
             throw DatabaseRuntimeError.internalError(
-                "Entity '\(targetEntity.name)' has no compiled Persistable type"
+                "Entity '\(targetEntity.name)' has no registered runtime type"
             )
         }
         try await EntityIndexBuilder.buildIndex(
@@ -424,7 +424,6 @@ public struct MigrationContext: Sendable {
         // 4. Convert and register index first (needed for DatabaseIndexRegistry operations)
         let index = try convertDescriptorToIndex(
             indexDescriptor,
-            entity: targetEntity,
             itemTypes: Set([targetEntity.name])
         )
         do {
@@ -457,9 +456,10 @@ public struct MigrationContext: Sendable {
         // Get configurations for this index (HNSW params, full-text settings, etc.)
         let configs = indexConfigurations[indexName] ?? []
 
-        guard let persistableType = targetEntity.persistableType else {
+        guard let persistableType = container.runtimeConfiguration
+            .persistableTypes.type(named: targetEntity.name) else {
             throw DatabaseRuntimeError.internalError(
-                "Entity '\(targetEntity.name)' has no compiled Persistable type"
+                "Entity '\(targetEntity.name)' has no registered runtime type"
             )
         }
         try await EntityIndexBuilder.buildIndex(
@@ -591,15 +591,31 @@ public struct MigrationContext: Sendable {
         let memberTypeNames = Set(group.memberTypeNames)
 
         for entity in schema.entities where memberTypeNames.contains(entity.name) {
-            guard let persistableType = entity.persistableType,
-                  let polymorphicType = persistableType as? any Polymorphable.Type else {
-                continue
+            guard let persistableType = container.runtimeConfiguration
+                .persistableTypes.type(named: entity.name) else {
+                throw DatabaseRuntimeError.internalError(
+                    "Polymorphic member '\(entity.name)' has no registered runtime type"
+                )
+            }
+            guard let polymorphicType = persistableType as? any Polymorphable.Type else {
+                throw DatabaseRuntimeError.internalError(
+                    "Polymorphic member '\(entity.name)' does not conform to Polymorphable"
+                )
             }
 
-            let descriptors = schema.polymorphicIndexDescriptors(
-                identifier: group.identifier,
-                memberType: persistableType
-            ).filter { $0.name == indexName }
+            func descriptors<Member: Persistable>(
+                for memberType: Member.Type
+            ) -> [IndexDescriptor] {
+                schema.polymorphicIndexDescriptors(
+                    identifier: group.identifier,
+                    memberType: memberType
+                )
+            }
+            let memberDescriptors = _openExistential(
+                persistableType,
+                do: descriptors
+            )
+            let descriptors = memberDescriptors.filter { $0.name == indexName }
             guard !descriptors.isEmpty else { continue }
 
             let typeCode = polymorphicType.typeCode(for: entity.name)
@@ -1025,19 +1041,13 @@ public struct MigrationContext: Sendable {
     ///
     /// - Parameters:
     ///   - descriptor: IndexDescriptor from schema
-    ///   - entity: The entity containing the Persistable type for KeyPath → String conversion
     ///   - itemTypes: Set of item type names that this index applies to
     /// - Returns: Index object
     /// - Throws: Error if conversion fails
     private func convertDescriptorToIndex(
         _ descriptor: IndexDescriptor,
-        entity: Schema.Entity,
         itemTypes: Set<String>
     ) throws -> Index {
-        guard entity.persistableType != nil else {
-            throw DatabaseRuntimeError.internalError("Entity '\(entity.name)' has no Persistable type (decoded from wire?)")
-        }
-
         // Build KeyExpression from field names using factory
         // This properly handles nested paths (e.g., "address.city" → NestExpression)
         let keyExpression = KeyExpressionFactory.from(

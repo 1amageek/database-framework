@@ -1897,12 +1897,16 @@ struct DatabasePersistentJobServiceTests {
         operation: Operation
     ) async throws -> PersistentJobServiceContext {
         let container = try await DBContainer.open(
-            for: Schema(
-                [DatabaseEndpointEntity.self],
+            for: try Schema(
+                entities: [
+                    try DatabaseEndpointEntity.schemaEntity,
+                ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseEndpointEntity.self]
+            ),
             security: .disabled
         )
         let stateStore = try await DatabaseMutationStateStore(

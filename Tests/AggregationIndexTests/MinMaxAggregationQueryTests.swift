@@ -88,7 +88,14 @@ struct MinMaxAggregationQueryTests {
         // Create schema from Persistable type
         let schema = Schema([MinimumOrder.self])
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(engine)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [MinimumOrder.self]
+            ),
+            security: .disabled
+        )
         let context = container.newContext()
 
         // Insert test data
@@ -135,7 +142,14 @@ struct MinMaxAggregationQueryTests {
         // Create schema from Persistable type
         let schema = Schema([MaximumOrder.self])
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(engine)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [MaximumOrder.self]
+            ),
+            security: .disabled
+        )
         let context = container.newContext()
 
         // Insert test data
@@ -182,7 +196,14 @@ struct MinMaxAggregationQueryTests {
         // Create schema from Persistable type
         let schema = Schema([MixedAggregationOrder.self])
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(engine)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [MixedAggregationOrder.self]
+            ),
+            security: .disabled
+        )
         let context = container.newContext()
 
         // Insert test data
@@ -258,7 +279,14 @@ struct MinMaxAggregationQueryTests {
         // Create schema from Persistable type
         let schema = Schema([Int64AggregationOrder.self])
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(engine)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .init(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [Int64AggregationOrder.self]
+            ),
+            security: .disabled
+        )
         let context = container.newContext()
 
         // Insert test data

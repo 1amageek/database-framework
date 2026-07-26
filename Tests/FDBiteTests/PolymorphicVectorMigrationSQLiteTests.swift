@@ -274,7 +274,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicVectorPersonV1.self, SQLitePolymorphicVectorOrganizationV1.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -341,7 +341,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicVectorPersonV2.self, SQLitePolymorphicVectorOrganizationV2.self]),
             security: .disabled
         )
         let context = initialContainer.newContext()

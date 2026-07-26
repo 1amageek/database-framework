@@ -309,14 +309,16 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
             engine: any StorageEngine = InMemoryEngine()
         ) async throws {
             let container = try await DBContainer.open(
-                for: Schema(
-                    [DatabaseEndpointEntity.self],
+                for: try Schema(
+                    entities: [try DatabaseEndpointEntity.schemaEntity],
                     version: Schema.Version(1, 0, 0)
                 ),
                 configuration: DBConfiguration(
                     backend: .custom(engine)
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    persistableTypes: [DatabaseEndpointEntity.self]
+                ),
                 security: .disabled
             )
             let stateStore = try await DatabaseMutationStateStore(

@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Owns database semantics performed within one storage transaction attempt.
@@ -30,12 +30,12 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     private var state: State = .open
     private var nextOperationID: UInt64 = 1
     private var subspaceCache: [DatabaseStoreCacheKey: ResolvedSubspaces] = [:]
-    private var scheduledDeletions = Set<PersistableIdentity>()
-    private var scheduledWrites = Set<PersistableIdentity>()
-    private var activeMutationIdentities = Set<PersistableIdentity>()
-    private var mutationOrder: [PersistableIdentity] = []
-    private var orderedMutationIdentities = Set<PersistableIdentity>()
-    private var mutationJournal: [PersistableIdentity: MutationJournalEntry] = [:]
+    private var scheduledDeletions = Set<EntityReference>()
+    private var scheduledWrites = Set<EntityReference>()
+    private var activeMutationIdentities = Set<EntityReference>()
+    private var mutationOrder: [EntityReference] = []
+    private var orderedMutationIdentities = Set<EntityReference>()
+    private var mutationJournal: [EntityReference: MutationJournalEntry] = [:]
 
     private struct ResolvedSubspaces {
         let items: Subspace
@@ -252,7 +252,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         identifiedBy id: Model.ID
     ) async throws {
         try await performOperation { operationID in
-            let identity = PersistableIdentity(
+            let identity = try EntityReference(
                 entity: Model.persistableType,
                 id: id.persistableIdentifierValue
             )
@@ -282,7 +282,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         in partition: DirectoryPath<Model>
     ) async throws {
         try await performOperation { operationID in
-            let identity = PersistableIdentity(
+            let identity = try EntityReference(
                 entity: Model.persistableType,
                 id: id.persistableIdentifierValue,
                 partitions: try AnyDirectoryPath(partition)
@@ -327,7 +327,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func fetchPersistedModel(
-        identifiedBy identity: PersistableIdentity
+        identifiedBy identity: EntityReference
     ) async throws -> (any Persistable)? {
         try await performOperation { _ in
             let resolved = try resolve(identity)
@@ -427,7 +427,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func fetchPersistedModel(
-        identifiedBy identity: PersistableIdentity,
+        identifiedBy identity: EntityReference,
         within operationID: UInt64
     ) async throws -> (any Persistable)? {
         do {
@@ -483,7 +483,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func isDeletionScheduled(
-        for identity: PersistableIdentity,
+        for identity: EntityReference,
         within operationID: UInt64
     ) throws -> Bool {
         try ensureActive(operationID, permitsMutation: false)
@@ -538,11 +538,11 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         _ mutations: [PersistableMutation],
         operationID: UInt64
     ) async throws {
-        var identities = Set<PersistableIdentity>()
+        var identities = Set<EntityReference>()
         identities.reserveCapacity(mutations.count)
 
         for mutation in mutations {
-            let identity = try PersistableIdentityEncoder.encode(
+            let identity = try EntityReferenceEncoder.encode(
                 mutation.model
             )
             guard identities.insert(identity).inserted else {
@@ -589,7 +589,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         operationID: UInt64,
         source: MutationSource
     ) async throws {
-        let identity = try PersistableIdentityEncoder.encode(model)
+        let identity = try EntityReferenceEncoder.encode(model)
         if source == .derived,
            scheduledDeletions.contains(identity) {
             throw DatabaseTransactionError.conflictingDerivedMutation(identity)
@@ -649,7 +649,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         operationID: UInt64,
         source: MutationSource
     ) async throws {
-        let identity = try PersistableIdentityEncoder.encode(model)
+        let identity = try EntityReferenceEncoder.encode(model)
         if source == .derived,
            scheduledWrites.contains(identity),
            !scheduledDeletions.contains(identity) {
@@ -707,7 +707,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     private func reserveMutationIdentity(
-        _ identity: PersistableIdentity
+        _ identity: EntityReference
     ) {
         guard orderedMutationIdentities.insert(identity).inserted else {
             return
@@ -716,7 +716,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     private func updateMutationJournal(
-        identity: PersistableIdentity,
+        identity: EntityReference,
         previousModel: (any Persistable)?,
         currentModel: (any Persistable)?
     ) {
@@ -982,17 +982,19 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     private func persistableType(
         named entity: String
     ) throws -> any Persistable.Type {
-        guard let schemaEntity = container.schema.entity(named: entity) else {
+        guard container.schema.entity(named: entity) != nil else {
             throw DatabaseTransactionError.unknownEntity(entity)
         }
-        guard let type = schemaEntity.persistableType else {
+        guard let type = container.runtimeConfiguration.persistableTypes.type(
+            named: entity
+        ) else {
             throw DatabaseTransactionError.entityHasNoPersistableType(entity)
         }
         return type
     }
 
     private func resolve(
-        _ identity: PersistableIdentity
+        _ identity: EntityReference
     ) throws -> (id: Tuple, partition: AnyDirectoryPath?) {
         let type = try persistableType(named: identity.entity)
         do {
@@ -1016,19 +1018,17 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     private func partition(
         for model: any Persistable
     ) throws -> AnyDirectoryPath? {
-        let type = type(of: model)
-        guard type.hasDynamicDirectory else {
-            return nil
-        }
-        var bindings: [(name: String, value: any Sendable)] = []
-        for component in type.directoryPathComponents {
-            guard case .dynamicField(let fieldName) = component,
-                  let value = model[dynamicMember: fieldName] else {
-                continue
+        func makePath<Model: Persistable>(
+            _ model: Model
+        ) throws -> AnyDirectoryPath? {
+            guard Model.hasDynamicDirectory else {
+                return nil
             }
-            bindings.append((fieldName, value))
+            return try AnyDirectoryPath(
+                DirectoryPath<Model>.from(model)
+            )
         }
-        return try AnyDirectoryPath(fieldValues: bindings, type: type)
+        return try _openExistential(model, do: makePath)
     }
 
     private func validate(
@@ -1061,7 +1061,7 @@ public enum DatabaseTransactionError: Error, Sendable, Equatable {
     case unknownEntity(String)
     case entityHasNoPersistableType(String)
     case invalidIdentity(entity: String, reason: String)
-    case persistedModelNotFound(PersistableIdentity)
-    case duplicateMutation(PersistableIdentity)
-    case conflictingDerivedMutation(PersistableIdentity)
+    case persistedModelNotFound(EntityReference)
+    case duplicateMutation(EntityReference)
+    case conflictingDerivedMutation(EntityReference)
 }

@@ -55,7 +55,7 @@ struct CanonicalReadRegistryTests {
 
     @Test("Builtin runtime composes canonical providers and read executors")
     func builtinRuntimeComposesProvidersAndExecutors() throws {
-        let configuration = try DatabaseFrameworkRuntime.configuration()
+        let configuration = try DatabaseFrameworkRuntime.configuration(persistableTypes: [])
         let registry = configuration.readExecutors
         let maintainers = configuration.indexMaintainerProviders
 

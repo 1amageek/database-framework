@@ -56,7 +56,7 @@ struct SHACLValidationTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SHACLValidationStatement.self]),
             security: .disabled,
         )
     }

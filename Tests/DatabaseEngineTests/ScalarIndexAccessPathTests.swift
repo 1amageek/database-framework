@@ -77,18 +77,18 @@ struct ScalarIndexAccessPathTests {
     private func setupContainer() async throws -> DBContainer {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema(
-            [
-                ScalarAccessPathEntity.self,
-                AggregationOnlyAccessPathEntity.self,
-                CompoundOnlyAccessPathEntity.self
+        let schema = try Schema(
+            entities: [
+                try ScalarAccessPathEntity.schemaEntity,
+                try AggregationOnlyAccessPathEntity.schemaEntity,
+                try CompoundOnlyAccessPathEntity.schemaEntity,
             ],
             version: Schema.Version(1, 0, 0)
         )
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [ScalarAccessPathEntity.self, AggregationOnlyAccessPathEntity.self, CompoundOnlyAccessPathEntity.self]),
             security: .disabled
         )
     }

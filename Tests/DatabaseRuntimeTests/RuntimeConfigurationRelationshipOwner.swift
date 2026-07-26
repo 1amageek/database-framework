@@ -1,11 +1,10 @@
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
 
 @Persistable
 struct RuntimeConfigurationRelationshipOwner {
     var id: String = ""
 
     @Relationship(deleteRule: .cascade)
-    var target: DatabaseReference<RuntimeConfigurationRelationshipTarget>? = nil
+    var target: PersistableReference<RuntimeConfigurationRelationshipTarget>? = nil
 }

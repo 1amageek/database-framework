@@ -1,7 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 struct DatabaseEntityMutationExecutor: Sendable {
     private let container: DBContainer
@@ -36,7 +36,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
             )
         }
 
-        var seen = Set<DatabaseResolvedPersistableIdentity.Key>()
+        var seen = Set<ResolvedEntityReference.Key>()
         var result: [PreparedChange] = []
         result.reserveCapacity(changes.count)
         for change in changes {
@@ -57,17 +57,18 @@ struct DatabaseEntityMutationExecutor: Sendable {
                 }) else {
                     throw DatabaseMutationError.unknownEntity(change.identity.entity)
                 }
-                guard let type = entity.persistableType else {
+                guard let type = container.runtimeConfiguration
+                    .persistableTypes.type(named: entity.name) else {
                     throw DatabaseMutationError.entityHasNoPersistableType(change.identity.entity)
                 }
-                model = try type.decodePersistedFields(change.fields)
+                model = try type.decodePersistedObject(change.fields)
             }
-            let resolved = try DatabaseResolvedPersistableIdentity.resolve(
+            let resolved = try ResolvedEntityReference.resolve(
                 change.identity,
                 container: container,
                 model: model
             )
-            let key = DatabaseResolvedPersistableIdentity.Key(
+            let key = ResolvedEntityReference.Key(
                 entity: change.identity.entity,
                 id: resolved.id.pack(),
                 partitionPath: resolved.partitionPath
@@ -111,7 +112,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
         workMeter: DatabaseWorkMeter,
         transaction: DatabaseTransaction
     ) async throws -> [MutationExecuteOperation.EntityEffect] {
-        var states: [DatabaseResolvedPersistableIdentity.Key: DatabaseEntityState] = [:]
+        var states: [ResolvedEntityReference.Key: DatabaseEntityState] = [:]
 
         for prepared in changes {
             states[prepared.key] = try await load(
@@ -122,9 +123,9 @@ struct DatabaseEntityMutationExecutor: Sendable {
         }
         for precondition in preconditions {
             let identity = precondition.identity
-            let key = try DatabaseResolvedPersistableIdentity.key(identity, container: container)
+            let key = try ResolvedEntityReference.key(identity, container: container)
             if states[key] == nil {
-                let resolved = try DatabaseResolvedPersistableIdentity.resolve(
+                let resolved = try ResolvedEntityReference.resolve(
                     identity,
                     container: container
                 )
@@ -137,7 +138,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
         }
 
         for precondition in preconditions {
-            let key = try DatabaseResolvedPersistableIdentity.key(
+            let key = try ResolvedEntityReference.key(
                 precondition.identity,
                 container: container
             )
@@ -267,7 +268,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
         try validatePreconditionSet(preconditions)
 
         for precondition in preconditions {
-            let resolved = try DatabaseResolvedPersistableIdentity.resolve(
+            let resolved = try ResolvedEntityReference.resolve(
                 precondition.identity,
                 container: container
             )
@@ -299,13 +300,13 @@ struct DatabaseEntityMutationExecutor: Sendable {
         struct Flags {
             var requiresExistence = false
             var requiresAbsence = false
-            var version: DatabaseBytes?
+            var version: ByteString?
             var values = Set<MutationExecuteOperation.Precondition>()
         }
-        var flagsByKey: [DatabaseResolvedPersistableIdentity.Key: Flags] = [:]
+        var flagsByKey: [ResolvedEntityReference.Key: Flags] = [:]
         for precondition in preconditions {
             let identity = precondition.identity
-            let key = try DatabaseResolvedPersistableIdentity.key(identity, container: container)
+            let key = try ResolvedEntityReference.key(identity, container: container)
             var flags = flagsByKey[key] ?? Flags()
             guard flags.values.insert(precondition).inserted else {
                 throw DatabaseMutationError.duplicatePrecondition(identity)
@@ -330,7 +331,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
     }
 
     private func load(
-        _ resolved: DatabaseResolvedPersistableIdentity,
+        _ resolved: ResolvedEntityReference,
         transaction: DatabaseTransaction,
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseEntityState {
@@ -367,18 +368,18 @@ struct DatabaseEntityMutationExecutor: Sendable {
 
     private func entityVersion(
         _ model: any Persistable
-    ) throws -> DatabaseBytes {
-        let fields = try DatabaseEntityProjection.fields(for: model)
+    ) throws -> ByteString {
+        let fields = try DatabaseEntityProjection.persistedFields(for: model)
         return try PersistableVersionTokenCodec.digest(fields: fields)
     }
 
     struct PreparedChange: Sendable {
         let change: MutationExecuteOperation.Change
-        let resolved: DatabaseResolvedPersistableIdentity
+        let resolved: ResolvedEntityReference
         let model: (any Persistable)?
 
-        var key: DatabaseResolvedPersistableIdentity.Key {
-            DatabaseResolvedPersistableIdentity.Key(
+        var key: ResolvedEntityReference.Key {
+            ResolvedEntityReference.Key(
                 entity: change.identity.entity,
                 id: resolved.id.pack(),
                 partitionPath: resolved.partitionPath
@@ -389,7 +390,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
 }
 
 private extension MutationExecuteOperation.Precondition {
-    var identity: PersistableIdentity {
+    var identity: EntityReference {
         switch self {
         case .expectedVersion(let identity, _):
             return identity

@@ -101,15 +101,18 @@ struct PolymorphicFetchTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        let schema = Schema(
-            [PolymorphicFetchArticle.self, PolymorphicFetchReport.self],
+        let schema = try Schema(
+            entities: [
+                try PolymorphicFetchArticle.schemaEntity,
+                try PolymorphicFetchReport.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
 
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PolymorphicFetchArticle.self, PolymorphicFetchReport.self]),
             security: .disabled,
         )
     }

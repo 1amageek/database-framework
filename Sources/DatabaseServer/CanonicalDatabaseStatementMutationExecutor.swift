@@ -1,10 +1,10 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
-import Graph
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 import GraphIndex
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutationExecutor {
@@ -27,7 +27,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
 
     public func prepare(
         _ validatedStatement: ValidatedDatabaseStatement,
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget(),
+        budget: ExecutionBudget = ExecutionBudget(),
         context: DatabaseOperationContext
     ) async throws -> CanonicalPreparedStatementMutation {
         let statement = validatedStatement.statement
@@ -117,7 +117,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
     public func execute(
         _ prepared: CanonicalPreparedStatementMutation,
         preconditions: [MutationExecuteOperation.Precondition] = [],
-        graphPartitions: [DatabaseObjectField] = [],
+        graphPartitions: FieldObject = FieldObject(),
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result {
@@ -161,7 +161,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
     private func execute(
         _ statement: QueryStatement,
         preconditions: [MutationExecuteOperation.Precondition],
-        graphPartitions: [DatabaseObjectField],
+        graphPartitions: FieldObject,
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction,
         entities: DatabaseEntityMutationExecutor,
@@ -261,10 +261,16 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             for index in triples.indices {
                 try workMeter.consume(at: .validation)
                 let triple = triples[index]
-                let scoped = Graph.RDFTriple(
-                    subject: scopeBlankNodes(triple.subject, scope: scope),
-                    predicate: scopeBlankNodes(triple.predicate, scope: scope),
-                    object: scopeBlankNodes(triple.object, scope: scope)
+                let scoped = RDFTriple(
+                    subject: try scopeBlankNodes(
+                        triple.subject,
+                        scope: scope
+                    ),
+                    predicate: triple.predicate,
+                    object: try scopeBlankNodes(
+                        triple.object,
+                        scope: scope
+                    )
                 )
                 do {
                     try scoped.quad.validate()
@@ -290,17 +296,37 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
     }
 
     private func scopeBlankNodes(
-        _ term: DatabaseRDFTerm,
+        _ subject: RDFSubject,
         scope: SPARQLBlankNodeScope
-    ) -> DatabaseRDFTerm {
+    ) throws -> RDFSubject {
+        switch subject {
+        case .blankNode(let identifier):
+            return .blankNode(
+                try RDFBlankNodeIdentifier(
+                    scope.identifier(for: identifier.rawValue)
+                )
+            )
+        case .iri:
+            return subject
+        }
+    }
+
+    private func scopeBlankNodes(
+        _ term: RDFTerm,
+        scope: SPARQLBlankNodeScope
+    ) throws -> RDFTerm {
         switch term {
-        case .blankNode(let label):
-            return .blankNode(scope.identifier(for: label))
+        case .blankNode(let identifier):
+            return .blankNode(
+                try RDFBlankNodeIdentifier(
+                    scope.identifier(for: identifier.rawValue)
+                )
+            )
         case .tripleTerm(let subject, let predicate, let object):
             return .tripleTerm(
-                subject: scopeBlankNodes(subject, scope: scope),
-                predicate: scopeBlankNodes(predicate, scope: scope),
-                object: scopeBlankNodes(object, scope: scope)
+                subject: try scopeBlankNodes(subject, scope: scope),
+                predicate: predicate,
+                object: try scopeBlankNodes(object, scope: scope)
             )
         case .iri, .literal:
             return term
@@ -308,7 +334,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
     }
 
     private func requireNoGraphPartitions(
-        _ graphPartitions: [DatabaseObjectField]
+        _ graphPartitions: FieldObject
     ) throws {
         guard graphPartitions.isEmpty else {
             throw DatabaseMutationError.invalidGraphPartitions(
@@ -318,7 +344,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
     }
 
     private func requireNoRDFGraphPartitions(
-        _ graphPartitions: [DatabaseObjectField]
+        _ graphPartitions: FieldObject
     ) throws {
         guard graphPartitions.isEmpty else {
             throw DatabaseMutationError.invalidGraphPartitions(
@@ -342,7 +368,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         }
         let entity = try resolve(query.target, container: context.container)
         let columns = try insertColumns(query.columns, entity: entity)
-        let rows: [[QueryIR.Expression]]
+        let rows: [[Expression]]
         switch query.source {
         case .values(let values):
             rows = values
@@ -371,9 +397,9 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         changes.reserveCapacity(rows.count)
         for row in rows {
             try workMeter.consume(at: .mutationPlanning)
-            let suppliedFields: [DatabaseObjectField]
+            let suppliedFields: FieldObject
             if row.isEmpty, case .defaultValues = query.source {
-                suppliedFields = []
+                suppliedFields = FieldObject()
             } else {
                 guard row.count == columns.count else {
                     throw DatabaseMutationError.unsupportedStatement(
@@ -381,24 +407,31 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     )
                 }
                 let evaluator = DatabaseExpressionEvaluator(fields: [:])
-                suppliedFields = try zip(columns, row).map { schema, expression in
-                    DatabaseObjectField(
-                        number: try fieldNumber(schema, entity: entity.name),
-                        name: schema.name,
+                let suppliedEntries = try zip(columns, row).map {
+                    schema,
+                    expression in
+                    _ = try fieldNumber(schema, entity: entity.name)
+                    return (
+                        key: schema.name,
                         value: try evaluator.evaluate(expression)
                     )
                 }
+                suppliedFields = try FieldObject(consume suppliedEntries)
             }
 
-            let candidate = try entity.type.decodePersistedFields(suppliedFields)
-            let candidateFields = try DatabaseEntityProjection.fields(for: candidate)
+            let candidate = try entity.type.decodePersistedObject(
+                suppliedFields
+            )
+            let candidateFields = try DatabaseEntityProjection.fieldObject(
+                for: candidate
+            )
             let candidateIdentity = try DatabaseEntityProjection.identity(for: candidate)
-            let targetIdentity = PersistableIdentity(
+            let targetIdentity = try EntityReference(
                 entity: candidateIdentity.entity,
                 id: candidateIdentity.id,
                 partitions: query.target.partitions
             )
-            let resolved = try DatabaseResolvedPersistableIdentity.resolve(
+            let resolved = try ResolvedEntityReference.resolve(
                 targetIdentity,
                 container: context.container,
                 model: candidate
@@ -421,7 +454,9 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             case (.some(.doNothing), .some):
                 continue
             case (.some(.doUpdate(let assignments, let filter)), .some(let model)):
-                let originalFields = try DatabaseEntityProjection.fields(for: model)
+                let originalFields = try DatabaseEntityProjection.fieldObject(
+                    for: model
+                )
                 let evaluation = evaluationFields(
                     originalFields,
                     table: query.target
@@ -436,12 +471,16 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     evaluationFields: evaluation,
                     entity: entity
                 )
-                let updated = try entity.type.decodePersistedFields(updatedFields)
+                let updated = try entity.type.decodePersistedObject(
+                    updatedFields
+                )
                 changes.append(
                     MutationExecuteOperation.Change(
                         kind: .update,
                         identity: try DatabaseEntityProjection.identity(for: model),
-                        fields: try DatabaseEntityProjection.fields(for: updated)
+                        fields: try DatabaseEntityProjection.fieldObject(
+                            for: updated
+                        )
                     )
                 )
             }
@@ -493,7 +532,9 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         var changes: [MutationExecuteOperation.Change] = []
         for model in models {
             try workMeter.consume(at: .mutationPlanning)
-            let originalFields = try DatabaseEntityProjection.fields(for: model)
+            let originalFields = try DatabaseEntityProjection.fieldObject(
+                for: model
+            )
             let evaluation = evaluationFields(originalFields, table: query.target)
             if let filter = query.filter,
                try !DatabaseExpressionEvaluator(fields: evaluation).predicate(filter) {
@@ -505,12 +546,14 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 evaluationFields: evaluation,
                 entity: entity
             )
-            let updated = try entity.type.decodePersistedFields(updatedFields)
+            let updated = try entity.type.decodePersistedObject(updatedFields)
             changes.append(
                 MutationExecuteOperation.Change(
                     kind: .update,
                     identity: try DatabaseEntityProjection.identity(for: model),
-                    fields: try DatabaseEntityProjection.fields(for: updated)
+                    fields: try DatabaseEntityProjection.fieldObject(
+                        for: updated
+                    )
                 )
             )
             guard changes.count <= runtimeLimits.maximumMutations else {
@@ -563,7 +606,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         var changes: [MutationExecuteOperation.Change] = []
         for model in models {
             try workMeter.consume(at: .mutationPlanning)
-            let fields = try DatabaseEntityProjection.fields(for: model)
+            let fields = try DatabaseEntityProjection.fieldObject(for: model)
             if let filter = query.filter,
                try !DatabaseExpressionEvaluator(
                     fields: evaluationFields(fields, table: query.target)
@@ -641,7 +684,9 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         guard let entity = container.schema.entities.first(where: { $0.name == table.table }) else {
             throw DatabaseMutationError.unknownEntity(table.table)
         }
-        guard let type = entity.persistableType else {
+        guard let type = container.runtimeConfiguration.persistableTypes.type(
+            named: entity.name
+        ) else {
             throw DatabaseMutationError.entityHasNoPersistableType(table.table)
         }
         let partition: AnyDirectoryPath?
@@ -695,11 +740,15 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
 
     private func applying(
         _ assignments: [Assignment],
-        to fields: [DatabaseObjectField],
-        evaluationFields: [String: DatabaseValue],
+        to fields: FieldObject,
+        evaluationFields: [String: FieldValue],
         entity: ResolvedEntity
-    ) throws -> [DatabaseObjectField] {
-        var byName = Dictionary(uniqueKeysWithValues: fields.map { ($0.name, $0) })
+    ) throws -> FieldObject {
+        var byName = Dictionary(
+            uniqueKeysWithValues: fields.fields.map {
+                ($0.key, $0.value)
+            }
+        )
         var seen = Set<String>()
         let evaluator = DatabaseExpressionEvaluator(fields: evaluationFields)
         for assignment in assignments {
@@ -714,25 +763,26 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     reason: "assignment column '\(assignment.column)' is not compiled"
                 )
             }
-            byName[assignment.column] = DatabaseObjectField(
-                number: try fieldNumber(schema, entity: entity.name),
-                name: schema.name,
-                value: try evaluator.evaluate(assignment.value)
+            _ = try fieldNumber(schema, entity: entity.name)
+            byName[assignment.column] = try evaluator.evaluate(
+                assignment.value
             )
         }
-        return byName.values.sorted { $0.number < $1.number }
+        return try FieldObject(
+            byName.map { (key: $0.key, value: $0.value) }
+        )
     }
 
     private func evaluationFields(
-        _ fields: [DatabaseObjectField],
+        _ fields: FieldObject,
         table: TableRef
-    ) -> [String: DatabaseValue] {
-        var values: [String: DatabaseValue] = [:]
-        for field in fields {
-            values[field.name] = field.value
-            values["\(table.table).\(field.name)"] = field.value
+    ) -> [String: FieldValue] {
+        var values: [String: FieldValue] = [:]
+        for field in fields.fields {
+            values[field.key] = field.value
+            values["\(table.table).\(field.key)"] = field.value
             if let alias = table.alias {
-                values["\(alias).\(field.name)"] = field.value
+                values["\(alias).\(field.key)"] = field.value
             }
         }
         return values

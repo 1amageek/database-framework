@@ -59,7 +59,7 @@ struct OntologyPersistenceTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [OntologyPersistenceEntity.self]),
             security: .disabled,
         )
         return container.newContext()

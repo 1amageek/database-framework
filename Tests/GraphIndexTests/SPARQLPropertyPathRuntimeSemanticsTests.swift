@@ -695,7 +695,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [RuntimeSemanticPathEdge.self]),
             security: .disabled
         )
     }

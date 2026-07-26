@@ -213,12 +213,15 @@ struct LeaderboardIntegrationTests {
     private func createContainer() async throws -> DBContainer {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([LeaderboardFusionScore.self])
-        return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let schema = try Schema(entities: [try LeaderboardFusionScore.schemaEntity])
+        return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [LeaderboardFusionScore.self]), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.removeDirectory(path: ["test", "leaderboard"])
+        let path = ["test", "leaderboard"]
+        if try await container.engine.directoryExists(path: path) {
+            try await container.engine.removeDirectory(path: path)
+        }
     }
 
     @Test("Insert and retrieve scores via DatabaseContext")

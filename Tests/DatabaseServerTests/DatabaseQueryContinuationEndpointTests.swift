@@ -161,12 +161,16 @@ struct DatabaseQueryContinuationEndpointTests {
 
     private func makeContainer(seedCount: Int = 0) async throws -> DBContainer {
         let container = try await DBContainer.open(
-            for: Schema(
-                [DatabaseEndpointEntity.self],
+            for: try Schema(
+                entities: [
+                    try DatabaseEndpointEntity.schemaEntity,
+                ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseEndpointEntity.self]
+            ),
             security: .disabled
         )
         guard seedCount > 0 else {

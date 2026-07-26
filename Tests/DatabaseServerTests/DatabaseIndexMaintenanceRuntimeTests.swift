@@ -223,26 +223,22 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         try await context.save()
     }
 
-    private func tenantPartition(_ tenant: String) throws -> DatabaseObjectField {
-        let schema = try #require(CatalogPartitionedEntity.fieldSchemas.first {
-            $0.name == "tenantID"
-        })
-        let number = try #require(UInt32(exactly: schema.fieldNumber))
-        return DatabaseObjectField(
-            number: number,
-            name: "tenantID",
-            value: .string(tenant)
-        )
+    private func tenantPartition(_ tenant: String) throws -> FieldObject {
+        try FieldObject([
+            (key: "tenantID", value: .string(tenant)),
+        ])
     }
 
     private func makeContainer(engine: InMemoryEngine) async throws -> DBContainer {
         try await DBContainer.open(
-            for: Schema(
-                [CatalogPartitionedEntity.self],
+            for: try Schema(
+                entities: [CatalogPartitionedEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [CatalogPartitionedEntity.self]
+            ),
             security: .disabled
         )
     }

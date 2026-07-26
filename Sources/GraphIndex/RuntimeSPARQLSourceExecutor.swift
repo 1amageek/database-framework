@@ -1,8 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
 import StorageKit
 
 struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
@@ -16,7 +15,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> QueryResponse {
         try validate(selectQuery)
         let execution = CanonicalReadExecution.resolve(
@@ -46,7 +45,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> QueryResponse {
         try validate(selectQuery)
@@ -69,7 +68,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         context: DatabaseContext,
         askQuery: AskQuery,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> Bool {
         let scanner = try await makeRuntime(
@@ -94,7 +93,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         constructQuery: ConstructQuery,
         resultScope: DatabaseGraphResultScope,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph {
         let scanner = try await makeRuntime(
@@ -119,7 +118,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         context: DatabaseContext,
         describeQuery: DescribeQuery,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph {
         let scanner = try await makeRuntime(
@@ -160,7 +159,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
 
     private func makeRuntime(
         context: DatabaseContext,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> (
         scanner: CanonicalRDFDatasetScanner,
@@ -193,14 +192,13 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     private func projectedSource(
         context: DatabaseContext,
         resolution: RDFDatasetReadResolution,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> RDFDatasetSource? {
-        guard let type = resolution.entity.persistableType else {
+        guard let type = context.container.runtimeConfiguration
+            .persistableTypes.type(named: resolution.entity.name) else {
             throw CanonicalReadError.unsupportedSource(
-                try RDFDatasetReadResolver.errorMessage(
-                    schema: context.container.schema
-                )
+                "RDF dataset entity '\(resolution.entity.name)' has no compiled runtime type"
             )
         }
         return try await projectedSource(
@@ -216,7 +214,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         context: DatabaseContext,
         type: T.Type,
         resolution: RDFDatasetReadResolution,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> RDFDatasetSource? {
         let queryContext = try context.indexQueryContext.withPartitions(
@@ -288,10 +286,10 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             )
         }
 
-        var rows: [QueryRow] = []
+        var rows: [DatabaseEngine.QueryRow] = []
         rows.reserveCapacity(bindings.count)
         for binding in bindings {
-            let row = QueryRow(
+            let row = DatabaseEngine.QueryRow(
                 fields: rowFields(
                     from: binding,
                     projectedVariables: projectedVariables
@@ -311,11 +309,11 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     private func rowFields(
         from binding: VariableBinding,
         projectedVariables: [String]
-    ) -> [String: DatabaseValue] {
-        var fields: [String: DatabaseValue] = [:]
+    ) -> [String: FieldValue] {
+        var fields: [String: FieldValue] = [:]
         for variable in projectedVariables {
             guard let value = binding[variable] else { continue }
-            fields[unprefixedVariable(variable)] = value.asDatabaseValue
+            fields[unprefixedVariable(variable)] = value
         }
         return fields
     }

@@ -193,12 +193,15 @@ struct NamedGraphStoreSQLiteTests {
     }
 
     private func seededContext() async throws -> DatabaseContext {
-        let schema = Schema(
-            [SQLiteNamedGraphStatement.self],
+        let schema = try Schema(
+            entities: [try SQLiteNamedGraphStatement.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [SQLiteNamedGraphStatement.self]
+            ),
             security: .disabled
         )
         let context = container.newContext()

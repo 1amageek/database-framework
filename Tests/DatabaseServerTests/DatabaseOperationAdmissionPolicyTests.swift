@@ -59,14 +59,18 @@ struct DatabaseOperationAdmissionPolicyTests {
 
     private func makeContainer() async throws -> DBContainer {
         try await DBContainer.open(
-            for: Schema(
-                [DatabaseEndpointEntity.self],
+            for: try Schema(
+                entities: [
+                    try DatabaseEndpointEntity.schemaEntity,
+                ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(
                 backend: .custom(InMemoryEngine())
             ),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseEndpointEntity.self]
+            ),
             security: .disabled
         )
     }

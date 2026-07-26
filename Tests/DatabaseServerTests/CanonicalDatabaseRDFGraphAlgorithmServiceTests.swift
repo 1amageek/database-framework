@@ -270,22 +270,51 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
     private func makeRDFGraphAlgorithmContext() async throws -> RDFGraphAlgorithmContext {
         let engine = InMemoryEngine()
         let container = try await DBContainer.open(
-            for: Schema(
-                [DatabaseEndpointEntity.self, Statement.self],
+            for: try Schema(
+                entities: [
+                    try DatabaseEndpointEntity.schemaEntity,
+                    try CanonicalRDFGraphStatement.schemaEntity,
+                ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    DatabaseEndpointEntity.self,
+                    CanonicalRDFGraphStatement.self,
+                ]
+            ),
             security: .disabled
         )
         let subspace = Subspace(
             prefix: Tuple("canonical-rdf-graph-service").pack()
         )
-        let kind = RDFQuadIndexKind<Statement>(
-            subject: \Statement.subject,
-            predicate: \Statement.predicate,
-            object: \Statement.object,
-            graph: \Statement.graph
+        let kind = RDFQuadIndexKind<CanonicalRDFGraphStatement>(
+            subject: IndexField(
+                Field<CanonicalRDFGraphStatement, RDFTerm>(
+                    identity: FieldIdentity(name: "subject", number: 2),
+                    type: .rdfTerm
+                )
+            ),
+            predicate: IndexField(
+                Field<CanonicalRDFGraphStatement, RDFTerm>(
+                    identity: FieldIdentity(name: "predicate", number: 3),
+                    type: .rdfTerm
+                )
+            ),
+            object: IndexField(
+                Field<CanonicalRDFGraphStatement, RDFTerm>(
+                    identity: FieldIdentity(name: "object", number: 4),
+                    type: .rdfTerm
+                )
+            ),
+            graph: IndexField(
+                Field<CanonicalRDFGraphStatement, RDFTerm?>(
+                    identity: FieldIdentity(name: "graph", number: 5),
+                    type: .rdfTerm,
+                    isOptional: true
+                )
+            )
         )
         let index = Index(
             name: "rdf-graph",

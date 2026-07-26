@@ -1,8 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import Core
-import QueryIR
-import Vector
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 enum VectorReadParameter {
@@ -36,7 +34,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult {
         let fieldName = try requireString(VectorReadParameter.fieldName, from: indexScan.parameters)
         let dimensions = try requireInt(VectorReadParameter.dimensions, from: indexScan.parameters)
@@ -67,17 +65,17 @@ private struct VectorReadExecutor: IndexReadExecutor {
             fieldName: fieldName,
             dimensions: dimensions
         )
-            .query(queryVector, k: k)
             .metric(distanceMetric)
+        let configuredBuilder = try builder.query(queryVector, k: k)
 
-        let results: [(item: T, distance: Double)] = try await builder.executeDirect(
+        let results: [(item: T, distance: Double)] = try await configuredBuilder.executeDirect(
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
         let rows = try results.map { result in
             try IndexReadRow.materializing(
                 result.item,
-                annotations: ["distance": .double(result.distance)]
+                annotations: ["distance": .float64(result.distance)]
             )
         }
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
@@ -85,7 +83,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
 
     private func requireString(
         _ key: String,
-        from parameters: [String: QueryParameterValue]
+        from parameters: [String: FieldValue]
     ) throws -> String {
         guard let value = parameters[key]?.stringValue else {
             throw VectorReadError.missingParameter(key)
@@ -95,7 +93,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
 
     private func requireInt(
         _ key: String,
-        from parameters: [String: QueryParameterValue]
+        from parameters: [String: FieldValue]
     ) throws -> Int {
         guard let value = parameters[key]?.int64Value else {
             throw VectorReadError.missingParameter(key)
@@ -105,20 +103,18 @@ private struct VectorReadExecutor: IndexReadExecutor {
 
     private func requireFloatArray(
         _ key: String,
-        from parameters: [String: QueryParameterValue]
+        from parameters: [String: FieldValue]
     ) throws -> [Float] {
-        guard let values = parameters[key]?.arrayValue else {
+        guard let vector = parameters[key]?.vectorValue,
+              vector.elementType == .float32 else {
             throw VectorReadError.missingParameter(key)
         }
-        var floats: [Float] = []
-        floats.reserveCapacity(values.count)
-        for value in values {
-            guard let scalar = value.doubleValue else {
-                throw VectorReadError.invalidParameter(key)
-            }
-            floats.append(Float(scalar))
+        guard let values = vector.withFloat32Elements({ elements in
+            Array(elements)
+        }) else {
+            throw VectorReadError.invalidParameter(key)
         }
-        return floats
+        return values
     }
 }
 
@@ -167,7 +163,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult {
         let fieldName = try requireString(VectorReadParameter.fieldName, from: indexScan.parameters)
         let dimensions = try requireInt(VectorReadParameter.dimensions, from: indexScan.parameters)
@@ -184,11 +180,17 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             indexName: indexScan.indexName,
             fieldName: fieldName
         )
-        let kind = try makeKind(
+        let concreteDescriptor = try resolveConcreteDescriptor(
+            context: context,
+            group: group,
+            indexName: indexScan.indexName
+        )
+        let specification = try resolveSpecification(
             fieldName: fieldName,
             dimensions: dimensions,
             metricRawValue: metricRawValue,
-            descriptor: descriptor
+            groupDescriptor: descriptor,
+            concreteDescriptor: concreteDescriptor
         )
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
@@ -198,8 +200,14 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         let orderByFields = try selectQuery.requiredOrderByColumnNames()
         try context.authorizePolymorphicListAccess(
             group: group,
-            limit: selectQuery.limit,
-            offset: selectQuery.offset,
+            limit: try authorizationValue(
+                selectQuery.limit,
+                parameter: "limit"
+            ),
+            offset: try authorizationValue(
+                selectQuery.offset,
+                parameter: "offset"
+            ),
             orderBy: orderByFields
         )
 
@@ -217,10 +225,9 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             configuration: execution.transactionConfiguration
         ) { transaction in
             try await executeSearch(
-                kind: kind,
+                specification: specification,
                 indexName: indexScan.indexName,
                 fieldName: fieldName,
-                dimensions: dimensions,
                 indexSubspace: indexSubspace,
                 queryVector: queryVector,
                 k: k,
@@ -245,10 +252,9 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func executeSearch(
-        kind: VectorIndexKind<PolymorphicVectorPlaceholder>,
+        specification: VectorIndexSpecification,
         indexName: String,
         fieldName: String,
-        dimensions: Int,
         indexSubspace: Subspace,
         queryVector: [Float],
         k: Int,
@@ -257,14 +263,15 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: specification.metadata,
             rootExpression: FieldKeyExpression(fieldName: fieldName)
         )
 
         let configs = context.container.indexConfigurations[indexName] ?? []
         let vectorConfig = configs.first { config in
-            type(of: config).kindIdentifier == VectorIndexKind<PolymorphicVectorPlaceholder>.identifier
-        } as? _VectorIndexConfiguration
+            type(of: config).kindIdentifier
+                == VectorIndexSpecification.identifier
+        } as? VectorIndexRuntimeConfiguration
 
         let resolvedAlgorithm: VectorAlgorithm
         if let vectorConfig {
@@ -291,8 +298,8 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         case .flat:
             let maintainer = FlatVectorIndexMaintainer<PolymorphicVectorPlaceholder>(
                 index: index,
-                dimensions: dimensions,
-                metric: kind.metric,
+                dimensions: specification.dimensions,
+                metric: specification.metric,
                 subspace: indexSubspace,
                 idExpression: FieldKeyExpression(fieldName: "id")
             )
@@ -305,8 +312,8 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         case .hnsw(let hnswParams):
             let maintainer = HNSWIndexMaintainer<PolymorphicVectorPlaceholder>(
                 index: index,
-                dimensions: dimensions,
-                metric: kind.metric,
+                dimensions: specification.dimensions,
+                metric: specification.metric,
                 subspace: indexSubspace,
                 idExpression: FieldKeyExpression(fieldName: "id"),
                 parameters: HNSWParameters(
@@ -325,8 +332,8 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         case .ivf(let ivfParams):
             let maintainer = IVFIndexMaintainer<PolymorphicVectorPlaceholder>(
                 index: index,
-                dimensions: dimensions,
-                metric: kind.metric,
+                dimensions: specification.dimensions,
+                metric: specification.metric,
                 subspace: indexSubspace,
                 idExpression: FieldKeyExpression(fieldName: "id"),
                 parameters: IVFParameters(
@@ -344,8 +351,8 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         case .pq(let pqParams):
             let maintainer = PQIndexMaintainer<PolymorphicVectorPlaceholder>(
                 index: index,
-                dimensions: dimensions,
-                metric: kind.metric,
+                dimensions: specification.dimensions,
+                metric: specification.metric,
                 subspace: indexSubspace,
                 idExpression: FieldKeyExpression(fieldName: "id"),
                 parameters: PQParameters(
@@ -390,42 +397,80 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(result.entity.typeName),
                     PolymorphicRowAnnotation.typeCode: .int64(result.entity.typeCode),
-                    "distance": .double(result.distance)
+                    "distance": .float64(result.distance)
                 ]
             )
         }
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 
-    private func makeKind(
+    private func resolveSpecification(
         fieldName: String,
         dimensions: Int,
         metricRawValue: String,
-        descriptor: IndexDescriptorMetadata?
-    ) throws -> VectorIndexKind<PolymorphicVectorPlaceholder> {
-        let resolvedDimensions = descriptor?.kind.metadata["dimensions"]?.intValue ?? dimensions
-        let resolvedMetricRawValue = descriptor?.kind.metadata["metric"]?.stringValue ?? metricRawValue
-        guard let metric = VectorMetric(rawValue: resolvedMetricRawValue) else {
-            throw VectorReadError.invalidParameter("metric")
+        groupDescriptor: PolymorphicIndexMetadata?,
+        concreteDescriptor: IndexDescriptor
+    ) throws -> VectorIndexSpecification {
+        guard let groupDescriptor else {
+            throw VectorReadError.indexNotFound(fieldName)
         }
-        return VectorIndexKind<PolymorphicVectorPlaceholder>(
-            fieldNames: descriptor?.fieldNames.isEmpty == false ? descriptor!.fieldNames : [fieldName],
-            dimensions: resolvedDimensions,
-            metric: metric
+        guard groupDescriptor.kindIdentifier
+                == VectorIndexSpecification.identifier,
+              groupDescriptor.subspaceStructure == .hierarchical,
+              groupDescriptor.fieldNames == [fieldName] else {
+            throw VectorReadError.invalidParameter(
+                VectorReadParameter.fieldName
+            )
+        }
+        let specification = try VectorIndexSpecification(
+            concreteDescriptor.kind
         )
+        guard specification.metadata.metadata == groupDescriptor.metadata else {
+            throw VectorReadError.invalidParameter(
+                VectorReadParameter.fieldName
+            )
+        }
+        guard specification.dimensions == dimensions else {
+            throw VectorReadError.invalidParameter(
+                VectorReadParameter.dimensions
+            )
+        }
+        guard specification.metric.rawValue == metricRawValue else {
+            throw VectorReadError.invalidParameter(VectorReadParameter.metric)
+        }
+        return specification
     }
 
     private func resolveDescriptor(
         in group: PolymorphicGroup,
         indexName: String,
         fieldName: String
-    ) -> IndexDescriptorMetadata? {
+    ) -> PolymorphicIndexMetadata? {
         if let descriptor = group.indexes.first(where: { $0.name == indexName }) {
             return descriptor
         }
         return group.indexes.first(where: {
             $0.kindIdentifier == kindIdentifier && $0.fieldNames.contains(fieldName)
         })
+    }
+
+    private func resolveConcreteDescriptor(
+        context: DatabaseContext,
+        group: PolymorphicGroup,
+        indexName: String
+    ) throws -> IndexDescriptor {
+        for memberTypeName in group.memberTypeNames {
+            guard let memberType = context.container.runtimeConfiguration
+                .persistableTypes.type(named: memberTypeName) else {
+                continue
+            }
+            if let descriptor = try memberType.indexDescriptors.first(
+                where: { $0.name == indexName }
+            ) {
+                return descriptor
+            }
+        }
+        throw VectorReadError.indexNotFound(indexName)
     }
 
     private func resolvedIndexSubspace(
@@ -435,8 +480,9 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     ) -> Subspace {
         let configs = context.container.indexConfigurations[indexName] ?? []
         guard let vectorConfig = configs.first(where: {
-            type(of: $0).kindIdentifier == VectorIndexKind<PolymorphicVectorPlaceholder>.identifier
-        }) as? _VectorIndexConfiguration,
+            type(of: $0).kindIdentifier
+                == VectorIndexSpecification.identifier
+        }) as? VectorIndexRuntimeConfiguration,
         let subspaceKey = vectorConfig.subspaceKey else {
             return baseIndexSubspace
         }
@@ -466,14 +512,14 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
     private func stableKey(_ tuple: Tuple) -> String {
         let packed = tuple.pack()
-        return DatabaseLiteralEncoding.base64(
-            DatabaseBytes(retaining: packed)
+        return QueryLiteralEncoding.base64(
+            ByteString(retaining: packed)
         )
     }
 
     private func requireString(
         _ key: String,
-        from parameters: [String: QueryParameterValue]
+        from parameters: [String: FieldValue]
     ) throws -> String {
         guard let value = parameters[key]?.stringValue else {
             throw VectorReadError.missingParameter(key)
@@ -483,7 +529,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
     private func requireInt(
         _ key: String,
-        from parameters: [String: QueryParameterValue]
+        from parameters: [String: FieldValue]
     ) throws -> Int {
         guard let value = parameters[key]?.int64Value else {
             throw VectorReadError.missingParameter(key)
@@ -493,19 +539,30 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
     private func requireFloatArray(
         _ key: String,
-        from parameters: [String: QueryParameterValue]
+        from parameters: [String: FieldValue]
     ) throws -> [Float] {
-        guard let values = parameters[key]?.arrayValue else {
+        guard let vector = parameters[key]?.vectorValue,
+              vector.elementType == .float32 else {
             throw VectorReadError.missingParameter(key)
         }
-        var floats: [Float] = []
-        floats.reserveCapacity(values.count)
-        for value in values {
-            guard let scalar = value.doubleValue else {
-                throw VectorReadError.invalidParameter(key)
-            }
-            floats.append(Float(scalar))
+        guard let values = vector.withFloat32Elements({ elements in
+            Array(elements)
+        }) else {
+            throw VectorReadError.invalidParameter(key)
         }
-        return floats
+        return values
+    }
+
+    private func authorizationValue(
+        _ value: UInt64?,
+        parameter: String
+    ) throws -> Int? {
+        guard let value else {
+            return nil
+        }
+        guard let result = Int(exactly: value) else {
+            throw VectorReadError.invalidParameter(parameter)
+        }
+        return result
     }
 }

@@ -97,16 +97,22 @@ struct SchemaDatabaseGraphSourceResolverTests {
 
     private func makeContainer() async throws -> DBContainer {
         try await DBContainer.open(
-            for: Schema(
-                [
-                    DatabaseGraphSourceEdge.self,
-                    DatabaseSHACLStatement.self,
-                    DefaultGraphSourceStatement.self,
+            for: try Schema(
+                entities: [
+                    try DatabaseGraphSourceEdge.schemaEntity,
+                    try DatabaseSHACLStatement.schemaEntity,
+                    try DefaultGraphSourceStatement.schemaEntity,
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    DatabaseGraphSourceEdge.self,
+                    DatabaseSHACLStatement.self,
+                    DefaultGraphSourceStatement.self,
+                ]
+            ),
             security: .disabled
         )
     }

@@ -83,15 +83,20 @@ struct ArrayFieldUniquenessTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        let schema = Schema(
-            [TaggedDocument.self, UniqueEmail.self, UUIDTaggedDocument.self, Int64TaggedDocument.self],
+        let schema = try Schema(
+            entities: [
+                try TaggedDocument.schemaEntity,
+                try UniqueEmail.schemaEntity,
+                try UUIDTaggedDocument.schemaEntity,
+                try Int64TaggedDocument.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
 
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [TaggedDocument.self, UniqueEmail.self, UUIDTaggedDocument.self, Int64TaggedDocument.self]),
             security: .disabled,
         )
 

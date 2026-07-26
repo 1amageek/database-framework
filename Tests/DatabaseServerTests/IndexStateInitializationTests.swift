@@ -80,14 +80,16 @@ struct IndexStateInitializationTests {
 
     private func makeIndexInitializationContext() async throws -> IndexInitializationContext {
         let engine = InMemoryEngine()
-        let schema = Schema(
-            [DatabaseEndpointEntity.self],
+        let schema = try Schema(
+            entities: [DatabaseEndpointEntity.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseEndpointEntity.self]
+            ),
             security: .disabled
         )
         let root = Subspace(prefix: Tuple("index-state-initialization").pack())

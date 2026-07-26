@@ -20,7 +20,9 @@ struct DatabaseMaintenanceOperationServiceTests {
             for: MaintenanceSchemaV1.self,
             migrationPlan: MaintenanceInitialMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [CatalogPartitionedEntity.self]
+            ),
             security: .disabled
         )
         try await initial.migrateIfNeeded()
@@ -29,7 +31,9 @@ struct DatabaseMaintenanceOperationServiceTests {
             for: MaintenanceSchemaV3.self,
             migrationPlan: MaintenanceMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [CatalogPartitionedEntity.self]
+            ),
             security: .disabled
         )
         let maintenanceContext = try await makeMaintenanceServiceContext(
@@ -100,7 +104,9 @@ struct DatabaseMaintenanceOperationServiceTests {
             for: MaintenanceSchemaV1.self,
             migrationPlan: MaintenanceInitialMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [CatalogPartitionedEntity.self]
+            ),
             security: .disabled
         )
         try await initial.migrateIfNeeded()
@@ -109,7 +115,9 @@ struct DatabaseMaintenanceOperationServiceTests {
             for: MaintenanceSchemaV3.self,
             migrationPlan: MaintenanceMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [CatalogPartitionedEntity.self]
+            ),
             security: .disabled
         )
         let maintenanceContext = try await makeMaintenanceServiceContext(
@@ -754,12 +762,16 @@ struct DatabaseMaintenanceOperationServiceTests {
         wireLimits: DatabaseWireLimits = .default
     ) async throws -> MaintenanceServiceContext {
         let container = try await DBContainer.open(
-            for: Schema(
-                [CatalogPartitionedEntity.self],
+            for: try Schema(
+                entities: [
+                    try CatalogPartitionedEntity.schemaEntity,
+                ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [CatalogPartitionedEntity.self]
+            ),
             security: .disabled
         )
         return try await makeMaintenanceServiceContext(

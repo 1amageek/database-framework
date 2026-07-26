@@ -929,12 +929,16 @@ struct DatabaseGraphQueryPagingTests {
         engine: any StorageEngine
     ) async throws -> DBContainer {
         try await DBContainer.open(
-            for: Schema(
-                [DatabaseGraphQueryStatement.self],
+            for: try Schema(
+                entities: [
+                    try DatabaseGraphQueryStatement.schemaEntity,
+                ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseGraphQueryStatement.self]
+            ),
             security: .disabled
         )
     }

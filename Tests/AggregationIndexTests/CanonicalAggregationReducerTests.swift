@@ -52,7 +52,7 @@ struct CanonicalAggregationReducerTests {
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [EmptyGlobalAggregationEntity.self, IndexedGlobalSketchEntity.self]),
             security: .disabled
         )
         let context = container.newContext()
@@ -988,7 +988,7 @@ struct CanonicalAggregationReducerTests {
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [EmptyGlobalAggregationEntity.self, IndexedGlobalSketchEntity.self]),
             security: .disabled
         )
         return container.newContext()
@@ -999,7 +999,7 @@ struct CanonicalAggregationReducerTests {
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [EmptyGlobalAggregationEntity.self, IndexedGlobalSketchEntity.self]),
             security: .disabled
         )
         return container.newContext()

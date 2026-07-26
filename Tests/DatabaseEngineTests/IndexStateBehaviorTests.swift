@@ -95,14 +95,14 @@ private struct IndexStateContext {
         self.subspace = Subspace(prefix: Tuple("test", "indexstate", String(testId)).pack())
 
         // Create a minimal container with IndexedUser schema
-        let schema = Schema(
-            entities: [Schema.Entity(from: IndexedUser.self)],
+        let schema = try Schema(
+            entities: [try IndexedUser.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
         self.container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [IndexedUser.self]),
             security: .disabled
             )
     }

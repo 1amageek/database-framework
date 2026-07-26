@@ -48,13 +48,13 @@ struct DatabaseContextFoundationDBTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        // Use Schema([Type.self]) to properly register types
-        let schema = Schema([ContextUser.self, ContextProduct.self], version: Schema.Version(1, 0, 0))
+        // Use try Schema(entities: [try Type.schemaEntity]) to properly register types
+        let schema = try Schema(entities: [try ContextUser.schemaEntity, try ContextProduct.schemaEntity], version: Schema.Version(1, 0, 0))
 
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [ContextUser.self, ContextProduct.self]),
             security: .disabled,
         )
     }

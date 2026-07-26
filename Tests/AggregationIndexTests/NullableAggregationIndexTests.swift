@@ -14,7 +14,7 @@ struct NullableAggregationIndexTests {
         let container = try await DBContainer.open(
             for: Schema([NullableUnsignedAggregationEntity.self]),
             configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [NullableUnsignedAggregationEntity.self]),
             security: .disabled
         )
         let context = container.newContext()

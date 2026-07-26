@@ -338,34 +338,39 @@ struct RelationshipReferenceE2ETests {
             try context.insert(owner)
             try await context.save()
 
-            let loaded = try await context.related(owner, \.target)
+            let loaded = try await context.related(
+                owner,
+                RelationshipPartitionedOwner.fields.target
+            )
             #expect(loaded?.tenantID == "tenant-b")
             #expect(loaded?.name == "Second")
             #expect(owner.target.identity.partitions.count == 1)
-            #expect(owner.target.identity.partitions.first?.name == "tenantID")
-            #expect(owner.target.identity.partitions.first?.value == .string("tenant-b"))
+            #expect(
+                owner.target.identity.partitions["tenantID"]
+                    == .string("tenant-b")
+            )
         }
     }
 
     private func makeContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema(
-            [
-                RelationshipTarget.self,
-                RelationshipOptionalOwner.self,
-                RelationshipArrayOwner.self,
-                RelationshipDenyOwner.self,
-                RelationshipCascadeOwner.self,
-                RelationshipCycleNode.self,
-                RelationshipPartitionedTarget.self,
-                RelationshipPartitionedOwner.self,
+        let schema = try Schema(
+            entities: [
+                try RelationshipTarget.schemaEntity,
+                try RelationshipOptionalOwner.schemaEntity,
+                try RelationshipArrayOwner.schemaEntity,
+                try RelationshipDenyOwner.schemaEntity,
+                try RelationshipCascadeOwner.schemaEntity,
+                try RelationshipCycleNode.schemaEntity,
+                try RelationshipPartitionedTarget.schemaEntity,
+                try RelationshipPartitionedOwner.schemaEntity,
             ],
             version: Schema.Version(1, 0, 0)
         )
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [RelationshipTarget.self, RelationshipOptionalOwner.self, RelationshipArrayOwner.self, RelationshipDenyOwner.self, RelationshipCascadeOwner.self, RelationshipCycleNode.self, RelationshipPartitionedTarget.self, RelationshipPartitionedOwner.self]),
             security: .disabled
         )
     }

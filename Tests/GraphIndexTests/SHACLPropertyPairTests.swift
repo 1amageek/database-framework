@@ -38,7 +38,7 @@ struct SHACLPropertyPairTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Statement.self]),
             security: .disabled
         )
     }

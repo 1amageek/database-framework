@@ -11,12 +11,14 @@ struct CanonicalDatabaseServerServiceFactoryTests {
     @Test("factory composes every canonical database service")
     func composesCanonicalServices() async throws {
         let container = try await DBContainer.open(
-            for: Schema(
-                [DatabaseGraphSourceEdge.self],
+            for: try Schema(
+                entities: [try DatabaseGraphSourceEdge.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseGraphSourceEdge.self]
+            ),
             security: .disabled
         )
         let stateStore = try await DatabaseMutationStateStore(

@@ -1,7 +1,7 @@
-import Core
-import DatabaseValue
-import DatabaseWire
-import Relationship
+import DatabaseKit
+import DatabaseEngine
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct SchemaDescribeHandler: DatabaseOperationHandler {
     public typealias Operation = SchemaDescribeOperation
@@ -9,12 +9,17 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
     public init() {}
 
     public func handle(
-        _ request: DatabaseEmpty,
+        _ request: EmptyOperationPayload,
         context: DatabaseOperationContext
     ) async throws -> SchemaDescribeOperation.Response {
         let entities = try context.container.schema.entities
             .sorted { $0.name < $1.name }
-            .map(Self.describe)
+            .map {
+                try Self.describe(
+                    $0,
+                    container: context.container
+                )
+            }
         return SchemaDescribeOperation.Response(
             version: context.container.schema.version,
             entities: entities
@@ -22,7 +27,8 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
     }
 
     private static func describe(
-        _ entity: Schema.Entity
+        _ entity: Schema.Entity,
+        container: DBContainer
     ) throws -> SchemaDescribeOperation.Entity {
         let fields = try entity.fields
             .sorted { $0.fieldNumber < $1.fieldNumber }
@@ -42,7 +48,8 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
                     nullable: field.isOptional,
                     reference: try reference(
                         for: field,
-                        entity: entity
+                        entity: entity,
+                        container: container
                     )
                 )
             }
@@ -67,7 +74,7 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
                     name: index.name,
                     kind: index.kindIdentifier,
                     fields: fieldNumbers,
-                    options: options(for: index)
+                    options: try options(for: index)
                 )
             }
         return SchemaDescribeOperation.Entity(
@@ -84,23 +91,55 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
         switch field.type {
         case .bool:
             return .bool
-        case .int, .int8, .int16, .int32, .int64:
+        case .int8:
+            return .int8
+        case .int16:
+            return .int16
+        case .int32:
+            return .int32
+        case .int64:
             return .int64
-        case .uint, .uint8, .uint16, .uint32, .uint64:
+        case .uint8:
+            return .uint8
+        case .uint16:
+            return .uint16
+        case .uint32:
+            return .uint32
+        case .uint64:
             return .uint64
-        case .double, .float:
-            return .double
+        case .float32:
+            return .float32
+        case .float64:
+            return .float64
+        case .decimal:
+            return .decimal
         case .string, .enum:
             return .string
         case .uuid:
             return .uuid
-        case .data:
+        case .bytes:
             return .bytes
         case .date:
+            return .date
+        case .time:
+            return .time
+        case .dateTime:
+            return .dateTime
+        case .timestamp:
             return .timestamp
+        case .timeSpan:
+            return .timeSpan
+        case .calendarPeriod:
+            return .calendarPeriod
+        case .geographicPoint:
+            return .geographicPoint
+        case .geographicPosition:
+            return .geographicPosition
+        case .vector:
+            return .vector
         case .rdfTerm:
             return .rdfTerm
-        case .nested:
+        case .nested, .object:
             return .object
         case .reference:
             return .reference
@@ -109,10 +148,12 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
 
     private static func reference(
         for field: FieldSchema,
-        entity: Schema.Entity
+        entity: Schema.Entity,
+        container: DBContainer
     ) throws -> SchemaDescribeOperation.Reference? {
         guard field.type == .reference else { return nil }
-        guard let ownerType = entity.persistableType,
+        guard let ownerType = container.runtimeConfiguration.persistableTypes
+            .type(named: entity.name),
               let descriptor = ownerType.relationshipDescriptors.first(where: {
                   $0.propertyName == field.name
               }) else {
@@ -143,41 +184,37 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
 
     private static func options(
         for index: IndexDescriptorMetadata
-    ) -> [DatabaseObjectField] {
-        var values: [(String, IndexMetadataValue)] = index.kind.metadata.map {
-            ("kind.\($0.key)", $0.value)
-        }
-        values.append(contentsOf: index.commonMetadata.map {
-            ("common.\($0.key)", $0.value)
-        })
-        return values
-            .sorted { $0.0 < $1.0 }
-            .enumerated()
-            .map { offset, entry in
-                DatabaseObjectField(
-                    number: UInt32(offset + 1),
-                    name: entry.0,
-                    value: databaseValue(entry.1)
-                )
+    ) throws -> FieldObject {
+        var values: [(key: String, value: FieldValue)] =
+            index.kind.metadata.map {
+                (key: "kind.\($0.key)", value: $0.value)
             }
-    }
-
-    private static func databaseValue(_ value: IndexMetadataValue) -> DatabaseValue {
-        switch value {
-        case .string(let scalar):
-            return .string(scalar)
-        case .int(let scalar):
-            return .int64(Int64(scalar))
-        case .double(let scalar):
-            return .double(scalar)
-        case .bool(let scalar):
-            return .bool(scalar)
-        case .stringArray(let values):
-            return .array(values.map(DatabaseValue.string))
-        case .intArray(let values):
-            return .array(values.map { .int64(Int64($0)) })
-        case .rdfTerm(let term):
-            return .rdfTerm(term)
-        }
+        values.append(
+            (
+                key: "common.unique",
+                value: .bool(index.commonOptions.unique)
+            )
+        )
+        values.append(
+            (
+                key: "common.sparse",
+                value: .bool(index.commonOptions.sparse)
+            )
+        )
+        values.append(contentsOf: index.commonOptions.metadata.map {
+            (
+                key: "common.metadata.\($0.key)",
+                value: .string($0.value)
+            )
+        })
+        values.append(
+            (
+                key: "storedFields",
+                value: .array(index.storedFieldNames.map(FieldValue.string))
+            )
+        )
+        return try FieldObject(
+            values.sorted { $0.key < $1.key }
+        )
     }
 }

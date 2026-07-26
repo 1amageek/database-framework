@@ -41,7 +41,7 @@ struct PostgreSQLSPARQLTests {
 
     private func setupContainer() async throws -> DBContainer {
         let schema = Schema([PGStatement.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGStatement.self])
     }
 
     private func cleanupAndSetup() async throws -> (DBContainer, DatabaseContext) {

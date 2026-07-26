@@ -29,7 +29,7 @@ struct PostgreSQLCRUDTests {
 
     private func setupContainer() async throws -> DBContainer {
         let schema = Schema([PGDemoItem.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGDemoItem.self])
     }
 
     // MARK: - Basic CRUD

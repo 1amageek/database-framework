@@ -30,12 +30,16 @@ struct DatabaseSchemaBootstrapTests {
     func rejectsUnversionedRows() async throws {
         let engine = InMemoryEngine()
         let unversioned = try await DBContainer.open(
-            for: Schema(
-                [BootstrapIndexedEntity.self],
+            for: try Schema(
+                entities: [
+                    try BootstrapIndexedEntity.schemaEntity,
+                ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [BootstrapIndexedEntity.self]
+            ),
             security: .disabled
         )
         let context = unversioned.newContext()
@@ -59,13 +63,20 @@ struct DatabaseSchemaBootstrapTests {
         try await initial.migrateIfNeeded()
 
         let divergent = try await DBContainer.open(
-            for: Schema(
-                [DatabaseEndpointEntity.self],
+            for: try Schema(
+                entities: [
+                    try DatabaseEndpointEntity.schemaEntity,
+                ],
                 version: Schema.Version(1, 0, 0)
             ),
             migrationPlan: BootstrapMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    BootstrapIndexedEntity.self,
+                    DatabaseEndpointEntity.self,
+                ]
+            ),
             security: .disabled
         )
 
@@ -84,16 +95,20 @@ struct DatabaseSchemaBootstrapTests {
             for: BootstrapSchema.self,
             migrationPlan: BootstrapMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [BootstrapIndexedEntity.self]
+            ),
             security: .disabled
         )
     }
 
     private enum BootstrapSchema: VersionedSchema {
         static let versionIdentifier = Schema.Version(1, 0, 0)
-        static let models: [any Persistable.Type] = [
-            BootstrapIndexedEntity.self,
-        ]
+        static var entities: [Schema.Entity] {
+            get throws(SchemaEntityError) {
+                [try BootstrapIndexedEntity.schemaEntity]
+            }
+        }
     }
 
     private enum BootstrapMigrationPlan: SchemaMigrationPlan {

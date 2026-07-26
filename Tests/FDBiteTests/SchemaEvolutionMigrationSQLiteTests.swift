@@ -118,7 +118,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteSchemaEvolutionUserV1.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -132,14 +132,14 @@ struct SchemaEvolutionMigrationSQLiteTests {
             for: SQLiteSchemaEvolutionSchemaV2.self,
             migrationPlan: SQLiteAppendOnlyMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteSchemaEvolutionUserV2.self])
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteSchemaEvolutionUserV2.self]),
             security: .disabled
         )
         let migratedContext = verificationContainer.newContext()
@@ -204,7 +204,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteMigratedUserV1.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -218,7 +218,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteMigratedUserV2.self])
         )
         try await migratedContainer.migrateIfNeeded()
 
@@ -234,7 +234,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteMigratedUserV2.self]),
             security: .disabled
         )
         let migratedUsers = try await verificationContainer.newContext()
@@ -254,7 +254,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteMigratedUserV1.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -274,14 +274,14 @@ struct SchemaEvolutionMigrationSQLiteTests {
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteMigratedUserV2.self])
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteMigratedUserV2.self]),
             security: .disabled
         )
         let migratedContext = verificationContainer.newContext()

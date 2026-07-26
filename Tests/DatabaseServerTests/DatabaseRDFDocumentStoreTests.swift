@@ -126,27 +126,29 @@ struct DatabaseRDFDocumentStoreTests {
 
     private func makeContainer() async throws -> DBContainer {
         try await DBContainer.open(
-            for: Schema(
-                [DatabaseEndpointEntity.self],
+            for: try Schema(
+                entities: [try DatabaseEndpointEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseEndpointEntity.self]
+            ),
             security: .disabled
         )
     }
 
-    private func quad(subject: String) throws -> DatabaseRDFQuad {
-        try DatabaseRDFQuad(
-            subject: .iri(subject),
-            predicate: .iri("urn:predicate"),
+    private func quad(subject: String) throws -> RDFQuad {
+        try RDFQuad(
+            validatingSubject: try RDFTerm.iri(validating: subject),
+            predicate: try RDFTerm.iri(validating: "urn:predicate"),
             object: .literal(
                 try .init(
                     lexicalForm: subject,
                     datatype: "http://www.w3.org/2001/XMLSchema#string"
                 )
             ),
-            graph: .iri("urn:graph")
+            graph: try RDFTerm.iri(validating: "urn:graph")
         )
     }
 }

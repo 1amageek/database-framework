@@ -3,7 +3,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import StorageKit
 
 public enum PolymorphicRowAnnotation {
@@ -44,7 +44,7 @@ extension DatabaseContext {
         let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        let typeMap = polymorphicTypeMap(for: group)
+        let typeMap = try polymorphicTypeMap(for: group)
 
         try authorizePolymorphicListAccess(
             group: group,
@@ -60,14 +60,15 @@ extension DatabaseContext {
 
             for try await (key, data) in storage.scan(begin: begin, end: end, snapshot: true) {
                 let tuple = try itemSubspace.unpack(key)
-                guard let typeCode = tuple[0] as? Int64,
-                      let runtimeType = typeMap[typeCode] else {
-                    continue
+                guard tuple.count > 0,
+                      let typeCode = tuple[0] as? Int64 else {
+                    throw PolymorphicRuntimeError.invalidStoredIdentifier
+                }
+                guard let runtimeType = typeMap[typeCode] else {
+                    throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
                 }
                 let item = try DataAccess.deserializeAny(data, as: runtimeType)
-                guard self.isPolymorphicGetAllowed(item) else {
-                    continue
-                }
+                try self.container.securityDelegate?.evaluateGet(item)
                 entities.append(
                     PolymorphicEntity(
                         item: item,
@@ -89,25 +90,26 @@ extension DatabaseContext {
         let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        let typeMap = polymorphicTypeMap(for: group)
+        let typeMap = try polymorphicTypeMap(for: group)
 
         return try await withStorageAccess(configuration: configuration) { transaction in
             let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
             var items: [PolymorphicEntity] = []
 
             for id in ids {
-                guard let typeCode = id[0] as? Int64 else {
-                    continue
+                guard id.count > 0,
+                      let typeCode = id[0] as? Int64 else {
+                    throw PolymorphicRuntimeError.invalidRequestedIdentifier
                 }
                 let key = itemSubspace.pack(id)
-                guard let data = try await storage.read(for: key),
-                      let runtimeType = typeMap[typeCode] else {
+                guard let data = try await storage.read(for: key) else {
                     continue
+                }
+                guard let runtimeType = typeMap[typeCode] else {
+                    throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
                 }
                 let item = try DataAccess.deserializeAny(data, as: runtimeType)
-                guard self.isPolymorphicGetAllowed(item) else {
-                    continue
-                }
+                try self.container.securityDelegate?.evaluateGet(item)
                 items.append(
                     PolymorphicEntity(
                         item: item,
@@ -122,16 +124,27 @@ extension DatabaseContext {
 
     func polymorphicTypeMap(
         for group: PolymorphicGroup
-    ) -> [Int64: any Persistable.Type] {
-        Dictionary(
-            uniqueKeysWithValues: group.memberTypeNames.compactMap { typeName in
-                guard let type = container.schema.entity(named: typeName)?.persistableType,
-                      let polymorphicType = type as? any Polymorphable.Type else {
-                    return nil
-                }
-                return (polymorphicType.typeCode(for: type.persistableType), type)
+    ) throws -> [Int64: any Persistable.Type] {
+        var result: [Int64: any Persistable.Type] = [:]
+        for typeName in group.memberTypeNames {
+            guard let type = container.runtimeConfiguration.persistableTypes.type(
+                named: typeName
+            ) else {
+                throw DatabaseRuntimeConfigurationError
+                    .missingCompiledPolymorphicMemberType(
+                        groupIdentifier: group.identifier,
+                        memberTypeName: typeName
+                    )
             }
-        )
+            guard let polymorphicType = type as? any Polymorphable.Type else {
+                throw PolymorphicRuntimeError.nonPolymorphableMember(
+                    groupIdentifier: group.identifier,
+                    memberTypeName: typeName
+                )
+            }
+            result[polymorphicType.typeCode(for: type.persistableType)] = type
+        }
+        return result
     }
 
     public func authorizePolymorphicListAccess(
@@ -141,8 +154,14 @@ extension DatabaseContext {
         orderBy: [String]?
     ) throws {
         for typeName in group.memberTypeNames {
-            guard let type = container.schema.entity(named: typeName)?.persistableType else {
-                continue
+            guard let type = container.runtimeConfiguration.persistableTypes.type(
+                named: typeName
+            ) else {
+                throw DatabaseRuntimeConfigurationError
+                    .missingCompiledPolymorphicMemberType(
+                        groupIdentifier: group.identifier,
+                        memberTypeName: typeName
+                    )
             }
             try evaluatePolymorphicListAccess(
                 for: type,
@@ -171,12 +190,4 @@ extension DatabaseContext {
         try _openExistential(type, do: evaluateConcreteListAccess)
     }
 
-    private func isPolymorphicGetAllowed(_ item: any Persistable) -> Bool {
-        do {
-            try container.securityDelegate?.evaluateGet(item)
-            return true
-        } catch {
-            return false
-        }
-    }
 }

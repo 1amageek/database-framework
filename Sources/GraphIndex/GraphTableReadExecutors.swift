@@ -3,9 +3,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 
 public enum GraphTableReadExecutors {
@@ -19,18 +18,23 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
         context: DatabaseContext,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> [QueryRow] {
         guard let resolution = try PropertyGraphReadResolver.resolve(
             graphName: graphTableSource.graphName,
             schema: context.container.schema
-        ),
-              let type = resolution.entity.persistableType else {
+        ) else {
             throw CanonicalReadError.unsupportedSource(
                 try PropertyGraphReadResolver.errorMessage(
                     graphName: graphTableSource.graphName,
                     schema: context.container.schema
                 )
+            )
+        }
+        guard let type = context.container.runtimeConfiguration
+            .persistableTypes.type(named: resolution.entity.name) else {
+            throw CanonicalReadError.unsupportedSource(
+                "Property graph entity '\(resolution.entity.name)' has no compiled runtime type"
             )
         }
 
@@ -48,7 +52,7 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
         type: any Persistable.Type,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> [QueryRow] {
         try await _execute(
             context: context,
@@ -64,7 +68,7 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
         type: T.Type,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> [QueryRow] {
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
@@ -78,7 +82,7 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
         )
 
         return try await executor.execute().map { row in
-            QueryRow(fields: row.fields.mapValues(\.asDatabaseValue))
+            QueryRow(fields: row.fields)
         }
     }
 }

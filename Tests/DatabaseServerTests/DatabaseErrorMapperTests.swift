@@ -1093,59 +1093,47 @@ struct DatabaseErrorMapperTests {
 
     private func makeContext() async throws -> DatabaseOperationContext {
         let container = try await DBContainer.open(
-            for: Schema(
-                [DatabaseEndpointEntity.self],
+            for: try Schema(
+                entities: [DatabaseEndpointEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseEndpointEntity.self]
+            ),
             security: .disabled
         )
         return DatabaseOperationContext(
             container: container,
             requestID: 1,
-            metadata: DatabaseRequestMetadata(),
+            metadata: OperationRequestMetadata(),
             requestPayload: []
         )
     }
 
     private func remoteFields(
-        _ error: DatabaseRemoteError
-    ) -> [DatabaseObjectField] {
-        [
-            DatabaseObjectField(
-                number: 1,
-                name: "category",
+        _ error: RemoteOperationError
+    ) throws -> FieldObject {
+        try FieldObject([
+            (
+                key: "category",
                 value: .uint64(UInt64(error.category.rawValue))
             ),
-            DatabaseObjectField(
-                number: 2,
-                name: "code",
-                value: .string(error.code)
-            ),
-            DatabaseObjectField(
-                number: 3,
-                name: "message",
-                value: .string(error.message)
-            ),
-            DatabaseObjectField(
-                number: 4,
-                name: "retryability",
+            (key: "code", value: .string(error.code)),
+            (key: "message", value: .string(error.message)),
+            (
+                key: "retryability",
                 value: .uint64(UInt64(error.retryability.rawValue))
             ),
-            DatabaseObjectField(
-                number: 5,
-                name: "details",
-                value: .object(error.details)
-            ),
-        ]
+            (key: "details", value: .object(error.details)),
+        ])
     }
 
     private func expectMappings(
         _ mappings: [
             (
                 error: any Error,
-                category: DatabaseErrorCategory,
+                category: OperationErrorCategory,
                 code: String
             )
         ],

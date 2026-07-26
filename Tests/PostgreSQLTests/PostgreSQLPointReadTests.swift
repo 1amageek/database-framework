@@ -67,12 +67,12 @@ struct PostgreSQLPointReadTests {
 
     private func setupStaticContainer() async throws -> DBContainer {
         let schema = Schema([PGPointReadItem.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGPointReadItem.self])
     }
 
     private func setupPartitionedContainer() async throws -> DBContainer {
         let schema = Schema([TenantOrder.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [TenantOrder.self])
     }
 
     private func setupSecuredContainer() async throws -> DBContainer {
@@ -81,7 +81,7 @@ struct PostgreSQLPointReadTests {
         return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PGPointReadItem.self, PGSecuredPointReadItem.self, TenantOrder.self]),
             security: .enabled(strict: true)
         )
     }

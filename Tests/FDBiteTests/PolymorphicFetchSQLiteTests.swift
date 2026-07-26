@@ -442,7 +442,7 @@ struct PolymorphicFetchSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicArticle.self, SQLitePolymorphicReport.self, SQLiteSecurePolymorphicArticle.self, SQLitePolymorphicVectorArticle.self, SQLitePolymorphicVectorReport.self, SQLitePolymorphicVectorNoIndexArticle.self, SQLitePolymorphicOptionalVectorArticle.self, SQLitePolymorphicOptionalVectorReport.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -465,7 +465,7 @@ struct PolymorphicFetchSQLiteTests {
         let reopenedContainer = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicArticle.self, SQLitePolymorphicReport.self, SQLiteSecurePolymorphicArticle.self, SQLitePolymorphicVectorArticle.self, SQLitePolymorphicVectorReport.self, SQLitePolymorphicVectorNoIndexArticle.self, SQLitePolymorphicOptionalVectorArticle.self, SQLitePolymorphicOptionalVectorReport.self]),
             security: .disabled
         )
         let reopenedContext = reopenedContainer.newContext()
@@ -764,7 +764,7 @@ struct PolymorphicFetchSQLiteTests {
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicArticle.self, SQLitePolymorphicReport.self, SQLiteSecurePolymorphicArticle.self, SQLitePolymorphicVectorArticle.self, SQLitePolymorphicVectorReport.self, SQLitePolymorphicVectorNoIndexArticle.self, SQLitePolymorphicOptionalVectorArticle.self, SQLitePolymorphicOptionalVectorReport.self]),
             security: .enabled()
         )
 

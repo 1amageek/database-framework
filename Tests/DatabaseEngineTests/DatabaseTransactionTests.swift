@@ -47,15 +47,18 @@ struct DatabaseTransactionTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        let schema = Schema(
-            [TransactionUser.self, TransactionProduct.self],
+        let schema = try Schema(
+            entities: [
+                try TransactionUser.schemaEntity,
+                try TransactionProduct.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
 
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [TransactionUser.self, TransactionProduct.self]),
             security: .disabled,
         )
     }

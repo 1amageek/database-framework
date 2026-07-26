@@ -99,12 +99,15 @@ struct IndexMaintenanceE2ETests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        let schema = Schema(types.map { $0 as any Persistable.Type }, version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: try types.map { try $0.schemaEntity },
+            version: Schema.Version(1, 0, 0)
+        )
 
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [E2EFullTextArticle.self, E2EGraphEdge.self, E2EScalarUser.self, E2ECountItem.self]),
             security: .disabled,
         )
     }

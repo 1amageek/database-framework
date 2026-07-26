@@ -1,16 +1,14 @@
-import Core
-import DatabaseValue
-import VectorIndex
+import DatabaseKit
+import DatabaseTypes
 
 @Persistable
 struct RuntimeConfigurationVectorEntity {
     #Index(
-        VectorIndexKind<RuntimeConfigurationVectorEntity>(
-            embedding: \.embedding,
-            dimensions: 3
-        ),
+        .vector(dimensions: 3),
+        embedding: \RuntimeConfigurationVectorEntity.embedding,
         name: "RuntimeConfigurationVectorEntity_embedding"
     )
 
-    var embedding: [Float]
+    var id: String = ""
+    var embedding: Vector
 }

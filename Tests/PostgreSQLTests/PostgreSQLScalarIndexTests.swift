@@ -45,12 +45,12 @@ struct PostgreSQLScalarIndexTests {
 
     private func setupUserContainer() async throws -> DBContainer {
         let schema = Schema([PGUser.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGUser.self])
     }
 
     private func setupProductContainer() async throws -> DBContainer {
         let schema = Schema([PGProduct.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGProduct.self])
     }
 
     // MARK: - Basic Index CRUD

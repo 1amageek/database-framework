@@ -77,7 +77,7 @@ struct SPARQLDebugTests {
         }
 
         // Create container and ensure indexes are ready AFTER cleanup
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DebugEdge.self, DebugRDFStatement.self]), security: .disabled)
         try await container.ensureIndexesReady()
 
         // Set index to readable
@@ -159,7 +159,7 @@ struct SPARQLDebugTests {
         }
 
         // Create container and ensure indexes are ready AFTER cleanup
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DebugEdge.self, DebugRDFStatement.self]), security: .disabled)
         try await container.ensureIndexesReady()
 
         // Set index to readable

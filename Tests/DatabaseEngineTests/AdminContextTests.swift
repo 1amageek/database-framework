@@ -44,15 +44,18 @@ struct AdminContextTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        let schema = Schema([
-            AdminIndexedEntity.self,
-            AdminUnindexedEntity.self
-        ], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try AdminIndexedEntity.schemaEntity,
+                try AdminUnindexedEntity.schemaEntity,
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
 
         return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [AdminIndexedEntity.self, AdminUnindexedEntity.self]),
             security: .disabled
             )
     }

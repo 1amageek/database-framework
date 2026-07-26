@@ -47,7 +47,7 @@ struct PostgreSQLConcurrencyTests {
 
     private func setupContainer() async throws -> DBContainer {
         let schema = Schema([PGCounter.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGCounter.self])
     }
 
     // MARK: - Concurrent Write Isolation

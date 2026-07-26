@@ -204,7 +204,8 @@ struct MigrationExecutionPostgreSQLTests {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
             let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
-                schema: PGStageBoundarySchemaV1.makeSchema()
+                schema: PGStageBoundarySchemaV1.makeSchema(),
+                persistableTypes: [PGStageBoundaryUserV1.self]
             )
             let initialContext = initialContainer.newContext()
 
@@ -218,7 +219,7 @@ struct MigrationExecutionPostgreSQLTests {
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PGStageBoundaryUserV3.self])
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -226,7 +227,8 @@ struct MigrationExecutionPostgreSQLTests {
             let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
-                schema: PGStageBoundarySchemaV3.makeSchema()
+                schema: PGStageBoundarySchemaV3.makeSchema(),
+                persistableTypes: [PGStageBoundaryUserV3.self]
             )
             let migratedUsers = try await verificationContainer.newContext()
                 .fetch(PGStageBoundaryUserV3.self)
@@ -249,7 +251,8 @@ struct MigrationExecutionPostgreSQLTests {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
             let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
-                schema: PGStageFailureSchemaV1.makeSchema()
+                schema: PGStageFailureSchemaV1.makeSchema(),
+                persistableTypes: [PGStageFailureUserV1.self]
             )
             let initialContext = initialContainer.newContext()
 
@@ -263,7 +266,7 @@ struct MigrationExecutionPostgreSQLTests {
                 for: PGStageFailureSchemaV3.self,
                 migrationPlan: PGStageFailureMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PGStageFailureUserV3.self])
             )
 
             do {
@@ -279,7 +282,8 @@ struct MigrationExecutionPostgreSQLTests {
             let entity = try await registry.load(typeName: PGStageFailureUserV1.persistableType)
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
-                schema: PGStageFailureSchemaV2.makeSchema()
+                schema: PGStageFailureSchemaV2.makeSchema(),
+                persistableTypes: [PGStageFailureUserV2.self]
             )
             let migratedUsers = try await verificationContainer.newContext()
                 .fetch(PGStageFailureUserV2.self)
@@ -306,7 +310,7 @@ struct MigrationExecutionPostgreSQLTests {
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PGStageBoundaryUserV3.self])
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -330,7 +334,8 @@ struct MigrationExecutionPostgreSQLTests {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
             let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
-                schema: PGStageBoundarySchemaV1.makeSchema()
+                schema: PGStageBoundarySchemaV1.makeSchema(),
+                persistableTypes: [PGStageBoundaryUserV1.self]
             )
             let initialContext = initialContainer.newContext()
 
@@ -344,7 +349,7 @@ struct MigrationExecutionPostgreSQLTests {
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PGStageBoundaryUserV3.self])
             )
 
             try await migratedContainer.migrateIfNeeded()
@@ -356,7 +361,8 @@ struct MigrationExecutionPostgreSQLTests {
             let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
-                schema: PGStageBoundarySchemaV3.makeSchema()
+                schema: PGStageBoundarySchemaV3.makeSchema(),
+                persistableTypes: [PGStageBoundaryUserV3.self]
             )
             let migratedUsers = try await verificationContainer.newContext()
                 .fetch(PGStageBoundaryUserV3.self)

@@ -49,11 +49,16 @@ enum SQLiteFacadeMigrationPlan: SchemaMigrationPlan {
 struct DatabaseContainerConfigurationSQLiteTests {
     @Test("Database facade accepts SQLite configuration through the common label")
     func sqliteConfigurationRoundTrip() async throws {
-        let schema = Schema([SQLiteFacadeUserV1.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try SQLiteFacadeUserV1.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             for: schema,
             configuration: SQLiteStorageEngine.Configuration.inMemory,
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [SQLiteFacadeUserV1.self]
+            ),
             security: .disabled
         )
 
@@ -79,7 +84,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV1.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteFacadeUserV1.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -93,14 +98,14 @@ struct DatabaseContainerConfigurationSQLiteTests {
             for: SQLiteFacadeSchemaV2.self,
             migrationPlan: SQLiteFacadeMigrationPlan.self,
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteFacadeUserV2.self])
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV2.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteFacadeUserV2.self]),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()

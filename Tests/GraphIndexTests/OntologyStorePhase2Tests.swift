@@ -51,7 +51,7 @@ struct OntologyStorePhase2Tests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [OntologyPhase2Dummy.self]),
             security: .disabled,
         )
         return container.newContext()

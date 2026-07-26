@@ -50,11 +50,11 @@ struct WritePreconditionTests {
 
     private func makeContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([WPUser.self])
+        let schema = try Schema(entities: [try WPUser.schemaEntity])
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [WPUser.self]),
             security: .disabled,
         )
     }

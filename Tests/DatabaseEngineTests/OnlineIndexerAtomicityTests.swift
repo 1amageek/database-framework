@@ -43,8 +43,8 @@ struct OnlineIndexerAtomicityTests {
             self.blobsSubspace = testSubspace.subspace("B")
 
             // Create container with Player schema
-            let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
-            self.container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
+            self.container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Player.self]), security: .disabled)
         }
 
         func cleanup() async throws {

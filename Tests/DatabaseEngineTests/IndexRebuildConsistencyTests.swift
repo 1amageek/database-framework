@@ -93,29 +93,37 @@ struct IndexRebuildConsistencyTests {
     private func setupContainer(_ types: [any Persistable.Type]) async throws -> DBContainer {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema(types, version: Schema.Version(1, 0, 0))
+        var entities: [Schema.Entity] = []
+        entities.reserveCapacity(types.count)
+        for type in types {
+            entities.append(try type.schemaEntity)
+        }
+        let schema = try Schema(
+            entities: entities,
+            version: Schema.Version(1, 0, 0)
+        )
         return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [RebuildScalarUser.self, RebuildTripleStatement.self, RebuildEdge.self, RebuildArticle.self, RebuildCountItem.self]),
             security: .disabled
             )
     }
 
     private func cleanup(container: DBContainer, path: [String]) async throws {
-        try? await container.engine.removeDirectory(path: path)
-        // Re-initialize indexes after directory removal
+        try await container.engine.removeDirectory(path: path)
+        // Reinitialize indexes after directory removal.
         try await container.ensureIndexesReady()
     }
 
-    /// FDB range scan: [I]/[indexName] 以下の全キーを取得
+    /// Returns every key below the `[I]/[indexName]` FoundationDB range.
     private func getIndexKeys<T: Persistable>(
         for type: T.Type,
         container: DBContainer
     ) async throws -> Set<[UInt8]> {
         let typeSubspace = try await container.resolveDirectory(for: type)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
-        guard let indexName = type.indexDescriptors.first?.name else {
+        guard let indexName = try type.indexDescriptors.first?.name else {
             return []
         }
         let namedSubspace = indexSubspace.subspace(indexName)

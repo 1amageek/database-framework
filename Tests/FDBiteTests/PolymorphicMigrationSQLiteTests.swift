@@ -328,7 +328,7 @@ struct PolymorphicMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV1.self, SQLitePolymorphicMigrationReportV1.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -347,7 +347,7 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
@@ -355,7 +355,7 @@ struct PolymorphicMigrationSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -405,7 +405,7 @@ struct PolymorphicMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV1.self, SQLitePolymorphicMigrationReportV1.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -432,7 +432,7 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
@@ -440,7 +440,7 @@ struct PolymorphicMigrationSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -463,7 +463,7 @@ struct PolymorphicMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -487,7 +487,7 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV3.self,
             migrationPlan: SQLitePolymorphicRemovalMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV3.self, SQLitePolymorphicMigrationReportV3.self]),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
@@ -526,7 +526,7 @@ struct PolymorphicMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -558,7 +558,7 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV4.self,
             migrationPlan: SQLitePolymorphicRebuildMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV4.self, SQLitePolymorphicMigrationReportV4.self]),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()

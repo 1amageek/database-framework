@@ -1,11 +1,5 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 
 /// A decoded polymorphic row returned from a logical polymorphic query.
 public struct PolymorphicQueryResult: Sendable {
@@ -26,8 +20,8 @@ public struct PolymorphicQueryResult: Sendable {
         self.row = row
     }
 
-    public var fields: [String: DatabaseValue] { row.fields }
-    public var annotations: [String: DatabaseValue] { row.annotations }
+    public var fields: [String: FieldValue] { row.fields }
+    public var annotations: [String: FieldValue] { row.annotations }
 
     public func item<Concrete: Persistable>(as type: Concrete.Type) -> Concrete? {
         item as? Concrete
@@ -38,12 +32,12 @@ public struct PolymorphicQueryResult: Sendable {
 public struct PolymorphicQueryPage: Sendable {
     public let results: [PolymorphicQueryResult]
     public let continuation: QueryContinuation?
-    public let metadata: [String: DatabaseValue]
+    public let metadata: [String: FieldValue]
 
     public init(
         results: [PolymorphicQueryResult],
         continuation: QueryContinuation?,
-        metadata: [String: DatabaseValue]
+        metadata: [String: FieldValue]
     ) {
         self.results = results
         self.continuation = continuation
@@ -73,8 +67,8 @@ public enum PolymorphicQueryError: Error, Sendable, CustomStringConvertible {
 public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     private let context: DatabaseContext
     private let groupIdentifier: String
-    private var limit: Int?
-    private var offset: Int?
+    private var limit: UInt64?
+    private var offset: UInt64?
     private var orderBy: [SortKey] = []
     private var options: ReadExecutionOptions = .default
 
@@ -87,10 +81,10 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     public var identifier: String { groupIdentifier }
 
     /// The current result limit, if configured.
-    public var limitCount: Int? { limit }
+    public var limitCount: UInt64? { limit }
 
     /// The current result offset, if configured.
-    public var offsetCount: Int? { offset }
+    public var offsetCount: UInt64? { offset }
 
     /// The current ORDER BY keys, if configured.
     public var sortKeys: [SortKey]? { orderBy.isEmpty ? nil : orderBy }
@@ -99,32 +93,32 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     public var executionOptions: ReadExecutionOptions { options }
 
     /// Limit the number of results returned by the logical source.
-    public func limit(_ count: Int) -> Self {
+    public func limit(_ count: UInt64) -> Self {
         var copy = self
         copy.limit = count
         return copy
     }
 
     /// Skip the first N results from the logical source.
-    public func offset(_ count: Int) -> Self {
+    public func offset(_ count: UInt64) -> Self {
         var copy = self
         copy.offset = count
         return copy
     }
 
-    /// Append an ORDER BY clause using a key path on the concrete member type.
+    /// Append an ORDER BY clause using a compiled field on the member type.
     ///
-    /// The key path should refer to a field that is shared across the polymorphic
+    /// The field should be shared across the polymorphic
     /// group. The runtime still validates against actual row data.
     public func orderBy<Value>(
-        _ keyPath: KeyPath<Member, Value>,
+        _ field: Field<Member, Value>,
         direction: SortDirection = .ascending,
         nulls: NullOrdering? = nil
     ) -> Self {
         var copy = self
         copy.orderBy.append(
             SortKey(
-                .column(ColumnRef(column: Member.fieldName(for: keyPath))),
+                .column(ColumnRef(column: field.name)),
                 direction: direction,
                 nulls: nulls
             )
@@ -250,7 +244,9 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
             throw PolymorphicQueryError.missingTypeName
         }
 
-        guard let runtimeType = context.container.schema.entity(named: typeName)?.persistableType else {
+        guard context.container.schema.entity(named: typeName) != nil,
+              let runtimeType = context.container.runtimeConfiguration
+                .persistableTypes.type(named: typeName) else {
             throw PolymorphicQueryError.unknownType(typeName)
         }
 

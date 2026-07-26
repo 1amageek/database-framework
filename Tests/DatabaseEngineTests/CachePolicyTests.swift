@@ -133,11 +133,11 @@ struct CachePolicyTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        let schema = Schema(
-            [CachePolicyEntity.self],
+        let schema = try Schema(
+            entities: [try CachePolicyEntity.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
         let context = container.newContext()
 
         // Create executor with cache policy
@@ -153,18 +153,18 @@ struct CachePolicyTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        let schema = Schema(
-            [CachePolicyEntity.self],
+        let schema = try Schema(
+            entities: [try CachePolicyEntity.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
         let context = container.newContext()
 
         // Chain cache policy with other query methods
         let executor = context.fetch(CachePolicyEntity.self)
-            .where(\.value > 10)
+            .where(CachePolicyEntity.fields.value > Int64(10))
             .cachePolicy(.stale(30))
-            .orderBy(\.value)
+            .orderBy(CachePolicyEntity.fields.value)
             .limit(5)
 
         #expect(executor.query.cachePolicy == .stale(30))
@@ -178,11 +178,11 @@ struct CachePolicyTests {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-            let schema = Schema(
-                [CachePolicyEntity.self],
+            let schema = try Schema(
+                entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -216,11 +216,11 @@ struct CachePolicyTests {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-            let schema = Schema(
-                [CachePolicyEntity.self],
+            let schema = try Schema(
+                entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -249,11 +249,11 @@ struct CachePolicyTests {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-            let schema = Schema(
-                [CachePolicyEntity.self],
+            let schema = try Schema(
+                entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -284,11 +284,11 @@ struct CachePolicyTests {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-            let schema = Schema(
-                [CachePolicyEntity.self],
+            let schema = try Schema(
+                entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -327,11 +327,11 @@ struct CachePolicyTests {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-            let schema = Schema(
-                [CachePolicyEntity.self],
+            let schema = try Schema(
+                entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -352,11 +352,11 @@ struct CachePolicyTests {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-            let schema = Schema(
-                [CachePolicyEntity.self],
+            let schema = try Schema(
+                entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -393,11 +393,11 @@ struct CachePolicyTests {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-            let schema = Schema(
-                [CachePolicyEntity.self],
+            let schema = try Schema(
+                entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -422,11 +422,11 @@ struct CachePolicyTests {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-            let schema = Schema(
-                [CachePolicyEntity.self],
+            let schema = try Schema(
+                entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
             let context = container.newContext()
 
             // Try to fetch non-existent ID with various cache policies

@@ -50,15 +50,18 @@ struct UniquenessEnforcementTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        let schema = Schema(
-            [UniquenessConstrainedUser.self, UnconstrainedProduct.self],
+        let schema = try Schema(
+            entities: [
+                try UniquenessConstrainedUser.schemaEntity,
+                try UnconstrainedProduct.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
 
         return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [UniquenessConstrainedUser.self, UnconstrainedProduct.self]),
             security: .disabled
             )
     }

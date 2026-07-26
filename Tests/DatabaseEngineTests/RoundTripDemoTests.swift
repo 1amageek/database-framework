@@ -29,11 +29,11 @@ struct RoundTripDemoTests {
     private func setupContainer() async throws -> DBContainer {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([DemoItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try DemoItem.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DemoItem.self]),
             security: .disabled,
         )
     }

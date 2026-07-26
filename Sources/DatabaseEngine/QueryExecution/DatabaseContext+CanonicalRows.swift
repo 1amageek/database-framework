@@ -1,22 +1,16 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 
 private struct CanonicalSourceRow: Sendable {
-    let fields: [String: DatabaseValue]
-    let scopedFields: [String: [String: DatabaseValue]]
-    let annotations: [String: DatabaseValue]
+    let fields: [String: FieldValue]
+    let scopedFields: [String: [String: FieldValue]]
+    let annotations: [String: FieldValue]
     let version: PersistableVersionToken?
 
     init(
-        fields: [String: DatabaseValue],
-        scopedFields: [String: [String: DatabaseValue]] = [:],
-        annotations: [String: DatabaseValue] = [:],
+        fields: [String: FieldValue],
+        scopedFields: [String: [String: FieldValue]] = [:],
+        annotations: [String: FieldValue] = [:],
         version: PersistableVersionToken? = nil
     ) {
         self.fields = fields
@@ -26,9 +20,9 @@ private struct CanonicalSourceRow: Sendable {
     }
 
     static func fromBaseFields(
-        _ fields: [String: DatabaseValue],
+        _ fields: [String: FieldValue],
         sourceName: String?,
-        annotations: [String: DatabaseValue] = [:],
+        annotations: [String: FieldValue] = [:],
         version: PersistableVersionToken? = nil
     ) -> CanonicalSourceRow {
         guard let sourceName else {
@@ -62,18 +56,18 @@ private struct CanonicalSourceRow: Sendable {
         )
     }
 
-    func value(for column: ColumnRef) -> DatabaseValue? {
+    func value(for column: ColumnRef) -> FieldValue? {
         if let table = column.table {
             return scopedFields[table]?[column.column]
         }
         return fields[column.column]
     }
 
-    func fields(for sourceName: String) -> [String: DatabaseValue]? {
+    func fields(for sourceName: String) -> [String: FieldValue]? {
         scopedFields[sourceName]
     }
 
-    static func flatten(scopedFields: [String: [String: DatabaseValue]]) -> [String: DatabaseValue] {
+    static func flatten(scopedFields: [String: [String: FieldValue]]) -> [String: FieldValue] {
         var counts: [String: Int] = [:]
         for fields in scopedFields.values {
             for key in fields.keys {
@@ -81,7 +75,7 @@ private struct CanonicalSourceRow: Sendable {
             }
         }
 
-        var flattened: [String: DatabaseValue] = [:]
+        var flattened: [String: FieldValue] = [:]
         for (sourceName, sourceFields) in scopedFields {
             for (key, value) in sourceFields {
                 if counts[key] == 1 {
@@ -104,7 +98,7 @@ extension DatabaseContext {
     public func query(
         _ selectQuery: SelectQuery,
         options: ReadExecutionOptions = .default,
-        graphPartitions: [DatabaseObjectField] = []
+        graphPartitions: FieldObject = FieldObject()
     ) async throws -> QueryResponse {
         let execution = ReadExecutionContext(options: options)
         let response = try await query(
@@ -127,7 +121,7 @@ extension DatabaseContext {
     package func query(
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
-        graphPartitions: [DatabaseObjectField] = []
+        graphPartitions: FieldObject = FieldObject()
     ) async throws -> QueryResponse {
         try await queryCanonical(
             selectQuery,
@@ -140,7 +134,7 @@ extension DatabaseContext {
     private func queryCanonical(
         _ selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        partitionValues: [DatabaseObjectField]?,
+        partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> QueryResponse {
         if let accessPath = selectQuery.accessPath {
@@ -175,7 +169,7 @@ extension DatabaseContext {
                 context: self,
                 selectQuery: selectQuery,
                 options: options,
-                partitions: partitionValues ?? []
+                partitions: partitionValues ?? FieldObject()
             )
         }
 
@@ -257,7 +251,7 @@ extension DatabaseContext {
         _ selectQuery: SelectQuery,
         accessPath: AccessPath,
         options: ReadExecutionContext,
-        partitionValues: [DatabaseObjectField]?,
+        partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> QueryResponse {
         switch selectQuery.source {
@@ -320,7 +314,7 @@ extension DatabaseContext {
                 indexScan: indexScan,
                 group: group,
                 options: options,
-                partitions: partitionValues ?? []
+                partitions: partitionValues ?? FieldObject()
             )
             return try finalizeIndexReadResult(
                 rowSet,
@@ -414,8 +408,11 @@ extension DatabaseContext {
         }
 
         let entity = try resolveEntity(named: tableRef.table)
-        guard let type = entity.persistableType else {
-            throw CanonicalReadError.unsupportedSelectQuery("Entity '\(tableRef.table)' is not loadable")
+        guard let type = container.runtimeConfiguration
+            .persistableTypes.type(named: entity.name) else {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "Entity '\(tableRef.table)' has no registered runtime type"
+            )
         }
 
         let sourceName = tableRef.alias ?? tableRef.effectiveName
@@ -479,7 +476,7 @@ extension DatabaseContext {
 
     private struct CanonicalTableSourceRows: Sendable {
         let rows: [CanonicalSourceRow]
-        let residualFilter: QueryIR.Expression?
+        let residualFilter: DatabaseKit.Expression?
         let residualOrderBy: [SortKey]?
         let limitPushed: Bool
         let offsetPushed: Bool
@@ -493,9 +490,10 @@ extension DatabaseContext {
         options: ReadExecutionContext
     ) async throws -> IndexReadResult {
         let entity = try resolveEntity(named: tableRef.table)
-        guard let type = entity.persistableType else {
+        guard let type = container.runtimeConfiguration
+            .persistableTypes.type(named: entity.name) else {
             throw CanonicalReadError.unsupportedSelectQuery(
-                "Entity '\(tableRef.table)' is not loadable"
+                "Entity '\(tableRef.table)' has no registered runtime type"
             )
         }
         func executeIndexRead<T: Persistable>(
@@ -580,8 +578,14 @@ extension DatabaseContext {
         let entities = try await scanPolymorphicItems(
             group: group,
             configuration: execution.transactionConfiguration,
-            limit: selectQuery.limit,
-            offset: selectQuery.offset,
+            limit: try runtimeWindowValue(
+                selectQuery.limit,
+                name: "limit"
+            ),
+            offset: try runtimeWindowValue(
+                selectQuery.offset,
+                name: "offset"
+            ),
             orderBy: canonicalOrderByFields(selectQuery.orderBy)
         )
 
@@ -643,7 +647,7 @@ extension DatabaseContext {
         for source: DataSource,
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
-        partitionValues: [DatabaseObjectField]?,
+        partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
         switch source {
@@ -799,7 +803,7 @@ extension DatabaseContext {
                     throw CanonicalReadError.unsupportedSelectQuery("VALUES column count mismatch")
                 }
                 let fields = try Dictionary(uniqueKeysWithValues: zip(names, values).map { name, literal in
-                    (name, try literal.toDatabaseValue())
+                    (name, try literal.toFieldValue())
                 })
                 return CanonicalSourceRow(fields: fields)
             }
@@ -812,7 +816,7 @@ extension DatabaseContext {
                 context: self,
                 graphTableSource: graphTableSource,
                 options: options,
-                partitions: partitionValues ?? []
+                partitions: partitionValues ?? FieldObject()
             )
             let sourceRows = rows.map {
                 canonicalGraphTableSourceRow(from: $0.fields, graphName: graphTableSource.graphName)
@@ -823,7 +827,7 @@ extension DatabaseContext {
                 }
             }
             return try sourceRows.map { row in
-                var fields: [String: DatabaseValue] = [:]
+                var fields: [String: FieldValue] = [:]
                 for column in columns {
                     fields[column.alias] = try evaluateExpression(column.expression, on: row)
                 }
@@ -839,7 +843,7 @@ extension DatabaseContext {
                 context: self,
                 selectQuery: SelectQuery(projection: .all, source: source),
                 options: options,
-                partitions: partitionValues ?? []
+                partitions: partitionValues ?? FieldObject()
             )
             return response.rows.map { CanonicalSourceRow(fields: $0.fields, annotations: $0.annotations) }
 
@@ -854,7 +858,7 @@ extension DatabaseContext {
         _ clause: JoinClause,
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
-        partitionValues: [DatabaseObjectField]?,
+        partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
         switch clause.type {
@@ -911,7 +915,7 @@ extension DatabaseContext {
     private func performJoin(
         leftRows: [CanonicalSourceRow],
         rightRows: [CanonicalSourceRow],
-        type: QueryIR.JoinType,
+        type: JoinType,
         condition: JoinCondition?,
         workMeter: DatabaseWorkMeter
     ) throws -> [CanonicalSourceRow] {
@@ -967,7 +971,7 @@ extension DatabaseContext {
         left: CanonicalSourceRow,
         right: CanonicalSourceRow,
         condition: JoinCondition?,
-        joinType: QueryIR.JoinType
+        joinType: JoinType
     ) throws -> Bool {
         if joinType == .cross {
             return true
@@ -999,7 +1003,7 @@ extension DatabaseContext {
         return Array(leftColumns.intersection(rightColumns)).sorted()
     }
 
-    private func naturalJoinBaseType(_ type: QueryIR.JoinType) -> QueryIR.JoinType {
+    private func naturalJoinBaseType(_ type: JoinType) -> JoinType {
         switch type {
         case .naturalLeft:
             return .left
@@ -1012,14 +1016,14 @@ extension DatabaseContext {
         }
     }
 
-    private func inferredEmptyScopes(from rows: [CanonicalSourceRow]) -> [String: [String: DatabaseValue]] {
+    private func inferredEmptyScopes(from rows: [CanonicalSourceRow]) -> [String: [String: FieldValue]] {
         guard let first = rows.first else { return [:] }
         return first.scopedFields.mapValues { fields in
             Dictionary(uniqueKeysWithValues: fields.keys.map { ($0, .null) })
         }
     }
 
-    private func firstScopedFieldValue(named column: String, in row: CanonicalSourceRow) -> DatabaseValue? {
+    private func firstScopedFieldValue(named column: String, in row: CanonicalSourceRow) -> FieldValue? {
         for fields in row.scopedFields.values {
             if let value = fields[column] {
                 return value
@@ -1033,7 +1037,7 @@ extension DatabaseContext {
         deduplicate: Bool,
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
-        partitionValues: [DatabaseObjectField]?,
+        partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
         var rows: [CanonicalSourceRow] = []
@@ -1062,7 +1066,7 @@ extension DatabaseContext {
         _ sources: [DataSource],
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
-        partitionValues: [DatabaseObjectField]?,
+        partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
         guard let first = sources.first else { return [] }
@@ -1102,7 +1106,7 @@ extension DatabaseContext {
         _ rhs: DataSource,
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
-        partitionValues: [DatabaseObjectField]?,
+        partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
         let leftRows = try await materializeRows(
@@ -1155,11 +1159,11 @@ extension DatabaseContext {
     }
 
     private func canonicalGraphTableSourceRow(
-        from fields: [String: DatabaseValue],
+        from fields: [String: FieldValue],
         graphName: String
     ) -> CanonicalSourceRow {
-        var baseFields: [String: DatabaseValue] = [:]
-        var scopedFields: [String: [String: DatabaseValue]] = [graphName: [:]]
+        var baseFields: [String: FieldValue] = [:]
+        var scopedFields: [String: [String: FieldValue]] = [graphName: [:]]
 
         for (key, value) in fields {
             if let dotIndex = key.firstIndex(of: ".") {
@@ -1181,7 +1185,7 @@ extension DatabaseContext {
     }
 
     private func applyFilter(
-        _ filter: QueryIR.Expression?,
+        _ filter: DatabaseKit.Expression?,
         to rows: [CanonicalSourceRow],
         workMeter: DatabaseWorkMeter
     ) throws -> [CanonicalSourceRow] {
@@ -1220,24 +1224,28 @@ extension DatabaseContext {
                 let lhsValue = try evaluateExpression(sortKey.expression, on: lhs)
                 let rhsValue = try evaluateExpression(sortKey.expression, on: rhs)
 
-                let comparison: ComparisonResult
+                let comparison: QueryComparison
                 switch (lhsValue, rhsValue) {
                 case (.null, .null):
-                    comparison = .orderedSame
+                    comparison = .equal
                 case (.null, _):
-                    comparison = sortKey.nulls == .last ? .orderedDescending : .orderedAscending
+                    comparison = sortKey.nulls == .last
+                        ? .greaterThan
+                        : .lessThan
                 case (_, .null):
-                    comparison = sortKey.nulls == .last ? .orderedAscending : .orderedDescending
+                    comparison = sortKey.nulls == .last
+                        ? .lessThan
+                        : .greaterThan
                 default:
-                    comparison = try DatabaseValueComparator.compare(lhsValue, rhsValue)
+                    comparison = try FieldValueComparator.compare(lhsValue, rhsValue)
                 }
 
-                guard comparison != .orderedSame else { continue }
+                guard comparison != .equal else { continue }
                 switch sortKey.direction {
                 case .ascending:
-                    return comparison == .orderedAscending
+                    return comparison == .lessThan
                 case .descending:
-                    return comparison == .orderedDescending
+                    return comparison == .greaterThan
                 }
             }
             try workMeter.consume(2, at: .sortComparison)
@@ -1275,7 +1283,7 @@ extension DatabaseContext {
         case .items(let items):
             return try rows.map { row in
                 try workMeter.consume(at: .projection)
-                var fields: [String: DatabaseValue] = [:]
+                var fields: [String: FieldValue] = [:]
                 for (index, item) in items.enumerated() {
                     let fieldName = item.alias ?? canonicalProjectionName(for: item.expression, index: index)
                     fields[fieldName] = try evaluateExpression(item.expression, on: row)
@@ -1331,7 +1339,7 @@ extension DatabaseContext {
     }
 
     private func evaluateBoolean(
-        _ expression: QueryIR.Expression,
+        _ expression: DatabaseKit.Expression,
         on row: CanonicalSourceRow
     ) throws -> Bool {
         switch expression {
@@ -1342,7 +1350,7 @@ extension DatabaseContext {
             }
             return boolValue
         case .literal(let literal):
-            guard let value = try literal.toDatabaseValue().boolValue else {
+            guard let value = try literal.toFieldValue().boolValue else {
                 throw CanonicalReadError.incompatibleLiteralType
             }
             return value
@@ -1350,34 +1358,34 @@ extension DatabaseContext {
         case .equal(let lhs, let rhs):
             let left = try evaluateExpression(lhs, on: row)
             let right = try evaluateExpression(rhs, on: row)
-            return try DatabaseValueComparator.equal(left, right)
+            return try FieldValueComparator.equal(left, right)
         case .notEqual(let lhs, let rhs):
             let left = try evaluateExpression(lhs, on: row)
             let right = try evaluateExpression(rhs, on: row)
             if left == .null || right == .null { return false }
-            return try !DatabaseValueComparator.equal(left, right)
+            return try !FieldValueComparator.equal(left, right)
         case .lessThan(let lhs, let rhs):
             let left = try evaluateExpression(lhs, on: row)
             let right = try evaluateExpression(rhs, on: row)
             if left == .null || right == .null { return false }
-            return try DatabaseValueComparator.compare(left, right) == .orderedAscending
+            return try FieldValueComparator.compare(left, right) == .lessThan
         case .lessThanOrEqual(let lhs, let rhs):
             let left = try evaluateExpression(lhs, on: row)
             let right = try evaluateExpression(rhs, on: row)
             if left == .null || right == .null { return false }
-            let comparison = try DatabaseValueComparator.compare(left, right)
-            return comparison != .orderedDescending
+            let comparison = try FieldValueComparator.compare(left, right)
+            return comparison != .greaterThan
         case .greaterThan(let lhs, let rhs):
             let left = try evaluateExpression(lhs, on: row)
             let right = try evaluateExpression(rhs, on: row)
             if left == .null || right == .null { return false }
-            return try DatabaseValueComparator.compare(left, right) == .orderedDescending
+            return try FieldValueComparator.compare(left, right) == .greaterThan
         case .greaterThanOrEqual(let lhs, let rhs):
             let left = try evaluateExpression(lhs, on: row)
             let right = try evaluateExpression(rhs, on: row)
             if left == .null || right == .null { return false }
-            let comparison = try DatabaseValueComparator.compare(left, right)
-            return comparison != .orderedAscending
+            let comparison = try FieldValueComparator.compare(left, right)
+            return comparison != .lessThan
         case .and(let lhs, let rhs):
             let left = try evaluateBoolean(lhs, on: row)
             let right = try evaluateBoolean(rhs, on: row)
@@ -1389,15 +1397,15 @@ extension DatabaseContext {
         case .not(let inner):
             return try !evaluateBoolean(inner, on: row)
         case .isNull(let inner):
-            return try evaluateExpression(inner, on: row) == DatabaseValue.null
+            return try evaluateExpression(inner, on: row) == FieldValue.null
         case .isNotNull(let inner):
-            return try evaluateExpression(inner, on: row) != DatabaseValue.null
+            return try evaluateExpression(inner, on: row) != FieldValue.null
         case .inList(let lhs, let values):
             let left = try evaluateExpression(lhs, on: row)
             let right = try values.map { try evaluateExpression($0, on: row) }
             if left == .null { return false }
             for value in right where value != .null {
-                if try DatabaseValueComparator.equal(left, value) { return true }
+                if try FieldValueComparator.equal(left, value) { return true }
             }
             return false
         case .notInList(let lhs, let values):
@@ -1406,7 +1414,7 @@ extension DatabaseContext {
             if left == .null { return false }
             for value in right {
                 if value == .null { return false }
-                if try DatabaseValueComparator.equal(left, value) { return false }
+                if try FieldValueComparator.equal(left, value) { return false }
             }
             return true
         default:
@@ -1415,9 +1423,9 @@ extension DatabaseContext {
     }
 
     private func evaluateExpression(
-        _ expression: QueryIR.Expression,
+        _ expression: DatabaseKit.Expression,
         on row: CanonicalSourceRow
-    ) throws -> DatabaseValue {
+    ) throws -> FieldValue {
         switch expression {
         case .column(let column):
             guard let value = row.value(for: column) else {
@@ -1425,7 +1433,7 @@ extension DatabaseContext {
             }
             return value
         case .literal(let literal):
-            return try literal.toDatabaseValue()
+            return try literal.toFieldValue()
         default:
             // Canonical logical-source evaluation intentionally supports only
             // column and literal operands plus the boolean/comparison forms above.
@@ -1433,7 +1441,10 @@ extension DatabaseContext {
         }
     }
 
-    private func canonicalProjectionName(for expression: QueryIR.Expression, index: Int) -> String {
+    private func canonicalProjectionName(
+        for expression: DatabaseKit.Expression,
+        index: Int
+    ) -> String {
         switch expression {
         case .column(let column):
             return column.column
@@ -1451,6 +1462,22 @@ extension DatabaseContext {
             return column.column
         }
         return fields.isEmpty ? nil : fields
+    }
+
+    private func runtimeWindowValue(
+        _ value: UInt64?,
+        name: String
+    ) throws(CanonicalReadError) -> Int? {
+        guard let value else {
+            return nil
+        }
+        guard let result = Int(exactly: value) else {
+            throw .paginationValueExceedsRuntimeRange(
+                name: name,
+                value: value
+            )
+        }
+        return result
     }
 
     private func canonicalUniqueRows(

@@ -283,7 +283,7 @@ struct PolymorphicVectorMigrationFDBTests {
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicVectorPersonV1.self, FDBPolymorphicVectorOrganizationV1.self]),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -354,7 +354,7 @@ struct PolymorphicVectorMigrationFDBTests {
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicVectorPersonV2.self, FDBPolymorphicVectorOrganizationV2.self]),
                 security: .disabled
             )
             let context = initialContainer.newContext()

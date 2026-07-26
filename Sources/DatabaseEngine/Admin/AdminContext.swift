@@ -3,14 +3,9 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
-
-// Type aliases to match protocol (avoiding naming conflicts with internal types)
-// These must match the typealiases in AdminContextProtocol
-public typealias PublicPlanType = Core.PlanType
-public typealias PublicIndexBuildState = Core.IndexBuildState
 
 /// Administrative operations for statistics, query analysis, and indexes.
 ///
@@ -45,7 +40,10 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     /// - Parameters:
     ///   - indexName: Name of the index
     ///   - entitySubspace: The entity's resolved directory subspace
-    private func getIndexBuildState(_ indexName: String, entitySubspace: Subspace) async throws -> PublicIndexBuildState {
+    private func getIndexBuildState(
+        _ indexName: String,
+        entitySubspace: Subspace
+    ) async throws -> AdminIndexState {
         let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: entitySubspace)
         let internalState = try await indexLifecycleStore.state(of: indexName)
 
@@ -61,7 +59,9 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
     // MARK: - Collection Statistics
 
-    public func collectionStatistics<T: Persistable>(_ type: T.Type) async throws -> CollectionStatisticsPublic {
+    public func collectionStatistics<T: Persistable>(
+        _ type: T.Type
+    ) async throws -> AdminCollectionStatistics {
         let subspace = try await container.resolveDirectory(for: type)
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(T.persistableType)
         let (begin, end) = itemSubspace.range()
@@ -89,20 +89,22 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         let avgDocumentSize = documentCount > 0 ? Int(storageSize / documentCount) : 0
 
-        return CollectionStatisticsPublic(
-            typeName: T.persistableType,
+        return AdminCollectionStatistics(
+            entityName: T.persistableType,
             documentCount: documentCount,
-            storageSize: storageSize,
-            avgDocumentSize: avgDocumentSize,
+            storageByteCount: storageSize,
+            averageDocumentByteCount: avgDocumentSize,
             lastModified: nil,
-            keyRangeStart: DatabaseBytes(retaining: begin),
-            keyRangeEnd: DatabaseBytes(retaining: end)
+            keyRangeStart: ByteString(retaining: begin),
+            keyRangeEnd: ByteString(retaining: end)
         )
     }
 
     // MARK: - Index Statistics
 
-    public func indexStatistics(_ indexName: String) async throws -> IndexStatisticsPublic {
+    public func indexStatistics(
+        _ indexName: String
+    ) async throws -> AdminIndexStatistics {
         // Find index descriptor from schema
         guard let indexDescriptor = findIndexDescriptor(name: indexName) else {
             throw AdminError.indexNotFound(indexName)
@@ -141,11 +143,11 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         // Determine index state from IndexLifecycleStore (using entity subspace)
         let state = try await getIndexBuildState(indexName, entitySubspace: subspace)
 
-        return IndexStatisticsPublic(
+        return AdminIndexStatistics(
             indexName: indexName,
-            kind: indexDescriptor.kindIdentifier,
+            kindIdentifier: indexDescriptor.kindIdentifier,
             entryCount: entryCount,
-            storageSize: storageSize,
+            storageByteCount: storageSize,
             uniqueKeyCount: nil, // Would need HyperLogLog to estimate
             state: state,
             lastUsed: nil,
@@ -153,8 +155,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         )
     }
 
-    public func allIndexStatistics() async throws -> [IndexStatisticsPublic] {
-        var results: [IndexStatisticsPublic] = []
+    public func allIndexStatistics() async throws -> [AdminIndexStatistics] {
+        var results: [AdminIndexStatistics] = []
 
         for entity in container.schema.entities {
             for indexDescriptor in entity.indexDescriptors {
@@ -168,34 +170,38 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
     // MARK: - Query Analysis
 
-    public func explain<T: Persistable>(_ query: Query<T>) async throws -> QueryPlanPublic {
+    public func explain<T: Persistable>(
+        _ query: Query<T>
+    ) async throws -> AdminQueryPlan {
         let context = container.newContext()
         let accessPlan = try await context.executionPlan(for: query)
-        let planType: PublicPlanType
+        let planKind: AdminQueryPlanKind
         let selectedIndex: String?
         switch accessPlan.accessPath {
         case .fullScan:
-            planType = .tableScan
+            planKind = .tableScan
             selectedIndex = nil
         case .scalarIndex(let name, _, _):
-            planType = .indexScan
+            planKind = .indexScan
             selectedIndex = name
         }
 
-        return QueryPlanPublic(
-            planType: planType,
-            selectedIndex: selectedIndex,
+        return AdminQueryPlan(
+            kind: planKind,
+            selectedIndexName: selectedIndex,
             indexConditions: accessPlan.indexedConditions.map {
                 "\($0.fieldName) \($0.comparison) \($0.value)"
             },
             filterConditions: accessPlan.residualFilterRequired
                 ? query.predicates.map { describeCondition($0) }
                 : [],
-            sortRequired: accessPlan.sortRequired
+            requiresSort: accessPlan.sortRequired
         )
     }
 
-    public func explainAnalyze<T: Persistable>(_ query: Query<T>) async throws -> QueryExecutionStatsPublic {
+    public func explainAnalyze<T: Persistable>(
+        _ query: Query<T>
+    ) async throws -> AdminQueryExecutionStatistics {
         let startTime = MonotonicClock.now()
         let plan = try await explain(query)
 
@@ -203,17 +209,21 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let store = try await container.store(for: T.self)
         let results = try await store.fetch(query)
 
-        let executionTime = Double(MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000_000
+        let elapsedNanoseconds = MonotonicClock.now().uptimeNanoseconds
+            - startTime.uptimeNanoseconds
+        let duration = try TimeSpan(
+            seconds: Int64(elapsedNanoseconds / 1_000_000_000),
+            nanoseconds: UInt32(elapsedNanoseconds % 1_000_000_000)
+        )
 
         // Get current read version
         let readVersion = try await currentReadVersion()
 
-        return QueryExecutionStatsPublic(
+        return AdminQueryExecutionStatistics(
             plan: plan,
-            actualRows: Int64(results.count),
-            executionTime: executionTime,
-            readVersion: readVersion,
-            conflictRanges: nil
+            actualRowCount: Int64(results.count),
+            executionDuration: duration,
+            readVersion: readVersion
         )
     }
 
@@ -278,7 +288,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         // Step 4: Build index using EntityIndexBuilder
         // This handles type dispatch and uses OnlineIndexer internally
-        guard let persistableType = entity.persistableType else {
+        guard let persistableType = container.runtimeConfiguration
+            .persistableTypes.type(named: entity.name) else {
             throw AdminError.operationFailed(
                 "Entity '\(entity.name)' has no Persistable type"
             )
@@ -432,7 +443,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     }
 
     private func resolveDirectoryForEntity(_ entity: Schema.Entity) async throws -> Subspace {
-        guard let persistableType = entity.persistableType else {
+        guard let persistableType = container.runtimeConfiguration
+            .persistableTypes.type(named: entity.name) else {
             throw AdminError.operationFailed("Entity '\(entity.name)' has no Persistable type")
         }
         // Use container's resolveDirectory to respect #Directory definitions

@@ -91,7 +91,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([SocialConnection.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialConnection.self, BasicEdge.self]), security: .disabled)
 
 
         if try await database.directoryExists(
@@ -312,7 +312,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     func testBackwardCompatibilityNoStoredFields() async throws {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = Schema([BasicEdge.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialConnection.self, BasicEdge.self]), security: .disabled)
 
         
         if try await database.directoryExists(

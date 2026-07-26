@@ -423,44 +423,65 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
     private func makePropertyGraphAlgorithmContext() async throws -> PropertyGraphAlgorithmContext {
         let engine = CountingEngine()
         let container = try await DBContainer.open(
-            for: Schema(
-                [DatabaseEndpointEntity.self, WeightedGraphEdge.self],
+            for: try Schema(
+                entities: [
+                    try DatabaseEndpointEntity.schemaEntity,
+                    try CanonicalPropertyGraphEdge.schemaEntity,
+                ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    DatabaseEndpointEntity.self,
+                    CanonicalPropertyGraphEdge.self,
+                ]
+            ),
             security: .disabled
         )
         let indexSubspace = Subspace(
             prefix: Tuple("canonical-graph-service").pack()
         )
+        let kind = IndexKindMetadata(
+            identifier: "graph",
+            subspaceStructure: .hierarchical,
+            fields: [
+                IndexFieldMetadata(
+                    identity: FieldIdentity(name: "source", number: 2)
+                ),
+                IndexFieldMetadata(
+                    identity: FieldIdentity(name: "label", number: 3)
+                ),
+                IndexFieldMetadata(
+                    identity: FieldIdentity(name: "target", number: 4)
+                ),
+            ],
+            metadata: [
+                "strategy": .string("tripleStore"),
+                "hasEdgeField": .bool(true),
+                "hasGraphField": .bool(false),
+            ]
+        )
+        let metadata = try PropertyGraphIndexMetadata(canonical: kind)
         let index = Index(
             name: "graph",
-            kind: GraphIndexKind<WeightedGraphEdge>(
-                fromField: "source",
-                edgeField: "label",
-                toField: "target",
-                strategy: .tripleStore
-            ),
+            kind: kind,
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "source"),
                 FieldKeyExpression(fieldName: "label"),
                 FieldKeyExpression(fieldName: "target"),
             ]),
-            itemTypes: [WeightedGraphEdge.persistableType],
+            itemTypes: Set([CanonicalPropertyGraphEdge.persistableType]),
             storedFieldNames: ["weight"]
         )
-        let maintainer = GraphIndexMaintainer<WeightedGraphEdge>(
+        let maintainer = try GraphIndexMaintainer<CanonicalPropertyGraphEdge>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            fromField: "source",
-            edgeField: "label",
-            toField: "target",
-            strategy: .tripleStore
+            metadata: metadata
         )
         let resolvedSource = ResolvedDatabaseGraphSource(
-            entityName: WeightedGraphEdge.persistableType,
+                entityName: CanonicalPropertyGraphEdge.persistableType,
             indexName: index.name,
             indexSubspace: indexSubspace,
             storedFieldNames: index.storedFieldNames,

@@ -1,28 +1,27 @@
-import Core
-import DatabaseValue
-import DatabaseWire
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 package struct DatabaseIndexMaintenanceRuntime: Sendable {
     package static let maximumSliceWorkUnits: UInt64 = 10_000
 
     private let container: DBContainer
-    private let wireLimits: DatabaseWireLimits
+    private let storageLimits: StorageFrameLimits
 
     package init(
         container: DBContainer,
-        wireLimits: DatabaseWireLimits = .default
+        storageLimits: StorageFrameLimits = .default
     ) {
         self.container = container
-        self.wireLimits = wireLimits
+        self.storageLimits = storageLimits
     }
 
     package func prepareResources(
         entity: String,
         index: String,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
-    ) async throws -> [DatabaseObjectField] {
+    ) async throws -> FieldObject {
         let target = try await resolveTarget(
             entity: entity,
             index: index,
@@ -35,7 +34,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
     package func status(
         entity: String,
         index: String,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> DatabaseIndexMaintenanceStatus {
         let target = try await resolveTarget(
@@ -68,8 +67,8 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
     package func runRebuildSlice(
         entity: String,
         index indexName: String,
-        partitions: [DatabaseObjectField],
-        generation: DatabaseUUID,
+        partitions: FieldObject,
+        generation: DatabaseTypes.UUID,
         mode: DatabaseIndexRebuildSliceMode,
         maximumWorkUnits: UInt64,
         transaction: any TransactionAccess
@@ -188,9 +187,9 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             )
         }
         try transaction.setValue(
-            Bytes(retaining: try DatabaseEnvelopeCodec.encode(
+            Bytes(retaining: try StorageFrameCodec.encode(
                 updated,
-                limits: wireLimits
+                limits: storageLimits
             )),
             for: key
         )
@@ -204,8 +203,8 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
     package func markFailed(
         entity: String,
         index: String,
-        partitions: [DatabaseObjectField],
-        generation: DatabaseUUID,
+        partitions: FieldObject,
+        generation: DatabaseTypes.UUID,
         detail: String,
         transaction: any TransactionAccess
     ) async throws {
@@ -238,9 +237,9 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             detail: detail
         )
         try transaction.setValue(
-            Bytes(retaining: try DatabaseEnvelopeCodec.encode(
+            Bytes(retaining: try StorageFrameCodec.encode(
                 failed,
-                limits: wireLimits
+                limits: storageLimits
             )),
             for: key
         )
@@ -248,7 +247,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
 
     private func prepare(
         target: Target,
-        generation: DatabaseUUID,
+        generation: DatabaseTypes.UUID,
         lifecycleStore: IndexLifecycleStore,
         transaction: any TransactionAccess
     ) async throws {
@@ -289,9 +288,9 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             phase: .building
         )
         try transaction.setValue(
-            Bytes(retaining: try DatabaseEnvelopeCodec.encode(
+            Bytes(retaining: try StorageFrameCodec.encode(
                 state,
-                limits: wireLimits
+                limits: storageLimits
             )),
             for: rebuildStateKey(target: target)
         )
@@ -310,10 +309,10 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             return nil
         }
         do {
-            let state = try DatabaseEnvelopeCodec.decode(
+            let state = try StorageFrameCodec.decode(
                 DatabaseIndexRebuildState.self,
-                from: DatabaseBytes(retaining: bytes),
-                limits: wireLimits
+                from: ByteString(retaining: bytes),
+                limits: storageLimits
             )
             guard state.entity == entity, state.index == index else {
                 throw DatabaseIndexRebuildError.corruptedRebuildState
@@ -329,7 +328,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
     private func resolveTarget(
         entity entityName: String,
         index indexName: String,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         directoryAccess: DirectoryAccess
     ) async throws -> Target {
         guard let entity = container.schema.entities.first(where: {
@@ -337,7 +336,8 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         }) else {
             throw DatabaseIndexRebuildError.entityNotFound(entityName)
         }
-        guard let persistableType = entity.persistableType else {
+        guard let persistableType = container.runtimeConfiguration
+            .persistableTypes.type(named: entityName) else {
             throw DatabaseIndexRebuildError.compiledTypeMissing(entityName)
         }
         guard let descriptor = entity.indexDescriptors.first(where: {
@@ -371,7 +371,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             entity: entityName,
             persistableType: persistableType,
             descriptor: descriptor,
-            partitions: binding?.canonicalPartitions() ?? [],
+            partitions: binding?.canonicalPartitions() ?? FieldObject(),
             subspace: subspace
         )
     }
@@ -410,7 +410,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         let entity: String
         let persistableType: any Persistable.Type
         let descriptor: IndexDescriptor
-        let partitions: [DatabaseObjectField]
+        let partitions: FieldObject
         let subspace: Subspace
     }
 }

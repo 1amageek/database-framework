@@ -105,12 +105,14 @@ struct DatabasePartitionCatalogTests {
 
     private func makeContainer(engine: InMemoryEngine) async throws -> DBContainer {
         try await DBContainer.open(
-            for: Schema(
-                [CatalogPartitionedEntity.self],
+            for: try Schema(
+                entities: [try CatalogPartitionedEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [CatalogPartitionedEntity.self]
+            ),
             security: .disabled
         )
     }

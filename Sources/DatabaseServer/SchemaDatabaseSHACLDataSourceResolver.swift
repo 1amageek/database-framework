@@ -1,8 +1,8 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
-import Graph
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 import GraphIndex
 import OntologyIndex
 import StorageKit
@@ -176,14 +176,15 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         selection: RDFDatasetIndexSelection,
         workBudget: SHACLValidationWorkBudget,
         transaction: any TransactionAccess
-    ) async throws -> [DatabaseRDFTerm]? {
+    ) async throws -> [RDFTerm]? {
         switch focus {
         case .targets:
             return nil
         case .nodes(let nodes):
             return Array(Set(nodes)).sorted()
         case .entities(let identities):
-            guard let persistableType = entity.persistableType else {
+            guard let persistableType = container.runtimeConfiguration
+                .persistableTypes.type(named: entity.name) else {
                 throw DatabaseSHACLDataSourceError.schemaEntityNotFound(data.entity)
             }
             let expectedPartition: [String]
@@ -203,7 +204,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                 storageAccess: transaction,
                 container: container
             )
-            var subjects = Set<DatabaseRDFTerm>()
+            var subjects = Set<RDFTerm>()
             for identity in identities {
                 try workBudget.consume()
                 guard identity.entity == data.entity else {
@@ -212,7 +213,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                         actual: identity.entity
                     )
                 }
-                let resolved = try DatabaseResolvedPersistableIdentity.resolve(
+                let resolved = try ResolvedEntityReference.resolve(
                     identity,
                     container: container
                 )
@@ -228,12 +229,12 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                     ) else {
                     throw DatabaseSHACLDataSourceError.focusEntityNotFound(identity)
                 }
-                let fields = try DatabaseEntityProjection.fields(for: entity)
-                guard let value = fields.first(
-                    where: {
-                        $0.name == selection.metadata.subjectFieldName
-                    }
-                )?.value,
+                let fields = try DatabaseEntityProjection.fieldObject(
+                    for: entity
+                )
+                guard let value = fields[
+                    selection.metadata.subjectFieldName
+                ],
                 case .rdfTerm(let subject) = value else {
                     throw DatabaseSHACLDataSourceError.focusSubjectMissing(
                         entity: identity,
@@ -246,9 +247,9 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         }
     }
 
-    private static func bigEndianBytes(_ value: UInt64) -> DatabaseBytes {
+    private static func bigEndianBytes(_ value: UInt64) -> ByteString {
         var encoded = value.bigEndian
-        return DatabaseBytes(
+        return ByteString(
             withUnsafeBytes(of: &encoded) { Array($0) }
         )
     }

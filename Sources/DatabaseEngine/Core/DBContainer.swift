@@ -3,12 +3,12 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 #if FOUNDATION_DB
 import FDBStorage
 #endif
-import Core
+import DatabaseKit
 import Synchronization
 
 /// DBContainer - Application resource manager for database persistence
@@ -115,7 +115,7 @@ public final class DBContainer: Sendable {
     internal let dataStoreDelegate: any DataStoreDelegate
 
     /// Index configurations grouped by indexName
-    public let indexConfigurations: [String: [any IndexConfiguration]]
+    public let indexConfigurations: [String: [any IndexRuntimeConfiguration]]
 
     /// Database event logger selected by the container configuration.
     private let logger: DatabaseLogger
@@ -186,6 +186,11 @@ public final class DBContainer: Sendable {
             )
         }
         try runtimeConfiguration.validate(schema: schema)
+        try IndexRuntimeConfigurationValidator.validate(
+            configuration.indexConfigurations,
+            schema: schema,
+            persistableTypes: runtimeConfiguration.persistableTypes
+        )
 
         let preparedStorage = try await prepareStorage(
             configuration: configuration
@@ -289,7 +294,10 @@ public final class DBContainer: Sendable {
         self.databaseFormat = preparedStorage.format
         self.securityConfiguration = security
         self.securityDelegate = security.isEnabled
-            ? RequestSecurityPolicyDelegate(configuration: security)
+            ? RequestSecurityPolicyDelegate(
+                configuration: security,
+                policies: runtimeConfiguration.authorizationPolicies
+            )
             : nil
         self.dataStoreDelegate = MetricsDataStoreDelegate()
 
@@ -316,7 +324,12 @@ public final class DBContainer: Sendable {
         for entity in schema.entities {
             guard !entity.indexDescriptors.isEmpty else { continue }
             guard !entity.hasDynamicDirectory else { continue }
-            guard let persistableType = entity.persistableType else { continue }
+            guard let persistableType = runtimeConfiguration.persistableTypes.type(
+                named: entity.name
+            ) else {
+                throw DatabaseRuntimeConfigurationError
+                    .missingCompiledEntityType(entityName: entity.name)
+            }
             let subspace = try await resolveDirectory(for: persistableType)
             let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
             let indexNames = entity.indexDescriptors.map { $0.name }
@@ -503,7 +516,7 @@ public final class DBContainer: Sendable {
 
     package func partitionCatalogPage(
         entity: String? = nil,
-        continuation: DatabaseBytes? = nil,
+        continuation: ByteString? = nil,
         limit: Int
     ) async throws -> DatabasePartitionCatalogPage {
         try await partitionCatalog.page(
@@ -604,7 +617,7 @@ public final class DBContainer: Sendable {
         for type: any Persistable.Type,
         subspace: Subspace
     ) async throws {
-        let indexNames = type.indexDescriptors.map(\.name)
+        let indexNames = try type.indexDescriptors.map(\.name)
         guard !indexNames.isEmpty else { return }
 
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
@@ -622,7 +635,7 @@ public final class DBContainer: Sendable {
         subspace: Subspace,
         transaction: any TransactionAccess
     ) async throws {
-        let indexNames = type.indexDescriptors.map(\.name)
+        let indexNames = try type.indexDescriptors.map(\.name)
         guard !indexNames.isEmpty else { return }
 
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
@@ -771,7 +784,7 @@ public final class DBContainer: Sendable {
     // MARK: - Index Configuration Management
 
     /// Get a single index configuration
-    public func indexConfiguration<C: IndexConfiguration>(
+    public func indexConfiguration<C: IndexRuntimeConfiguration>(
         for indexName: String,
         as type: C.Type
     ) -> C? {
@@ -779,7 +792,7 @@ public final class DBContainer: Sendable {
     }
 
     /// Get all index configurations for an index
-    public func indexConfigurations<C: IndexConfiguration>(
+    public func indexConfigurations<C: IndexRuntimeConfiguration>(
         for indexName: String,
         as type: C.Type
     ) -> [C] {
@@ -794,9 +807,9 @@ public final class DBContainer: Sendable {
 
     /// Aggregate index configurations by indexName
     internal static func aggregateIndexConfigurations(
-        _ indexConfigurations: [any IndexConfiguration]
-    ) -> [String: [any IndexConfiguration]] {
-        var result: [String: [any IndexConfiguration]] = [:]
+        _ indexConfigurations: [any IndexRuntimeConfiguration]
+    ) -> [String: [any IndexRuntimeConfiguration]] {
+        var result: [String: [any IndexRuntimeConfiguration]] = [:]
         for config in indexConfigurations {
             result[config.indexName, default: []].append(config)
         }
@@ -933,7 +946,7 @@ extension DBContainer {
         security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
         try P.validate()
-        let schemaInstance = S.makeSchema()
+        let schemaInstance = try S.makeSchema()
         let container = try await open(
             for: schemaInstance,
             configuration: configuration,
@@ -1034,7 +1047,6 @@ extension DBContainer {
             )
         }
         let targetVersion = try migrationTarget(requestedTarget)
-        try schema.validateIndexNames()
         let registry = SchemaRegistry(database: engine)
         var completedStageCount: UInt64 = 0
 
@@ -1127,7 +1139,7 @@ extension DBContainer {
               }) else {
             throw MigrationPlanError.schemaDefinitionNotFound(version)
         }
-        return versionedSchema.makeSchema()
+        return try versionedSchema.makeSchema()
     }
 
     private func validatePersistedSchemaFingerprint(
@@ -1170,9 +1182,14 @@ extension DBContainer {
             indexNames: [String]
         )] = []
         for entity in schema.entities {
-            guard !entity.hasDynamicDirectory,
-                  let persistableType = entity.persistableType else {
+            guard !entity.hasDynamicDirectory else {
                 continue
+            }
+            guard let persistableType = runtimeConfiguration.persistableTypes.type(
+                named: entity.name
+            ) else {
+                throw DatabaseRuntimeConfigurationError
+                    .missingCompiledEntityType(entityName: entity.name)
             }
             let subspace = try await resolveDirectory(for: persistableType)
             staticStores.append((
@@ -1233,8 +1250,8 @@ extension DBContainer {
     private func executeStage(_ stage: MigrationStage) async throws {
         logger.info("Executing \(stage.migrationDescription)")
 
-        let sourceSchema = stage.fromVersion.makeSchema()
-        let targetSchema = stage.toVersion.makeSchema()
+        let sourceSchema = try stage.fromVersion.makeSchema()
+        let targetSchema = try stage.toVersion.makeSchema()
 
         // Guard: a lightweight stage cannot move data across a `#Directory`
         // change. Compare the compiled directory contract directly so dynamic
@@ -1265,7 +1282,7 @@ extension DBContainer {
             }
         }
 
-        let indexChanges = stage.indexChanges
+        let indexChanges = try stage.indexChanges
         let requiresStoreAccess = stage.willMigrate != nil
             || stage.didMigrate != nil
             || !indexChanges.added.isEmpty
@@ -1324,7 +1341,9 @@ extension DBContainer {
         let persistMode: SchemaRegistryPersistMode = if stage.isLightweight {
             .strict
         } else {
-            .allowBreakingChanges(entityNames: stage.entitiesRequiringCustomMigration)
+            .allowBreakingChanges(
+                entityNames: try stage.entitiesRequiringCustomMigration
+            )
         }
         try await engine.withTransaction(configuration: .batch) { transaction in
             try await registry.persist(
@@ -1345,7 +1364,12 @@ extension DBContainer {
         var registry: [String: MigrationStoreInfo] = [:]
 
         for entity in schema.entities {
-            guard let persistableType = entity.persistableType else { continue }
+            guard let persistableType = runtimeConfiguration.persistableTypes.type(
+                named: entity.name
+            ) else {
+                throw DatabaseRuntimeConfigurationError
+                    .missingCompiledEntityType(entityName: entity.name)
+            }
             // Use resolveDirectory to respect #Directory definitions declared
             // by *this schema's* Swift type — V1 and V2 with the same entity
             // name may point to different directories.

@@ -53,6 +53,7 @@ struct SPARQLRuntimeDependencyInjectionTests {
             ),
             configuration: .init(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [Statement.self],
                 sparqlFunctionRegistry: functionRegistry
             ),
             security: .disabled

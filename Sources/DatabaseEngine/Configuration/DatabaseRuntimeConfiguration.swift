@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 /// Immutable, container-scoped composition of runtime extension points.
 public struct DatabaseRuntimeConfiguration: Sendable {
@@ -7,6 +7,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
     public let readExecutors: ReadExecutorRegistry
     public let logicalSourceExecutors: LogicalSourceExecutorRegistry
     public let persistableMutationMaintainers: [any PersistableMutationMaintainer]
+    public let authorizationPolicies: AuthorizationPolicyRegistry
+    public let persistableTypes: PersistableTypeRegistry
 
     public init(
         indexMaintainerProviders: [any IndexMaintainerProvider] = [],
@@ -15,7 +17,9 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         fusionReadExecutors: [any FusionReadExecutor] = [],
         graphTableSourceExecutor: (any GraphTableSourceExecutor)? = nil,
         sparqlSourceExecutor: (any SPARQLSourceExecutor)? = nil,
-        persistableMutationMaintainers: [any PersistableMutationMaintainer] = []
+        persistableMutationMaintainers: [any PersistableMutationMaintainer] = [],
+        persistableTypes: [any Persistable.Type] = [],
+        authorizationPolicies: [AuthorizationPolicyHandler] = []
     ) throws(DatabaseRuntimeConfigurationError) {
         self.indexMaintainerProviders = try IndexMaintainerProviderRegistry(
             providers: indexMaintainerProviders
@@ -28,6 +32,12 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         self.logicalSourceExecutors = LogicalSourceExecutorRegistry(
             graphTableExecutor: graphTableSourceExecutor,
             sparqlExecutor: sparqlSourceExecutor
+        )
+        self.authorizationPolicies = try AuthorizationPolicyRegistry(
+            handlers: authorizationPolicies
+        )
+        self.persistableTypes = try PersistableTypeRegistry(
+            types: persistableTypes
         )
         var maintainerIdentifiers = Set<String>()
         for maintainer in persistableMutationMaintainers {
@@ -44,33 +54,20 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         schema: Schema
     ) throws(DatabaseRuntimeConfigurationError) {
         for entity in schema.entities {
-            guard let persistableType = entity.persistableType else {
+            guard persistableTypes.type(named: entity.name) != nil else {
                 throw .missingCompiledEntityType(entityName: entity.name)
-            }
-            do {
-                try PersistableIdentifierValidator.validate(
-                    persistableType.persistableIdentifierType
-                )
-            } catch let error {
-                throw .invalidPersistableIdentifierType(
-                    entityName: entity.name,
-                    reason: error
-                )
             }
             try validateMaintainerProviders(
                 source: .entity(entity.name),
                 descriptors: entity.indexDescriptors
             )
-            for descriptor in persistableType.descriptors {
-                guard let maintained = descriptor as? any RuntimeMaintainedDescriptor else {
-                    continue
-                }
+            for maintained in entity.relationships {
                 guard persistableMutationMaintainers.contains(where: {
                     $0.identifier == maintained.runtimeMaintainerIdentifier
                 }) else {
                     throw .missingPersistableMutationMaintainer(
                         entityName: entity.name,
-                        descriptorName: descriptor.name,
+                        descriptorName: maintained.name,
                         identifier: maintained.runtimeMaintainerIdentifier
                     )
                 }
@@ -78,9 +75,9 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         }
         for group in schema.polymorphicGroups {
             for memberTypeName in group.memberTypeNames {
-                guard let memberType = schema.entity(
+                guard let memberType = persistableTypes.type(
                     named: memberTypeName
-                )?.persistableType else {
+                ) else {
                     throw .missingCompiledPolymorphicMemberType(
                         groupIdentifier: group.identifier,
                         memberTypeName: memberTypeName
@@ -137,6 +134,29 @@ public struct DatabaseRuntimeConfiguration: Sendable {
     private func validateMaintainerProviders(
         source: DatabaseRuntimeIndexRequirementSource,
         descriptors: [IndexDescriptorMetadata]
+    ) throws(DatabaseRuntimeConfigurationError) {
+        for descriptor in descriptors {
+            guard let requirements = indexMaintainerProviders.runtimeRequirements(
+                for: descriptor.kindIdentifier
+            ) else {
+                throw .missingIndexMaintainerProvider(
+                    source: source,
+                    indexName: descriptor.name,
+                    kindIdentifier: descriptor.kindIdentifier
+                )
+            }
+            try validateProvider(
+                source: source,
+                indexName: descriptor.name,
+                kindIdentifier: descriptor.kindIdentifier,
+                requirements: requirements
+            )
+        }
+    }
+
+    private func validateMaintainerProviders(
+        source: DatabaseRuntimeIndexRequirementSource,
+        descriptors: [PolymorphicIndexMetadata]
     ) throws(DatabaseRuntimeConfigurationError) {
         for descriptor in descriptors {
             guard let requirements = indexMaintainerProviders.runtimeRequirements(

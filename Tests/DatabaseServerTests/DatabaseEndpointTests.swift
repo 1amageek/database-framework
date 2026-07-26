@@ -283,14 +283,16 @@ struct DatabaseEndpointTests {
     }
 
     private func makeContainer() async throws -> DBContainer {
-        let schema = Schema(
-            [DatabaseEndpointEntity.self],
+        let schema = try Schema(
+            entities: [try DatabaseEndpointEntity.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
         return try await DBContainer.open(
             for: schema,
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseEndpointEntity.self]
+            ),
             security: .disabled
         )
     }

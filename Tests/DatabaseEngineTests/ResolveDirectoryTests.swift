@@ -53,17 +53,19 @@ struct ResolveDirectoryTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        // Use Schema([Type.self]) to properly register types
-        let schema = Schema([
-            DirectoryUser.self,
-            DirectoryProduct.self,
-            NestedDirectoryItem.self
-        ], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try DirectoryUser.schemaEntity,
+                try DirectoryProduct.schemaEntity,
+                try NestedDirectoryItem.schemaEntity,
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
 
         return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryUser.self, DirectoryProduct.self, NestedDirectoryItem.self]),
             security: .disabled
             )
     }
@@ -228,10 +230,10 @@ struct ResolveDirectoryTests {
             
             try? await database.removeDirectory(path: ["test", "resolve"])
 
-            let schema = Schema([DirectoryUser.self], version: Schema.Version(1, 0, 0))
+            let schema = try Schema(entities: [try DirectoryUser.schemaEntity], version: Schema.Version(1, 0, 0))
 
-            let container1 = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
-            let container2 = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(), security: .disabled)
+            let container1 = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryUser.self, DirectoryProduct.self, NestedDirectoryItem.self]), security: .disabled)
+            let container2 = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryUser.self, DirectoryProduct.self, NestedDirectoryItem.self]), security: .disabled)
 
             let subspace1 = try await container1.resolveDirectory(for: DirectoryUser.self)
             let subspace2 = try await container2.resolveDirectory(for: DirectoryUser.self)

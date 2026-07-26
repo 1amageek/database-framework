@@ -190,12 +190,17 @@ public actor PostgreSQLScenarioCoordinator {
     }
 
     /// Create a DBContainer using the PostgreSQL engine
-    public func makeContainer(schema: Schema) async throws -> DBContainer {
+    public func makeContainer(
+        schema: Schema,
+        persistableTypes: [any Persistable.Type]
+    ) async throws -> DBContainer {
         let pgEngine = try engine
         return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(pgEngine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: persistableTypes
+            ),
             security: .disabled
         )
     }

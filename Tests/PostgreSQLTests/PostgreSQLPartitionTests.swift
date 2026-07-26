@@ -64,7 +64,7 @@ struct PostgreSQLPartitionTests {
 
     private func setupContainer() async throws -> DBContainer {
         let schema = Schema([Player.self, TenantOrder.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema)
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [Player.self, TenantOrder.self])
     }
 
     // MARK: - Save Tests

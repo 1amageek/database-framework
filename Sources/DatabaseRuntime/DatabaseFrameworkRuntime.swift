@@ -1,6 +1,7 @@
 import AggregationIndex
 import BitmapIndex
 import DatabaseEngine
+import DatabaseKit
 import FullTextIndex
 import GraphIndex
 import LeaderboardIndex
@@ -14,12 +15,17 @@ import VersionIndex
 
 /// Runtime composition that exposes the complete database-framework feature set.
 public enum DatabaseFrameworkRuntime {
-    public static func configuration()
-        throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
-        try configuration(sparqlFunctionRegistry: .empty)
+    public static func configuration(
+        persistableTypes: [any Persistable.Type]
+    ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
+        try configuration(
+            persistableTypes: persistableTypes,
+            sparqlFunctionRegistry: .empty
+        )
     }
 
     public static func configuration(
+        persistableTypes: [any Persistable.Type],
         sparqlFunctionRegistry: SPARQLFunctionRegistry
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
@@ -44,7 +50,8 @@ public enum DatabaseFrameworkRuntime {
             sparqlSourceExecutor: SPARQLReadExecutors.sourceExecutor(
                 functionRegistry: sparqlFunctionRegistry
             ),
-            persistableMutationMaintainers: [RelationshipReferenceMaintainer()]
+            persistableMutationMaintainers: [RelationshipReferenceMaintainer()],
+            persistableTypes: persistableTypes
         )
     }
 
@@ -65,6 +72,7 @@ public enum DatabaseFrameworkRuntime {
             PercentileIndexMaintainerProvider(),
             VectorIndexMaintainerProvider(),
             FullTextIndexMaintainerProvider(),
+            AutocompleteIndexMaintainerProvider(),
             SpatialIndexMaintainerProvider(),
             RankIndexMaintainerProvider(),
             PermutedIndexMaintainerProvider(),

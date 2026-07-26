@@ -1,4 +1,5 @@
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
     case duplicateIndexMaintainerProvider(String)
@@ -6,11 +7,9 @@ public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
     case duplicatePolymorphicIndexReadExecutor(String)
     case duplicateFusionReadExecutor(String)
     case duplicatePersistableMutationMaintainer(identifier: String)
+    case duplicatePersistableType(entityName: String)
+    case duplicateAuthorizationPolicy(entityName: String)
     case missingCompiledEntityType(entityName: String)
-    case invalidPersistableIdentifierType(
-        entityName: String,
-        reason: PersistableIdentifierValidationError
-    )
     case missingCompiledPolymorphicMemberType(
         groupIdentifier: String,
         memberTypeName: String

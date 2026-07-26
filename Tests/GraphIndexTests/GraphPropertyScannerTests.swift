@@ -71,7 +71,7 @@ struct GraphPropertyScannerTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialEdge.self]),
             security: .disabled,
         )
 

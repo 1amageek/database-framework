@@ -56,22 +56,22 @@ struct ContextMutationIntentTests {
 
     private func makeUserContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([DelInsUser.self])
+        let schema = try Schema(entities: [try DelInsUser.schemaEntity])
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DelInsUser.self, DelInsArticle.self]),
             security: .disabled,
         )
     }
 
     private func makeArticleContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([DelInsArticle.self])
+        let schema = try Schema(entities: [try DelInsArticle.schemaEntity])
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DelInsUser.self, DelInsArticle.self]),
             security: .disabled,
         )
     }

@@ -74,7 +74,7 @@ struct GraphTableExecutorTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialEdge.self, NoGraphIndexType.self]),
             security: .disabled,
         )
 
@@ -353,7 +353,7 @@ struct GraphTableExecutorTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialEdge.self, NoGraphIndexType.self]),
             security: .disabled,
         )
         let subspace = try await container.resolveDirectory(for: NoGraphIndexType.self)

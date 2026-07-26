@@ -80,7 +80,8 @@ struct DirectoryMigrationPostgreSQLTests {
             let seededID = "pg-dir-migration-\(UUID().uuidString)"
 
             let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
-                schema: PGDirectoryMigrationSchemaV1.makeSchema()
+                schema: PGDirectoryMigrationSchemaV1.makeSchema(),
+                persistableTypes: [PGDirectoryMigrationUserV1.self]
             )
             let initialContext = initialContainer.newContext()
             var seededUser = PGDirectoryMigrationUserV1(name: "Alice", email: "alice@example.com")
@@ -93,12 +94,13 @@ struct DirectoryMigrationPostgreSQLTests {
                 for: PGDirectoryMigrationSchemaV2.self,
                 migrationPlan: PGDirectoryMigrationCopyPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PGDirectoryMigrationUserV2.self])
             )
             try await migratedContainer.migrateIfNeeded()
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
-                schema: PGDirectoryMigrationSchemaV2.makeSchema()
+                schema: PGDirectoryMigrationSchemaV2.makeSchema(),
+                persistableTypes: [PGDirectoryMigrationUserV2.self]
             )
             let rows = try await verificationContainer.newContext()
                 .fetch(PGDirectoryMigrationUserV2.self)
@@ -119,7 +121,8 @@ struct DirectoryMigrationPostgreSQLTests {
             let seededID = "pg-dir-migration-idempotent-\(UUID().uuidString)"
 
             let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
-                schema: PGDirectoryMigrationSchemaV1.makeSchema()
+                schema: PGDirectoryMigrationSchemaV1.makeSchema(),
+                persistableTypes: [PGDirectoryMigrationUserV1.self]
             )
             let initialContext = initialContainer.newContext()
             var seededUser = PGDirectoryMigrationUserV1(name: "Bob", email: "bob@example.com")
@@ -132,13 +135,14 @@ struct DirectoryMigrationPostgreSQLTests {
                 for: PGDirectoryMigrationSchemaV2.self,
                 migrationPlan: PGDirectoryMigrationCopyPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PGDirectoryMigrationUserV2.self])
             )
             try await migratedContainer.migrateIfNeeded()
             try await migratedContainer.migrateIfNeeded()
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
-                schema: PGDirectoryMigrationSchemaV2.makeSchema()
+                schema: PGDirectoryMigrationSchemaV2.makeSchema(),
+                persistableTypes: [PGDirectoryMigrationUserV2.self]
             )
             let rows = try await verificationContainer.newContext()
                 .fetch(PGDirectoryMigrationUserV2.self)

@@ -229,19 +229,21 @@ struct CanonicalStatementMutationExecutorTests {
 
     private func makeContainer() async throws -> DBContainer {
         try await DBContainer.open(
-            for: Schema(
-                [DatabaseEndpointEntity.self],
+            for: try Schema(
+                entities: [DatabaseEndpointEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseEndpointEntity.self]
+            ),
             security: .disabled
         )
     }
 
     private func execute(
         _ statement: QueryStatement,
-        parameters: [DatabaseObjectField],
+        parameters: [QueryParameter],
         preconditions: [MutationExecuteOperation.Precondition] = [],
         executor: CanonicalDatabaseStatementMutationExecutor,
         context: DatabaseOperationContext

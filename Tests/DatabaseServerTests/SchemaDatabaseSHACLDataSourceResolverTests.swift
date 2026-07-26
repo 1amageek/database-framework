@@ -93,15 +93,17 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
     private func makeSHACLDataSourceResolutionContext()
         async throws -> SHACLDataSourceResolutionContext {
         let container = try await DBContainer.open(
-            for: Schema(
-                [DatabaseSHACLStatement.self],
+            for: try Schema(
+                entities: [try DatabaseSHACLStatement.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseSHACLStatement.self]
+            ),
             security: .disabled
         )
-        guard let descriptor = DatabaseSHACLStatement.indexDescriptors
+        guard let descriptor = try DatabaseSHACLStatement.indexDescriptors
             .first(where: { $0.kindIdentifier == "rdf_quad" }) else {
             throw SHACLDataSourceResolutionSetupError.missingRDFIndex
         }

@@ -115,19 +115,22 @@ struct RDFQuadSQLiteTests {
             guard case .rdfTerm(.iri(let iri)) = binding["?graph"] else {
                 return nil
             }
-            return iri
+            return iri.rawValue
         })
 
         #expect(graphs == Set([firstGraph, secondGraph]))
     }
 
     private func seededContext() async throws -> DatabaseContext {
-        let schema = Schema(
-            [SQLiteRDFQuadStatement.self],
+        let schema = try Schema(
+            entities: [try SQLiteRDFQuadStatement.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [SQLiteRDFQuadStatement.self]
+            ),
             security: .disabled
         )
         let context = container.newContext()

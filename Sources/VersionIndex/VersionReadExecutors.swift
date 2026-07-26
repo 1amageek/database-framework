@@ -4,9 +4,8 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseEngine
-import DatabaseValue
-import Core
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 
 enum VersionReadParameter {
     static let primaryKey = "primaryKey"
@@ -22,7 +21,6 @@ public enum VersionReadExecutors {
 }
 
 private enum VersionReadError: Error, Sendable {
-    case missingParameter(String)
     case invalidParameter(String)
 }
 
@@ -35,9 +33,12 @@ private struct VersionReadExecutor: IndexReadExecutor {
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult {
-        let primaryKeyValues = try requireArray(VersionReadParameter.primaryKey, from: indexScan.parameters)
+        let parameters = IndexReadParameters(indexScan.parameters)
+        let primaryKeyValues = try parameters.requireArray(
+            named: VersionReadParameter.primaryKey
+        )
         let primaryKey = try primaryKeyValues.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
 
         let execution = CanonicalReadExecution.resolve(
@@ -50,10 +51,18 @@ private struct VersionReadExecutor: IndexReadExecutor {
             primaryKey: primaryKey
         )
 
-        if let limit = indexScan.parameters[VersionReadParameter.limit]?.int64Value {
-            builder = builder.limit(Int(limit))
+        if let limit = try parameters.optionalInteger(
+            named: VersionReadParameter.limit
+        ) {
+            builder = builder.limit(limit)
         }
-        if let indexName = indexScan.parameters[VersionReadParameter.indexName]?.stringValue {
+        if let indexNameValue = parameters[VersionReadParameter.indexName] {
+            guard case .string(let indexName) = indexNameValue else {
+                throw IndexReadParameterError.invalid(
+                    name: VersionReadParameter.indexName,
+                    expected: "string"
+                )
+            }
             builder = builder.index(indexName)
         }
 
@@ -66,7 +75,7 @@ private struct VersionReadExecutor: IndexReadExecutor {
                 result.item,
                 annotations: [
                     "version": .bytes(
-                        DatabaseBytes(retaining: result.version.bytes)
+                        ByteString(retaining: result.version.bytes)
                     )
                 ]
             )
@@ -74,15 +83,6 @@ private struct VersionReadExecutor: IndexReadExecutor {
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 
-    private func requireArray(
-        _ key: String,
-        from parameters: [String: QueryParameterValue]
-    ) throws -> [QueryParameterValue] {
-        guard let values = parameters[key]?.arrayValue else {
-            throw VersionReadError.missingParameter(key)
-        }
-        return values
-    }
 }
 
 private struct PolymorphicVersionPlaceholder: Persistable {
@@ -99,26 +99,6 @@ private struct PolymorphicVersionPlaceholder: Persistable {
 
     static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
 
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        member == "id" ? id : nil
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<PolymorphicVersionPlaceholder, Value>) -> String {
-        if keyPath == \PolymorphicVersionPlaceholder.id { return "id" }
-        return "\(keyPath)"
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<PolymorphicVersionPlaceholder>) -> String {
-        if keyPath == \PolymorphicVersionPlaceholder.id { return "id" }
-        return "\(keyPath)"
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PolymorphicVersionPlaceholder> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
@@ -130,9 +110,12 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult {
-        let primaryKeyValues = try requireArray(VersionReadParameter.primaryKey, from: indexScan.parameters)
+        let parameters = IndexReadParameters(indexScan.parameters)
+        let primaryKeyValues = try parameters.requireArray(
+            named: VersionReadParameter.primaryKey
+        )
         let primaryKey = try primaryKeyValues.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
         guard let typeCode = primaryKey.first as? Int64 else {
             throw VersionReadError.invalidParameter(VersionReadParameter.primaryKey)
@@ -149,22 +132,41 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
             requested: options.consistency,
             default: .snapshot
         )
-        let indexName = indexScan.parameters[VersionReadParameter.indexName]?.stringValue ?? indexScan.indexName
+        let indexName: String
+        if let value = parameters[VersionReadParameter.indexName] {
+            guard case .string(let suppliedIndexName) = value else {
+                throw IndexReadParameterError.invalid(
+                    name: VersionReadParameter.indexName,
+                    expected: "string"
+                )
+            }
+            indexName = suppliedIndexName
+        } else {
+            indexName = indexScan.indexName
+        }
         let indexSubspace = try await context.container
             .resolvePolymorphicDirectory(for: group.identifier)
             .subspace(SubspaceKey.indexes)
             .subspace(indexName)
 
-        let limit = indexScan.parameters[VersionReadParameter.limit]?.int64Value.map(Int.init)
+        let limit = try parameters.optionalInteger(
+            named: VersionReadParameter.limit
+        )
         let rawResults = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction in
             let maintainer = VersionIndexMaintainer<PolymorphicVersionPlaceholder>(
                 index: Index(
                     name: indexName,
-                    kind: VersionIndexKind<PolymorphicVersionPlaceholder>(
-                        fieldNames: ["id"],
-                        strategy: .keepAll
+                    kind: IndexKindMetadata(
+                        identifier: "version",
+                        subspaceStructure: .hierarchical,
+                        fields: [
+                            IndexFieldMetadata(
+                                identity: FieldIdentity(name: "id", number: 1)
+                            )
+                        ],
+                        metadata: ["strategy": .string("keepAll")]
                     ),
                     rootExpression: EmptyKeyExpression()
                 ),
@@ -179,13 +181,13 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
             )
         }
 
-        let results: [(version: Version, item: any Persistable)] = try rawResults.compactMap { result in
-            guard !result.data.isEmpty else {
-                return nil
-            }
+        var results: [(version: Version, item: any Persistable)] = []
+        results.reserveCapacity(rawResults.count)
+        for result in rawResults {
+            guard !result.data.isEmpty else { continue }
             let item = try DataAccess.deserializeAny(result.data, as: runtimeType)
             try context.container.securityDelegate?.evaluateGet(item)
-            return (result.version, item)
+            results.append((result.version, item))
         }
 
         let rows = try results.map { result in
@@ -195,22 +197,12 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
                     PolymorphicRowAnnotation.typeName: .string(runtimeType.persistableType),
                     PolymorphicRowAnnotation.typeCode: .int64(typeCode),
                     "version": .bytes(
-                        DatabaseBytes(retaining: result.version.bytes)
+                        ByteString(retaining: result.version.bytes)
                     )
                 ]
             )
         }
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
-    }
-
-    private func requireArray(
-        _ key: String,
-        from parameters: [String: QueryParameterValue]
-    ) throws -> [QueryParameterValue] {
-        guard let values = parameters[key]?.arrayValue else {
-            throw VersionReadError.missingParameter(key)
-        }
-        return values
     }
 
     private func resolveRuntimeType(
@@ -219,7 +211,8 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
         context: DatabaseContext
     ) -> (any Persistable.Type)? {
         for typeName in group.memberTypeNames {
-            guard let type = context.container.schema.entity(named: typeName)?.persistableType,
+            guard let type = context.container.runtimeConfiguration
+                    .persistableTypes.type(named: typeName),
                   let polymorphicType = type as? any Polymorphable.Type else {
                 continue
             }

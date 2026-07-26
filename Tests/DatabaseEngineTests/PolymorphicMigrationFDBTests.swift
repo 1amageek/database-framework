@@ -279,7 +279,7 @@ struct PolymorphicMigrationFDBTests {
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicMigrationArticleV1.self, FDBPolymorphicMigrationReportV1.self]),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -298,7 +298,7 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV2.self,
                 migrationPlan: FDBPolymorphicMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicMigrationArticleV2.self, FDBPolymorphicMigrationReportV2.self]),
                 security: .disabled
             )
             try await migratedContainer.migrateIfNeeded()
@@ -306,13 +306,13 @@ struct PolymorphicMigrationFDBTests {
             let verificationContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicMigrationArticleV2.self, FDBPolymorphicMigrationReportV2.self]),
                 security: .disabled
             )
             let verificationContext = verificationContainer.newContext()
             let migratedResults = try await verificationContext
                 .findPolymorphic(FDBPolymorphicMigrationArticleV2.self)
-                .fullText(\.title)
+                .fullText(FDBPolymorphicMigrationArticleV2.fields.title)
                 .term("needle")
                 .execute()
             let migratedIDs = Set(migratedResults.compactMap(Self.resultID))
@@ -360,7 +360,7 @@ struct PolymorphicMigrationFDBTests {
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicMigrationArticleV2.self, FDBPolymorphicMigrationReportV2.self]),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -384,7 +384,7 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV3.self,
                 migrationPlan: FDBPolymorphicRemovalMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicMigrationArticleV3.self, FDBPolymorphicMigrationReportV3.self]),
                 security: .disabled
             )
             try await migratedContainer.migrateIfNeeded()
@@ -427,7 +427,7 @@ struct PolymorphicMigrationFDBTests {
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicMigrationArticleV2.self, FDBPolymorphicMigrationReportV2.self]),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -459,7 +459,7 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV4.self,
                 migrationPlan: FDBPolymorphicRebuildMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicMigrationArticleV4.self, FDBPolymorphicMigrationReportV4.self]),
                 security: .disabled
             )
             try await migratedContainer.migrateIfNeeded()

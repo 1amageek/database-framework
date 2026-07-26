@@ -17,11 +17,11 @@ struct OnlineIndexerBatchDispatchTests {
         let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
         let blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
 
-        let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Player.self]),
             security: .disabled
         )
 
@@ -80,11 +80,11 @@ struct OnlineIndexerBatchDispatchTests {
         let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
         let blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
 
-        let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Player.self]),
             security: .disabled
         )
 
@@ -153,11 +153,11 @@ struct OnlineIndexerBatchDispatchTests {
         let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
         let blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
 
-        let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Player.self]),
             security: .disabled
         )
 

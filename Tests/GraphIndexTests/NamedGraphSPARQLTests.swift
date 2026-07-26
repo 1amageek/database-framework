@@ -209,7 +209,7 @@ struct NamedGraphSPARQLTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SPARQLQuadStatement.self]),
             security: .disabled
         )
         try await container.ensureIndexesReady()

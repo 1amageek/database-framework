@@ -1,15 +1,21 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 
 enum CanonicalRelationshipIdentity {
     static func resolve(
-        _ identity: PersistableIdentity,
+        _ identity: EntityReference,
         container: DBContainer
     ) throws -> (id: Tuple, partition: AnyDirectoryPath?) {
-        guard let entity = container.schema.entity(named: identity.entity),
-              let type = entity.persistableType else {
+        guard container.schema.entity(named: identity.entity) != nil else {
             throw RelationshipReferenceError.unknownRelatedEntity(identity.entity)
+        }
+        guard let type = container.runtimeConfiguration.persistableTypes.type(
+            named: identity.entity
+        ) else {
+            throw RelationshipReferenceError.relatedEntityHasNoCompiledType(
+                identity.entity
+            )
         }
         let id: Tuple
         do {

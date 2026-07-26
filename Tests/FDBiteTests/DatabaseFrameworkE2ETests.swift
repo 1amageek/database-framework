@@ -896,7 +896,9 @@ struct DatabaseFrameworkE2ETests {
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2ELargeDocument.self]
+            ),
             security: .disabled
         )
         let subspace = try await container.resolveDirectory(for: DatabaseFrameworkE2ELargeDocument.self)
@@ -1524,7 +1526,7 @@ struct DatabaseFrameworkE2ETests {
         let initialContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DatabaseFrameworkE2EMigratedAccountV1.self]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -1549,7 +1551,7 @@ struct DatabaseFrameworkE2ETests {
             for: DatabaseFrameworkE2EMigrationSchemaV2.self,
             migrationPlan: DatabaseFrameworkE2EMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration()
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DatabaseFrameworkE2EMigratedAccountV2.self])
         )
         try await migratedContainer.migrateIfNeeded()
         let migratedVersion = try await migratedContainer.getCurrentSchemaVersion()
@@ -1557,7 +1559,7 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV2.makeSchema(),
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DatabaseFrameworkE2EMigratedAccountV2.self]),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
