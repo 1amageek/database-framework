@@ -9,7 +9,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -80,6 +80,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     private var idsSubspace: Subspace { subspace.subspace("ids") }
     private var pksSubspace: Subspace { subspace.subspace("pks") }
     private var nextIdKey: Bytes { subspace.subspace("meta").pack(Tuple("nextId")) }
+    private var reader: BitmapIndexReader { BitmapIndexReader(subspace: subspace) }
 
     // MARK: - Initialization
 
@@ -398,13 +399,10 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         for fieldValues: [any TupleElement],
         transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
-        let key = dataSubspace.pack(Tuple(fieldValues))
-
-        guard let bytes = try await transaction.getValue(for: key) else {
-            return RoaringBitmap()
-        }
-
-        return try RoaringBitmap.deserialize(Data(bytes))
+        try await reader.bitmap(
+            for: fieldValues,
+            transaction: transaction
+        )
     }
 
     /// Get count of entities with a specific field value
@@ -417,7 +415,10 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         for fieldValues: [any TupleElement],
         transaction: any TransactionAccess
     ) async throws -> Int {
-        let bitmap = try await getBitmap(for: fieldValues, transaction: transaction)
+        let bitmap = try await reader.bitmap(
+            for: fieldValues,
+            transaction: transaction
+        )
         return bitmap.cardinality
     }
 
@@ -431,14 +432,10 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         values: [[any TupleElement]],
         transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
-        guard !values.isEmpty else { return RoaringBitmap() }
-
-        var result = try await getBitmap(for: values[0], transaction: transaction)
-        for value in values.dropFirst() {
-            let bitmap = try await getBitmap(for: value, transaction: transaction)
-            result = result && bitmap
-        }
-        return result
+        try await reader.intersection(
+            of: values,
+            transaction: transaction
+        )
     }
 
     /// Perform OR query across multiple values
@@ -451,14 +448,10 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         values: [[any TupleElement]],
         transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
-        guard !values.isEmpty else { return RoaringBitmap() }
-
-        var result = RoaringBitmap()
-        for value in values {
-            let bitmap = try await getBitmap(for: value, transaction: transaction)
-            result = result || bitmap
-        }
-        return result
+        try await reader.union(
+            of: values,
+            transaction: transaction
+        )
     }
 
     /// Convert sequential IDs to primary keys
@@ -471,18 +464,10 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         from bitmap: RoaringBitmap,
         transaction: any TransactionAccess
     ) async throws -> [Tuple] {
-        let ids = bitmap.toArray()
-        var results: [Tuple] = []
-        results.reserveCapacity(ids.count)
-
-        for seqId in ids {
-            let idKey = idsSubspace.pack(Tuple(Int(seqId)))
-            if let pkBytes = try await transaction.getValue(for: idKey) {
-                let pkElements = try Tuple.unpack(from: pkBytes)
-                results.append(Tuple(pkElements))
-            }
-        }
-        return results
+        try await reader.primaryKeys(
+            for: bitmap,
+            transaction: transaction
+        )
     }
 
     /// Get all distinct field values in this index
@@ -492,23 +477,6 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     public func getAllDistinctValues(
         transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
-        let range = dataSubspace.range()
-        var results: [[any TupleElement]] = []
-
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
-            snapshot: true
-        )
-
-        for (key, _) in sequence {
-            guard dataSubspace.contains(key) else { break }
-
-            let keyTuple = try dataSubspace.unpack(key)
-            let elements = try keyTuple.elements()
-            results.append(elements)
-        }
-
-        return results
+        try await reader.distinctValues(transaction: transaction)
     }
 }

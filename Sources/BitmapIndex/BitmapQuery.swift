@@ -3,14 +3,8 @@
 //
 // Provides DatabaseContext extension and query builder for set operations.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
+import DatabaseKit
 import DatabaseEngine
-import QueryIR
 import StorageKit
 
 // MARK: - Bitmap Entry Point
@@ -23,19 +17,19 @@ import StorageKit
 ///
 /// // Find all active users
 /// let activeUsers = try await context.bitmap(User.self)
-///     .field(\.status)
+///     .field(User.fields.status)
 ///     .equals("active")
 ///     .execute()
 ///
 /// // Find users with status "active" OR "pending"
 /// let users = try await context.bitmap(User.self)
-///     .field(\.status)
+///     .field(User.fields.status)
 ///     .in(["active", "pending"])
 ///     .execute()
 ///
 /// // Count active users
 /// let count = try await context.bitmap(User.self)
-///     .field(\.status)
+///     .field(User.fields.status)
 ///     .equals("active")
 ///     .count()
 /// ```
@@ -48,12 +42,12 @@ public struct BitmapEntryPoint<T: Persistable>: Sendable {
 
     /// Specify the bitmap index field
     ///
-    /// - Parameter keyPath: KeyPath to the indexed field
+    /// - Parameter field: Compiled identity of the indexed field
     /// - Returns: Bitmap query builder
-    public func field<V>(_ keyPath: KeyPath<T, V>) -> BitmapQueryBuilder<T> {
+    public func field<Value>(_ field: Field<T, Value>) -> BitmapQueryBuilder<T> {
         BitmapQueryBuilder(
             queryContext: queryContext,
-            fieldName: T.fieldName(for: keyPath)
+            fieldName: field.name
         )
     }
 }
@@ -78,7 +72,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
     private let fieldName: String
     private var operation: Operation?
-    private var limitCount: Int?
+    private var limitCount: UInt64?
 
     // MARK: - Initialization
 
@@ -143,7 +137,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Parameter count: Maximum number of results
     /// - Returns: Updated query builder
-    public func limit(_ count: Int) -> Self {
+    public func limit(_ count: UInt64) -> Self {
         var copy = self
         copy.limitCount = count
         return copy
@@ -174,14 +168,14 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             var resultBitmap = bitmap
             if let limit = self.limitCount {
                 let array = bitmap.toArray()
-                if array.count > limit {
+                if UInt64(array.count) > limit {
                     resultBitmap = RoaringBitmap()
-                    for id in array.prefix(limit) {
+                    for id in array.prefix(Int(limit)) {
                         resultBitmap.add(id)
                     }
                 }
             }
-            return try await maintainer.getPrimaryKeys(from: resultBitmap, transaction: transaction)
+            return try await maintainer.primaryKeys(for: resultBitmap, transaction: transaction)
         }
         return try await queryContext.fetchItems(ids: primaryKeys, type: T.self, cachePolicy: cachePolicy)
     }
@@ -226,7 +220,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     /// `execute()`, `count()`, and `getBitmap()`.
     private func withResolvedBitmap<R: Sendable>(
         configuration: TransactionConfiguration,
-        _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexMaintainer<T>, any TransactionAccess) async throws -> R
+        _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexReader, any TransactionAccess) async throws -> R
     ) async throws -> R {
         guard let op = operation else {
             throw BitmapQueryError.noOperation
@@ -236,41 +230,31 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
             throw BitmapQueryError.indexNotFound(indexName)
         }
-        guard descriptor.kindIdentifier == BitmapIndexKind<T>.identifier,
-              descriptor.fieldNames == [fieldName] else {
+        guard descriptor.fieldNames == [fieldName] else {
             throw BitmapQueryError.invalidIndex(indexName)
         }
+        _ = try BitmapIndexSpecification(descriptor.kind)
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
         return try await queryContext.withTransaction(configuration: configuration) { transaction in
-            let maintainer = BitmapIndexMaintainer<T>(
-                index: Index(
-                    name: indexName,
-                    kind: descriptor.kind,
-                    rootExpression: FieldKeyExpression(fieldName: self.fieldName),
-                    isUnique: descriptor.isUnique,
-                    storedFieldNames: descriptor.storedFieldNames
-                ),
-                subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id")
-            )
+            let reader = BitmapIndexReader(subspace: indexSubspace)
 
             let bitmap: RoaringBitmap
             switch op {
             case .equals(let value):
-                bitmap = try await maintainer.getBitmap(for: [value], transaction: transaction)
+                bitmap = try await reader.bitmap(for: [value], transaction: transaction)
 
             case .in(let values):
                 let valueSets = values.map { [$0] as [any TupleElement] }
-                bitmap = try await maintainer.orQuery(values: valueSets, transaction: transaction)
+                bitmap = try await reader.union(of: valueSets, transaction: transaction)
 
             case .and(let valueSets):
                 let converted = valueSets.map { $0 as [any TupleElement] }
-                bitmap = try await maintainer.andQuery(values: converted, transaction: transaction)
+                bitmap = try await reader.intersection(of: converted, transaction: transaction)
             }
 
-            return try await body(bitmap, maintainer, transaction)
+            return try await body(bitmap, reader, transaction)
         }
     }
 
@@ -283,11 +267,11 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             throw BitmapQueryError.noOperation
         }
 
-        var parameters: [String: QueryParameterValue] = [
+        var parameters: [String: FieldValue] = [
             BitmapReadParameter.fieldName: .string(fieldName)
         ]
         if let limitCount {
-            parameters[BitmapReadParameter.limit] = .int64(Int64(limitCount))
+            parameters[BitmapReadParameter.limit] = .uint64(limitCount)
         }
 
         switch operation {
@@ -316,7 +300,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             accessPath: .index(
                 IndexScanSource(
                     indexName: buildIndexName(),
-                    kindIdentifier: BitmapIndexKind<T>.identifier,
+                    kindIdentifier: BitmapIndexSpecification.identifier,
                     parameters: parameters
                 )
             ),
@@ -338,13 +322,13 @@ extension DatabaseContext {
     ///
     /// // Find all active users
     /// let activeUsers = try await context.bitmap(User.self)
-    ///     .field(\.status)
+    ///     .field(User.fields.status)
     ///     .equals("active")
     ///     .execute()
     ///
     /// // Count active users (more efficient)
     /// let count = try await context.bitmap(User.self)
-    ///     .field(\.status)
+    ///     .field(User.fields.status)
     ///     .equals("active")
     ///     .count()
     /// ```

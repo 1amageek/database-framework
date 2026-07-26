@@ -1,10 +1,10 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
 /// Canonical runtime provider for bitmap indexes.
 public struct BitmapIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "bitmap"
+    public let kindIdentifier = BitmapIndexSpecification.identifier
     public let runtimeRequirements: IndexRuntimeRequirements = .entityAndPolymorphicReads
 
     public init() {}
@@ -13,14 +13,9 @@ public struct BitmapIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
-        try index.kind.validateIdentity(
-            identifier: kindIdentifier,
-            subspaceStructure: .hierarchical
-        )
-        try index.kind.validateMetadataKeys()
-        try index.kind.validateFieldCount(minimum: 1)
+        _ = try BitmapIndexSpecification(index.kind)
         return BitmapIndexMaintainer<Item>(
             index: index,
             subspace: subspace,

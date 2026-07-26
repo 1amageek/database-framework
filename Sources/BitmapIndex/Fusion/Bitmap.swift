@@ -2,14 +2,14 @@
 // BitmapIndex - Bitmap filter query for Fusion
 //
 // This file is part of BitmapIndex module, not DatabaseEngine.
-// DatabaseEngine does not know about BitmapIndexKind.
+// DatabaseEngine remains independent of bitmap execution behavior.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -21,14 +21,14 @@ import StorageKit
 /// **Usage**:
 /// ```swift
 /// let results = try await context.fuse(User.self) {
-///     Bitmap(\.status, equals: "active")
+///     Bitmap(User.fields.status, equals: "active")
 ///     Search(\.bio).terms(["developer"])
 /// }
 /// .execute()
 ///
 /// // OR query
 /// let results = try await context.fuse(User.self) {
-///     Bitmap(\.status, in: ["active", "pending"])
+///     Bitmap(User.fields.status, in: ["active", "pending"])
 ///     Similar(\.embedding, dimensions: 384).nearest(to: vector, k: 100)
 /// }
 /// .execute()
@@ -54,30 +54,30 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     /// **Usage**:
     /// ```swift
     /// context.fuse(User.self) {
-    ///     Bitmap(\.status, equals: "active")
+    ///     Bitmap(User.fields.status, equals: "active")
     /// }
     /// ```
     public init<V: Sendable & Hashable & Equatable>(
-        _ keyPath: KeyPath<T, V>,
+        _ field: Field<T, V>,
         equals value: V
     ) {
         guard let context = FusionContext.current else {
             fatalError("Bitmap must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.fieldName = field.name
         self.predicate = .equals(value)
         self.queryContext = context
     }
 
     /// Create a Bitmap query for optional field equality
     public init<V: Sendable & Hashable & Equatable>(
-        _ keyPath: KeyPath<T, V?>,
+        _ field: Field<T, V?>,
         equals value: V
     ) {
         guard let context = FusionContext.current else {
             fatalError("Bitmap must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.fieldName = field.name
         self.predicate = .equals(value)
         self.queryContext = context
     }
@@ -88,13 +88,13 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     ///
     /// Returns items matching ANY of the provided values.
     public init<V: Sendable & Hashable & Equatable>(
-        _ keyPath: KeyPath<T, V>,
+        _ field: Field<T, V>,
         in values: [V]
     ) {
         guard let context = FusionContext.current else {
             fatalError("Bitmap must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.fieldName = field.name
         self.predicate = .in(values)
         self.queryContext = context
     }
@@ -103,22 +103,22 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
 
     /// Create a Bitmap query for equality comparison with explicit context
     public init<V: Sendable & Hashable & Equatable>(
-        _ keyPath: KeyPath<T, V>,
+        _ field: Field<T, V>,
         equals value: V,
         context: IndexQueryContext
     ) {
-        self.fieldName = T.fieldName(for: keyPath)
+        self.fieldName = field.name
         self.predicate = .equals(value)
         self.queryContext = context
     }
 
     /// Create a Bitmap query for optional field equality with explicit context
     public init<V: Sendable & Hashable & Equatable>(
-        _ keyPath: KeyPath<T, V?>,
+        _ field: Field<T, V?>,
         equals value: V,
         context: IndexQueryContext
     ) {
-        self.fieldName = T.fieldName(for: keyPath)
+        self.fieldName = field.name
         self.predicate = .equals(value)
         self.queryContext = context
     }
@@ -127,11 +127,11 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
 
     /// Create a Bitmap query for set membership with explicit context
     public init<V: Sendable & Hashable & Equatable>(
-        _ keyPath: KeyPath<T, V>,
+        _ field: Field<T, V>,
         in values: [V],
         context: IndexQueryContext
     ) {
-        self.fieldName = T.fieldName(for: keyPath)
+        self.fieldName = field.name
         self.predicate = .in(values)
         self.queryContext = context
     }
@@ -139,19 +139,21 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     // MARK: - Index Discovery
 
     /// Find the index descriptor using kindIdentifier and fieldName
-    private func findIndexDescriptor() -> IndexDescriptor? {
-        T.indexDescriptors.first { descriptor in
-            guard descriptor.kindIdentifier == Core.BitmapIndexKind<T>.identifier else {
-                return false
-            }
-            return descriptor.fieldNames.contains(fieldName)
+    private func findIndexDescriptor() throws -> IndexDescriptor? {
+        guard let descriptor = try T.indexDescriptors.first(where: {
+            $0.kindIdentifier == BitmapIndexSpecification.identifier
+                && $0.fieldNames.contains(fieldName)
+        }) else {
+            return nil
         }
+        _ = try BitmapIndexSpecification(descriptor.kind)
+        return descriptor
     }
 
     // MARK: - FusionQuery
 
     public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
-        guard let descriptor = findIndexDescriptor() else {
+        guard let descriptor = try findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
                 type: T.persistableType,
                 field: fieldName,

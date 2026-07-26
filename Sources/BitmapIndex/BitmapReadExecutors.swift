@@ -4,9 +4,8 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseEngine
-import DatabaseValue
-import Core
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 enum BitmapReadParameter {
@@ -42,7 +41,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult {
         let fieldName = try requireString(BitmapReadParameter.fieldName, from: indexScan.parameters)
 
@@ -56,8 +55,8 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             fieldName: fieldName
         )
 
-        if let limit = indexScan.parameters[BitmapReadParameter.limit]?.int64Value {
-            builder = builder.limit(Int(limit))
+        if let limit = indexScan.parameters[BitmapReadParameter.limit]?.uint64Value {
+            builder = builder.limit(limit)
         }
 
         let operation = try requireString(BitmapReadParameter.operation, from: indexScan.parameters)
@@ -89,7 +88,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
 
     private func requireString(
         _ key: String,
-        from parameters: [String: QueryParameterValue]
+        from parameters: [String: FieldValue]
     ) throws -> String {
         guard let value = parameters[key]?.stringValue else {
             throw BitmapReadError.missingParameter(key)
@@ -98,7 +97,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
     }
 
     private func decodeTupleArray(
-        _ value: QueryParameterValue?
+        _ value: FieldValue?
     ) throws -> [any TupleElement & Sendable] {
         guard let values = value?.arrayValue else {
             throw BitmapReadError.missingParameter(BitmapReadParameter.values)
@@ -107,7 +106,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
     }
 
     private func decodeTupleMatrix(
-        _ value: QueryParameterValue?
+        _ value: FieldValue?
     ) throws -> [[any TupleElement & Sendable]] {
         guard let rows = value?.arrayValue else {
             throw BitmapReadError.missingParameter(BitmapReadParameter.valueSets)
@@ -121,42 +120,6 @@ private struct BitmapReadExecutor: IndexReadExecutor {
     }
 }
 
-private struct PolymorphicBitmapPlaceholder: Persistable {
-    typealias ID = String
-
-    var id: String = ""
-
-    static var persistableType: String { "_PolymorphicBitmapPlaceholder" }
-    static var allFields: [String] { ["id"] }
-
-    static func fieldNumber(for fieldName: String) -> Int? {
-        fieldName == "id" ? 1 : nil
-    }
-
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        member == "id" ? id : nil
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<PolymorphicBitmapPlaceholder, Value>) -> String {
-        if keyPath == \PolymorphicBitmapPlaceholder.id { return "id" }
-        return "\(keyPath)"
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<PolymorphicBitmapPlaceholder>) -> String {
-        if keyPath == \PolymorphicBitmapPlaceholder.id { return "id" }
-        return "\(keyPath)"
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PolymorphicBitmapPlaceholder> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
-}
-
 private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "bitmap"
 
@@ -166,7 +129,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult {
         let fieldName = try requireString(BitmapReadParameter.fieldName, from: indexScan.parameters)
         let execution = CanonicalReadExecution.resolve(
@@ -176,8 +139,14 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
         let orderByFields = try selectQuery.requiredOrderByColumnNames()
         try context.authorizePolymorphicListAccess(
             group: group,
-            limit: selectQuery.limit,
-            offset: selectQuery.offset,
+            limit: try authorizationValue(
+                selectQuery.limit,
+                parameter: "limit"
+            ),
+            offset: try authorizationValue(
+                selectQuery.offset,
+                parameter: "offset"
+            ),
             orderBy: orderByFields
         )
 
@@ -190,15 +159,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
         let primaryKeys = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction -> [Tuple] in
-            let maintainer = BitmapIndexMaintainer<PolymorphicBitmapPlaceholder>(
-                index: Index(
-                    name: indexScan.indexName,
-                    kind: BitmapIndexKind<PolymorphicBitmapPlaceholder>(fieldNames: [fieldName]),
-                    rootExpression: FieldKeyExpression(fieldName: fieldName)
-                ),
-                subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id")
-            )
+            let reader = BitmapIndexReader(subspace: indexSubspace)
 
             let bitmap: RoaringBitmap
             switch operation {
@@ -207,26 +168,26 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
                 guard let first = values.first else {
                     throw BitmapReadError.invalidParameter(BitmapReadParameter.values)
                 }
-                bitmap = try await maintainer.getBitmap(for: [first], transaction: transaction)
+                bitmap = try await reader.bitmap(for: [first], transaction: transaction)
 
             case BitmapReadParameter.inOperation:
                 let values = try decodeTupleArray(indexScan.parameters[BitmapReadParameter.values])
                 let valueSets = values.map { [$0] as [any TupleElement] }
-                bitmap = try await maintainer.orQuery(values: valueSets, transaction: transaction)
+                bitmap = try await reader.union(of: valueSets, transaction: transaction)
 
             case BitmapReadParameter.andOperation:
                 let valueSets = try decodeTupleMatrix(indexScan.parameters[BitmapReadParameter.valueSets])
                 let converted = valueSets.map { $0 as [any TupleElement] }
-                bitmap = try await maintainer.andQuery(values: converted, transaction: transaction)
+                bitmap = try await reader.intersection(of: converted, transaction: transaction)
 
             default:
                 throw BitmapReadError.invalidParameter(BitmapReadParameter.operation)
             }
 
             let limitedBitmap: RoaringBitmap
-            if let limit = indexScan.parameters[BitmapReadParameter.limit]?.int64Value {
+            if let limit = indexScan.parameters[BitmapReadParameter.limit]?.uint64Value {
                 let ids = bitmap.toArray()
-                if ids.count > limit {
+                if UInt64(ids.count) > limit {
                     var truncated = RoaringBitmap()
                     for id in ids.prefix(Int(limit)) {
                         truncated.add(id)
@@ -238,7 +199,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             } else {
                 limitedBitmap = bitmap
             }
-            return try await maintainer.getPrimaryKeys(from: limitedBitmap, transaction: transaction)
+            return try await reader.primaryKeys(for: limitedBitmap, transaction: transaction)
         }
 
         let entities = try await context.fetchPolymorphicItems(
@@ -264,7 +225,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
 
     private func requireString(
         _ key: String,
-        from parameters: [String: QueryParameterValue]
+        from parameters: [String: FieldValue]
     ) throws -> String {
         guard let value = parameters[key]?.stringValue else {
             throw BitmapReadError.missingParameter(key)
@@ -273,7 +234,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func decodeTupleArray(
-        _ value: QueryParameterValue?
+        _ value: FieldValue?
     ) throws -> [any TupleElement & Sendable] {
         guard let values = value?.arrayValue else {
             throw BitmapReadError.missingParameter(BitmapReadParameter.values)
@@ -282,7 +243,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func decodeTupleMatrix(
-        _ value: QueryParameterValue?
+        _ value: FieldValue?
     ) throws -> [[any TupleElement & Sendable]] {
         guard let rows = value?.arrayValue else {
             throw BitmapReadError.missingParameter(BitmapReadParameter.valueSets)
@@ -293,5 +254,18 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             }
             return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
         }
+    }
+
+    private func authorizationValue(
+        _ value: UInt64?,
+        parameter: String
+    ) throws -> Int? {
+        guard let value else {
+            return nil
+        }
+        guard let result = Int(exactly: value) else {
+            throw BitmapReadError.invalidParameter(parameter)
+        }
+        return result
     }
 }
