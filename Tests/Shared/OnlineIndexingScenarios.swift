@@ -7,7 +7,7 @@
 // - RecordingIndexLifecycleStore: Entities index lifecycle transitions
 
 import Foundation
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 import Synchronization
@@ -205,7 +205,7 @@ public struct PlayerDatasetGenerator {
             var player = Player(
                 name: name,
                 score: Int64(i * 100),
-                level: (i % 100) + 1
+                level: Int64((i % 100) + 1)
             )
             player.id = String(format: "player_%06d", i)
             return player
@@ -372,7 +372,12 @@ public struct PlayerIdentifierIndexDefinition {
     public static func make(name: String) -> Index {
         Index(
             name: name,
-            kind: ScalarIndexKind<Player>(fields: [\Player.id]),
+            kind: IndexKindMetadata(
+                identifier: IndexDefinition.scalar.identifier,
+                subspaceStructure: .flat,
+                fields: [Player.fields.id.ascending.metadata],
+                metadata: [:]
+            ),
             rootExpression: FieldKeyExpression(fieldName: "id")
         )
     }
