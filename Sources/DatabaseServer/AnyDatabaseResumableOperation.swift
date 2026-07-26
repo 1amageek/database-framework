@@ -1,17 +1,17 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct AnyDatabaseResumableOperation: Sendable {
     struct PreparedJob: Sendable {
-        let planPayload: DatabaseBytes
-        let initialStatePayload: DatabaseBytes
+        let planPayload: ByteString
+        let initialStatePayload: ByteString
         let sliceTimeoutMilliseconds: UInt32
     }
 
     struct Slice: Sendable {
         enum Outcome: Sendable {
-            case incomplete(DatabaseBytes)
-            case complete(DatabaseBytes)
+            case incomplete(ByteString)
+            case complete(ByteString)
         }
 
         let completedWorkUnits: UInt64
@@ -19,38 +19,38 @@ public struct AnyDatabaseResumableOperation: Sendable {
         let outcome: Outcome
     }
 
-    public let operation: DatabaseJobOperationIdentifier
+    public let operation: JobOperationIdentifier
 
     private let prepareJob: @Sendable (
-        DatabaseBytes,
+        ByteString,
         DatabaseResumableOperationStartContext,
         DatabaseWireLimits,
         DatabasePersistentJobStorageLimits
     ) async throws -> PreparedJob
     private let resolveCommitModel: @Sendable (
-        DatabaseBytes,
+        ByteString,
         DatabaseWireLimits,
         DatabasePersistentJobStorageLimits
     ) throws -> DatabaseResumableOperationCommitModel
     private let executeSlice: @Sendable (
-        DatabaseBytes,
-        DatabaseBytes,
+        ByteString,
+        ByteString,
         UInt64,
         DatabaseResumableOperationContext,
         DatabaseWireLimits,
         DatabasePersistentJobStorageLimits
     ) async throws -> Slice
     private let executeCheckpointedSlice: @Sendable (
-        DatabaseBytes,
-        DatabaseBytes,
+        ByteString,
+        ByteString,
         UInt64,
         DatabaseCheckpointedResumableOperationContext,
         DatabaseWireLimits,
         DatabasePersistentJobStorageLimits
     ) async throws -> Slice
     private let applyUnsuccessfulOutcome: @Sendable (
-        DatabaseBytes,
-        DatabaseBytes,
+        ByteString,
+        ByteString,
         DatabaseJobUnsuccessfulOutcome,
         DatabaseResumableOperationContext,
         DatabaseWireLimits,
@@ -60,11 +60,11 @@ public struct AnyDatabaseResumableOperation: Sendable {
     public init<Operation: DatabaseResumableOperation>(
         _ operation: Operation
     ) throws {
-        self.operation = try Operation.Job.jobOperationIdentifier()
+        let job = try Operation.job()
+        self.operation = job.identifier
         self.prepareJob = { payload, context, limits, storageLimits in
-            let request = try DatabaseEnvelopeCodec.decode(
-                Operation.Job.Request.self,
-                from: payload,
+            let request = try job.decodeStartRequest(
+                payload,
                 limits: limits
             )
             let prepared = try await operation.compile(request, context: context)
@@ -87,7 +87,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
         self.resolveCommitModel = { planPayload, limits, storageLimits in
             let plan: Operation.Plan
             do {
-                plan = try DatabaseEnvelopeCodec.decode(
+                plan = try decodePersistentJobPayload(
                     Operation.Plan.self,
                     from: planPayload,
                     limits: try storageLimits.planWireLimits(basedOn: limits)
@@ -106,7 +106,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
             storageLimits in
             let plan: Operation.Plan
             do {
-                plan = try DatabaseEnvelopeCodec.decode(
+                plan = try decodePersistentJobPayload(
                     Operation.Plan.self,
                     from: planPayload,
                     limits: try storageLimits.planWireLimits(basedOn: limits)
@@ -116,7 +116,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
             }
             let state: Operation.State
             do {
-                state = try DatabaseEnvelopeCodec.decode(
+                state = try decodePersistentJobPayload(
                     Operation.State.self,
                     from: statePayload,
                     limits: try storageLimits.stateWireLimits(basedOn: limits)
@@ -145,8 +145,9 @@ public struct AnyDatabaseResumableOperation: Sendable {
                 )
             case .complete(let result):
                 outcome = .complete(
-                    try encodePersistentJobPayload(
+                    try encodePersistentJobResult(
                         result,
+                        job: job,
                         limits: try storageLimits.resultWireLimits(
                             basedOn: limits
                         ),
@@ -170,7 +171,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
             storageLimits in
             let plan: Operation.Plan
             do {
-                plan = try DatabaseEnvelopeCodec.decode(
+                plan = try decodePersistentJobPayload(
                     Operation.Plan.self,
                     from: planPayload,
                     limits: try storageLimits.planWireLimits(basedOn: limits)
@@ -180,7 +181,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
             }
             let state: Operation.State
             do {
-                state = try DatabaseEnvelopeCodec.decode(
+                state = try decodePersistentJobPayload(
                     Operation.State.self,
                     from: statePayload,
                     limits: try storageLimits.stateWireLimits(basedOn: limits)
@@ -209,8 +210,9 @@ public struct AnyDatabaseResumableOperation: Sendable {
                 )
             case .complete(let result):
                 outcome = .complete(
-                    try encodePersistentJobPayload(
+                    try encodePersistentJobResult(
                         result,
+                        job: job,
                         limits: try storageLimits.resultWireLimits(
                             basedOn: limits
                         ),
@@ -234,7 +236,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
             storageLimits in
             let plan: Operation.Plan
             do {
-                plan = try DatabaseEnvelopeCodec.decode(
+                plan = try decodePersistentJobPayload(
                     Operation.Plan.self,
                     from: planPayload,
                     limits: try storageLimits.planWireLimits(basedOn: limits)
@@ -244,7 +246,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
             }
             let state: Operation.State
             do {
-                state = try DatabaseEnvelopeCodec.decode(
+                state = try decodePersistentJobPayload(
                     Operation.State.self,
                     from: statePayload,
                     limits: try storageLimits.stateWireLimits(basedOn: limits)
@@ -262,7 +264,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
     }
 
     func compile(
-        requestPayload: DatabaseBytes,
+        requestPayload: ByteString,
         context: DatabaseResumableOperationStartContext,
         limits: DatabaseWireLimits,
         storageLimits: DatabasePersistentJobStorageLimits
@@ -276,8 +278,8 @@ public struct AnyDatabaseResumableOperation: Sendable {
     }
 
     func runSlice(
-        planPayload: DatabaseBytes,
-        statePayload: DatabaseBytes,
+        planPayload: ByteString,
+        statePayload: ByteString,
         maximumWorkUnits: UInt64,
         context: DatabaseResumableOperationContext,
         limits: DatabaseWireLimits,
@@ -294,7 +296,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
     }
 
     func commitModel(
-        planPayload: DatabaseBytes,
+        planPayload: ByteString,
         limits: DatabaseWireLimits,
         storageLimits: DatabasePersistentJobStorageLimits
     ) throws -> DatabaseResumableOperationCommitModel {
@@ -302,8 +304,8 @@ public struct AnyDatabaseResumableOperation: Sendable {
     }
 
     func runCheckpointedSlice(
-        planPayload: DatabaseBytes,
-        statePayload: DatabaseBytes,
+        planPayload: ByteString,
+        statePayload: ByteString,
         maximumWorkUnits: UInt64,
         context: DatabaseCheckpointedResumableOperationContext,
         limits: DatabaseWireLimits,
@@ -320,8 +322,8 @@ public struct AnyDatabaseResumableOperation: Sendable {
     }
 
     func applyUnsuccessfulOutcome(
-        planPayload: DatabaseBytes,
-        statePayload: DatabaseBytes,
+        planPayload: ByteString,
+        statePayload: ByteString,
         outcome: DatabaseJobUnsuccessfulOutcome,
         context: DatabaseResumableOperationContext,
         limits: DatabaseWireLimits,
@@ -355,14 +357,58 @@ private enum DatabasePersistentJobPayloadKind {
     }
 }
 
-private func encodePersistentJobPayload<Value: DatabaseWireValue>(
+private func encodePersistentJobPayload<Value: PersistentJobPayload>(
     _ value: Value,
     limits: DatabaseWireLimits,
     maximum: Int,
     kind: DatabasePersistentJobPayloadKind
-) throws -> DatabaseBytes {
+) throws -> ByteString {
     do {
-        return try DatabaseEnvelopeCodec.encode(value, limits: limits)
+        return try PersistentJobPayloadStorage.encode(
+            value,
+            limits: limits
+        )
+    } catch let error as DatabaseWireError {
+        let actual: Int
+        switch error {
+        case .frameTooLarge(let value, _),
+             .stringTooLarge(let value, _),
+             .byteStringTooLarge(let value, _),
+             .collectionTooLarge(let value, _),
+             .nestingTooDeep(let value, _),
+             .objectBudgetExceeded(let value, _):
+            actual = value
+        default:
+            throw error
+        }
+        throw kind.limitError(actual: actual, maximum: maximum)
+    } catch {
+        throw error
+    }
+}
+
+private func decodePersistentJobPayload<Value: PersistentJobPayload>(
+    _ type: Value.Type,
+    from bytes: ByteString,
+    limits: DatabaseWireLimits
+) throws -> Value {
+    try PersistentJobPayloadStorage.decode(
+        type,
+        from: bytes,
+        limits: limits
+    )
+}
+
+private func encodePersistentJobResult<Request, Response>(
+    _ response: Response,
+    job: JobOperation<Request, Response>,
+    limits: DatabaseWireLimits,
+    maximum: Int,
+    kind: DatabasePersistentJobPayloadKind
+) throws -> ByteString
+where Request: Sendable, Response: Sendable {
+    do {
+        return try job.encodeCompletedResponse(response, limits: limits)
     } catch let error {
         let actual: Int
         switch error {

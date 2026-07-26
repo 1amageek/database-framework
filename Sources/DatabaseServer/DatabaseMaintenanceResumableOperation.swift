@@ -1,22 +1,24 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 
 public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation {
-    public typealias Job = DatabaseMaintenanceJobDescriptor
-    public typealias Plan = DatabaseMaintenanceJobPlan
-    public typealias State = DatabaseMaintenanceJobState
+    public static func job()
+        throws(DatabaseWireError)
+        -> JobOperation<
+            MaintenanceExecuteOperation.Request,
+            MaintenanceExecuteOperation.Response
+        > {
+        JobOperations.maintenance
+    }
 
     private let runtimeLimits: DatabaseRuntimeLimits
-    private let wireLimits: DatabaseWireLimits
 
     public init(
-        runtimeLimits: DatabaseRuntimeLimits = .default,
-        wireLimits: DatabaseWireLimits = .default
+        runtimeLimits: DatabaseRuntimeLimits = .default
     ) {
         self.runtimeLimits = runtimeLimits
-        self.wireLimits = wireLimits
     }
 
     public func compile(
@@ -69,8 +71,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 throw DatabaseMaintenanceRuntimeError.invalidBatchSize(batchSize)
             }
             let canonicalPartitions = try await DatabaseIndexMaintenanceRuntime(
-                container: context.operationContext.container,
-                wireLimits: wireLimits
+                container: context.operationContext.container
             ).prepareResources(
                 entity: entity,
                 index: index,
@@ -250,8 +251,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 )
             }
             let slice = try await DatabaseIndexMaintenanceRuntime(
-                container: context.operationContext.container,
-                wireLimits: wireLimits
+                container: context.operationContext.container
             ).runRebuildSlice(
                 entity: entity,
                 index: index,
@@ -344,7 +344,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 completedWorkUnits: result.workUnitsConsumed,
                 state: DatabaseMaintenanceJobState(
                     value: .compaction(
-                        continuation: DatabaseBytes(retaining: backend.bytes)
+                        continuation: ByteString(retaining: backend.bytes)
                     )
                 )
             )
@@ -381,8 +381,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 detail = "cancelled"
             }
             try await DatabaseIndexMaintenanceRuntime(
-                container: context.operationContext.container,
-                wireLimits: wireLimits
+                container: context.operationContext.container
             ).markFailed(
                 entity: entity,
                 index: index,

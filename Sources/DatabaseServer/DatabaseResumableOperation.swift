@@ -1,12 +1,16 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public protocol DatabaseResumableOperation: Sendable {
-    associatedtype Job: DatabaseJobDescriptor
-    associatedtype Plan: DatabaseWireValue
-    associatedtype State: DatabaseWireValue
+    associatedtype Request: Sendable
+    associatedtype Response: Sendable
+    associatedtype Plan: PersistentJobPayload
+    associatedtype State: PersistentJobPayload
+
+    static func job()
+        throws(DatabaseWireError) -> JobOperation<Request, Response>
 
     func compile(
-        _ request: Job.Request,
+        _ request: Request,
         context: DatabaseResumableOperationStartContext
     ) async throws -> DatabasePreparedResumableJob<Plan, State>
 
@@ -19,14 +23,14 @@ public protocol DatabaseResumableOperation: Sendable {
         state: State,
         maximumWorkUnits: UInt64,
         context: DatabaseResumableOperationContext
-    ) async throws -> DatabaseResumableOperationSlice<State, Job.Response>
+    ) async throws -> DatabaseResumableOperationSlice<State, Response>
 
     func runCheckpointedSlice(
         plan: Plan,
         state: State,
         maximumWorkUnits: UInt64,
         context: DatabaseCheckpointedResumableOperationContext
-    ) async throws -> DatabaseResumableOperationSlice<State, Job.Response>
+    ) async throws -> DatabaseResumableOperationSlice<State, Response>
 
     /// Applies operation-owned state in the same transaction that publishes
     /// the job's unsuccessful outcome. The transaction may retry this invocation.
@@ -51,7 +55,7 @@ public extension DatabaseResumableOperation {
         state: State,
         maximumWorkUnits: UInt64,
         context: DatabaseCheckpointedResumableOperationContext
-    ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+    ) async throws -> DatabaseResumableOperationSlice<State, Response> {
         _ = plan
         _ = state
         _ = maximumWorkUnits
