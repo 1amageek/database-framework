@@ -132,6 +132,17 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
         partitions: FieldObject
     ) async throws -> IndexReadResult {
         let fieldName = try requireString(BitmapReadParameter.fieldName, from: indexScan.parameters)
+        guard let descriptor = group.indexes.first(where: {
+            $0.name == indexScan.indexName
+        }),
+        descriptor.kindIdentifier == BitmapIndexSpecification.identifier,
+        descriptor.subspaceStructure == .hierarchical,
+        descriptor.fieldNames == [fieldName],
+        descriptor.metadata.isEmpty else {
+            throw BitmapReadError.invalidParameter(
+                BitmapReadParameter.fieldName
+            )
+        }
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .snapshot
