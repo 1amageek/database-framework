@@ -6,13 +6,11 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import QueryIR
+import DatabaseKit
 import QueryAST
 import GraphIndex
-import Graph
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 
 /// Rewrites SelectQuery by executing SPARQL() subqueries
@@ -54,11 +52,11 @@ internal struct SPARQLFunctionRewriter: Sendable {
     /// - Parameter query: The SelectQuery to rewrite
     /// - Returns: Rewritten SelectQuery with SPARQL() calls replaced
     /// - Throws: `SPARQLFunctionError` for execution errors
-    internal func rewrite(_ query: QueryIR.SelectQuery) async throws -> QueryIR.SelectQuery {
+    internal func rewrite(_ query: SelectQuery) async throws -> SelectQuery {
         guard let filter = query.filter else { return query }
         let rewrittenFilter = try await rewriteExpression(filter)
 
-        return QueryIR.SelectQuery(
+        return SelectQuery(
             projection: query.projection,
             source: query.source,
             filter: rewrittenFilter,
@@ -84,11 +82,13 @@ internal struct SPARQLFunctionRewriter: Sendable {
     /// - Parameter expr: Expression to rewrite
     /// - Returns: Rewritten expression
     /// - Throws: `SPARQLFunctionError` for execution errors
-    private func rewriteExpression(_ expr: QueryIR.Expression) async throws -> QueryIR.Expression {
+    private func rewriteExpression(
+        _ expr: DatabaseKit.Expression
+    ) async throws -> DatabaseKit.Expression {
         switch expr {
         case .inList(let lhs, let values):
             // Check if any value is a SPARQL() function
-            var rewrittenValues: [QueryIR.Expression] = []
+            var rewrittenValues: [DatabaseKit.Expression] = []
             for value in values {
                 if case .function(let call) = value, call.name.uppercased() == "SPARQL" {
                     // Execute SPARQL and inline results
@@ -101,7 +101,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             return .inList(try await rewriteExpression(lhs), values: rewrittenValues)
 
         case .notInList(let lhs, let values):
-            var rewrittenValues: [QueryIR.Expression] = []
+            var rewrittenValues: [DatabaseKit.Expression] = []
             for value in values {
                 if case .function(let call) = value, call.name.uppercased() == "SPARQL" {
                     let literals = try await executeSPARQLFunctionAsArray(call)
@@ -200,7 +200,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             return .caseWhen(cases: rewrittenCases, elseResult: rewrittenElse)
 
         case .coalesce(let exprs):
-            var rewrittenExprs: [QueryIR.Expression] = []
+            var rewrittenExprs: [DatabaseKit.Expression] = []
             for expr in exprs {
                 rewrittenExprs.append(try await rewriteExpression(expr))
             }
@@ -217,7 +217,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                 )
             }
             // Other functions - recurse on arguments
-            var rewrittenArgs: [QueryIR.Expression] = []
+            var rewrittenArgs: [DatabaseKit.Expression] = []
             for arg in call.arguments {
                 rewrittenArgs.append(try await rewriteExpression(arg))
             }
@@ -247,7 +247,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
     /// - Parameter call: The SPARQL() function call
     /// - Returns: Array of literals (single-variable projection)
     /// - Throws: `SPARQLFunctionError` for invalid arguments or execution errors
-    private func executeSPARQLFunctionAsArray(_ call: FunctionCall) async throws -> [QueryIR.Literal] {
+    private func executeSPARQLFunctionAsArray(_ call: FunctionCall) async throws -> [Literal] {
         // 1. Extract arguments (type name, query string, optional variable)
         let (typeName, sparqlQuery, extractVar) = try extractArguments(call)
 
@@ -260,7 +260,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
         let graphIndex = dataset.indexDescriptor
 
         // 4. Resolve type directory and index subspace
-        guard let persistableType = entity.persistableType else {
+        guard let persistableType = context.container.runtimeConfiguration
+            .persistableTypes.type(named: entity.name) else {
             throw SPARQLFunctionError.invalidGraphIndex(entity.name)
         }
         let typeDirectory = try await resolveTypeDirectory(persistableType)
@@ -409,32 +410,13 @@ internal struct SPARQLFunctionRewriter: Sendable {
 
     // MARK: - FieldValue Conversion
 
-    /// Convert FieldValue to QueryIR.Literal
-    ///
-    /// - Parameter fieldValue: The FieldValue to convert
-    /// - Returns: Equivalent Literal
-    /// - Throws: `SPARQLFunctionError` if conversion fails (not expected for graph data)
-    private func fieldValueToLiteral(_ fieldValue: FieldValue) throws -> QueryIR.Literal {
-        switch fieldValue {
-        case .null:
-            return .null
-        case .bool(let value):
-            return .bool(value)
-        case .int64(let value):
-            return .int(value)
-        case .uint64(let value):
-            return .uint(value)
-        case .double(let value):
-            return .double(value)
-        case .string(let value):
-            return .string(value)
-        case .data(let value):
-            return .binary(value)
-        case .rdfTerm(let term):
-            return .rdfTerm(term)
-        case .array:
-            // Array values are not supported in SPARQL function results
-            throw SPARQLFunctionError.invalidArguments("Array values not supported in SPARQL() results")
+    private func fieldValueToLiteral(
+        _ fieldValue: FieldValue
+    ) throws -> Literal {
+        do {
+            return try fieldValue.toLiteral()
+        } catch {
+            throw SPARQLFunctionError.invalidArguments(error.description)
         }
     }
 }
