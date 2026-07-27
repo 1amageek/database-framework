@@ -40,7 +40,7 @@ internal final class HNSWGraphCache: Sendable {
             efSearch: Int
         ) throws -> [SearchResult] {
             try searchLock.withLock { _ in
-                index.setEfSearch(efSearch)
+                try index.setEfSearch(efSearch)
                 return try queryVector.withUnsafeBufferPointer { buffer in
                     try index.search(buffer, k: k)
                 }

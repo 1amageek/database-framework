@@ -309,7 +309,7 @@ the same commit as `origin/main`.
 | `database-types` | `26.0726.0` |
 | `database-kit` | `26.0727.1` |
 | `storage-kit` | `26.0727.0` |
-| `swift-hnsw` | `1.0.0` |
+| `swift-hnsw` | `1.0.1` |
 
 Repository branches and local paths are development conveniences, not part of
 the package or release contract.

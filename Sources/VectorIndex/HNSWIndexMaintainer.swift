@@ -404,6 +404,10 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             throw VectorIndexError.invalidArgument("k must be positive")
         }
 
+        guard searchParams.ef > 0 else {
+            throw VectorIndexError.invalidArgument("ef must be positive")
+        }
+
         let snapshot = try await loadSearchSnapshot(transaction: transaction)
         let results = try snapshot.search(
             queryVector: queryVector,
@@ -475,6 +479,10 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         guard k > 0 else {
             throw VectorIndexError.invalidArgument("k must be positive")
+        }
+
+        guard searchParams.ef > 0 else {
+            throw VectorIndexError.invalidArgument("ef must be positive")
         }
 
         // Expand ef for filtered search
@@ -603,13 +611,16 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             try await estimateMaxElements(transaction: transaction),
             additionalCapacity
         )
-        let index = try HNSWIndexF32(
-            dimensions: dimensions,
-            maxElements: maxElements,
-            metric: metric.toHNSWMetric,
-            configuration: parameters.hnswConfiguration
-        )
-        return index
+        do {
+            return try HNSWIndexF32(
+                dimensions: dimensions,
+                maxElements: maxElements,
+                metric: metric.toHNSWMetric,
+                configuration: parameters.hnswConfiguration
+            )
+        } catch HNSWError.invalidArgument(let message) {
+            throw VectorIndexError.invalidArgument(message)
+        }
     }
 
     /// Resize the graph before adding a batch when the saved capacity is full.

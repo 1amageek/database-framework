@@ -320,18 +320,106 @@ struct HNSWBasicBehaviorTests {
         #expect(results.count == 3, "Should return 3 results")
 
         // Extract IDs from results
-        let resultIds = results.compactMap { result -> String? in
-            guard let id = result.primaryKey.first as? String else { return nil }
-            return id
+        let resultIds = try results.map { result in
+            try decodePrimaryKeyString(result.primaryKey)
         }
 
         // Exact match should be first (closest cosine distance)
-        #expect(resultIds[0] == "exact", "Exact match should be first")
+        #expect(resultIds.first == "exact", "Exact match should be first")
 
         // Cleanup
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
             try transaction.clearRange(beginKey: begin, endKey: end)
+        }
+    }
+
+    @Test("HNSW rejects a non-positive search breadth as a vector error")
+    func testHNSWRejectsInvalidSearchBreadth() async throws {
+        let database = InMemoryEngine()
+        let testId = UUID().uuidString.prefix(8)
+        let subspace = Subspace(
+            prefix: Tuple("test", "hnsw", "invalidSearch", String(testId)).pack()
+        )
+        let indexSubspace = subspace.subspace("I").subspace(
+            "HNSWDocument_embedding"
+        )
+        let specification = try VectorIndexSpecification(
+            vectorIndexMetadata(dimensions: 4, metric: .cosine)
+        )
+        let index = Index(
+            name: "HNSWDocument_embedding",
+            kind: specification.metadata,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            subspaceKey: "HNSWDocument_embedding",
+            itemTypes: Set(["HNSWDocument"])
+        )
+        let maintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: index,
+            dimensions: specification.dimensions,
+            metric: specification.metric,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id")
+        )
+
+        do {
+            _ = try await database.withTransaction { transaction in
+                try await maintainer.search(
+                    queryVector: [1.0, 0.0, 0.0, 0.0],
+                    k: 1,
+                    searchParams: HNSWSearchParameters(ef: 0),
+                    transaction: transaction
+                )
+            }
+            Issue.record("Expected an invalid search breadth error")
+        } catch VectorIndexError.invalidArgument(let message) {
+            #expect(message == "ef must be positive")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test("HNSW rejects invalid construction parameters as a vector error")
+    func testHNSWRejectsInvalidConstructionParameters() async throws {
+        let database = InMemoryEngine()
+        let testId = UUID().uuidString.prefix(8)
+        let subspace = Subspace(
+            prefix: Tuple("test", "hnsw", "invalidConstruction", String(testId)).pack()
+        )
+        let indexSubspace = subspace.subspace("I").subspace(
+            "HNSWDocument_embedding"
+        )
+        let specification = try VectorIndexSpecification(
+            vectorIndexMetadata(dimensions: 4, metric: .cosine)
+        )
+        let index = Index(
+            name: "HNSWDocument_embedding",
+            kind: specification.metadata,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            subspaceKey: "HNSWDocument_embedding",
+            itemTypes: Set(["HNSWDocument"])
+        )
+        let maintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: index,
+            dimensions: specification.dimensions,
+            metric: specification.metric,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: HNSWParameters(m: 1)
+        )
+
+        do {
+            _ = try await database.withTransaction { transaction in
+                try await maintainer.getNodeCount(transaction: transaction)
+            }
+            Issue.record("Expected an invalid construction parameter error")
+        } catch VectorIndexError.invalidArgument(let message) {
+            #expect(
+                message
+                    == "m must be at least 2 and small enough to calculate connection capacity"
+            )
+        } catch {
+            Issue.record("Unexpected error: \(error)")
         }
     }
 
@@ -387,9 +475,8 @@ struct HNSWBasicBehaviorTests {
             )
         }
 
-        let resultIds = results.compactMap { result -> String? in
-            guard let id = result.primaryKey.first as? String else { return nil }
-            return id
+        let resultIds = try results.map { result in
+            try decodePrimaryKeyString(result.primaryKey)
         }
 
         #expect(resultIds.first == "batch-exact")
@@ -442,7 +529,10 @@ struct HNSWBasicBehaviorTests {
             )
         }
 
-        #expect(initialResults.compactMap { $0.primaryKey.first as? String }.first == "first")
+        let initialIdentifiers = try initialResults.map { result in
+            try decodePrimaryKeyString(result.primaryKey)
+        }
+        #expect(initialIdentifiers.first == "first")
 
         let second = HNSWDocument(id: "second", title: "Second", embedding: try Vector(float32: [1.0, 0.0, 0.0, 0.0]))
         try await database.withTransaction { transaction in
@@ -461,7 +551,10 @@ struct HNSWBasicBehaviorTests {
             )
         }
 
-        #expect(refreshedResults.compactMap { $0.primaryKey.first as? String }.first == "second")
+        let refreshedIdentifiers = try refreshedResults.map { result in
+            try decodePrimaryKeyString(result.primaryKey)
+        }
+        #expect(refreshedIdentifiers.first == "second")
 
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
@@ -643,4 +736,25 @@ struct HNSWBasicBehaviorTests {
             try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
+}
+
+private enum HNSWTestError: Error {
+    case missingPrimaryKey
+    case unexpectedPrimaryKey(FieldValue)
+}
+
+private func decodePrimaryKeyString(
+    _ primaryKey: [any TupleElement]
+) throws -> String {
+    guard let firstElement = primaryKey.first else {
+        throw HNSWTestError.missingPrimaryKey
+    }
+    if let string = firstElement as? String {
+        return string
+    }
+    let fieldValue = try FieldValue(tupleElement: firstElement)
+    guard case .string(let string) = fieldValue else {
+        throw HNSWTestError.unexpectedPrimaryKey(fieldValue)
+    }
+    return string
 }

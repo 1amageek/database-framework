@@ -255,7 +255,7 @@ against the model metadata.
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Flat scan (exact) | ✅ Complete | O(n) brute force |
-| HNSW API | ✅ Complete | Uses swift-hnsw 1.0 Swift production backend |
+| HNSW API | ✅ Complete | Uses swift-hnsw 1.0.1 Swift production backend |
 | Cosine distance | ✅ Complete | 1 - cosine_similarity |
 | Euclidean distance | ✅ Complete | L2 distance |
 | Dot product | ✅ Complete | Inner product |
@@ -268,7 +268,7 @@ against the model metadata.
 
 ## Performance Characteristics
 
-swift-hnsw 1.0 uses a Swift-only production backend. The C++ hnswlib implementation is kept inside swift-hnsw's reference benchmark package and is not part of database-framework's package graph.
+swift-hnsw 1.0.1 uses a Swift-only production backend. The C++ hnswlib implementation is kept inside swift-hnsw's reference benchmark package and is not part of database-framework's package graph.
 
 | Operation | Flat Scan | Swift HNSW Backend |
 |-----------|-----------|--------------------|
