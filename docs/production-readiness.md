@@ -24,7 +24,8 @@ database-framework service.
 
 ## Security
 
-- Establish AuthContext at the request boundary.
+- Establish AuthorizationContext at the request boundary.
+- Register every enabled entity policy through AuthorizationPolicyHandler.
 - Keep SecurityPolicy evaluation enabled in production.
 - Test create, read, update, delete, list, and cross-tenant move paths.
 - Provision tenant, workspace, and database routing independently from
@@ -51,15 +52,17 @@ database-framework service.
 ~~~bash
 swift build
 xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS'
-swift build --traits SQLite
-swift build --traits PostgreSQL
+swift build --disable-default-traits --traits SQLite
+swift build --disable-default-traits --traits PostgreSQL
 swift build \
   --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a_wasm \
   --product DatabaseRuntime \
   --disable-default-traits
 ~~~
 
-Run PostgreSQL integration tests only when a test database is configured.
+Run PostgreSQL integration tests only when `POSTGRES_TEST_UNIX_SOCKET` or
+`POSTGRES_TEST_HOST` identifies an isolated test database. The Unix-socket
+form is preferred because it does not expose a host TCP port.
 Run Cloudflare Worker smoke and deployment dry-run checks in the
 database-framework-cloudflare repository.
 

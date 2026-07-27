@@ -31,14 +31,14 @@ xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=ar
 The default build enables FoundationDB.
 
 ~~~bash
-swift build --traits SQLite
+swift build --disable-default-traits --traits SQLite
 xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
 ~~~
 
 SQLite builds do not link libfdb_c.
 
 ~~~bash
-swift build --traits PostgreSQL
+swift build --disable-default-traits --traits PostgreSQL
 xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
 ~~~
 

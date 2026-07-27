@@ -11,18 +11,26 @@ updated, or deleted.
 
 ~~~swift
 extension Post: SecurityPolicy {
-    static func allowGet(
-        resource: Post,
-        auth: (any AuthContext)?
+    static func permitsRead(
+        of resource: borrowing Post,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        resource.isPublic || resource.authorID == auth?.userID
+        resource.isPublic
+            || resource.authorID == context.principal?.identifier
     }
 
-    static func allowDelete(
-        resource: Post,
-        auth: (any AuthContext)?
+    static func permitsQuery(
+        _ query: borrowing SecurityQuery,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        resource.authorID == auth?.userID
+        context.isAuthenticated && (query.limit ?? 0) <= 100
+    }
+
+    static func permitsDelete(
+        _ resource: borrowing Post,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        resource.authorID == context.principal?.identifier
     }
 }
 ~~~
@@ -33,10 +41,24 @@ independent of index selection.
 
 ## Request Context
 
-Set authentication information around each request:
+Register every policy explicitly in the container-scoped runtime. Conformance
+alone does not mutate a global registry and is not discovered through
+reflection.
 
 ~~~swift
-try await AuthContextKey.$current.withValue(requestAuth) {
+let runtime = try DatabaseFrameworkRuntime.configuration(
+    persistableTypes: [Post.self],
+    authorizationPolicies: [AuthorizationPolicyHandler(Post.self)]
+)
+~~~
+
+Set authorization information around each request:
+
+~~~swift
+let authorization = AuthorizationContext.authenticated(
+    Principal(identifier: authenticatedUserID, roles: authenticatedRoles)
+)
+try await RequestAuthorization.$context.withValue(authorization) {
     let context = container.newContext()
     let posts = try await context.fetch(Post.self).execute()
     _ = posts
@@ -64,7 +86,7 @@ Tenant isolation has two independent parts:
 | Concern | Mechanism |
 |---|---|
 | Physical/logical partition | dynamic directory and partition binding |
-| Authorization | SecurityPolicy and request AuthContext |
+| Authorization | SecurityPolicy and request AuthorizationContext |
 
 Every dynamic-directory read, delete, or enumeration must provide all required
 partition fields. Authorization still applies after the partition is resolved.
@@ -72,7 +94,8 @@ A partition value is not an authorization credential.
 
 ## Production Rules
 
-- Establish AuthContext at the request boundary.
+- Establish AuthorizationContext at the request boundary.
+- Register each AuthorizationPolicyHandler in DatabaseRuntimeConfiguration.
 - Keep the security configuration enabled in production.
 - Never use client-side filtering as the authorization mechanism.
 - Validate tenant and workspace identifiers before binding them to a directory.

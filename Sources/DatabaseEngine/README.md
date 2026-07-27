@@ -247,9 +247,14 @@ struct Employee {
     var ssn: String = ""
 }
 
-// Secure fetch with auth context
-try await AuthContextKey.$current.withValue(userAuth) {
-    let employees = try await context.fetchSecure(Employee.self).execute()
+let authorization = AuthorizationContext.authenticated(
+    Principal(identifier: userID, roles: userRoles)
+)
+try await RequestAuthorization.$context.withValue(authorization) {
+    let employees = try await context.fetch(Employee.self).execute()
+    let unreadable = employees.flatMap {
+        context.unreadableFields(in: $0)
+    }
 }
 ```
 
@@ -269,8 +274,8 @@ struct TenantOrder {
 
 // Query with partition
 let orders = try await context.fetch(TenantOrder.self)
-    .partition(\.tenantID, equals: "tenant_123")
-    .where(\.status == "pending")
+    .partition(TenantOrder.fields.tenantID, equals: "tenant_123")
+    .where(TenantOrder.fields.status == "pending")
     .execute()
 ```
 
