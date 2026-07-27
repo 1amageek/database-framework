@@ -232,8 +232,7 @@ enum PGStageFailureMigrationPlan: SchemaMigrationPlan {
 struct MigrationExecutionPostgreSQLTests {
     @Test("Multi-stage migration executes in order and persists stage boundaries on PostgreSQL")
     func multiStageMigrationExecutesInOrderAndPersistsBetweenStages() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             await pgMigrationEventRecorder.reset()
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
@@ -279,8 +278,7 @@ struct MigrationExecutionPostgreSQLTests {
 
     @Test("Failed later stage keeps earlier stage committed on PostgreSQL")
     func failedLaterStageKeepsEarlierStageCommitted() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             await pgMigrationEventRecorder.reset()
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
@@ -335,8 +333,7 @@ struct MigrationExecutionPostgreSQLTests {
 
     @Test("Empty database bootstraps to latest schema without executing stages on PostgreSQL")
     func emptyDatabaseBootstrapsWithoutExecutingStages() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             await pgMigrationEventRecorder.reset()
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
@@ -362,8 +359,7 @@ struct MigrationExecutionPostgreSQLTests {
 
     @Test("Re-entrant migrateIfNeeded is idempotent on PostgreSQL")
     func reEntrantMigrateIsIdempotent() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             await pgMigrationEventRecorder.reset()
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 

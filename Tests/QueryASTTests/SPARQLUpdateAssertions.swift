@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 @testable import QueryAST
 
 enum SPARQLUpdateAssertionError: Error {
@@ -14,4 +13,3 @@ func requireSingleSPARQLUpdateOperation(
     }
     return request.firstOperation
 }
-#endif

@@ -16,7 +16,7 @@ struct PGDemoItem: Equatable {
 
     var id: String = UUID().uuidString
     var name: String = ""
-    var value: Int = 0
+    var value: Int64 = 0
     var tags: [String] = []
 }
 
@@ -36,7 +36,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Create -> Read -> Update -> Delete round-trip")
     func roundTrip() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -98,7 +98,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Insert multiple items and save in batch")
     func batchInsertSave() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -109,7 +109,7 @@ struct PostgreSQLCRUDTests {
                 var item = PGDemoItem()
                 item.id = id
                 item.name = "Item \(i)"
-                item.value = i * 10
+                item.value = Int64(i * 10)
                 try context.insert(item)
             }
 
@@ -119,7 +119,7 @@ struct PostgreSQLCRUDTests {
             // Verify all items are persisted
             for (i, id) in ids.enumerated() {
                 let fetched = try await context.fetch(PGDemoItem.self)
-                    .where(\.id == id)
+                    .where(PGDemoItem.fields.id == id)
                     .first()
                 #expect(fetched != nil, "Item \(i) should exist")
                 #expect(fetched?.name == "Item \(i)")
@@ -129,7 +129,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Delete via change tracking")
     func deleteViaChangeTracking() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -143,7 +143,7 @@ struct PostgreSQLCRUDTests {
 
             // Verify exists
             let before = try await context.fetch(PGDemoItem.self)
-                .where(\.id == itemId)
+                .where(PGDemoItem.fields.id == itemId)
                 .first()
             #expect(before != nil)
 
@@ -155,7 +155,7 @@ struct PostgreSQLCRUDTests {
 
             // Verify deleted
             let after = try await context.fetch(PGDemoItem.self)
-                .where(\.id == itemId)
+                .where(PGDemoItem.fields.id == itemId)
                 .first()
             #expect(after == nil)
         }
@@ -165,7 +165,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Fetch with where clause")
     func fetchWithWhere() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -184,7 +184,7 @@ struct PostgreSQLCRUDTests {
 
             // Filter by name
             let alphas = try await context.fetch(PGDemoItem.self)
-                .where(\.name == "Alpha")
+                .where(PGDemoItem.fields.name == "Alpha")
                 .execute()
 
             let matchingAlphas = alphas.filter { $0.id == id1 || $0.id == id3 }
@@ -195,7 +195,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Fetch with limit")
     func fetchWithLimit() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -204,13 +204,13 @@ struct PostgreSQLCRUDTests {
                 var item = PGDemoItem()
                 item.id = uniqueID("lim\(i)")
                 item.name = "Limit test"
-                item.value = i
+                item.value = Int64(i)
                 try context.insert(item)
             }
             try await context.save()
 
             let results = try await context.fetch(PGDemoItem.self)
-                .where(\.name == "Limit test")
+                .where(PGDemoItem.fields.name == "Limit test")
                 .limit(3)
                 .execute()
 
@@ -222,7 +222,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Read non-existent item returns nil")
     func readNonExistent() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -233,9 +233,9 @@ struct PostgreSQLCRUDTests {
         }
     }
 
-    @Test("Insert same ID overwrites (upsert behavior)")
+    @Test("Explicit upsert replaces an existing item")
     func upsertBehavior() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -249,17 +249,17 @@ struct PostgreSQLCRUDTests {
             try context.insert(item1)
             try await context.save()
 
-            // Second insert with same ID
+            // Explicitly replace the existing item.
             var item2 = PGDemoItem()
             item2.id = itemId
             item2.name = "Overwritten"
             item2.value = 2
-            try context.insert(item2)
+            try context.upsert(item2)
             try await context.save()
 
             // Should have the second value
             let fetched = try await context.fetch(PGDemoItem.self)
-                .where(\.id == itemId)
+                .where(PGDemoItem.fields.id == itemId)
                 .first()
             #expect(fetched?.name == "Overwritten")
             #expect(fetched?.value == 2)
@@ -268,7 +268,7 @@ struct PostgreSQLCRUDTests {
 
     @Test("Empty array field round-trip")
     func emptyArrayRoundTrip() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -283,7 +283,7 @@ struct PostgreSQLCRUDTests {
             try await context.save()
 
             let fetched = try await context.fetch(PGDemoItem.self)
-                .where(\.id == itemId)
+                .where(PGDemoItem.fields.id == itemId)
                 .first()
             #expect(fetched?.tags == [])
         }

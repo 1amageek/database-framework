@@ -84,8 +84,7 @@ enum PGDirectoryMigrationCopyPlan: SchemaMigrationPlan {
 struct DirectoryMigrationPostgreSQLTests {
     @Test("Custom migration copies data across changed #Directory paths on PostgreSQL")
     func customMigrationCopiesAcrossDirectoryChange() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let seededID = "pg-dir-migration-\(UUID().uuidString)"
 
@@ -125,8 +124,7 @@ struct DirectoryMigrationPostgreSQLTests {
 
     @Test("Running migration twice leaves data consistent on PostgreSQL (idempotent)")
     func rerunningMigrationIsIdempotent() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let seededID = "pg-dir-migration-idempotent-\(UUID().uuidString)"
 

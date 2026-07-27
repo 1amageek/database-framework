@@ -7,11 +7,8 @@ import Synchronization
 import TestHeartbeat
 import Testing
 @testable import GraphIndex
-#if FOUNDATION_DB
-import TestSupport
-#endif
 
-@Suite("RDF dataset read isolation", .foundationDBScenario, .heartbeat)
+@Suite("RDF dataset read isolation", .heartbeat)
 struct RDFDatasetReadModeTests {
     @Test("SPARQL executor propagates default and mutation read modes")
     func sparqlExecutorPropagatesReadMode() async throws {

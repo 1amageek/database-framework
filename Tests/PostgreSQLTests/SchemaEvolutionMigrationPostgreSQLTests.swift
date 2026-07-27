@@ -152,8 +152,7 @@ enum PGCustomMigrationPlan: SchemaMigrationPlan {
 struct SchemaEvolutionMigrationPostgreSQLTests {
     @Test("Lightweight migration keeps existing PostgreSQL data readable end-to-end")
     func lightweightMigrationPreservesExistingDataEndToEnd() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
             let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
@@ -195,8 +194,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
 
     @Test("SchemaRegistry accepts append-only fields on PostgreSQL")
     func schemaRegistryAcceptsAppendOnlyFields() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let registry = SchemaRegistry(database: engine)
 
@@ -212,8 +210,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
 
     @Test("SchemaRegistry rejects reordered fields on PostgreSQL")
     func schemaRegistryRejectsReorderedFields() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let registry = SchemaRegistry(database: engine)
             let typeName = PGSchemaEvolutionUserV1.persistableType
@@ -245,8 +242,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
 
     @Test("Custom migration persists breaking schema changes on PostgreSQL")
     func customMigrationPersistsBreakingSchemaChanges() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let seededID = "pg-breaking-\(UUID().uuidString)"
 
@@ -295,8 +291,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
 
     @Test("Custom migration transforms PostgreSQL data end-to-end")
     func customMigrationTransformsDataEndToEnd() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            try await PostgreSQLScenarioCoordinator.shared.clearScenarioData()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
             let initialContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(

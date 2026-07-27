@@ -22,18 +22,19 @@ struct PGCounter: Equatable {
     #Directory<PGCounter>("test", "pg", "concurrency")
 
     var id: String = UUID().uuidString
-    var value: Int = 0
+    var value: Int64 = 0
 }
 
 /// Collect range scan results from a concrete transaction type
 private func collectRange(
     _ tx: some Transaction,
-    begin: [UInt8], end: [UInt8],
+    begin: Bytes,
+    end: Bytes,
     limit: Int = 0,
     reverse: Bool = false
-) async throws -> [(key: [UInt8], value: [UInt8])] {
+) async throws -> [(key: Bytes, value: Bytes)] {
     let seq = tx.getRange(begin: begin, end: end, limit: limit, reverse: reverse)
-    var result: [(key: [UInt8], value: [UInt8])] = []
+    var result: [(key: Bytes, value: Bytes)] = []
     for try await (key, value) in seq { result.append((key: key, value: value)) }
     return result
 }
@@ -54,7 +55,7 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("Concurrent writes to different keys succeed")
     func concurrentWritesDifferentKeys() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
 
             let id1 = uniqueID("conc-1")
@@ -85,12 +86,12 @@ struct PostgreSQLConcurrencyTests {
             let ctx = container.newContext()
 
             let result1 = try await ctx.fetch(PGCounter.self)
-                .where(\.id == id1)
+                .where(PGCounter.fields.id == id1)
                 .first()
             #expect(result1?.value == 100)
 
             let result2 = try await ctx.fetch(PGCounter.self)
-                .where(\.id == id2)
+                .where(PGCounter.fields.id == id2)
                 .first()
             #expect(result2?.value == 200)
         }
@@ -100,7 +101,7 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("withTransaction retries on serialization failure")
     func withTransactionRetries() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -128,7 +129,7 @@ struct PostgreSQLConcurrencyTests {
 
             // Verify final value
             let final_ = try await context.fetch(PGCounter.self)
-                .where(\.id == itemId)
+                .where(PGCounter.fields.id == itemId)
                 .first()
             #expect(final_?.value == 5)
         }
@@ -138,10 +139,10 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("Empty byte arrays round-trip correctly")
     func emptyByteArrayRoundTrip() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let key: [UInt8] = [0x99, 0x01, 0x02]
+            let key: Bytes = [0x99, 0x01, 0x02]
 
             // Write empty value
             let tx1 = try engine.createTransaction()
@@ -167,22 +168,26 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("Range scan with PostgreSQLRangeResult works correctly")
     func rangeScanLazyEvaluation() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let prefix: [UInt8] = [0xAA]
-            let endPrefix: [UInt8] = [0xAB]
+            let prefix: Bytes = [0xAA]
+            let endPrefix: Bytes = [0xAB]
 
             // Insert multiple keys with same prefix
             let tx1 = try engine.createTransaction()
             for i: UInt8 in 0..<10 {
-                try tx1.setValue([i], for: prefix + [i])
+                var key = prefix
+                key.append(i)
+                try tx1.setValue(Bytes([i]), for: key)
             }
             try await tx1.commit()
 
             // Range scan
             let tx2 = try engine.createTransaction()
-            let results = try await collectRange(tx2, begin: prefix + [0x00], end: endPrefix)
+            var begin = prefix
+            begin.append(0x00)
+            let results = try await collectRange(tx2, begin: begin, end: endPrefix)
             try await tx2.cancel()
 
             #expect(results.count == 10)
@@ -196,28 +201,37 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("Reverse range scan returns items in reverse order")
     func reverseRangeScan() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let prefix: [UInt8] = [0xBB]
-            let endPrefix: [UInt8] = [0xBC]
+            let prefix: Bytes = [0xBB]
+            let endPrefix: Bytes = [0xBC]
 
             // Insert ordered keys
             let tx1 = try engine.createTransaction()
             for i: UInt8 in 0..<5 {
-                try tx1.setValue([i], for: prefix + [i])
+                var key = prefix
+                key.append(i)
+                try tx1.setValue(Bytes([i]), for: key)
             }
             try await tx1.commit()
 
             // Reverse range scan
             let tx2 = try engine.createTransaction()
-            let results = try await collectRange(tx2, begin: prefix + [0x00], end: endPrefix, reverse: true)
+            var begin = prefix
+            begin.append(0x00)
+            let results = try await collectRange(
+                tx2,
+                begin: begin,
+                end: endPrefix,
+                reverse: true
+            )
             try await tx2.cancel()
 
             #expect(results.count == 5)
             // Verify reverse order
             for i in 0..<results.count {
-                #expect(results[i].value == [UInt8(4 - i)])
+                #expect(results[i].value == Bytes([UInt8(4 - i)]))
             }
 
             // Cleanup
@@ -229,22 +243,31 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("Range scan with limit returns correct count")
     func rangeScanWithLimit() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let prefix: [UInt8] = [0xCC]
-            let endPrefix: [UInt8] = [0xCD]
+            let prefix: Bytes = [0xCC]
+            let endPrefix: Bytes = [0xCD]
 
             // Insert 10 keys
             let tx1 = try engine.createTransaction()
             for i: UInt8 in 0..<10 {
-                try tx1.setValue([i], for: prefix + [i])
+                var key = prefix
+                key.append(i)
+                try tx1.setValue(Bytes([i]), for: key)
             }
             try await tx1.commit()
 
             // Scan with limit 3
             let tx2 = try engine.createTransaction()
-            let results = try await collectRange(tx2, begin: prefix + [0x00], end: endPrefix, limit: 3)
+            var begin = prefix
+            begin.append(0x00)
+            let results = try await collectRange(
+                tx2,
+                begin: begin,
+                end: endPrefix,
+                limit: 3
+            )
             try await tx2.cancel()
 
             #expect(results.count == 3)
@@ -260,7 +283,7 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("SchemaRegistry persists and loads on PostgreSQL")
     func schemaRegistryPersistence() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
 
             // SchemaRegistry is automatically initialized by DBContainer.
@@ -274,7 +297,7 @@ struct PostgreSQLConcurrencyTests {
 
     @Test("Nested withTransaction reuses parent connection")
     func nestedTransactionReuse() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -301,7 +324,7 @@ struct PostgreSQLConcurrencyTests {
 
             // Verify committed
             let result = try await context.fetch(PGCounter.self)
-                .where(\.id == itemId)
+                .where(PGCounter.fields.id == itemId)
                 .first()
             #expect(result?.value == 42)
         }

@@ -17,7 +17,7 @@ private struct PGPointReadItem: Equatable {
 
     var id: String = UUID().uuidString
     var name: String = ""
-    var value: Int = 0
+    var value: Int64 = 0
 }
 
 @Persistable
@@ -28,34 +28,42 @@ private struct PGSecuredPointReadItem: Equatable, SecurityPolicy {
     var ownerID: String = ""
     var name: String = ""
 
-    static func allowGet(resource: PGSecuredPointReadItem, auth: (any AuthContext)?) -> Bool {
-        resource.ownerID == auth?.userID
-    }
-
-    static func allowList(query: SecurityQuery<PGSecuredPointReadItem>, auth: (any AuthContext)?) -> Bool {
-        auth != nil
-    }
-
-    static func allowCreate(newResource: PGSecuredPointReadItem, auth: (any AuthContext)?) -> Bool {
-        newResource.ownerID == auth?.userID
-    }
-
-    static func allowUpdate(
-        resource: PGSecuredPointReadItem,
-        newResource: PGSecuredPointReadItem,
-        auth: (any AuthContext)?
+    static func permitsRead(
+        of resource: borrowing PGSecuredPointReadItem,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        resource.ownerID == auth?.userID && newResource.ownerID == auth?.userID
+        resource.ownerID == context.principal?.identifier
     }
 
-    static func allowDelete(resource: PGSecuredPointReadItem, auth: (any AuthContext)?) -> Bool {
-        resource.ownerID == auth?.userID
+    static func permitsQuery(
+        _ query: borrowing SecurityQuery,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        context.isAuthenticated
     }
-}
 
-private struct PostgreSQLAuthorizationContext: AuthContext {
-    let userID: String
-    var roles: Set<String> = []
+    static func permitsCreate(
+        _ newResource: borrowing PGSecuredPointReadItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        newResource.ownerID == context.principal?.identifier
+    }
+
+    static func permitsUpdate(
+        from resource: borrowing PGSecuredPointReadItem,
+        to newResource: borrowing PGSecuredPointReadItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        resource.ownerID == context.principal?.identifier
+            && newResource.ownerID == context.principal?.identifier
+    }
+
+    static func permitsDelete(
+        _ resource: borrowing PGSecuredPointReadItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        resource.ownerID == context.principal?.identifier
+    }
 }
 
 @Suite("PostgreSQL Point Read Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
@@ -81,14 +89,23 @@ struct PostgreSQLPointReadTests {
         return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PGPointReadItem.self, PGSecuredPointReadItem.self, TenantOrder.self]),
-            security: .enabled(strict: true)
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    PGPointReadItem.self,
+                    PGSecuredPointReadItem.self,
+                    TenantOrder.self,
+                ],
+                authorizationPolicies: [
+                    AuthorizationPolicyHandler(PGSecuredPointReadItem.self)
+                ]
+            ),
+            security: .enabled()
         )
     }
 
-    @Test("DataStore.fetch(id:) returns item, supports tuple-wrapped ids, and returns nil for missing key")
+    @Test("DataStore.fetch(id:) returns an item and nil for a missing key")
     func staticPointRead() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupStaticContainer()
             let context = container.newContext()
 
@@ -102,23 +119,18 @@ struct PostgreSQLPointReadTests {
 
             let store = try await container.store(for: PGPointReadItem.self)
             let fetched = try await store.fetch(PGPointReadItem.self, id: itemID)
-            let tupleFetched = try await store.fetch(
-                PGPointReadItem.self,
-                id: Tuple([itemID as any TupleElement])
-            )
             let missing = try await store.fetch(PGPointReadItem.self, id: uniqueID("missing"))
 
             #expect(fetched?.id == itemID)
             #expect(fetched?.name == "stored")
             #expect(fetched?.value == 42)
-            #expect(tupleFetched?.id == itemID)
             #expect(missing == nil)
         }
     }
 
     @Test("DataStore.executeBatch single-item path preserves upsert and delete semantics")
     func dataStoreSingleItemExecuteBatch() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupStaticContainer()
             let store = try await container.store(for: PGPointReadItem.self)
 
@@ -146,7 +158,7 @@ struct PostgreSQLPointReadTests {
 
     @Test("DataStore.fetch(id:) respects resolved partition path")
     func partitionedPointRead() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupPartitionedContainer()
             let context = container.newContext()
 
@@ -158,12 +170,15 @@ struct PostgreSQLPointReadTests {
             try await context.save()
 
             var path = DirectoryPath<TenantOrder>()
-            path.set(\.tenantID, to: tenantID)
+            path.set(TenantOrder.fields.tenantID, to: tenantID)
             let store = try await container.store(for: TenantOrder.self, path: path)
             let fetched = try await store.fetch(TenantOrder.self, id: orderID)
 
             var wrongPath = DirectoryPath<TenantOrder>()
-            wrongPath.set(\.tenantID, to: uniqueID("other"))
+            wrongPath.set(
+                TenantOrder.fields.tenantID,
+                to: uniqueID("other")
+            )
             let wrongStore = try await container.store(for: TenantOrder.self, path: wrongPath)
             let missing = try await wrongStore.fetch(TenantOrder.self, id: orderID)
 
@@ -175,11 +190,14 @@ struct PostgreSQLPointReadTests {
 
     @Test("DataStore.fetch(id:) preserves GET security checks on point-read fast path")
     func securedPointRead() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupSecuredContainer()
             let itemID = uniqueID("secure")
 
-            try await AuthContextKey.$current.withValue(PostgreSQLAuthorizationContext(userID: "owner")) {
+            let owner = AuthorizationContext.authenticated(
+                Principal(identifier: "owner")
+            )
+            try await RequestAuthorization.$context.withValue(owner) {
                 let context = container.newContext()
                 var item = PGSecuredPointReadItem()
                 item.id = itemID
@@ -191,13 +209,16 @@ struct PostgreSQLPointReadTests {
 
             let store = try await container.store(for: PGSecuredPointReadItem.self)
 
-            let authorized = try await AuthContextKey.$current.withValue(PostgreSQLAuthorizationContext(userID: "owner")) {
+            let authorized = try await RequestAuthorization.$context.withValue(owner) {
                 try await store.fetch(PGSecuredPointReadItem.self, id: itemID)
             }
             #expect(authorized?.id == itemID)
 
             await #expect(throws: SecurityError.self) {
-                try await AuthContextKey.$current.withValue(PostgreSQLAuthorizationContext(userID: "intruder")) {
+                let intruder = AuthorizationContext.authenticated(
+                    Principal(identifier: "intruder")
+                )
+                try await RequestAuthorization.$context.withValue(intruder) {
                     _ = try await store.fetch(PGSecuredPointReadItem.self, id: itemID)
                 }
             }

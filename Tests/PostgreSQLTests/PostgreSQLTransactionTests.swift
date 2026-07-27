@@ -15,7 +15,7 @@ struct PGTxItem: Equatable {
     #Directory<PGTxItem>("test", "pg", "transaction")
 
     var id: String = UUID().uuidString
-    var counter: Int = 0
+    var counter: Int64 = 0
 }
 
 @Suite("PostgreSQL Transaction Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
@@ -34,7 +34,7 @@ struct PostgreSQLTransactionTests {
 
     @Test("Transaction commit persists data")
     func transactionCommit() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -59,7 +59,7 @@ struct PostgreSQLTransactionTests {
 
     @Test("Multiple writes in single transaction are atomic")
     func atomicMultipleWrites() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -70,7 +70,7 @@ struct PostgreSQLTransactionTests {
                 for (i, id) in ids.enumerated() {
                     var item = PGTxItem()
                     item.id = id
-                    item.counter = i * 10
+                    item.counter = Int64(i * 10)
                     try await tx.save(item)
                 }
             }
@@ -80,7 +80,7 @@ struct PostgreSQLTransactionTests {
                 for (i, id) in ids.enumerated() {
                     let fetched = try await tx.fetch(PGTxItem.self, identifiedBy: id)
                     #expect(fetched != nil, "Item \(i) should exist")
-                    #expect(fetched?.counter == i * 10)
+                    #expect(fetched?.counter == Int64(i * 10))
                 }
             }
         }
@@ -90,7 +90,7 @@ struct PostgreSQLTransactionTests {
 
     @Test("Read-your-writes within transaction")
     func readYourWrites() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -113,7 +113,7 @@ struct PostgreSQLTransactionTests {
 
     @Test("Update within transaction is visible")
     func updateWithinTransaction() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -146,7 +146,7 @@ struct PostgreSQLTransactionTests {
 
     @Test("Delete within transaction is visible")
     func deleteWithinTransaction() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -174,7 +174,7 @@ struct PostgreSQLTransactionTests {
 
     @Test("Separate contexts see committed data")
     func separateContextsCommitted() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
 
             let itemId = uniqueID("tx-iso")
@@ -202,7 +202,7 @@ struct PostgreSQLTransactionTests {
 
     @Test("Change tracking save commits as single transaction")
     func changeTrackingSave() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -211,7 +211,7 @@ struct PostgreSQLTransactionTests {
             for (i, id) in ids.enumerated() {
                 var item = PGTxItem()
                 item.id = id
-                item.counter = i
+                item.counter = Int64(i)
                 try context.insert(item)
             }
             #expect(context.hasChanges == true)
@@ -222,16 +222,16 @@ struct PostgreSQLTransactionTests {
             // Verify all persisted
             for (i, id) in ids.enumerated() {
                 let fetched = try await context.fetch(PGTxItem.self)
-                    .where(\.id == id)
+                    .where(PGTxItem.fields.id == id)
                     .first()
-                #expect(fetched?.counter == i)
+                #expect(fetched?.counter == Int64(i))
             }
         }
     }
 
     @Test("Rollback discards uncommitted changes")
     func rollbackDiscards() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 

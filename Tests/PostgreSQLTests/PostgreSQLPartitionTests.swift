@@ -39,7 +39,7 @@ struct PostgreSQLPartitionMetadataTests {
     @Test("DirectoryPath validates complete binding")
     func directoryPathValidatesCompleteBinding() {
         var binding = DirectoryPath<TenantOrder>()
-        binding.set(\.tenantID, to: "tenant_123")
+        binding.set(TenantOrder.fields.tenantID, to: "tenant_123")
 
         #expect(throws: Never.self) {
             try binding.validate()
@@ -47,11 +47,12 @@ struct PostgreSQLPartitionMetadataTests {
     }
 
     @Test("DirectoryPath.from extracts values from model")
-    func directoryPathFromModel() {
+    func directoryPathFromModel() throws {
         let order = TenantOrder(tenantID: "tenant_xyz", status: "pending", total: 50.0)
-        let binding = DirectoryPath<TenantOrder>.from(order)
+        let binding = try DirectoryPath<TenantOrder>.from(order)
+        let tenantID = try binding.value(for: TenantOrder.fields.tenantID)
 
-        #expect(binding.value(for: \.tenantID) == "tenant_xyz")
+        #expect(tenantID == "tenant_xyz")
     }
 }
 
@@ -77,7 +78,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Save TenantOrder extracts tenantID from model")
     func saveTenantOrderExtractsTenantID() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -92,8 +93,8 @@ struct PostgreSQLPartitionTests {
 
             // Fetch using partition
             let fetched = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenantID)
-                .where(\.id == orderID)
+                .partition(TenantOrder.fields.tenantID, equals: tenantID)
+                .where(TenantOrder.fields.id == orderID)
                 .first()
 
             #expect(fetched != nil)
@@ -104,7 +105,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Save multiple orders to different tenants")
     func saveOrdersToDifferentTenants() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -125,7 +126,7 @@ struct PostgreSQLPartitionTests {
 
             // Fetch tenant1 orders — should not contain tenant2's order
             let tenant1Orders = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenant1)
+                .partition(TenantOrder.fields.tenantID, equals: tenant1)
                 .execute()
 
             #expect(tenant1Orders.contains { $0.id == order1ID })
@@ -133,7 +134,7 @@ struct PostgreSQLPartitionTests {
 
             // Fetch tenant2 orders — should not contain tenant1's order
             let tenant2Orders = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenant2)
+                .partition(TenantOrder.fields.tenantID, equals: tenant2)
                 .execute()
 
             #expect(tenant2Orders.contains { $0.id == order2ID })
@@ -145,7 +146,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Fetch without partition throws for dynamic directory type")
     func fetchWithoutPartitionThrows() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -157,7 +158,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Fetch with partition and where clause filters within partition")
     func fetchWithWhereFiltersWithinPartition() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -177,8 +178,8 @@ struct PostgreSQLPartitionTests {
 
             // Filter by status within partition
             let pendingOrders = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenantID)
-                .where(\.status == "pending")
+                .partition(TenantOrder.fields.tenantID, equals: tenantID)
+                .where(TenantOrder.fields.status == "pending")
                 .execute()
 
             #expect(pendingOrders.contains { $0.id == order1ID })
@@ -190,7 +191,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Delete TenantOrder from correct partition")
     func deleteFromCorrectPartition() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -204,8 +205,8 @@ struct PostgreSQLPartitionTests {
 
             // Verify exists
             let before = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenantID)
-                .where(\.id == orderID)
+                .partition(TenantOrder.fields.tenantID, equals: tenantID)
+                .where(TenantOrder.fields.id == orderID)
                 .first()
             #expect(before != nil)
 
@@ -217,8 +218,8 @@ struct PostgreSQLPartitionTests {
 
             // Verify deleted
             let after = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenantID)
-                .where(\.id == orderID)
+                .partition(TenantOrder.fields.tenantID, equals: tenantID)
+                .where(TenantOrder.fields.id == orderID)
                 .first()
             #expect(after == nil)
         }
@@ -228,7 +229,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("deleteAll without partition throws for dynamic directory type")
     func deleteAllWithoutPartitionThrows() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -240,7 +241,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("deleteAll with partition deletes only from that partition")
     func deleteAllWithPartition() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -260,18 +261,22 @@ struct PostgreSQLPartitionTests {
             try await context.save()
 
             // Delete all from tenant1
-            try await context.deleteAll(TenantOrder.self, partition: \.tenantID, equals: tenant1)
+            try await context.deleteAll(
+                TenantOrder.self,
+                partition: TenantOrder.fields.tenantID,
+                equals: tenant1
+            )
             try await context.save()
 
             // tenant1 should be empty
             let tenant1Orders = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenant1)
+                .partition(TenantOrder.fields.tenantID, equals: tenant1)
                 .execute()
             #expect(!tenant1Orders.contains { $0.id == order1ID })
 
             // tenant2 should still have data
             let tenant2Orders = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenant2)
+                .partition(TenantOrder.fields.tenantID, equals: tenant2)
                 .execute()
             #expect(tenant2Orders.contains { $0.id == order2ID })
         }
@@ -281,7 +286,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("enumerate without partition throws for dynamic directory type")
     func enumerateWithoutPartitionThrows() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -293,7 +298,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("enumerate with partition enumerates only that partition")
     func enumerateWithPartition() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -306,7 +311,11 @@ struct PostgreSQLPartitionTests {
             try await context.save()
 
             var found = false
-            try await context.enumerate(TenantOrder.self, partition: \.tenantID, equals: tenantID) { item in
+            try await context.enumerate(
+                TenantOrder.self,
+                partition: TenantOrder.fields.tenantID,
+                equals: tenantID
+            ) { item in
                 if item.id == orderID {
                     found = true
                 }
@@ -319,7 +328,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("Static directory types work without partition on PostgreSQL")
     func staticDirectoryTypesWork() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let context = container.newContext()
 
@@ -331,7 +340,7 @@ struct PostgreSQLPartitionTests {
             try await context.save()
 
             let fetched = try await context.fetch(Player.self)
-                .where(\.id == playerID)
+                .where(Player.fields.id == playerID)
                 .first()
 
             #expect(fetched != nil)
@@ -343,7 +352,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("DatabaseTransaction saves and fetches dynamic directory types on PostgreSQL")
     func transactionSavesAndFetchesDynamicDirectoryModel() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -358,7 +367,7 @@ struct PostgreSQLPartitionTests {
                 )
 
                 var binding = DirectoryPath<TenantOrder>()
-                binding.set(\.tenantID, to: tenantID)
+                binding.set(TenantOrder.fields.tenantID, to: tenantID)
                 let fetched = try await transaction.fetch(
                     TenantOrder.self,
                     identifiedBy: orderID,
@@ -373,7 +382,7 @@ struct PostgreSQLPartitionTests {
 
     @Test("DatabaseTransaction fetch rejects a missing PostgreSQL partition")
     func transactionFetchRejectsMissingDynamicPartition() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
 
             await #expect(throws: DirectoryPathError.self) {

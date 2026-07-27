@@ -66,7 +66,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Insert and fetch by indexed field")
     func insertAndFetchByIndex() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
@@ -82,7 +82,7 @@ struct PostgreSQLScalarIndexTests {
 
             // Fetch by email
             let fetched = try await context.fetch(PGUser.self)
-                .where(\.email == email)
+                .where(PGUser.fields.email == email)
                 .first()
 
             #expect(fetched != nil)
@@ -93,7 +93,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Update indexed field")
     func updateIndexedField() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
@@ -111,19 +111,19 @@ struct PostgreSQLScalarIndexTests {
 
             // Update email
             user.email = updatedEmail
-            try context.insert(user) // upsert
+            try context.update(user)
 
             try await context.save()
 
             // Old email should not find the user
             let oldResult = try await context.fetch(PGUser.self)
-                .where(\.email == originalEmail)
+                .where(PGUser.fields.email == originalEmail)
                 .first()
             #expect(oldResult == nil)
 
             // New email should find the user
             let newResult = try await context.fetch(PGUser.self)
-                .where(\.email == updatedEmail)
+                .where(PGUser.fields.email == updatedEmail)
                 .first()
             #expect(newResult != nil)
             #expect(newResult?.id == userId)
@@ -132,7 +132,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Delete removes index entry")
     func deleteRemovesIndex() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
@@ -148,7 +148,7 @@ struct PostgreSQLScalarIndexTests {
 
             // Verify exists
             let before = try await context.fetch(PGUser.self)
-                .where(\.email == email)
+                .where(PGUser.fields.email == email)
                 .first()
             #expect(before != nil)
 
@@ -158,7 +158,7 @@ struct PostgreSQLScalarIndexTests {
 
             // Should not be found
             let after = try await context.fetch(PGUser.self)
-                .where(\.email == email)
+                .where(PGUser.fields.email == email)
                 .first()
             #expect(after == nil)
         }
@@ -168,7 +168,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Unique index prevents duplicate values")
     func uniqueIndexPreventsDuplicates() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
@@ -199,14 +199,14 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Fetch by range on indexed field")
     func fetchByRange() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
             let prefix = UUID().uuidString.prefix(6)
 
             // Insert users with different ages
-            for age in [20, 25, 30, 35, 40] {
+            for age: Int64 in [20, 25, 30, 35, 40] {
                 var user = PGUser()
                 user.email = "\(prefix)-age\(age)@test.com"
                 user.name = "User\(age)"
@@ -217,7 +217,7 @@ struct PostgreSQLScalarIndexTests {
 
             // Fetch users age >= 30
             let results = try await context.fetch(PGUser.self)
-                .where(\.age >= 30)
+                .where(PGUser.fields.age >= 30)
                 .execute()
 
             let matching = results.filter { $0.email.hasPrefix(String(prefix)) }
@@ -230,7 +230,7 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Composite index: category + price")
     func compositeIndex() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupProductContainer()
             let context = container.newContext()
 
@@ -248,7 +248,7 @@ struct PostgreSQLScalarIndexTests {
             // Verify data exists by reading back individual items
             let ctx2 = container.newContext()
             let fetchedP1 = try await ctx2.fetch(PGProduct.self)
-                .where(\.id == p1.id)
+                .where(PGProduct.fields.id == p1.id)
                 .first()
             #expect(fetchedP1 != nil, "Product p1 should exist after save")
 
@@ -264,12 +264,12 @@ struct PostgreSQLScalarIndexTests {
 
     @Test("Non-unique index allows multiple entries")
     func nonUniqueIndexMultipleEntries() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
             let context = container.newContext()
 
             let prefix = UUID().uuidString.prefix(6)
-            let age = 42
+            let age: Int64 = 42
 
             // Insert multiple users with same age
             for i in 0..<3 {
@@ -282,7 +282,7 @@ struct PostgreSQLScalarIndexTests {
             try await context.save()
 
             let results = try await context.fetch(PGUser.self)
-                .where(\.age == age)
+                .where(PGUser.fields.age == age)
                 .execute()
 
             let matching = results.filter { $0.email.hasPrefix(String(prefix)) }

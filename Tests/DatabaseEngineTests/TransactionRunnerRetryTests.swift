@@ -4,7 +4,7 @@ import StorageKit
 import Synchronization
 @testable import DatabaseEngine
 
-@Suite("TransactionRunner Retry Tests", .foundationDBScenario, .serialized, .heartbeat)
+@Suite("TransactionRunner Retry Tests", .serialized, .heartbeat)
 struct TransactionRunnerRetryTests {
     @Test("Batch configuration reaches the body on a portable backend")
     func batchConfigurationRunsOnInMemoryBackend() async throws {

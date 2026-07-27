@@ -10,7 +10,6 @@ import StorageKit
 import PostgreSQLStorage
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -22,12 +21,12 @@ struct PGStatement {
     #Directory<PGStatement>("test", "pg", "sparql", "statements")
 
     var id: String = UUID().uuidString
-    var subject: String = ""
-    var predicate: String = ""
-    var object: String = ""
+    var subject: RDFTerm = .iri(.xsdString)
+    var predicate: RDFTerm = .iri(.xsdString)
+    var object: RDFTerm = .iri(.xsdString)
 
     #Index(
-        .propertyGraph(strategy: .hexastore),
+        .rdfDataset,
         from: \PGStatement.subject,
         edge: \PGStatement.predicate,
         to: \PGStatement.object
@@ -36,6 +35,10 @@ struct PGStatement {
 
 @Suite("PostgreSQL SPARQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
 struct PostgreSQLSPARQLTests {
+    private static let resourcePrefix =
+        "did:database-framework:postgresql-test-resource:"
+    private static let predicatePrefix =
+        "did:database-framework:postgresql-test-predicate:"
 
     // MARK: - Setup
 
@@ -44,20 +47,58 @@ struct PostgreSQLSPARQLTests {
         return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGStatement.self])
     }
 
-    private func cleanupAndSetup() async throws -> (DBContainer, DatabaseContext) {
+    private func makeScenario() async throws -> (DBContainer, DatabaseContext) {
         let container = try await setupContainer()
-        try await container.engine.removeDirectory(path: ["test", "pg", "sparql", "statements"])
-        let container2 = try await setupContainer()
-        let context = container2.newContext()
-        return (container2, context)
+        let context = container.newContext()
+        return (container, context)
     }
 
-    private func makeStatement(subject: String, predicate: String, object: String) -> PGStatement {
+    private func makeStatement(
+        subject: String,
+        predicate: String,
+        object: String
+    ) throws -> PGStatement {
         var stmt = PGStatement()
-        stmt.subject = subject
-        stmt.predicate = predicate
-        stmt.object = object
+        stmt.subject = try Self.resource(subject)
+        stmt.predicate = try Self.predicate(predicate)
+        stmt.object = try Self.resource(object)
         return stmt
+    }
+
+    private static func resource(_ identifier: String) throws -> RDFTerm {
+        try .iri(validating: resourcePrefix + identifier)
+    }
+
+    private static func predicate(_ identifier: String) throws -> RDFTerm {
+        try .iri(validating: predicatePrefix + identifier)
+    }
+
+    private static func subjectTerm(_ value: String) throws -> ExecutionTerm {
+        value.hasPrefix("?")
+            ? .variable(value)
+            : .value(.rdfTerm(try resource(value)))
+    }
+
+    private static func predicateTerm(_ value: String) throws -> ExecutionTerm {
+        value.hasPrefix("?")
+            ? .variable(value)
+            : .value(.rdfTerm(try predicate(value)))
+    }
+
+    private static func objectTerm(_ value: String) throws -> ExecutionTerm {
+        value.hasPrefix("?")
+            ? .variable(value)
+            : .value(.rdfTerm(try resource(value)))
+    }
+
+    private static func resourceIdentifier(
+        _ value: FieldValue?
+    ) -> String? {
+        guard case .rdfTerm(.iri(let iri)) = value,
+              iri.rawValue.hasPrefix(resourcePrefix) else {
+            return nil
+        }
+        return String(iri.rawValue.dropFirst(resourcePrefix.count))
     }
 
     private func insertStatements(_ statements: [PGStatement], context: DatabaseContext) async throws {
@@ -71,54 +112,64 @@ struct PostgreSQLSPARQLTests {
 
     @Test("Single pattern: subject bound")
     func singlePatternSubjectBound() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            let (_, context) = try await cleanupAndSetup()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
+            let (_, context) = try await makeScenario()
 
             let stmts = [
-                makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
-                makeStatement(subject: "Alice", predicate: "likes", object: "Coffee"),
-                makeStatement(subject: "Bob", predicate: "knows", object: "Charlie"),
+                try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
+                try makeStatement(subject: "Alice", predicate: "likes", object: "Coffee"),
+                try makeStatement(subject: "Bob", predicate: "knows", object: "Charlie"),
             ]
             try await insertStatements(stmts, context: context)
 
             // SPARQL: SELECT ?p ?o WHERE { "Alice" ?p ?o }
             let result = try await context.sparql(PGStatement.self)
                 .defaultIndex()
-                .where("Alice", "?p", "?o")
+                .where(
+                    try Self.subjectTerm("Alice"),
+                    try Self.predicateTerm("?p"),
+                    try Self.objectTerm("?o")
+                )
                 .select("?p", "?o")
                 .execute()
 
             #expect(result.count == 2)
 
             let predicates = result.nonNilValues(for: "?p")
-            #expect(predicates.contains(.string("knows")))
-            #expect(predicates.contains(.string("likes")))
+            #expect(predicates.contains(.rdfTerm(try Self.predicate("knows"))))
+            #expect(predicates.contains(.rdfTerm(try Self.predicate("likes"))))
         }
     }
 
     @Test("Single pattern: object bound")
     func singlePatternObjectBound() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            let (_, context) = try await cleanupAndSetup()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
+            let (_, context) = try await makeScenario()
 
             let stmts = [
-                makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
-                makeStatement(subject: "Charlie", predicate: "knows", object: "Bob"),
-                makeStatement(subject: "Dave", predicate: "likes", object: "Bob"),
+                try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
+                try makeStatement(subject: "Charlie", predicate: "knows", object: "Bob"),
+                try makeStatement(subject: "Dave", predicate: "likes", object: "Bob"),
             ]
             try await insertStatements(stmts, context: context)
 
             // Find who knows Bob
             let result = try await context.sparql(PGStatement.self)
                 .defaultIndex()
-                .where("?s", "knows", "Bob")
+                .where(
+                    try Self.subjectTerm("?s"),
+                    try Self.predicateTerm("knows"),
+                    try Self.objectTerm("Bob")
+                )
                 .select("?s")
                 .execute()
 
-            let subjects = result.nonNilValues(for: "?s")
-            #expect(subjects.contains(.string("Alice")))
-            #expect(subjects.contains(.string("Charlie")))
-            #expect(!subjects.contains(.string("Dave"))) // Dave "likes" Bob, not "knows"
+            let subjects = result.nonNilValues(for: "?s").compactMap {
+                Self.resourceIdentifier($0)
+            }
+            #expect(subjects.contains("Alice"))
+            #expect(subjects.contains("Charlie"))
+            #expect(!subjects.contains("Dave"))
         }
     }
 
@@ -126,27 +177,37 @@ struct PostgreSQLSPARQLTests {
 
     @Test("Two-pattern join: friend of a friend")
     func twoPatternJoin() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            let (_, context) = try await cleanupAndSetup()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
+            let (_, context) = try await makeScenario()
 
             let stmts = [
-                makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
-                makeStatement(subject: "Bob", predicate: "knows", object: "Charlie"),
-                makeStatement(subject: "Bob", predicate: "knows", object: "Dave"),
+                try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
+                try makeStatement(subject: "Bob", predicate: "knows", object: "Charlie"),
+                try makeStatement(subject: "Bob", predicate: "knows", object: "Dave"),
             ]
             try await insertStatements(stmts, context: context)
 
             // Friends of friends of Alice
             let result = try await context.sparql(PGStatement.self)
                 .defaultIndex()
-                .where("Alice", "knows", "?friend")
-                .where("?friend", "knows", "?foaf")
+                .where(
+                    try Self.subjectTerm("Alice"),
+                    try Self.predicateTerm("knows"),
+                    try Self.objectTerm("?friend")
+                )
+                .where(
+                    try Self.subjectTerm("?friend"),
+                    try Self.predicateTerm("knows"),
+                    try Self.objectTerm("?foaf")
+                )
                 .select("?foaf")
                 .execute()
 
-            let foafs = result.nonNilValues(for: "?foaf")
-            #expect(foafs.contains(.string("Charlie")))
-            #expect(foafs.contains(.string("Dave")))
+            let foafs = result.nonNilValues(for: "?foaf").compactMap {
+                Self.resourceIdentifier($0)
+            }
+            #expect(foafs.contains("Charlie"))
+            #expect(foafs.contains("Dave"))
         }
     }
 
@@ -154,18 +215,22 @@ struct PostgreSQLSPARQLTests {
 
     @Test("Query with no matches returns empty")
     func noMatches() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            let (_, context) = try await cleanupAndSetup()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
+            let (_, context) = try await makeScenario()
 
             let stmts = [
-                makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
+                try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
             ]
             try await insertStatements(stmts, context: context)
 
             // Query for non-existent predicate
             let result = try await context.sparql(PGStatement.self)
                 .defaultIndex()
-                .where("Alice", "hates", "?o")
+                .where(
+                    try Self.subjectTerm("Alice"),
+                    try Self.predicateTerm("hates"),
+                    try Self.objectTerm("?o")
+                )
                 .select("?o")
                 .execute()
 
@@ -177,18 +242,22 @@ struct PostgreSQLSPARQLTests {
 
     @Test("All variables returns all triples")
     func allVariables() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            let (_, context) = try await cleanupAndSetup()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
+            let (_, context) = try await makeScenario()
 
             let stmts = [
-                makeStatement(subject: "A", predicate: "r1", object: "B"),
-                makeStatement(subject: "C", predicate: "r2", object: "D"),
+                try makeStatement(subject: "A", predicate: "r1", object: "B"),
+                try makeStatement(subject: "C", predicate: "r2", object: "D"),
             ]
             try await insertStatements(stmts, context: context)
 
             let result = try await context.sparql(PGStatement.self)
                 .defaultIndex()
-                .where("?s", "?p", "?o")
+                .where(
+                    try Self.subjectTerm("?s"),
+                    try Self.predicateTerm("?p"),
+                    try Self.objectTerm("?o")
+                )
                 .select("?s", "?p", "?o")
                 .execute()
 
@@ -200,38 +269,62 @@ struct PostgreSQLSPARQLTests {
 
     @Test("Traverse graph: two-hop path")
     func graphTraversal() async throws {
-        try await PostgreSQLScenarioCoordinator.shared.withSerializedAccess {
-            let (_, context) = try await cleanupAndSetup()
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
+            let (_, context) = try await makeScenario()
 
             // A -> B -> C -> D
             let stmts = [
-                makeStatement(subject: "A", predicate: "next", object: "B"),
-                makeStatement(subject: "B", predicate: "next", object: "C"),
-                makeStatement(subject: "C", predicate: "next", object: "D"),
+                try makeStatement(subject: "A", predicate: "next", object: "B"),
+                try makeStatement(subject: "B", predicate: "next", object: "C"),
+                try makeStatement(subject: "C", predicate: "next", object: "D"),
             ]
             try await insertStatements(stmts, context: context)
 
             // Find direct next of A
             let direct = try await context.sparql(PGStatement.self)
                 .defaultIndex()
-                .where("A", "next", "?next")
+                .where(
+                    try Self.subjectTerm("A"),
+                    try Self.predicateTerm("next"),
+                    try Self.objectTerm("?next")
+                )
                 .select("?next")
                 .execute()
 
             #expect(direct.count == 1)
-            #expect(direct.nonNilValues(for: "?next").contains(.string("B")))
+            #expect(
+                direct.nonNilValues(for: "?next").compactMap {
+                    Self.resourceIdentifier($0)
+                }.contains("B")
+            )
 
             // Find two-hop path: A -> ?mid -> ?end
             let twoHop = try await context.sparql(PGStatement.self)
                 .defaultIndex()
-                .where("A", "next", "?mid")
-                .where("?mid", "next", "?end")
+                .where(
+                    try Self.subjectTerm("A"),
+                    try Self.predicateTerm("next"),
+                    try Self.objectTerm("?mid")
+                )
+                .where(
+                    try Self.subjectTerm("?mid"),
+                    try Self.predicateTerm("next"),
+                    try Self.objectTerm("?end")
+                )
                 .select("?mid", "?end")
                 .execute()
 
             #expect(twoHop.count == 1)
-            #expect(twoHop.nonNilValues(for: "?mid").contains(.string("B")))
-            #expect(twoHop.nonNilValues(for: "?end").contains(.string("C")))
+            #expect(
+                twoHop.nonNilValues(for: "?mid").compactMap {
+                    Self.resourceIdentifier($0)
+                }.contains("B")
+            )
+            #expect(
+                twoHop.nonNilValues(for: "?end").compactMap {
+                    Self.resourceIdentifier($0)
+                }.contains("C")
+            )
         }
     }
 }
