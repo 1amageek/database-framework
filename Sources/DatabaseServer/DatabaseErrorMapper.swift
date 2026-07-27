@@ -846,7 +846,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_GRAPH_PARTITIONS"
         case .entityTypeMismatch, .persistableIdentityMismatch,
-             .fieldNotRepresentable:
+             .fieldNotRepresentable, .fieldValueNotRepresentable:
             category = .invalidRequest
             code = "INVALID_ENTITY"
         case .duplicateChange, .duplicatePrecondition,

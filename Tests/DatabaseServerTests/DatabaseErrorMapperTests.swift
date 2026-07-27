@@ -278,6 +278,15 @@ struct DatabaseErrorMapperTests {
                     "ENTITY_NOT_FOUND"
                 ),
                 (
+                    DatabaseMutationError.fieldValueNotRepresentable(
+                        entity: "Event",
+                        type: "Decimal",
+                        reason: "precision exceeds the canonical range"
+                    ),
+                    .invalidRequest,
+                    "INVALID_ENTITY"
+                ),
+                (
                     DatabaseMutationError.invalidCompiledSchema(
                         entity: "Event",
                         reason: "missing field"

@@ -24,6 +24,7 @@ public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
     case entityVersionMismatch(EntityReference)
     case identifierNotRepresentable(String)
     case fieldNotRepresentable(entity: String, field: String)
+    case fieldValueNotRepresentable(entity: String, type: String, reason: String)
     case invalidCompiledSchema(entity: String, reason: String)
     case unsupportedStatement(String)
     case fieldsRequired(EntityReference)
@@ -78,6 +79,8 @@ public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
             return "Entity '\(entity)' has an identifier that DatabaseWire cannot represent"
         case .fieldNotRepresentable(let entity, let field):
             return "Entity '\(entity)' field '\(field)' cannot be represented by DatabaseWire"
+        case .fieldValueNotRepresentable(let entity, let type, let reason):
+            return "Entity '\(entity)' value of type '\(type)' cannot be represented: \(reason)"
         case .invalidCompiledSchema(let entity, let reason):
             return "Entity '\(entity)' has an invalid compiled schema: \(reason)"
         case .unsupportedStatement(let reason):
