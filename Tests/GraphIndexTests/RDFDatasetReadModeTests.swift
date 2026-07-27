@@ -5,6 +5,7 @@ import DatabaseKit
 import StorageKit
 import Synchronization
 import TestHeartbeat
+import TestSupport
 import Testing
 @testable import GraphIndex
 
