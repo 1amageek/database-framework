@@ -8,6 +8,27 @@ import Testing
 
 @Suite("Canonical aggregation reduction semantics")
 struct CanonicalAggregationReducerTests {
+    @Test("aggregation grouping restores declared integer widths")
+    func aggregationGroupingRestoresDeclaredIntegerWidths() throws {
+        let stored = try FieldValue.toTupleElements([
+            .int8(127),
+            .uint8(255),
+            .uint64(UInt64.max),
+        ])
+        let decoded = try AggregationGroupingValueDecoder.decode(
+            stored
+        )
+
+        #expect(decoded == [.int8(127), .uint8(255), .uint64(UInt64.max)])
+    }
+
+    @Test("aggregation grouping rejects noncanonical storage elements")
+    func aggregationGroupingRejectsNoncanonicalStorageElement() {
+        #expect(throws: FieldValueTupleCodecError.self) {
+            try AggregationGroupingValueDecoder.decode([Int64(256)])
+        }
+    }
+
     @Test("empty global aggregate returns one canonical reduced row")
     func emptyGlobalAggregateReturnsOneReducedRow() async throws {
         let context = try await makeEmptyQueryContext()

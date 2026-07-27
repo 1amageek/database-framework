@@ -145,21 +145,21 @@ private struct AggregationQueryContext {
     }
 
     /// Get all counts from COUNT index
-    func getAllCounts() async throws -> [(grouping: [any TupleElement], count: Int64)] {
+    func getAllCounts() async throws -> [(grouping: [FieldValue], count: Int64)] {
         try await database.withTransaction { transaction in
             try await countMaintainer.getAllCounts(transaction: transaction)
         }
     }
 
     /// Get all sums from SUM index (returns Double)
-    func getAllSums() async throws -> [(grouping: [any TupleElement], sum: Double)] {
+    func getAllSums() async throws -> [(grouping: [FieldValue], sum: Double)] {
         try await database.withTransaction { transaction in
             try await sumMaintainer.getAllSumsAsDouble(transaction: transaction)
         }
     }
 
     /// Get all averages from AVG index
-    func getAllAverages() async throws -> [(grouping: [any TupleElement], average: Double)] {
+    func getAllAverages() async throws -> [(grouping: [FieldValue], average: Double)] {
         try await database.withTransaction { transaction in
             let results = try await avgMaintainer.getAllAveragesAsDouble(transaction: transaction)
             return results.map { ($0.grouping, $0.average) }
@@ -169,7 +169,7 @@ private struct AggregationQueryContext {
 
 // MARK: - Behavior Tests
 
-@Suite("AggregationQuery Optimization Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("AggregationQuery Optimization Tests", .tags(.fdb), .foundationDBScenario, .serialized, .heartbeat)
 struct AggregationQueryOptimizationTests {
 
     // MARK: - Index Maintainer Direct Tests
@@ -192,7 +192,7 @@ struct AggregationQueryOptimizationTests {
         #expect(counts.count == 3, "Should have 3 regions")
 
         let countByRegion = Dictionary(uniqueKeysWithValues: counts.map { (grouping, count) in
-            (grouping.first as! String, count)
+            (grouping.first!.stringValue!, count)
         })
         #expect(countByRegion["Tokyo"] == 2, "Tokyo should have 2 orders")
         #expect(countByRegion["Osaka"] == 1, "Osaka should have 1 order")
@@ -218,7 +218,7 @@ struct AggregationQueryOptimizationTests {
         #expect(sums.count == 2, "Should have 2 regions")
 
         let sumByRegion = Dictionary(uniqueKeysWithValues: sums.map { (grouping, sum) in
-            (grouping.first as! String, sum)
+            (grouping.first!.stringValue!, sum)
         })
         #expect(sumByRegion["Tokyo"] == 300.0, "Tokyo sum should be 300")
         #expect(sumByRegion["Osaka"] == 150.0, "Osaka sum should be 150")
@@ -243,7 +243,7 @@ struct AggregationQueryOptimizationTests {
         #expect(averages.count == 2, "Should have 2 regions")
 
         let avgByRegion = Dictionary(uniqueKeysWithValues: averages.map { (grouping, avg) in
-            (grouping.first as! String, avg)
+            (grouping.first!.stringValue!, avg)
         })
         #expect(avgByRegion["Tokyo"] == 150.0, "Tokyo avg should be 150.0")
         #expect(avgByRegion["Osaka"] == 150.0, "Osaka avg should be 150.0")

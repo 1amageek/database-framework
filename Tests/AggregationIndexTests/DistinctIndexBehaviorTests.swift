@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import DatabaseKit
+import DatabaseKitFoundation
 import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
@@ -14,64 +15,12 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct DistinctIndexedPageView: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct DistinctIndexedPageView {
+    var id: String = UUID().uuidString
     var pageId: String
     var userId: String
-    var timestamp: Date
-
-    init(id: String = UUID().uuidString, pageId: String, userId: String, timestamp: Date = Date()) {
-        self.id = id
-        self.pageId = pageId
-        self.userId = userId
-        self.timestamp = timestamp
-    }
-
-    static var persistableType: String { "DistinctIndexedPageView" }
-    static var allFields: [String] { ["id", "pageId", "userId", "timestamp"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "pageId": return pageId
-        case "userId": return userId
-        case "timestamp": return timestamp
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<DistinctIndexedPageView, Value>) -> String {
-        switch keyPath {
-        case \DistinctIndexedPageView.id: return "id"
-        case \DistinctIndexedPageView.pageId: return "pageId"
-        case \DistinctIndexedPageView.userId: return "userId"
-        case \DistinctIndexedPageView.timestamp: return "timestamp"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<DistinctIndexedPageView>) -> String {
-        switch keyPath {
-        case \DistinctIndexedPageView.id: return "id"
-        case \DistinctIndexedPageView.pageId: return "pageId"
-        case \DistinctIndexedPageView.userId: return "userId"
-        case \DistinctIndexedPageView.timestamp: return "timestamp"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<DistinctIndexedPageView> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var timestamp: Date = Date()
 }
 
 // MARK: - Distinct Index Context
@@ -130,7 +79,7 @@ private struct DistinctIndexContext {
         }
     }
 
-    func getAllDistinctCounts() async throws -> [(grouping: [any TupleElement], estimated: Int64, errorRate: Double)] {
+    func getAllDistinctCounts() async throws -> [(grouping: [FieldValue], estimated: Int64, errorRate: Double)] {
         try await database.withTransaction { transaction in
             try await maintainer.getAllDistinctCounts(transaction: transaction)
         }
@@ -139,7 +88,7 @@ private struct DistinctIndexContext {
 
 // MARK: - Behavior Tests
 
-@Suite("DistinctIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("DistinctIndex Behavior Tests", .tags(.fdb), .foundationDBScenario, .serialized, .heartbeat)
 struct DistinctIndexBehaviorTests {
 
     // MARK: - Insert Tests
@@ -399,15 +348,19 @@ struct DistinctIndexBehaviorTests {
 
         let uniqueUserCount = 1000
 
+        let pageViews = (1...uniqueUserCount).map { index in
+            DistinctIndexedPageView(
+                pageId: "popular-page",
+                userId: "user\(index)"
+            )
+        }
         try await ctx.database.withTransaction { transaction in
-            for i in 1...uniqueUserCount {
-                let pageView = DistinctIndexedPageView(pageId: "popular-page", userId: "user\(i)")
-                try await ctx.maintainer.updateIndex(
-                    oldItem: nil as DistinctIndexedPageView?,
-                    newItem: pageView,
-                    transaction: transaction
-                )
-            }
+            try await ctx.maintainer.scanItems(
+                pageViews.map { pageView in
+                    (item: pageView, id: Tuple(pageView.id))
+                },
+                transaction: transaction
+            )
         }
 
         let (estimated, errorRate) = try await ctx.getDistinctCount(for: "popular-page")

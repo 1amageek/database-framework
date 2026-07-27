@@ -517,6 +517,10 @@ let package = Package(
                 "DatabaseRuntime",
                 "TestSupport",
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(
+                    name: "DatabaseKitFoundation",
+                    package: "database-kit"
+                ),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [

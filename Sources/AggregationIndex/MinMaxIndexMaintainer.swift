@@ -202,8 +202,8 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     /// - `itemId`: Primary key of the item with minimum value
     public func getAllMins(
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], min: Value, itemId: Tuple)] {
-        var results: [(grouping: [any TupleElement], min: Value, itemId: Tuple)] = []
+    ) async throws -> [(grouping: [FieldValue], min: Value, itemId: Tuple)] {
+        var results: [(grouping: [FieldValue], min: Value, itemId: Tuple)] = []
         guard index.rootExpression.columnCount >= 1 else {
             throw AggregationIndexError.invalidStructure(
                 "MIN index must contain a value field"
@@ -263,7 +263,9 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
             let aggregate = try decodeAggregateValue(value)
 
             results.append((
-                grouping: groupingElements,
+                grouping: try AggregationGroupingValueDecoder.decode(
+                    groupingElements
+                ),
                 min: aggregate.value,
                 itemId: aggregate.itemId
             ))
@@ -567,8 +569,8 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     /// - `itemId`: Primary key of the item with maximum value
     public func getAllMaxs(
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], max: Value, itemId: Tuple)] {
-        var results: [(grouping: [any TupleElement], max: Value, itemId: Tuple)] = []
+    ) async throws -> [(grouping: [FieldValue], max: Value, itemId: Tuple)] {
+        var results: [(grouping: [FieldValue], max: Value, itemId: Tuple)] = []
         guard index.rootExpression.columnCount >= 1 else {
             throw AggregationIndexError.invalidStructure(
                 "MAX index must contain a value field"
@@ -628,7 +630,9 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
             let aggregate = try decodeAggregateValue(value)
 
             results.append((
-                grouping: groupingElements,
+                grouping: try AggregationGroupingValueDecoder.decode(
+                    groupingElements
+                ),
                 max: aggregate.value,
                 itemId: aggregate.itemId
             ))

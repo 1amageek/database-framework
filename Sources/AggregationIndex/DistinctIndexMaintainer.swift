@@ -348,7 +348,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
     public func getAllDistinctCounts(
         transaction: any TransactionAccess
     ) async throws -> [(
-        grouping: [any TupleElement],
+        grouping: [FieldValue],
         estimated: Int64,
         errorRate: Double
     )] {
@@ -374,7 +374,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
             )]
         }
         var results: [(
-            grouping: [any TupleElement],
+            grouping: [FieldValue],
             estimated: Int64,
             errorRate: Double
         )] = []
@@ -465,7 +465,9 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
                 expectedPrecision: precision
             )
             results.append((
-                grouping: group.grouping,
+                grouping: try AggregationGroupingValueDecoder.decode(
+                    group.grouping
+                ),
                 estimated: try estimatedCardinality(estimator),
                 errorRate: estimator.estimatedRelativeError
             ))

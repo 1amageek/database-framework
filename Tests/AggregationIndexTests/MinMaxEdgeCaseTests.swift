@@ -4,6 +4,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -28,7 +29,7 @@ private func productExtremumIndexMetadata(
     )
 }
 
-@Suite("MIN/MAX Edge Case Tests", .serialized, .heartbeat)
+@Suite("MIN/MAX Edge Case Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct MinMaxEdgeCaseTests {
 
     init() async throws {
@@ -243,8 +244,8 @@ struct MinMaxEdgeCaseTests {
                 #expect(Bool(false), "Grouping should have 2 elements")
                 continue
             }
-            let region = result.grouping[0] as! String
-            let category = result.grouping[1] as! String
+            let region = result.grouping[0].stringValue!
+            let category = result.grouping[1].stringValue!
             let key = "\(region)-\(category)"
             minsByGroup[key] = result.min
         }
@@ -317,8 +318,8 @@ struct MinMaxEdgeCaseTests {
                 #expect(Bool(false), "Grouping should have 2 elements")
                 continue
             }
-            let region = result.grouping[0] as! String
-            let category = result.grouping[1] as! String
+            let region = result.grouping[0].stringValue!
+            let category = result.grouping[1].stringValue!
             let key = "\(region)-\(category)"
             maxsByGroup[key] = result.max
         }
@@ -514,7 +515,7 @@ struct MinMaxEdgeCaseTests {
 
         var minsByRegion: [String: Int64] = [:]
         for result in mins {
-            let region = result.grouping[0] as! String
+            let region = result.grouping[0].stringValue!
             minsByRegion[region] = result.min
         }
 
@@ -611,7 +612,7 @@ struct MinMaxEdgeCaseTests {
 
         var minsByRegion: [String: Int64] = [:]
         for result in mins {
-            let region = result.grouping[0] as! String
+            let region = result.grouping[0].stringValue!
             minsByRegion[region] = result.min
         }
 
@@ -705,7 +706,7 @@ struct MinMaxEdgeCaseTests {
 
         var maxsByRegion: [String: Int64] = [:]
         for result in maxs {
-            let region = result.grouping[0] as! String
+            let region = result.grouping[0].stringValue!
             maxsByRegion[region] = result.max
         }
 

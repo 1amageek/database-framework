@@ -562,7 +562,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         typealias AggregationIndexResult = (
             aggregationName: String,
             aggregationType: AggregationType,
-            results: [(grouping: [any TupleElement], value: FieldValue?)]
+            results: [(grouping: [FieldValue], value: FieldValue?)]
         )
 
         // Collect all aggregation results inside the transaction
@@ -598,9 +598,9 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         var groupedResults: [[FieldValue]: (groupKey: [String: FieldValue], aggregates: [String: FieldValue?])] = [:]
 
         for aggResult in allAggregationResults {
-            for (groupingElements, value) in aggResult.results {
-                let (identity, groupKeyDict) = try decodeGroupKeyAndDictionary(
-                    groupingElements
+            for (groupingValues, value) in aggResult.results {
+                let (identity, groupKeyDict) = try groupKeyAndIdentity(
+                    groupingValues
                 )
 
                 if var existing = groupedResults[identity] {
@@ -667,7 +667,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         idExpression: KeyExpression,
         aggregation: AggregationSpec,
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
+    ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let metadata = try AggregationIndexMetadata(canonical: index.kind)
         switch aggregation.type {
         case .count:
@@ -777,7 +777,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
+    ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
         case .int8:
@@ -812,7 +812,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
+    ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = SumIndexMaintainer<T, Value>(
             index: index,
             subspace: subspace,
@@ -834,7 +834,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
+    ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
         case .int8:
@@ -869,7 +869,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
+    ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = AverageIndexMaintainer<T, Value>(
             index: index,
             subspace: subspace,
@@ -893,7 +893,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
+    ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
         case .int8:
@@ -932,7 +932,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
+    ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = MinIndexMaintainer<T, Value>(
             index: index,
             subspace: subspace,
@@ -954,7 +954,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
+    ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
         case .int8:
@@ -993,7 +993,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
+    ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = MaxIndexMaintainer<T, Value>(
             index: index,
             subspace: subspace,
@@ -1009,192 +1009,26 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
-    /// Decode the typed identity and presentation dictionary for an index group.
-    private func decodeGroupKeyAndDictionary(
-        _ elements: [any TupleElement]
+    /// Builds the typed identity and presentation dictionary for an index group.
+    private func groupKeyAndIdentity(
+        _ values: [FieldValue]
     ) throws -> ([FieldValue], [String: FieldValue]) {
-        guard elements.count == groupByFieldNames.count else {
+        guard values.count == groupByFieldNames.count else {
             throw AggregationQueryError.invalidIndexMetadata(
                 "Index grouping arity does not match the query"
             )
         }
         var groupKeyDict: [String: FieldValue] = [:]
-        var identity: [FieldValue] = []
-        identity.reserveCapacity(elements.count)
-
-        for (index, element) in elements.enumerated() {
+        groupKeyDict.reserveCapacity(values.count)
+        for (index, value) in values.enumerated() {
             let fieldName = groupByFieldNames[index]
-            let decodedValue = try FieldValue(tupleElement: element)
-            let fieldValue = try restoreGroupFieldValue(
-                decodedValue,
-                fieldName: fieldName
-            )
             try CanonicalAggregationReducer.validate(
-                value: fieldValue,
+                value: value,
                 field: fieldName
             )
-            groupKeyDict[fieldName] = fieldValue
-            identity.append(fieldValue)
+            groupKeyDict[fieldName] = value
         }
-
-        return (identity, groupKeyDict)
-    }
-
-    /// Restores the declared presentation type erased by FoundationDB's
-    /// canonical positive-integer tuple encoding. Storage identity intentionally
-    /// treats equal signed and unsigned positive integers as one key; schema
-    /// metadata restores the application's typed `FieldValue` at the query edge.
-    private func restoreGroupFieldValue(
-        _ value: FieldValue,
-        fieldName: String
-    ) throws -> FieldValue {
-        guard let schema = T.fieldSchemas.first(where: {
-            $0.name == fieldName
-        }) else {
-            // Nested field schemas are owned by their nested compiled type. The
-            // tuple representation already preserves all non-integer families.
-            return value
-        }
-        if value.isNull {
-            guard schema.isOptional else {
-                throw AggregationQueryError.invalidIndexMetadata(
-                    "Non-optional group field '\(fieldName)' contains null"
-                )
-            }
-            return value
-        }
-
-        switch schema.type {
-        case .uint8, .uint16, .uint32, .uint64:
-            let unsigned: UInt64
-            switch value {
-            case .int64(let signed) where signed >= 0:
-                unsigned = UInt64(signed)
-            case .uint64(let stored):
-                unsigned = stored
-            default:
-                throw AggregationQueryError.invalidIndexMetadata(
-                    "Unsigned group field '\(fieldName)' has incompatible storage"
-                )
-            }
-            try validateUnsignedGroupValue(
-                unsigned,
-                schemaType: schema.type,
-                fieldName: fieldName
-            )
-            switch schema.type {
-            case .uint8:
-                return .uint8(UInt8(unsigned))
-            case .uint16:
-                return .uint16(UInt16(unsigned))
-            case .uint32:
-                return .uint32(UInt32(unsigned))
-            case .uint64:
-                return .uint64(unsigned)
-            default:
-                throw AggregationQueryError.invalidIndexMetadata(
-                    "Unsigned group field '\(fieldName)' has invalid schema"
-                )
-            }
-
-        case .int8, .int16, .int32, .int64:
-            let signed: Int64
-            switch value {
-            case .int64(let stored):
-                signed = stored
-            case .uint64(let unsigned):
-                guard let converted = Int64(exactly: unsigned) else {
-                    throw AggregationQueryError.invalidIndexMetadata(
-                        "Signed group field '\(fieldName)' is out of range"
-                    )
-                }
-                signed = converted
-            default:
-                throw AggregationQueryError.invalidIndexMetadata(
-                    "Signed group field '\(fieldName)' has incompatible storage"
-                )
-            }
-            try validateSignedGroupValue(
-                signed,
-                schemaType: schema.type,
-                fieldName: fieldName
-            )
-            switch schema.type {
-            case .int8:
-                return .int8(Int8(signed))
-            case .int16:
-                return .int16(Int16(signed))
-            case .int32:
-                return .int32(Int32(signed))
-            case .int64:
-                return .int64(signed)
-            default:
-                throw AggregationQueryError.invalidIndexMetadata(
-                    "Signed group field '\(fieldName)' has invalid schema"
-                )
-            }
-
-        case .bool, .float32, .float64, .decimal, .string, .bytes,
-             .date, .time, .dateTime, .timestamp, .timeSpan,
-             .calendarPeriod, .geographicPoint, .geographicPosition,
-             .vector, .uuid, .object, .rdfTerm, .reference, .nested,
-             .enum:
-            return value
-        }
-    }
-
-    private func validateUnsignedGroupValue(
-        _ value: UInt64,
-        schemaType: FieldSchemaType,
-        fieldName: String
-    ) throws {
-        let maximum: UInt64?
-        switch schemaType {
-        case .uint8:
-            maximum = UInt64(UInt8.max)
-        case .uint16:
-            maximum = UInt64(UInt16.max)
-        case .uint32:
-            maximum = UInt64(UInt32.max)
-        case .uint64:
-            maximum = nil
-        default:
-            throw AggregationQueryError.invalidIndexMetadata(
-                "Group field '\(fieldName)' has invalid unsigned schema metadata"
-            )
-        }
-        if let maximum, value > maximum {
-            throw AggregationQueryError.invalidIndexMetadata(
-                "Unsigned group field '\(fieldName)' is out of range"
-            )
-        }
-    }
-
-    private func validateSignedGroupValue(
-        _ value: Int64,
-        schemaType: FieldSchemaType,
-        fieldName: String
-    ) throws {
-        let range: ClosedRange<Int64>?
-        switch schemaType {
-        case .int8:
-            range = Int64(Int8.min)...Int64(Int8.max)
-        case .int16:
-            range = Int64(Int16.min)...Int64(Int16.max)
-        case .int32:
-            range = Int64(Int32.min)...Int64(Int32.max)
-        case .int64:
-            range = nil
-        default:
-            throw AggregationQueryError.invalidIndexMetadata(
-                "Group field '\(fieldName)' has invalid signed schema metadata"
-            )
-        }
-        if let range, !range.contains(value) {
-            throw AggregationQueryError.invalidIndexMetadata(
-                "Signed group field '\(fieldName)' is out of range"
-            )
-        }
+        return (values, groupKeyDict)
     }
 
     private static func emptyValue(

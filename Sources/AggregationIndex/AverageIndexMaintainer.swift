@@ -163,13 +163,13 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     public func getAllAveragesAsDouble(
         transaction: any TransactionAccess
     ) async throws -> [(
-        grouping: [any TupleElement],
+        grouping: [FieldValue],
         count: Int64,
         average: Double
     )] {
         let exactResults = try await getAllAverages(transaction: transaction)
         var results: [(
-            grouping: [any TupleElement],
+            grouping: [FieldValue],
             count: Int64,
             average: Double
         )] = []
@@ -187,7 +187,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     public func getAllAverages(
         transaction: any TransactionAccess
     ) async throws -> [(
-        grouping: [any TupleElement],
+        grouping: [FieldValue],
         count: Int64,
         average: FieldValue
     )] {
@@ -259,7 +259,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
         }
 
         var results: [(
-            grouping: [any TupleElement],
+            grouping: [FieldValue],
             count: Int64,
             average: FieldValue
         )] = []
@@ -272,7 +272,9 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
                 )
             }
             results.append((
-                grouping: sumInfo.grouping,
+                grouping: try AggregationGroupingValueDecoder.decode(
+                    sumInfo.grouping
+                ),
                 count: count,
                 average: try exactAverage(sum: sumInfo.sum, count: count)
             ))

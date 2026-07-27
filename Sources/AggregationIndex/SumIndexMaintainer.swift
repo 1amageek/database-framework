@@ -173,9 +173,9 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     /// - Returns: Array of (groupingValues, sum) tuples
     public func getAllSumsAsDouble(
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], sum: Double)] {
+    ) async throws -> [(grouping: [FieldValue], sum: Double)] {
         let exactResults = try await getAllSums(transaction: transaction)
-        var results: [(grouping: [any TupleElement], sum: Double)] = []
+        var results: [(grouping: [FieldValue], sum: Double)] = []
         results.reserveCapacity(exactResults.count)
         for result in exactResults {
             results.append((
@@ -188,7 +188,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
 
     public func getAllSums(
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], sum: FieldValue)] {
+    ) async throws -> [(grouping: [FieldValue], sum: FieldValue)] {
         var groupingByIdentity: [Bytes: [any TupleElement]] = [:]
         var sums: [Bytes: FieldValue] = [:]
         var counts: [Bytes: Int64] = [:]
@@ -246,13 +246,18 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
             }
         }
 
-        var results: [(grouping: [any TupleElement], sum: FieldValue)] = []
+        var results: [(grouping: [FieldValue], sum: FieldValue)] = []
         results.reserveCapacity(sums.count)
         for (identity, sum) in sums {
-            guard let grouping = groupingByIdentity[identity], counts[identity] != nil else {
+            guard let storedGrouping = groupingByIdentity[identity], counts[identity] != nil else {
                 throw AggregationIndexError.invalidStructure("Sum index value is missing its count")
             }
-            results.append((grouping: grouping, sum: sum))
+            results.append((
+                grouping: try AggregationGroupingValueDecoder.decode(
+                    storedGrouping
+                ),
+                sum: sum
+            ))
         }
         for identity in counts.keys where sums[identity] == nil {
             throw AggregationIndexError.invalidStructure("Sum index count is missing its value")

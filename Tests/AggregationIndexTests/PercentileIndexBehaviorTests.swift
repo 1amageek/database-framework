@@ -7,6 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import DatabaseKit
+import DatabaseKitFoundation
 import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
@@ -14,64 +15,12 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct EndpointRequest: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct EndpointRequest {
+    var id: String = UUID().uuidString
     var endpoint: String
     var latencyMs: Double
-    var timestamp: Date
-
-    init(id: String = UUID().uuidString, endpoint: String, latencyMs: Double, timestamp: Date = Date()) {
-        self.id = id
-        self.endpoint = endpoint
-        self.latencyMs = latencyMs
-        self.timestamp = timestamp
-    }
-
-    static var persistableType: String { "EndpointRequest" }
-    static var allFields: [String] { ["id", "endpoint", "latencyMs", "timestamp"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "endpoint": return endpoint
-        case "latencyMs": return latencyMs
-        case "timestamp": return timestamp
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<EndpointRequest, Value>) -> String {
-        switch keyPath {
-        case \EndpointRequest.id: return "id"
-        case \EndpointRequest.endpoint: return "endpoint"
-        case \EndpointRequest.latencyMs: return "latencyMs"
-        case \EndpointRequest.timestamp: return "timestamp"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<EndpointRequest>) -> String {
-        switch keyPath {
-        case \EndpointRequest.id: return "id"
-        case \EndpointRequest.endpoint: return "endpoint"
-        case \EndpointRequest.latencyMs: return "latencyMs"
-        case \EndpointRequest.timestamp: return "timestamp"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<EndpointRequest> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var timestamp: Date = Date()
 }
 
 // MARK: - Percentile Index Context
@@ -153,7 +102,7 @@ private struct PercentileIndexContext {
 
 // MARK: - Behavior Tests
 
-@Suite("PercentileIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("PercentileIndex Behavior Tests", .tags(.fdb), .foundationDBScenario, .serialized, .heartbeat)
 struct PercentileIndexBehaviorTests {
 
     // MARK: - Insert Tests

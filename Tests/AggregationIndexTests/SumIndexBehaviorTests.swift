@@ -14,64 +14,12 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct RegionalSale: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct RegionalSale {
+    var id: String = UUID().uuidString
     var category: String
     var region: String
     var amount: Double
-
-    init(id: String = UUID().uuidString, category: String, region: String, amount: Double) {
-        self.id = id
-        self.category = category
-        self.region = region
-        self.amount = amount
-    }
-
-    static var persistableType: String { "RegionalSale" }
-    static var allFields: [String] { ["id", "category", "region", "amount"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "category": return category
-        case "region": return region
-        case "amount": return amount
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<RegionalSale, Value>) -> String {
-        switch keyPath {
-        case \RegionalSale.id: return "id"
-        case \RegionalSale.category: return "category"
-        case \RegionalSale.region: return "region"
-        case \RegionalSale.amount: return "amount"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<RegionalSale>) -> String {
-        switch keyPath {
-        case \RegionalSale.id: return "id"
-        case \RegionalSale.category: return "category"
-        case \RegionalSale.region: return "region"
-        case \RegionalSale.amount: return "amount"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<RegionalSale> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Sum Index Context
@@ -137,7 +85,7 @@ private struct SumIndexContext {
         }
     }
 
-    func getAllSums() async throws -> [(grouping: [any TupleElement], sum: Double)] {
+    func getAllSums() async throws -> [(grouping: [FieldValue], sum: Double)] {
         try await database.withTransaction { transaction in
             try await maintainer.getAllSumsAsDouble(transaction: transaction)
         }
@@ -146,7 +94,7 @@ private struct SumIndexContext {
 
 // MARK: - Behavior Tests
 
-@Suite("SumIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("SumIndex Behavior Tests", .tags(.fdb), .foundationDBScenario, .serialized, .heartbeat)
 struct SumIndexBehaviorTests {
 
     // MARK: - Insert Tests

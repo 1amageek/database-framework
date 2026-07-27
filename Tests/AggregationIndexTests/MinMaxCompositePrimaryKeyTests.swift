@@ -4,11 +4,12 @@ import Foundation
 import StorageKit
 import FDBStorage
 import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
-@Suite("MIN/MAX Composite Primary Key Tests", .serialized, .heartbeat)
+@Suite("MIN/MAX Composite Primary Key Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct MinMaxCompositePrimaryKeyTests {
 
     init() async throws {
@@ -17,10 +18,61 @@ struct MinMaxCompositePrimaryKeyTests {
 
     // MARK: - Test Model with Composite Primary Key
 
+    struct TenantOrderIdentifier:
+        PersistableIdentifier,
+        FieldValueEncodable,
+        FieldValueDecodable,
+        Hashable
+    {
+        let tenantId: String
+        let orderId: String
+
+        static let persistableIdentifierType: PersistableIdentifierType =
+            .composite([.string, .string])
+        static let fieldSchemaType: FieldSchemaType = .object
+
+        var persistableIdentifierValue: ReferenceIdentifier {
+            .composite([.string(tenantId), .string(orderId)])
+        }
+
+        func encodeFieldValue() throws(PersistableEncodingError) -> FieldValue {
+            do {
+                return .object(
+                    try FieldObject([
+                        (key: "tenantId", value: .string(tenantId)),
+                        (key: "orderId", value: .string(orderId)),
+                    ])
+                )
+            } catch {
+                throw .invalidScalar(
+                    type: "TenantOrderIdentifier",
+                    reason: "Composite identifier fields must have unique names"
+                )
+            }
+        }
+
+        static func decodeFieldValue(
+            _ value: FieldValue,
+            field: String
+        ) throws(PersistableDecodingError) -> TenantOrderIdentifier {
+            guard case .object(let object) = value,
+                  case .string(let tenantId) = object["tenantId"],
+                  case .string(let orderId) = object["orderId"] else {
+                throw .invalidValue(
+                    field: field,
+                    expected: "a tenant-order identifier object"
+                )
+            }
+            return TenantOrderIdentifier(
+                tenantId: tenantId,
+                orderId: orderId
+            )
+        }
+    }
+
     @Persistable
     struct MultiTenantOrder {
-        // Composite identity encoded as "tenantId:orderId".
-        var id: String = ""
+        var id: TenantOrderIdentifier
         var tenantId: String
         var orderId: String
         var region: String
@@ -33,14 +85,16 @@ struct MinMaxCompositePrimaryKeyTests {
         region: String,
         amount: Double
     ) -> MultiTenantOrder {
-        var order = MultiTenantOrder(
+        MultiTenantOrder(
+            id: TenantOrderIdentifier(
+                tenantId: tenantId,
+                orderId: orderId
+            ),
             tenantId: tenantId,
             orderId: orderId,
             region: region,
             amount: amount
         )
-        order.id = "\(tenantId):\(orderId)"
-        return order
     }
 
     // MARK: - Tests
@@ -72,10 +126,7 @@ struct MinMaxCompositePrimaryKeyTests {
         let maintainer = MinIndexMaintainer<MultiTenantOrder, Double>(
             index: index,
             subspace: indexSubspace,
-            idExpression: ConcatenateKeyExpression(children: [
-                FieldKeyExpression(fieldName: "tenantId"),
-                FieldKeyExpression(fieldName: "orderId")
-            ])
+            idExpression: FieldKeyExpression(fieldName: "id")
         )
 
         let orders = [
@@ -115,7 +166,7 @@ struct MinMaxCompositePrimaryKeyTests {
 
         var minsByRegion: [String: (value: Double, itemId: Tuple)] = [:]
         for result in mins {
-            let region = result.grouping[0] as! String
+            let region = result.grouping[0].stringValue!
             minsByRegion[region] = (result.min, result.itemId)
         }
 
@@ -124,15 +175,13 @@ struct MinMaxCompositePrimaryKeyTests {
         #expect(minsByRegion["EU"]?.value == 39.0)
 
         // Verify composite primary keys
-        let usItemId = minsByRegion["US"]!.itemId
-        #expect(usItemId.count == 2, "Primary key should have 2 elements")
-        #expect(usItemId[0] as? String == "tenant1")
-        #expect(usItemId[1] as? String == "o2")
+        let usItemId = try Self.decodeIdentifier(minsByRegion["US"]!.itemId)
+        #expect(usItemId.tenantId == "tenant1")
+        #expect(usItemId.orderId == "o2")
 
-        let euItemId = minsByRegion["EU"]!.itemId
-        #expect(euItemId.count == 2, "Primary key should have 2 elements")
-        #expect(euItemId[0] as? String == "tenant2")
-        #expect(euItemId[1] as? String == "o2")
+        let euItemId = try Self.decodeIdentifier(minsByRegion["EU"]!.itemId)
+        #expect(euItemId.tenantId == "tenant2")
+        #expect(euItemId.orderId == "o2")
     }
 
     @Test("MAX with composite primary key")
@@ -162,10 +211,7 @@ struct MinMaxCompositePrimaryKeyTests {
         let maintainer = MaxIndexMaintainer<MultiTenantOrder, Double>(
             index: index,
             subspace: indexSubspace,
-            idExpression: ConcatenateKeyExpression(children: [
-                FieldKeyExpression(fieldName: "tenantId"),
-                FieldKeyExpression(fieldName: "orderId")
-            ])
+            idExpression: FieldKeyExpression(fieldName: "id")
         )
 
         let orders = [
@@ -205,7 +251,7 @@ struct MinMaxCompositePrimaryKeyTests {
 
         var maxsByRegion: [String: (value: Double, itemId: Tuple)] = [:]
         for result in maxs {
-            let region = result.grouping[0] as! String
+            let region = result.grouping[0].stringValue!
             maxsByRegion[region] = (result.max, result.itemId)
         }
 
@@ -214,15 +260,35 @@ struct MinMaxCompositePrimaryKeyTests {
         #expect(maxsByRegion["EU"]?.value == 1299.0)
 
         // Verify composite primary keys
-        let usItemId = maxsByRegion["US"]!.itemId
-        #expect(usItemId.count == 2, "Primary key should have 2 elements")
-        #expect(usItemId[0] as? String == "tenant1")
-        #expect(usItemId[1] as? String == "o1")
+        let usItemId = try Self.decodeIdentifier(maxsByRegion["US"]!.itemId)
+        #expect(usItemId.tenantId == "tenant1")
+        #expect(usItemId.orderId == "o1")
 
-        let euItemId = maxsByRegion["EU"]!.itemId
-        #expect(euItemId.count == 2, "Primary key should have 2 elements")
-        #expect(euItemId[0] as? String == "tenant2")
-        #expect(euItemId[1] as? String == "o1")
+        let euItemId = try Self.decodeIdentifier(maxsByRegion["EU"]!.itemId)
+        #expect(euItemId.tenantId == "tenant2")
+        #expect(euItemId.orderId == "o1")
+    }
+
+    private static func decodeIdentifier(
+        _ tuple: Tuple
+    ) throws -> TenantOrderIdentifier {
+        let value = try PersistableIdentifierKeyCodec.value(
+            from: tuple,
+            expectedType: TenantOrderIdentifier.persistableIdentifierType
+        )
+        guard case .composite(let components) = value,
+              components.count == 2,
+              case .string(let tenantId) = components[0],
+              case .string(let orderId) = components[1] else {
+            throw PersistableDecodingError.invalidValue(
+                field: "id",
+                expected: "a tenant-order composite identifier"
+            )
+        }
+        return TenantOrderIdentifier(
+            tenantId: tenantId,
+            orderId: orderId
+        )
     }
 }
 #endif

@@ -14,64 +14,12 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct CountIndexedUser: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct CountIndexedUser {
+    var id: String = UUID().uuidString
     var city: String
     var department: String
-    var active: Bool
-
-    init(id: String = UUID().uuidString, city: String, department: String, active: Bool = true) {
-        self.id = id
-        self.city = city
-        self.department = department
-        self.active = active
-    }
-
-    static var persistableType: String { "CountIndexedUser" }
-    static var allFields: [String] { ["id", "city", "department", "active"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "city": return city
-        case "department": return department
-        case "active": return active
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<CountIndexedUser, Value>) -> String {
-        switch keyPath {
-        case \CountIndexedUser.id: return "id"
-        case \CountIndexedUser.city: return "city"
-        case \CountIndexedUser.department: return "department"
-        case \CountIndexedUser.active: return "active"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<CountIndexedUser>) -> String {
-        switch keyPath {
-        case \CountIndexedUser.id: return "id"
-        case \CountIndexedUser.city: return "city"
-        case \CountIndexedUser.department: return "department"
-        case \CountIndexedUser.active: return "active"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<CountIndexedUser> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var active: Bool = true
 }
 
 // MARK: - Count Index Context
@@ -123,7 +71,7 @@ private struct CountIndexContext {
         }
     }
 
-    func getAllCounts() async throws -> [(grouping: [any TupleElement], count: Int64)] {
+    func getAllCounts() async throws -> [(grouping: [FieldValue], count: Int64)] {
         try await database.withTransaction { transaction in
             try await maintainer.getAllCounts(transaction: transaction)
         }
@@ -132,7 +80,7 @@ private struct CountIndexContext {
 
 // MARK: - Behavior Tests
 
-@Suite("CountIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("CountIndex Behavior Tests", .tags(.fdb), .foundationDBScenario, .serialized, .heartbeat)
 struct CountIndexBehaviorTests {
 
     // MARK: - Insert Tests

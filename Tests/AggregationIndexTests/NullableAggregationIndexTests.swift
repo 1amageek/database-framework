@@ -129,7 +129,7 @@ struct NullableAggregationIndexTests {
         #expect(result.count == 1)
         #expect(result.grouping.count == 1)
         #expect(
-            try FieldValue(tupleElement: result.grouping[0]) == .null
+            result.grouping[0] == .null
         )
     }
 }

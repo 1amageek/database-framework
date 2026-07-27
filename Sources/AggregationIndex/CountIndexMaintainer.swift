@@ -121,8 +121,16 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
     /// Get all counts in this index
     public func getAllCounts(
         transaction: any TransactionAccess
-    ) async throws -> [(grouping: [any TupleElement], count: Int64)] {
-        try await scanAllCounts(transaction: transaction)
+    ) async throws -> [(grouping: [FieldValue], count: Int64)] {
+        let storedResults = try await scanAllCounts(transaction: transaction)
+        return try storedResults.map { result in
+            (
+                grouping: try AggregationGroupingValueDecoder.decode(
+                    result.grouping
+                ),
+                count: result.count
+            )
+        }
     }
 
     private func groupingValues(

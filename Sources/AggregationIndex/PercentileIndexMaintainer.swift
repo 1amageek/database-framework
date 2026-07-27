@@ -355,7 +355,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
         percentiles: [Double],
         transaction: any TransactionAccess
     ) async throws -> [(
-        grouping: [any TupleElement],
+        grouping: [FieldValue],
         values: [Double: Double]
     )] {
         try validatePercentiles(percentiles)
@@ -375,7 +375,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
             )]
         }
         var results: [(
-            grouping: [any TupleElement],
+            grouping: [FieldValue],
             values: [Double: Double]
         )] = []
         var groups: [Bytes: PercentileIndexReadGroup] = [:]
@@ -466,7 +466,9 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
                 throw PercentileIndexError.corruptedSummary
             }
             results.append((
-                grouping: group.grouping,
+                grouping: try AggregationGroupingValueDecoder.decode(
+                    group.grouping
+                ),
                 values: try digest.quantiles(percentiles)
             ))
             group.summarySeen = true

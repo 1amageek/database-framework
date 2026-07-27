@@ -14,69 +14,13 @@ import TestSupport
 
 // MARK: - Test Models
 
-struct AggregationBenchmarkSale: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct AggregationBenchmarkSale {
+    var id: String = UUID().uuidString
     var region: String
     var category: String
     var amount: Double
-    var quantity: Int64
-
-    init(id: String = UUID().uuidString, region: String, category: String, amount: Double, quantity: Int64 = 1) {
-        self.id = id
-        self.region = region
-        self.category = category
-        self.amount = amount
-        self.quantity = quantity
-    }
-
-    static var persistableType: String { "AggregationBenchmarkSale" }
-    static var allFields: [String] { ["id", "region", "category", "amount", "quantity"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "region": return region
-        case "category": return category
-        case "amount": return amount
-        case "quantity": return quantity
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<AggregationBenchmarkSale, Value>) -> String {
-        switch keyPath {
-        case \AggregationBenchmarkSale.id: return "id"
-        case \AggregationBenchmarkSale.region: return "region"
-        case \AggregationBenchmarkSale.category: return "category"
-        case \AggregationBenchmarkSale.amount: return "amount"
-        case \AggregationBenchmarkSale.quantity: return "quantity"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<AggregationBenchmarkSale>) -> String {
-        switch keyPath {
-        case \AggregationBenchmarkSale.id: return "id"
-        case \AggregationBenchmarkSale.region: return "region"
-        case \AggregationBenchmarkSale.category: return "category"
-        case \AggregationBenchmarkSale.amount: return "amount"
-        case \AggregationBenchmarkSale.quantity: return "quantity"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<AggregationBenchmarkSale> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var quantity: Int64 = 1
 }
 
 // MARK: - Benchmark Measurement
@@ -116,7 +60,7 @@ private func benchmark<T>(
 
 // MARK: - Performance Tests
 
-@Suite("AggregationIndex Performance Tests", .tags(.fdb, .performance), .serialized, .heartbeat)
+@Suite("AggregationIndex Performance Tests", .tags(.fdb, .performance), .foundationDBScenario, .serialized, .heartbeat)
 struct AggregationIndexPerformanceTests {
 
     // MARK: - COUNT Index Performance

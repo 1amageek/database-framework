@@ -4,11 +4,12 @@ import Foundation
 import StorageKit
 import FDBStorage
 import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
-@Suite("MIN/MAX Batch API Tests", .serialized, .heartbeat)
+@Suite("MIN/MAX Batch API Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct MinMaxBatchAPITests {
 
     init() async throws {
@@ -86,7 +87,7 @@ struct MinMaxBatchAPITests {
         // Verify MIN values for each group
         var minsByRegion: [String: Double] = [:]
         for result in mins {
-            let region = result.grouping[0] as! String
+            let region = result.grouping[0].stringValue!
             minsByRegion[region] = result.min
         }
 
@@ -154,7 +155,7 @@ struct MinMaxBatchAPITests {
         // Verify MAX values for each group
         var maxsByRegion: [String: Double] = [:]
         for result in maxs {
-            let region = result.grouping[0] as! String
+            let region = result.grouping[0].stringValue!
             maxsByRegion[region] = result.max
         }
 

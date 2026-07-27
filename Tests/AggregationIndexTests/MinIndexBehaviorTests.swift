@@ -92,7 +92,7 @@ private struct MinimumIndexContext {
 
 // MARK: - Behavior Tests
 
-@Suite("MinIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("MinIndex Behavior Tests", .tags(.fdb), .foundationDBScenario, .serialized, .heartbeat)
 struct MinIndexBehaviorTests {
 
     // MARK: - Insert Tests

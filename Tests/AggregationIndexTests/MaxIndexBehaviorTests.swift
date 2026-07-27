@@ -92,7 +92,7 @@ private struct MaximumIndexContext {
 
 // MARK: - Behavior Tests
 
-@Suite("MaxIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("MaxIndex Behavior Tests", .tags(.fdb), .foundationDBScenario, .serialized, .heartbeat)
 struct MaxIndexBehaviorTests {
 
     // MARK: - Insert Tests

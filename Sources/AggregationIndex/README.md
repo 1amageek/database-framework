@@ -263,7 +263,7 @@ struct PageView {
 
 // Get unique visitor count for a page (O(1) lookup, ~0.81% error)
 let (estimated, errorRate) = try await distinctMaintainer.getDistinctCount(
-    groupingValues: ["homepage"],
+    groupingValues: [.string("homepage")],
     transaction: transaction
 )
 print("Unique visitors: ~\(estimated) (±\(errorRate * 100)%)")
@@ -734,6 +734,11 @@ AggregationQueryBuilder.execute()
 4. `aggregationValueField` matches (for non-COUNT aggregations)
 
 **Supported for Index-Backed Batch Queries**:
+
+Every batch result exposes grouping keys as `[FieldValue]`. FoundationDB tuple
+elements remain an internal storage representation and never cross the public
+aggregation query boundary.
+
 | Aggregation | Index Kind | Batch API |
 |-------------|------------|-----------|
 | COUNT | `CountIndexKind` | `getAllCounts()` |
