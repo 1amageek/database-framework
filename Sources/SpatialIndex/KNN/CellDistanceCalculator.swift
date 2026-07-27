@@ -12,7 +12,6 @@ import DatabaseEngine
 import DatabaseMath
 import DatabaseKit
 import StorageKit
-import DatabaseKit
 
 /// Calculator for cell-to-point distances
 ///

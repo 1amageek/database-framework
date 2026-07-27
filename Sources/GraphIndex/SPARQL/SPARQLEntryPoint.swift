@@ -12,7 +12,6 @@ import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
 import DatabaseWire
-import DatabaseKit
 
 // MARK: - SPARQL Entry Point
 

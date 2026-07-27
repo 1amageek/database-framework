@@ -1,5 +1,4 @@
 import DatabaseKit
-import DatabaseKit
 
 package struct PropertyGraphReadResolution {
     package let entity: Schema.Entity

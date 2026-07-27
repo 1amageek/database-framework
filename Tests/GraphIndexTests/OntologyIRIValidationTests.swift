@@ -12,7 +12,6 @@ import FDBStorage
 import DatabaseKit
 import DatabaseTypes
 import DatabaseRuntime
-import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex

@@ -1,6 +1,5 @@
 import DatabaseKit
 import DatabaseEngine
-import DatabaseKit
 
 /// Enumerates canonical RDF dataset indexes that can expose a named graph.
 public struct RDFDatasetSourcePlanner: Sendable {

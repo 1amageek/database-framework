@@ -2,11 +2,9 @@ import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
-import DatabaseKit
 import GraphIndex
 import OntologyIndex
 import QueryAST
-import DatabaseKit
 import RelationshipIndex
 import StorageKit
 

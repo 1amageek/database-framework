@@ -1,6 +1,5 @@
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
 import TestHeartbeat
 import Testing
 @testable import GraphIndex

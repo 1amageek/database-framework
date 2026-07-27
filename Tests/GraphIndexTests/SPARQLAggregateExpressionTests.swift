@@ -3,7 +3,6 @@ import DatabaseEngine
 import DatabaseTypes
 import DatabaseWire
 @testable import GraphIndex
-import DatabaseKit
 import Synchronization
 import TestHeartbeat
 import Testing

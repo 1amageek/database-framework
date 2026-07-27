@@ -6,7 +6,6 @@ import Testing
 import TestHeartbeat
 import Foundation
 import DatabaseKit
-import DatabaseKit
 import DatabaseEngine
 @testable import GraphIndex
 

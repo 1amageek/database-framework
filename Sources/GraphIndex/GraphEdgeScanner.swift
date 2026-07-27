@@ -1,7 +1,6 @@
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
-import DatabaseKit
 import StorageKit
 
 /// One canonical graph edge decoded from an index key.

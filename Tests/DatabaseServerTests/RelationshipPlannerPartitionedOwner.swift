@@ -1,6 +1,5 @@
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
 
 @Persistable
 struct RelationshipPlannerPartitionedOwner {

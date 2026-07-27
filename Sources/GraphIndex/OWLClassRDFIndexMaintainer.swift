@@ -1,6 +1,5 @@
 import DatabaseKit
 import DatabaseEngine
-import DatabaseKit
 import StorageKit
 
 /// Maintains the canonical RDF projection of an OWL-bound entity.

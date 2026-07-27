@@ -191,7 +191,6 @@ extension DatabaseCLI {
     }
 }
 #else
-import ArgumentParser
 
 @main
 struct DatabaseCLI: ParsableCommand {

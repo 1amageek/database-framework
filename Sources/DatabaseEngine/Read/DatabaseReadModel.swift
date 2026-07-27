@@ -1,7 +1,6 @@
 import DatabaseKit
 import DatabaseTypes
 import DatabaseWire
-import DatabaseKit
 
 /// Opaque continuation produced and consumed by the engine read pipeline.
 public struct QueryContinuation: Sendable, Hashable {

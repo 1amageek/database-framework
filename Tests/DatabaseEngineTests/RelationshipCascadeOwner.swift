@@ -2,7 +2,6 @@
 #if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
 
 @Persistable
 struct RelationshipCascadeOwner {

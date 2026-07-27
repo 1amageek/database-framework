@@ -1,7 +1,6 @@
 import Testing
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import RelationshipIndex

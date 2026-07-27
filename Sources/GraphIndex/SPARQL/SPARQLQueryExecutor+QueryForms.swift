@@ -2,7 +2,6 @@ import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
 import DatabaseWire
-import DatabaseKit
 import StorageKit
 
 extension SPARQLQueryExecutor {

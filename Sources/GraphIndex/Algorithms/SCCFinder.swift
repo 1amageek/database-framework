@@ -13,7 +13,6 @@ import Foundation
 import StorageKit
 import DatabaseKit
 import DatabaseEngine
-import DatabaseKit
 import Synchronization
 
 /// Configuration for SCC algorithm

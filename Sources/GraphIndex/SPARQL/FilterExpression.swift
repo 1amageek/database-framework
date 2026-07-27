@@ -11,7 +11,6 @@ import Foundation
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
-import DatabaseKit
 
 /// Filter expression for FILTER clauses
 ///

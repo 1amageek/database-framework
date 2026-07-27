@@ -4,7 +4,6 @@
 import Testing
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
 @testable import GraphIndex
 
 @Suite("ExpressionEvaluator SPARQL Hash Functions", .heartbeat)

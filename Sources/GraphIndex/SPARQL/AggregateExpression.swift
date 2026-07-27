@@ -1,7 +1,6 @@
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
-import DatabaseKit
 
 /// Canonical SPARQL aggregate algebra. Aggregate operands remain QueryIR plans
 /// so every solution is evaluated by the same runtime expression semantics used

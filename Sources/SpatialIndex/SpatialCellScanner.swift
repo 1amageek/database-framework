@@ -11,7 +11,6 @@ import Foundation
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
-import DatabaseKit
 
 /// Unified spatial cell scanner for S2 and Morton encodings
 ///

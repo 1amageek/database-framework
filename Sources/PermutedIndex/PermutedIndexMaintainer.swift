@@ -10,7 +10,6 @@ import Foundation
 #endif
 import DatabaseKit
 import DatabaseEngine
-import DatabaseKit
 import StorageKit
 
 /// Maintainer for PERMUTED indexes

@@ -2,9 +2,7 @@ import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
-import DatabaseKit
 import GraphIndex
-import DatabaseKit
 import StorageKit
 
 public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutationExecutor {

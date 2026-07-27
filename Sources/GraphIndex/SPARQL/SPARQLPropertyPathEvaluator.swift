@@ -1,7 +1,6 @@
 import DatabaseEngine
 import DatabaseTypes
 import DatabaseKit
-import DatabaseKit
 import StorageKit
 
 /// Executes SPARQL property-path algebra over retained RDF endpoint pairs.

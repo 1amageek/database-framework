@@ -1,10 +1,8 @@
 import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
-import DatabaseKit
 import GraphIndex
 import QueryAST
-import DatabaseKit
 import StorageKit
 
 extension DatabaseContext {

@@ -9,7 +9,6 @@ import Foundation
 import DatabaseKit
 import DatabaseMath
 import DatabaseEngine
-import DatabaseKit
 
 internal enum SpatialScanPlan: Sendable {
     case cells([UInt64])

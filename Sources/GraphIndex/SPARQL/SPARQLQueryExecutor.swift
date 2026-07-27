@@ -10,9 +10,7 @@ import Foundation
 #endif
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
-import DatabaseKit
 import StorageKit
 
 /// SPARQL query execution engine

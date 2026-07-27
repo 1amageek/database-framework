@@ -11,7 +11,6 @@ import Foundation
 #endif
 import DatabaseTypes
 import DatabaseKit
-import DatabaseKit
 import DatabaseEngine
 
 /// Analyzes SPARQL FilterExpression to determine filter pushdown strategy

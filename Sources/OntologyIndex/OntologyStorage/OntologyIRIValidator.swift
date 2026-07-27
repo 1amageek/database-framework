@@ -8,7 +8,6 @@ import Foundation
 #endif
 import StorageKit
 import DatabaseKit
-import DatabaseKit
 import DatabaseEngine
 
 /// Validates that @OWLClass and @OWLObjectProperty IRIs

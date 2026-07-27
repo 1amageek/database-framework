@@ -12,8 +12,6 @@ import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
-import DatabaseKit
-import DatabaseKit
 
 /// Builder for SPARQL GROUP BY queries with aggregation
 ///

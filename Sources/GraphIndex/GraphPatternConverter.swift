@@ -5,8 +5,6 @@
 
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
-import DatabaseKit
 
 /// Converts QueryIR graph types to GraphIndex execution types.
 ///

@@ -7,8 +7,6 @@ import Foundation
 import StorageKit
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
-import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex

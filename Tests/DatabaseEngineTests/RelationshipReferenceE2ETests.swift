@@ -6,7 +6,6 @@ import DatabaseRuntime
 import DatabaseTypes
 import FDBStorage
 import Foundation
-import DatabaseKit
 @testable import RelationshipIndex
 import StorageKit
 import Testing

@@ -7,7 +7,6 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseKit
-import DatabaseKit
 import QueryAST
 import DatabaseEngine
 import DatabaseRuntime

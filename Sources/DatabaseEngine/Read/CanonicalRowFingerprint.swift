@@ -1,7 +1,6 @@
 import DatabaseKit
 import DatabaseWire
 import DatabaseTypes
-import DatabaseWire
 
 public enum CanonicalRowFingerprint {
     public static func compute(

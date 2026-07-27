@@ -1,7 +1,6 @@
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
-import DatabaseKit
 import StorageKit
 
 /// A graph edge and its covering-index properties.
