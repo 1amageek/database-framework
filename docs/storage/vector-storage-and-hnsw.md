@@ -62,7 +62,6 @@ each candidate. Invalid codebook shapes and code ranges fail with
 | V5 Dependent Package Validation | Verify database-client and Cloudflare package paths do not assume tuple vector payloads. | Build and smoke tests pass across related packages. | Done |
 | V6 Integration Release Gate | Run complete vector tests and dependent package builds. | Vector tests and dependent package builds pass with binary vector payloads. | Done |
 | V7 Metric-Correct PQ | Preserve each configured metric without per-candidate reconstruction. | Euclidean, cosine, and dot-product lookup-table tests pass. | Done |
-| V8 Performance Snapshot Refresh | Refresh published VectorIndex benchmark numbers. | A current benchmark report is committed before updating public latency/throughput claims. | Open |
 
 ## Validation Log
 

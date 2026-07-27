@@ -7,7 +7,6 @@ debug logs, and review reports are not retained here.
 
 | Item | Status | Owner |
 |---|---|---|
-| Refresh published VectorIndex benchmark snapshot | Open | database-framework |
 | Keep Cloudflare Durable Object validation aligned with DatabaseWire changes | Ongoing | database-framework-cloudflare |
 | Maintain backend parity tests for FoundationDB, SQLite, and PostgreSQL | Ongoing | database-framework and storage-kit |
 

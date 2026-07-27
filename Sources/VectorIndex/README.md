@@ -282,29 +282,21 @@ Where:
 - **10KB key limit**: Max ~2500 dimensions in key (use value storage)
 - **Transaction limit**: 10MB writes, batch large inserts
 
-## Benchmark Results
+## Performance Measurement
 
-Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:VectorIndexTests/VectorIndexPerformanceTests`
+VectorIndex does not publish hardware-independent latency or recall figures.
+Measure the selected algorithm with the production dimensions, dataset, and
+backend before choosing parameters:
 
-### Flat Scan
+```bash
+xcodebuild test \
+  -scheme VectorIndexFocused \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:VectorIndexTests/VectorIndexPerformanceTests
+```
 
-| Vectors | Dimensions | k=10 | k=50 | Recall |
-|---------|------------|------|------|--------|
-| 1,000 | 384 | ~5ms | ~8ms | 100% |
-| 10,000 | 384 | ~50ms | ~80ms | 100% |
-| 100,000 | 384 | ~500ms | ~800ms | 100% |
-
-### SwiftHNSW Production Backend
-
-The production path uses the Swift backend from `swift-hnsw`. The C++ hnswlib backend is retained only in swift-hnsw's separate reference benchmark package and is not compiled by database-framework.
-
-| Vectors | Dimensions | k=10 (ef=50) | k=10 (ef=100) | Recall |
-|---------|------------|--------------|---------------|--------|
-| 10,000 | 384 | ~2ms | ~4ms | ~95% |
-| 100,000 | 384 | ~5ms | ~10ms | ~95% |
-| 1,000,000 | 384 | ~10ms | ~20ms | ~95% |
-
-*Historical benchmark shape. Refresh these numbers with the current SwiftHNSW benchmark before using them for a release decision.*
+The production HNSW path uses the Swift backend from `swift-hnsw`. Its C++
+reference benchmark is not part of database-framework's package graph.
 
 ## References
 
