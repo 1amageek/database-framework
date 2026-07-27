@@ -304,7 +304,7 @@ let originalValues = try maintainer.toOriginalOrder(permutedValues)
 
 ## Benchmark Results
 
-Run with: `swift test --filter PermutedIndexPerformanceTests`
+Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:PermutedIndexTests/PermutedIndexPerformanceTests`
 
 ### Indexing
 

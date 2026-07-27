@@ -213,7 +213,7 @@ struct Customer {
 
 ## Benchmark Results
 
-Run with: `swift test --filter "PerformanceBenchmarks.CoveringIndexBenchmark"`
+Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:PerformanceBenchmarks/CoveringIndexBenchmark`
 
 ### Latest Results (2026-04-11)
 

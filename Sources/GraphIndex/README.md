@@ -1174,7 +1174,7 @@ let errors = reasoner.validateStructure()
 
 ## Benchmark Results
 
-Run with: `swift test --filter GraphIndexPerformanceTests`
+Run with: `xcodebuild test -scheme GraphIndexFocused -destination 'platform=macOS,arch=arm64' -only-testing:GraphIndexTests/GraphIndexPerformanceTests`
 
 ### Indexing
 

@@ -316,7 +316,7 @@ Reference: FoundationDB Record Layer RankedSet
 
 ## Benchmark Results
 
-Run with: `swift test --filter "PerformanceBenchmarks.RangeTreeBenchmark"`
+Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:RankIndexTests/RankIndexPerformanceTests`
 
 ### Latest Results (2026-04-11)
 

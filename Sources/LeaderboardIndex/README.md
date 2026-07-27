@@ -368,7 +368,7 @@ Each entry's position is tracked for efficient updates:
 
 ## Benchmark Results
 
-Run with: `swift test --filter LeaderboardIndexPerformanceTests`
+Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:LeaderboardIndexTests`
 
 ### Insert Performance
 

@@ -45,9 +45,8 @@ storage configuration at initialization.
 
 - DBContainer owns the schema, storage engine, directory resolution, and
   index lifecycle.
-- DatabaseContext is the user-facing change-tracking context and transaction entry
-  point. The name is historical: it is used with every StorageEngine, not only
-  FoundationDB.
+- DatabaseContext is the backend-neutral user-facing change-tracking context
+  and application transaction entry point.
 - DatabaseEngine provides backend-neutral persistence, transaction
   coordination, query planning, migrations, security, and schema catalog logic.
 - Index modules maintain and query Scalar, Vector, FullText, Spatial, Graph,
@@ -94,7 +93,7 @@ documented semantic mapping.
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0629.0"
+            from: "26.0727.0"
         )
     ]
 
@@ -190,7 +189,7 @@ For local testing, the repository includes an isolated cluster wrapper:
 SQLite is the local and embedded backend. It does not load libfdb_c and does
 not require a FoundationDB process.
 
-    swift build --traits SQLite
+    swift build --disable-default-traits --traits SQLite
     xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS'
 
     import Database
@@ -219,7 +218,7 @@ SERIALIZABLE so transaction behavior is aligned with the framework's strong
 consistency model. It can connect over TCP, a Unix domain socket, or the
 Cloud SQL socket mounted into Cloud Run.
 
-    swift build --traits PostgreSQL
+    swift build --disable-default-traits --traits PostgreSQL
     xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
 
     import Database
@@ -390,9 +389,10 @@ the backend requires administrative setup, such as a DML-only Cloud SQL role.
 
 ### Graph and Ontology
 
-GraphIndex supports graph traversal, SPARQL-oriented queries, and OWL
-integration. Persistable handles storage; OWLClass, OWLDataProperty, and
-OWLObjectProperty add ontology metadata.
+GraphIndex supports RDF storage, graph traversal, SPARQL-oriented queries,
+SHACL data access, and graph algorithms. OntologyIndex owns ontology storage
+and reasoning. Persistable handles model storage; OWLClass, OWLDataProperty,
+and OWLObjectProperty add ontology metadata.
 
 See [Sources/GraphIndex/README.md](Sources/GraphIndex/README.md) for graph
 query and reasoning APIs.
@@ -478,10 +478,10 @@ products when compile time and dependency size matter.
     swift build
 
     # SQLite: no FoundationDB process required
-    swift build --traits SQLite
+    swift build --disable-default-traits --traits SQLite
 
     # PostgreSQL: requires a reachable PostgreSQL instance
-    swift build --traits PostgreSQL
+    swift build --disable-default-traits --traits PostgreSQL
 
     # Native test suite (120-second timeout)
     perl -e 'alarm shift; exec @ARGV' 120 \

@@ -819,7 +819,7 @@ let package = Package(
         // the compiled adapter reachable through Database, so its client
         // library remains a link-time dependency unless default traits are disabled.
         .testTarget(
-            name: "FDBiteTests",
+            name: "SQLiteTests",
             dependencies: [
                 "Database",
                 "DatabaseRuntime",

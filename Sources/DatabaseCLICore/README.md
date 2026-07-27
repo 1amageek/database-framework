@@ -1,204 +1,71 @@
-# DatabaseCLI
+# DatabaseCLICore
 
-FoundationDB の対話型 CLI。`@Persistable` 型のコンパイルなしで、Schema.Entity を使ってデータの読み書き・スキーマ確認ができる。
+`DatabaseCLICore` provides read-only schema and raw-storage inspection for the
+FoundationDB administration CLI. It does not provide a second database runtime.
 
-## Prerequisites
+## Responsibility
 
-- FoundationDB must be running locally
-- Schema.Entity must be written to storage (via `DBContainer(for:configuration:)` or `database schema apply`)
-
-## Setup
-
-### Initialize a Local Database
-
-```bash
-# Default port (4690)
-database init
-
-# Custom port
-database init --port 5000
+```text
+StorageEngine
+    |
+    +-- DatabaseFormatCatalog.loadRequired()
+    +-- SchemaRegistry.loadAll()
+    |
+    v
+CatalogDataAccess
+    |
+    +-- SchemaInfoCommands
+    +-- bounded RawCommands
+    +-- DatabaseREPL
 ```
 
-Creates a `.database/` directory in the current working directory:
+`CatalogDataAccess.open(database:)` verifies that the database contains the
+canonical persisted format descriptor before exposing catalog inspection.
+Schema entries are loaded from the catalog written by `DBContainer`.
 
-```
-.database/
-├── fdb.cluster          # Cluster config (local:<id>@127.0.0.1:<port>)
-├── data/                # FDB data files
-└── logs/                # FDB log files
-```
+## Supported Commands
 
-### Check Status
+| Command | Behavior |
+|---|---|
+| `schema list` | Lists catalog entities |
+| `schema show <TypeName>` | Shows fields, indexes, and directory components |
+| `raw get <key>` | Reads one raw key |
+| `raw range <prefix> [limit N]` | Reads at most 10,000 keys sharing a prefix |
+| `help [schema|raw]` | Shows command help |
+| `quit` / `exit` | Leaves the REPL |
 
-```bash
-database status
-# Database directory: /path/to/.database
-# Cluster file: /path/to/.database/fdb.cluster
-# Port: 4690
-```
+Raw commands are intentionally read-only. Model mutation, query, graph,
+ontology, maintenance, and job operations belong to the authenticated
+`DatabaseWire` server path, where authorization, limits, idempotency,
+preconditions, model encoding, relationship rules, and index maintenance are
+enforced.
 
-### Cluster File Auto-Discovery
-
-All commands automatically walk up the directory tree from the current directory looking for `.database/fdb.cluster`. Falls back to the system default if not found.
-
-## REPL Mode
-
-Run `database` without arguments to enter interactive mode. Catalogs are loaded automatically:
-
-```
-database - FoundationDB Interactive CLI
-Types: Order, User
-Type 'help' for available commands, 'quit' to exit.
-
-database>
-```
-
-## コマンド一覧
-
-### スキーマ情報
-
-```
-schema list                        全型の一覧
-schema show <TypeName>             フィールド・型・インデックス・ディレクトリ構造を表示
-```
-
-```
-database> schema list
-Registered types:
-  Order  (5 fields, 2 indexes)
-  User   (3 fields, 1 indexes)
-
-database> schema show User
-User
-  Fields:
-    id: string
-    name: string
-    age: int64
-  Indexes:
-    User_name (scalar) [name]
-  Directory: ["app", "users"]
-```
-
-### データ操作
-
-```
-insert <TypeName> <json>           レコード挿入
-get <TypeName> <id>                ID でレコード取得
-update <TypeName> <id> <json>      レコード更新（フィールドをマージ）
-delete <TypeName> <id>             レコード削除
-```
-
-```
-database> insert User {"id": "user-001", "name": "Alice", "age": 30}
-WARNING: CLI writes do NOT update indexes.
-Inserted record into 'User'
-
-database> get User user-001
-{"age":30,"id":"user-001","name":"Alice"}
-
-database> update User user-001 {"age": 31}
-WARNING: CLI writes do NOT update indexes.
-Updated record 'user-001' in 'User'
-
-database> delete User user-001
-Deleted record 'user-001' from 'User'
-```
-
-> **注意**: CLI からの書き込み（insert/update/delete）はインデックスを更新しない。データの確認・デバッグ用途を想定。
-
-### クエリ
-
-```
-find <TypeName>                                 全レコード取得
-find <TypeName> --limit N                       件数制限
-find <TypeName> --where field op value          フィルタ
-find <TypeName> --sort field [desc]             ソート
-```
-
-演算子: `==`, `!=`, `>`, `<`, `>=`, `<=`
-
-```
-database> find User --limit 5
-database> find User --where name == "Alice"
-database> find User --where age > 25 --sort age desc --limit 10
-```
-
-### パーティション（動的ディレクトリ）
-
-マルチテナント型など動的ディレクトリを持つ型には `--partition` オプションを指定する:
-
-```
-database> get Order order-001 --partition tenantId=tenant_123
-database> find Order --limit 10 --partition tenantId=tenant_123
-database> insert Order {"id": "order-002", "total": 5000} --partition tenantId=tenant_123
-```
-
-`schema show` で動的フィールドを確認できる:
-
-```
-database> schema show Order
-Order
-  ...
-  Directory: ["app", <tenantId>, "orders"]
-    - Static: "app"
-    - Dynamic: tenantId (use --partition tenantId=<value>)
-    - Static: "orders"
-```
-
-### Raw FDB アクセス
-
-```
-raw get <key>                      キーの値を取得
-raw set <key> <value>              キー・値を設定
-raw delete <key>                   キーを削除
-raw range <prefix> [limit N]       プレフィックスでキーをスキャン
-```
-
-キーは文字列またはタプル形式 `("key", 123)` で指定可能。
-
-### Graph / History
-
-Graph および History コマンドはコンパイル済み `@Persistable` 型が必要。埋め込みモードでのみ利用可能。
-
-## 埋め込みモード
-
-アプリケーションに CLI を組み込む場合は `DatabaseCLICore` ライブラリを使用する:
+## Embedding the REPL
 
 ```swift
 import DatabaseCLICore
 import DatabaseEngine
 
-// DBContainer から初期化（カタログを自動読み込み）
-let container = try await DBContainer(
-    for: schema,
-    configuration: DBConfiguration(backend: .fdb())
-)
 let repl = try await DatabaseREPL(container: container)
 try await repl.run()
 ```
 
-## モジュール構成
+The standalone initializer accepts any `StorageEngine`, but the current
+executable supplies FoundationDB:
 
+```swift
+let repl = try await DatabaseREPL(database: engine)
+try await repl.run()
 ```
-Sources/
-├── DatabaseCLI/                    # Executable（エントリポイント）
-│   └── EntryPoint.swift
-└── DatabaseCLICore/                # Library（埋め込み可能）
-    ├── Core/
-    │   ├── DatabaseREPL.swift      # REPL ループ
-    │   ├── CommandRouter.swift     # コマンド解析・ディスパッチ
-    │   └── CatalogDataAccess.swift # Schema.Entity ベースのデータアクセス
-    ├── Commands/
-    │   ├── DataCommands.swift      # insert/get/update/delete
-    │   ├── FindCommands.swift      # find + filter/sort
-    │   ├── SchemaInfoCommands.swift # schema list/show
-    │   ├── RawCommands.swift       # raw FDB アクセス
-    │   ├── GraphCommands.swift     # graph（埋め込みモード専用）
-    │   └── HistoryCommands.swift   # history（埋め込みモード専用）
-    ├── Cluster/
-    │   └── LocalCluster.swift
-    └── Util/
-        ├── CLIError.swift
-        ├── JSONParser.swift
-        └── Output.swift
-```
+
+## Source Layout
+
+| Path | Responsibility |
+|---|---|
+| `Core/CatalogDataAccess.swift` | Validated format and schema-catalog access |
+| `Core/DatabaseREPL.swift` | Interactive read-evaluate-print loop |
+| `Core/CommandRouter.swift` | Tokenization and command routing |
+| `Commands/SchemaInfoCommands.swift` | Schema inspection |
+| `Commands/RawCommands.swift` | Bounded raw key inspection |
+| `Cluster/` | Local FoundationDB cluster discovery and setup |
+| `Util/` | Typed CLI errors and output formatting |

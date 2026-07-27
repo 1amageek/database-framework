@@ -301,7 +301,7 @@ struct Event {
 
 ## Benchmark Results
 
-Run with: `swift test --filter SpatialIndexPerformanceTests`
+Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:SpatialIndexTests/SpatialIndexPerformanceTests`
 
 ### Indexing
 

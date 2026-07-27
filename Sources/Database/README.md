@@ -367,7 +367,7 @@ The Database module includes comprehensive integration tests for the SPARQL() fu
 
 Run tests:
 ```bash
-swift test --filter SPARQLFunctionIntegrationTests
+xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:DatabaseTests/SPARQLFunctionIntegrationTests
 ```
 
 ## Best Practices

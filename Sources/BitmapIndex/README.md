@@ -392,7 +392,7 @@ struct Article {
 
 ## Benchmark Results
 
-Run with: `swift test --filter "PerformanceBenchmarks.SerializationBenchmark"`
+Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:PerformanceBenchmarks/SerializationBenchmark`
 
 ### Latest Results (2026-04-11)
 

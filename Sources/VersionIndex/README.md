@@ -353,7 +353,7 @@ This enables:
 
 ## Benchmark Results
 
-Run with: `swift test --filter VersionIndexPerformanceTests`
+Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:VersionIndexTests/VersionIndexPerformanceTests`
 
 ### Indexing
 

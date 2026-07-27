@@ -817,7 +817,7 @@ AggregationQueryBuilder.execute()
 
 ## Benchmark Results
 
-Run with: `swift test --filter "PerformanceBenchmarks.MinMaxBatchBenchmark"`
+Run with: `xcodebuild test -scheme AggregationIndexFocused -destination 'platform=macOS,arch=arm64' -only-testing:PerformanceBenchmarks/MinMaxBatchBenchmark`
 
 ### Latest Results (2026-04-11)
 

@@ -292,7 +292,7 @@ Where:
 
 ## Benchmark Results
 
-Run with: `swift test --filter VectorIndexPerformanceTests`
+Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:VectorIndexTests/VectorIndexPerformanceTests`
 
 ### Flat Scan
 

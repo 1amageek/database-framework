@@ -317,7 +317,7 @@ struct Document {
 
 ## Benchmark Results
 
-Run with: `swift test --filter FullTextIndexPerformanceTests`
+Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:FullTextIndexTests/FullTextIndexPerformanceTests`
 
 ### Indexing
 
