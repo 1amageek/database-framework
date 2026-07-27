@@ -663,19 +663,20 @@ struct DatabasePersistentJobStore: Sendable {
             guard due.contains(key), key.count > due.prefix.count else {
                 throw DatabaseJobRuntimeError.corruptedState
             }
-            let encoded = key[due.prefix.count..<key.count]
-            var offset = 0
-            guard offset < encoded.count else {
+            let suffixStart = key.startIndex + due.prefix.count
+            let encoded = key[suffixStart..<key.endIndex]
+            var offset = encoded.startIndex
+            guard offset < encoded.endIndex else {
                 throw DatabaseJobRuntimeError.corruptedState
             }
             offset += 1
             let seconds = try Int64.decodeTuple(from: encoded, at: &offset)
-            guard offset < encoded.count else {
+            guard offset < encoded.endIndex else {
                 throw DatabaseJobRuntimeError.corruptedState
             }
             offset += 1
             let nanoseconds = try Int64.decodeTuple(from: encoded, at: &offset)
-            guard offset < encoded.count else {
+            guard offset < encoded.endIndex else {
                 throw DatabaseJobRuntimeError.corruptedState
             }
             offset += 1
@@ -688,7 +689,7 @@ struct DatabasePersistentJobStore: Sendable {
                 from: value,
                 limits: wireLimits
             )
-            guard offset == encoded.count,
+            guard offset == encoded.endIndex,
                   nanoseconds >= 0,
                   let exactNanoseconds = UInt32(exactly: nanoseconds),
                   keyJobID == dueEntry.jobID else {
