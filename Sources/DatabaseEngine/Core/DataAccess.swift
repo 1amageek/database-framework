@@ -108,19 +108,35 @@ public struct DataAccess: Sendable {
         return [try value.toTupleElement()]
     }
 
-    /// Extract id from an item using the id expression
+    /// Resolve an item's canonical persistence identifier.
     ///
     /// - Parameters:
     ///   - item: The item to extract from
-    ///   - idExpression: The KeyExpression defining the id
+    ///   - idExpression: Either the model's canonical `id` field or a
+    ///     pre-resolved canonical tuple supplied by the persistence path.
     /// - Returns: Tuple representing the id
     /// - Throws: Error if extraction fails
     public static func extractId<Item: Persistable>(
         from item: Item,
         using idExpression: KeyExpression
     ) throws -> Tuple {
-        let elements = try evaluate(item: item, expression: idExpression)
-        return Tuple(elements)
+        if let resolved = idExpression as? TupleKeyExpression {
+            _ = try PersistableIdentifierKeyCodec.value(
+                from: resolved.value,
+                expectedType: Item.persistableIdentifierType
+            )
+            return resolved.value
+        }
+
+        if let field = idExpression as? FieldKeyExpression,
+           field.fieldName == "id" {
+            return try item.persistableIdentifierTuple()
+        }
+
+        throw DataAccessError.invalidIdentifierExpression(
+            itemType: Item.persistableType,
+            actualType: String(reflecting: type(of: idExpression))
+        )
     }
 
     /// Extract Range boundary value
@@ -313,6 +329,7 @@ public enum DataAccessError: Error, CustomStringConvertible {
     case nilValueCannotBeIndexed
     case unsupportedType(actualType: String)
     case invalidNestedExpression(actualType: String)
+    case invalidIdentifierExpression(itemType: String, actualType: String)
 
     public var description: String {
         switch self {
@@ -330,6 +347,8 @@ public enum DataAccessError: Error, CustomStringConvertible {
             return "Unsupported type '\(actualType)' for indexing. Supported types: String, signed and unsigned integers, Double, Float, Bool, UUID, Data, [UInt8], Tuple"
         case .invalidNestedExpression(let actualType):
             return "Nested field path cannot contain '\(actualType)'"
+        case .invalidIdentifierExpression(let itemType, let actualType):
+            return "Identifier for \(itemType) must use its canonical 'id' field or a pre-resolved tuple, got '\(actualType)'"
         }
     }
 }

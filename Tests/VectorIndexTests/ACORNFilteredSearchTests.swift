@@ -77,7 +77,7 @@ private struct ACORNSearchContext {
     func insertProduct(_ product: ACORNProduct) async throws {
         try await database.withTransaction { transaction in
             // Store the item using ItemStorage
-            let itemKey = itemsSubspace.pack(Tuple(product.id))
+            let itemKey = itemsSubspace.pack(try product.persistableIdentifierTuple())
             let itemData = try PersistableStorageCodec.encode(product)
 
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
@@ -100,7 +100,8 @@ private struct ACORNSearchContext {
 
     func fetchProduct(id: String) async throws -> ACORNProduct? {
         try await database.withTransaction { transaction in
-            let itemKey = itemsSubspace.pack(Tuple(id))
+            let identifier = try PersistableIdentifierKeyCodec.tuple(for: id)
+            let itemKey = itemsSubspace.pack(identifier)
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             if let data = try await storage.read(for: itemKey) {
                 return try PersistableStorageCodec.decode(
@@ -124,8 +125,7 @@ private struct ACORNSearchContext {
                 Tuple,
                 any TransactionAccess
             ) async throws -> ACORNProduct? = { primaryKey, tx in
-                guard let id = primaryKey[0] as? String else { return nil }
-                let itemKey = self.itemsSubspace.pack(Tuple(id))
+                let itemKey = self.itemsSubspace.pack(primaryKey)
                 let storage = ItemStorage(transaction: tx, blobsSubspace: self.blobsSubspace, configuration: .v1)
                 if let data = try await storage.read(for: itemKey) {
                     return try PersistableStorageCodec.decode(

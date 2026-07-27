@@ -7,65 +7,23 @@ import Foundation
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
-import DatabaseKit
 @testable import DatabaseEngine
 @testable import VectorIndex
 
 // MARK: - Test Model
 
-struct BenchmarkDocument: Persistable {
-    typealias ID = String
-
+@Persistable
+struct BenchmarkDocument {
     var id: String
     var title: String
-    var embedding: [Float]
+    var embedding: Vector
 
-    init(id: String = UUID().uuidString, title: String, embedding: [Float]) {
+    init(id: String, title: String, embedding: [Float]) throws {
         self.id = id
         self.title = title
-        self.embedding = embedding
+        self.embedding = try Vector(float32: embedding)
     }
 
-    static var persistableType: String { "BenchmarkDocument" }
-    static var allFields: [String] { ["id", "title", "embedding"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "title": return title
-        case "embedding": return embedding
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BenchmarkDocument, Value>) -> String {
-        switch keyPath {
-        case \BenchmarkDocument.id: return "id"
-        case \BenchmarkDocument.title: return "title"
-        case \BenchmarkDocument.embedding: return "embedding"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BenchmarkDocument>) -> String {
-        switch keyPath {
-        case \BenchmarkDocument.id: return "id"
-        case \BenchmarkDocument.title: return "title"
-        case \BenchmarkDocument.embedding: return "embedding"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BenchmarkDocument> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Vector Benchmark Context
@@ -161,8 +119,8 @@ struct VectorIndexPerformanceTests {
 
         // Setup: Insert 100 vectors
         let vectorCount = 100
-        let docs = (0..<vectorCount).map { i in
-            BenchmarkDocument(
+        let docs = try (0..<vectorCount).map { i in
+            try BenchmarkDocument(
                 id: "\(uniqueID("doc"))-\(i)",
                 title: "Document \(i)",
                 embedding: randomUnitVector(dimensions: 128)
@@ -211,8 +169,8 @@ struct VectorIndexPerformanceTests {
 
         // Setup: Insert 500 vectors
         let vectorCount = 500
-        let docs = (0..<vectorCount).map { i in
-            BenchmarkDocument(
+        let docs = try (0..<vectorCount).map { i in
+            try BenchmarkDocument(
                 id: "\(uniqueID("doc"))-\(i)",
                 title: "Document \(i)",
                 embedding: randomUnitVector(dimensions: 128)
@@ -259,8 +217,8 @@ struct VectorIndexPerformanceTests {
 
         // Setup: Insert 200 vectors
         let vectorCount = 200
-        let docs = (0..<vectorCount).map { i in
-            BenchmarkDocument(
+        let docs = try (0..<vectorCount).map { i in
+            try BenchmarkDocument(
                 id: "\(uniqueID("doc"))-\(i)",
                 title: "Document \(i)",
                 embedding: randomUnitVector(dimensions: 128)
@@ -308,8 +266,8 @@ struct VectorIndexPerformanceTests {
         for dimensions in [64, 128, 256, 384] {
             let ctx = try await BenchmarkContext(dimensions: dimensions)
 
-            let docs = (0..<vectorCount).map { i in
-                BenchmarkDocument(
+            let docs = try (0..<vectorCount).map { i in
+                try BenchmarkDocument(
                     id: "\(uniqueID("doc"))-\(i)",
                     title: "Document \(i)",
                     embedding: randomUnitVector(dimensions: dimensions)
@@ -352,8 +310,8 @@ struct VectorIndexPerformanceTests {
         let ctx = try await BenchmarkContext(dimensions: 128)
 
         let batchSize = 100
-        let docs = (0..<batchSize).map { i in
-            BenchmarkDocument(
+        let docs = try (0..<batchSize).map { i in
+            try BenchmarkDocument(
                 id: "\(uniqueID("doc"))-\(i)",
                 title: "Document \(i)",
                 embedding: randomUnitVector(dimensions: 128)
@@ -398,8 +356,8 @@ struct VectorIndexPerformanceTests {
         for metric in [VectorMetric.cosine, VectorMetric.euclidean, VectorMetric.dotProduct] {
             let ctx = try await BenchmarkContext(dimensions: dimensions, metric: metric)
 
-            let docs = (0..<vectorCount).map { i in
-                BenchmarkDocument(
+            let docs = try (0..<vectorCount).map { i in
+                try BenchmarkDocument(
                     id: "\(uniqueID("doc"))-\(i)",
                     title: "Document \(i)",
                     embedding: randomUnitVector(dimensions: dimensions)
@@ -448,7 +406,7 @@ struct VectorIndexPerformanceTests {
 
         // 10 similar vectors (small perturbation)
         for i in 0..<10 {
-            docs.append(BenchmarkDocument(
+            docs.append(try BenchmarkDocument(
                 id: "\(uniqueID("similar"))-\(i)",
                 title: "Similar \(i)",
                 embedding: similarVector(to: baseVector, perturbation: 0.1)
@@ -457,7 +415,7 @@ struct VectorIndexPerformanceTests {
 
         // 50 random vectors
         for i in 0..<50 {
-            docs.append(BenchmarkDocument(
+            docs.append(try BenchmarkDocument(
                 id: "\(uniqueID("random"))-\(i)",
                 title: "Random \(i)",
                 embedding: randomUnitVector(dimensions: 64)
@@ -504,8 +462,8 @@ struct VectorIndexPerformanceTests {
 
         // Setup: Insert initial vectors
         let vectorCount = 50
-        var docs = (0..<vectorCount).map { i in
-            BenchmarkDocument(
+        var docs = try (0..<vectorCount).map { i in
+            try BenchmarkDocument(
                 id: "\(uniqueID("doc"))-\(i)",
                 title: "Document \(i)",
                 embedding: randomUnitVector(dimensions: 128)
@@ -528,7 +486,7 @@ struct VectorIndexPerformanceTests {
 
         for i in 0..<updateCount {
             let oldDoc = docs[i]
-            let newDoc = BenchmarkDocument(
+            let newDoc = try BenchmarkDocument(
                 id: oldDoc.id,
                 title: "Updated \(i)",
                 embedding: randomUnitVector(dimensions: 128)
@@ -567,8 +525,8 @@ struct VectorIndexPerformanceTests {
 
         // Setup: Insert vectors
         let vectorCount = 50
-        let docs = (0..<vectorCount).map { i in
-            BenchmarkDocument(
+        let docs = try (0..<vectorCount).map { i in
+            try BenchmarkDocument(
                 id: "\(uniqueID("doc"))-\(i)",
                 title: "Document \(i)",
                 embedding: randomUnitVector(dimensions: 128)

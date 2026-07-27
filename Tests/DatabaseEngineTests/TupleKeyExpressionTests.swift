@@ -6,63 +6,63 @@ import DatabaseKit
 import DatabaseTypes
 @testable import DatabaseEngine
 
-private struct TupleKeyExpressionEntity: Persistable, Codable, Sendable {
-    typealias ID = String
-
+@Persistable
+private struct TupleKeyExpressionEntity {
     var id: String
     var title: String
-
-    static var persistableType: String { "TupleKeyExpressionEntity" }
-    static var allFields: [String] { ["id", "title"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "title": return title
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<TupleKeyExpressionEntity, Value>) -> String {
-        switch keyPath {
-        case \TupleKeyExpressionEntity.id: return "id"
-        case \TupleKeyExpressionEntity.title: return "title"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<TupleKeyExpressionEntity>) -> String {
-        switch keyPath {
-        case \TupleKeyExpressionEntity.id: return "id"
-        case \TupleKeyExpressionEntity.title: return "title"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TupleKeyExpressionEntity> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 @Suite("TupleKeyExpression Tests")
 struct TupleKeyExpressionTests {
-    @Test("TupleKeyExpression preserves composite tuple IDs")
-    func preservesCompositeTuple() throws {
+    @Test("TupleKeyExpression preserves a pre-resolved identifier")
+    func preservesResolvedIdentifier() throws {
         let entity = TupleKeyExpressionEntity(id: "entity-1", title: "Doc")
-        let compositeID = Tuple([Int64(42), "entity-1"])
+        let identifier = try entity.persistableIdentifierTuple()
 
         let extracted = try DataAccess.extractId(
             from: entity,
-            using: TupleKeyExpression(value: compositeID)
+            using: TupleKeyExpression(value: identifier)
         )
 
-        #expect(extracted == compositeID)
+        #expect(extracted == identifier)
+    }
+
+    @Test("TupleKeyExpression rejects a non-canonical identifier")
+    func rejectsNonCanonicalResolvedIdentifier() {
+        let entity = TupleKeyExpressionEntity(id: "entity-1", title: "Doc")
+
+        #expect(throws: PersistableIdentifierKeyError.self) {
+            _ = try DataAccess.extractId(
+                from: entity,
+                using: TupleKeyExpression(value: Tuple("entity-1", "extra"))
+            )
+        }
+    }
+
+    @Test("Field identifier uses the persistence key codec")
+    func fieldIdentifierUsesPersistenceKeyCodec() throws {
+        let entity = TupleKeyExpressionEntity(id: "entity-1", title: "Doc")
+
+        let extracted = try DataAccess.extractId(
+            from: entity,
+            using: FieldKeyExpression(fieldName: "id")
+        )
+        let canonical = try entity.persistableIdentifierTuple()
+
+        #expect(extracted == canonical)
+        #expect(extracted.pack() == canonical.pack())
+    }
+
+    @Test("Non-identifier field cannot define persistence identity")
+    func rejectsNonIdentifierField() {
+        let entity = TupleKeyExpressionEntity(id: "entity-1", title: "Doc")
+
+        #expect(throws: DataAccessError.self) {
+            _ = try DataAccess.extractId(
+                from: entity,
+                using: FieldKeyExpression(fieldName: "title")
+            )
+        }
     }
 }
 

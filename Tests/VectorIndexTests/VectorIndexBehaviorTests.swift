@@ -7,65 +7,23 @@ import Foundation
 import StorageKit
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
 @testable import DatabaseEngine
 @testable import VectorIndex
 
 // MARK: - Test Model
 
-struct VectorDocument: Persistable {
-    typealias ID = String
-
+@Persistable
+struct VectorDocument {
     var id: String
     var title: String
-    var embedding: [Float]
+    var embedding: Vector
 
-    init(id: String = UUID().uuidString, title: String, embedding: [Float]) {
+    init(id: String, title: String, embedding: [Float]) throws {
         self.id = id
         self.title = title
-        self.embedding = embedding
+        self.embedding = try Vector(float32: embedding)
     }
 
-    static var persistableType: String { "VectorDocument" }
-    static var allFields: [String] { ["id", "title", "embedding"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "title": return title
-        case "embedding": return embedding
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<VectorDocument, Value>) -> String {
-        switch keyPath {
-        case \VectorDocument.id: return "id"
-        case \VectorDocument.title: return "title"
-        case \VectorDocument.embedding: return "embedding"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<VectorDocument>) -> String {
-        switch keyPath {
-        case \VectorDocument.id: return "id"
-        case \VectorDocument.title: return "title"
-        case \VectorDocument.embedding: return "embedding"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<VectorDocument> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Vector Index Context
@@ -142,7 +100,7 @@ struct VectorIndexBehaviorTests {
     func testInsertStoresVector() async throws {
         let ctx = try await VectorIndexContext(dimensions: 4)
 
-        let doc = VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
+        let doc = try VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -163,9 +121,9 @@ struct VectorIndexBehaviorTests {
         let ctx = try await VectorIndexContext(dimensions: 4)
 
         let docs = [
-            VectorDocument(id: "doc1", title: "First", embedding: [1.0, 0.0, 0.0, 0.0]),
-            VectorDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0]),
-            VectorDocument(id: "doc3", title: "Third", embedding: [0.0, 0.0, 1.0, 0.0])
+            try VectorDocument(id: "doc1", title: "First", embedding: [1.0, 0.0, 0.0, 0.0]),
+            try VectorDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0]),
+            try VectorDocument(id: "doc3", title: "Third", embedding: [0.0, 0.0, 1.0, 0.0])
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -190,7 +148,7 @@ struct VectorIndexBehaviorTests {
     func testDeleteRemovesVector() async throws {
         let ctx = try await VectorIndexContext(dimensions: 4)
 
-        let doc = VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
+        let doc = try VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -225,7 +183,7 @@ struct VectorIndexBehaviorTests {
     func testUpdateReplacesVector() async throws {
         let ctx = try await VectorIndexContext(dimensions: 4)
 
-        let doc = VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
+        let doc = try VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -237,7 +195,7 @@ struct VectorIndexBehaviorTests {
         }
 
         // Update with different embedding
-        let updatedDoc = VectorDocument(id: "doc1", title: "Test Updated", embedding: [0.0, 1.0, 0.0, 0.0])
+        let updatedDoc = try VectorDocument(id: "doc1", title: "Test Updated", embedding: [0.0, 1.0, 0.0, 0.0])
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: doc,
@@ -265,10 +223,10 @@ struct VectorIndexBehaviorTests {
 
         // Create vectors at different angles
         let docs = [
-            VectorDocument(id: "exact", title: "Exact", embedding: [1.0, 0.0, 0.0, 0.0]),
-            VectorDocument(id: "similar", title: "Similar", embedding: [0.9, 0.1, 0.0, 0.0]),
-            VectorDocument(id: "different", title: "Different", embedding: [0.0, 1.0, 0.0, 0.0]),
-            VectorDocument(id: "opposite", title: "Opposite", embedding: [-1.0, 0.0, 0.0, 0.0])
+            try VectorDocument(id: "exact", title: "Exact", embedding: [1.0, 0.0, 0.0, 0.0]),
+            try VectorDocument(id: "similar", title: "Similar", embedding: [0.9, 0.1, 0.0, 0.0]),
+            try VectorDocument(id: "different", title: "Different", embedding: [0.0, 1.0, 0.0, 0.0]),
+            try VectorDocument(id: "opposite", title: "Opposite", embedding: [-1.0, 0.0, 0.0, 0.0])
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -310,9 +268,9 @@ struct VectorIndexBehaviorTests {
 
         // Create points at known distances from origin
         let docs = [
-            VectorDocument(id: "close", title: "Close", embedding: [1.0, 0.0, 0.0]),
-            VectorDocument(id: "medium", title: "Medium", embedding: [2.0, 0.0, 0.0]),
-            VectorDocument(id: "far", title: "Far", embedding: [5.0, 0.0, 0.0])
+            try VectorDocument(id: "close", title: "Close", embedding: [1.0, 0.0, 0.0]),
+            try VectorDocument(id: "medium", title: "Medium", embedding: [2.0, 0.0, 0.0]),
+            try VectorDocument(id: "far", title: "Far", embedding: [5.0, 0.0, 0.0])
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -354,8 +312,8 @@ struct VectorIndexBehaviorTests {
         let ctx = try await VectorIndexContext(dimensions: 4)
 
         // Insert 10 documents
-        let docs = (0..<10).map { i in
-            VectorDocument(id: "doc\(i)", title: "Doc \(i)", embedding: [Float(i), 0.0, 0.0, 0.0])
+        let docs = try (0..<10).map { i in
+            try VectorDocument(id: "doc\(i)", title: "Doc \(i)", embedding: [Float(i), 0.0, 0.0, 0.0])
         }
 
         try await ctx.database.withTransaction { transaction in
@@ -385,7 +343,7 @@ struct VectorIndexBehaviorTests {
     func testDimensionMismatchThrowsError() async throws {
         let ctx = try await VectorIndexContext(dimensions: 4)
 
-        let doc = VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
+        let doc = try VectorDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -425,15 +383,15 @@ struct VectorIndexBehaviorTests {
         let ctx = try await VectorIndexContext(dimensions: 4)
 
         let docs = [
-            VectorDocument(id: "doc1", title: "First", embedding: [1.0, 0.0, 0.0, 0.0]),
-            VectorDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0])
+            try VectorDocument(id: "doc1", title: "First", embedding: [1.0, 0.0, 0.0, 0.0]),
+            try VectorDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0])
         ]
 
         try await ctx.database.withTransaction { transaction in
             for doc in docs {
                 try await ctx.maintainer.scanItem(
                     doc,
-                    id: Tuple(doc.id),
+                    id: try doc.persistableIdentifierTuple(),
                     transaction: transaction
                 )
             }
