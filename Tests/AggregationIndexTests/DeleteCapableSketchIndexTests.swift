@@ -203,7 +203,7 @@ struct DeleteCapableSketchIndexTests {
         let floating = SketchIndexEntity(
             id: "floating",
             group: "calendar",
-            distinctValue: .double(1),
+            distinctValue: .float64(1),
             numericValue: 20
         )
 
@@ -337,7 +337,7 @@ struct DeleteCapableSketchIndexTests {
         let maintainer = makeDistinctMaintainer(subspace: subspace)
         let summaryKey = subspace
             .subspace(Int64(1))
-            .pack(Tuple("calendar"))
+            .pack(try canonicalGroupingTuple(["calendar"]))
         let entity = SketchIndexEntity(
             id: "entity",
             group: "calendar",
@@ -378,7 +378,7 @@ struct DeleteCapableSketchIndexTests {
         )
         let summaryKey = subspace
             .subspace(Int64(1))
-            .pack(Tuple("calendar"))
+            .pack(try canonicalGroupingTuple(["calendar"]))
 
         try await engine.withTransaction { transaction in
             try await maintainer.scanItem(
@@ -549,7 +549,7 @@ struct DeleteCapableSketchIndexTests {
         )
         let summaryKey = subspace
             .subspace(Int64(1))
-            .pack(Tuple("calendar"))
+            .pack(try canonicalGroupingTuple(["calendar"]))
 
         try await engine.withTransaction { transaction in
             try await maintainer.scanItem(
@@ -738,7 +738,7 @@ private func distinctCount(
 ) async throws -> (estimated: Int64, errorRate: Double) {
     try await engine.withTransaction { transaction in
         try await maintainer.getDistinctCount(
-            groupingValues: [group],
+            groupingValues: [.string(group)],
             transaction: transaction
         )
     }
@@ -756,10 +756,16 @@ private func percentileStatistics(
 )? {
     try await engine.withTransaction { transaction in
         try await maintainer.getStatistics(
-            groupingValues: [group],
+            groupingValues: [.string(group)],
             transaction: transaction
         )
     }
+}
+
+private func canonicalGroupingTuple(
+    _ values: [FieldValue]
+) throws -> Tuple {
+    try Tuple(FieldValue.toTupleElements(values))
 }
 
 private struct SketchIndexEntity: Persistable {
@@ -778,9 +784,35 @@ private struct SketchIndexEntity: Persistable {
         "numericValue",
     ]
     static let indexDescriptors: [IndexDescriptor] = []
+    static let fieldSchemas = [
+        FieldSchema(name: "id", fieldNumber: 1, type: .string),
+        FieldSchema(name: "group", fieldNumber: 2, type: .string),
+        FieldSchema(name: "distinctValue", fieldNumber: 3, type: .float64),
+        FieldSchema(name: "numericValue", fieldNumber: 4, type: .float64),
+    ]
 
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
+    static func fieldNumber(for fieldName: String) -> Int? {
+        switch fieldName {
+        case "id": 1
+        case "group": 2
+        case "distinctValue": 3
+        case "numericValue": 4
+        default: nil
+        }
+    }
     static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
+
+    func persistedFieldValue(
+        for field: FieldIdentity
+    ) throws(PersistableEncodingError) -> FieldValue? {
+        switch (field.name, field.number) {
+        case ("id", 1): .string(id)
+        case ("group", 2): .string(group)
+        case ("distinctValue", 3): distinctValue
+        case ("numericValue", 4): .float64(numericValue)
+        default: nil
+        }
+    }
 
     subscript(dynamicMember member: String) -> (any Sendable)? {
         switch member {

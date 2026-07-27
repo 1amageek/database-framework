@@ -111,11 +111,12 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
 
     /// Get the canonical typed average for a specific grouping.
     public func getAverage(
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> (count: Int64, average: FieldValue) {
-        let sumKey = try buildSumKey(groupingValues: groupingValues)
-        let countKey = try buildCountKey(groupingValues: groupingValues)
+        let storedGrouping = try FieldValue.toTupleElements(groupingValues)
+        let sumKey = try buildSumKey(storedGroupingElements: storedGrouping)
+        let countKey = try buildCountKey(storedGroupingElements: storedGrouping)
 
         let sumBytes = try await transaction.getValue(for: sumKey)
         let countBytes = try await transaction.getValue(for: countKey)
@@ -140,7 +141,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
 
     /// Get a lossless Double view of the average for a specific grouping.
     public func getAverageAsDouble(
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> (count: Int64, average: Double) {
         let exact = try await getAverage(
@@ -337,8 +338,8 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
         )
 
         return AggregationData(
-            sumKey: try buildSumKey(groupingValues: fields.grouping),
-            countKey: try buildCountKey(groupingValues: fields.grouping),
+            sumKey: try buildSumKey(storedGroupingElements: fields.grouping),
+            countKey: try buildCountKey(storedGroupingElements: fields.grouping),
             numericValue: numericValue
         )
     }
@@ -406,19 +407,25 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     }
 
     private func buildSumKey<Elements: Collection>(
-        groupingValues: Elements
+        storedGroupingElements: Elements
     ) throws -> Bytes where Elements.Element == any TupleElement {
-        try validateGroupingCount(groupingValues.count)
-        let key = subspace.pack(elements: groupingValues, appending: "sum")
+        try validateGroupingCount(storedGroupingElements.count)
+        let key = subspace.pack(
+            elements: storedGroupingElements,
+            appending: "sum"
+        )
         try validateKeySize(key)
         return key
     }
 
     private func buildCountKey<Elements: Collection>(
-        groupingValues: Elements
+        storedGroupingElements: Elements
     ) throws -> Bytes where Elements.Element == any TupleElement {
-        try validateGroupingCount(groupingValues.count)
-        let key = subspace.pack(elements: groupingValues, appending: "count")
+        try validateGroupingCount(storedGroupingElements.count)
+        let key = subspace.pack(
+            elements: storedGroupingElements,
+            appending: "count"
+        )
         try validateKeySize(key)
         return key
     }

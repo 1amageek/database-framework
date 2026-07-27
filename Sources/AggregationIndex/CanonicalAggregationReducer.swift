@@ -375,7 +375,20 @@ enum CanonicalAggregationReducer {
             for item in items {
                 let value = try fieldValue(item: item, field: field)
                 if !value.isNull {
-                    values.insert(value)
+                    do {
+                        values.insert(
+                            try DistinctValueIdentity.canonicalize(value).value
+                        )
+                    } catch DistinctValueIdentityError.nonFiniteNumericValue {
+                        throw AggregationQueryError.nonFiniteNumericValue(
+                            field: field.name
+                        )
+                    } catch DistinctValueIdentityError.invalidObject {
+                        throw AggregationQueryError.resultNotRepresentable(
+                            operation: "distinct",
+                            field: field.name
+                        )
+                    }
                 }
             }
             guard let count = Int64(exactly: values.count) else {

@@ -117,7 +117,7 @@ private struct CountIndexContext {
     func getCount(for city: String) async throws -> Int64 {
         try await database.withTransaction { transaction in
             try await maintainer.getCount(
-                groupingValues: [city],
+                groupingValues: [.string(city)],
                 transaction: transaction
             )
         }

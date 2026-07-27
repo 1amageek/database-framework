@@ -298,11 +298,13 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
     }
 
     public func getDistinctCount(
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> (estimated: Int64, errorRate: Double) {
         try validateConfiguration()
-        let group = try makeGroup(groupingValues: groupingValues)
+        let group = try makeGroup(
+            groupingValues: FieldValue.toTupleElements(groupingValues)
+        )
         return try await storedDistinctCount(
             for: group,
             transaction: transaction,
@@ -885,204 +887,13 @@ private func canonicalDistinctValue(
     _ value: FieldValue,
     fieldName: String
 ) throws -> FieldValue {
-    try canonicalDistinctValueResult(
-        value,
-        fieldName: fieldName
-    ).value
-}
-
-private struct CanonicalDistinctValueResult {
-    let value: FieldValue
-    let changedRepresentation: Bool
-}
-
-/// Canonicalizes only representations that compare as the same numeric value.
-/// Arrays retain their original copy-on-write storage unless a nested value
-/// actually changes representation.
-private func canonicalDistinctValueResult(
-    _ value: FieldValue,
-    fieldName: String
-) throws -> CanonicalDistinctValueResult {
-    switch value {
-    case .int8(let integer):
-        return CanonicalDistinctValueResult(
-            value: .int64(Int64(integer)),
-            changedRepresentation: true
-        )
-    case .int16(let integer):
-        return CanonicalDistinctValueResult(
-            value: .int64(Int64(integer)),
-            changedRepresentation: true
-        )
-    case .int32(let integer):
-        return CanonicalDistinctValueResult(
-            value: .int64(Int64(integer)),
-            changedRepresentation: true
-        )
-    case .int64(let integer):
-        return CanonicalDistinctValueResult(
-            value: .int64(integer),
-            changedRepresentation: false
-        )
-    case .uint8(let integer):
-        return CanonicalDistinctValueResult(
-            value: .int64(Int64(integer)),
-            changedRepresentation: true
-        )
-    case .uint16(let integer):
-        return CanonicalDistinctValueResult(
-            value: .int64(Int64(integer)),
-            changedRepresentation: true
-        )
-    case .uint32(let integer):
-        return CanonicalDistinctValueResult(
-            value: .int64(Int64(integer)),
-            changedRepresentation: true
-        )
-    case .uint64(let integer):
-        if integer <= UInt64(Int64.max) {
-            return CanonicalDistinctValueResult(
-                value: .int64(Int64(integer)),
-                changedRepresentation: true
-            )
-        }
-        return CanonicalDistinctValueResult(
-            value: .uint64(integer),
-            changedRepresentation: false
-        )
-    case .float32(let number):
-        guard number.isFinite else {
-            throw DistinctIndexError.invalidDistinctValue(
-                fieldName: fieldName
-            )
-        }
-        let canonical = try canonicalDistinctValue(
-            .float64(Double(number)),
+    do {
+        return try DistinctValueIdentity.canonicalize(value).value
+    } catch {
+        throw DistinctIndexError.invalidDistinctValue(
             fieldName: fieldName
         )
-        return CanonicalDistinctValueResult(
-            value: canonical,
-            changedRepresentation: canonical != value
-        )
-    case .float64(let number):
-        guard number.isFinite else {
-            throw DistinctIndexError.invalidDistinctValue(
-                fieldName: fieldName
-            )
-        }
-        if let integer = Int64(exactly: number) {
-            return CanonicalDistinctValueResult(
-                value: .int64(integer),
-                changedRepresentation: true
-            )
-        }
-        if let integer = UInt64(exactly: number) {
-            let canonical: FieldValue = integer <= UInt64(Int64.max)
-                ? .int64(Int64(integer))
-                : .uint64(integer)
-            return CanonicalDistinctValueResult(
-                value: canonical,
-                changedRepresentation: true
-            )
-        }
-        let normalized = number == 0 ? 0 : number
-        return CanonicalDistinctValueResult(
-            value: .float64(normalized),
-            changedRepresentation: normalized.bitPattern != number.bitPattern
-        )
-    case .decimal(let decimal):
-        let canonical = canonicalIntegralFieldValue(decimal) ?? .decimal(decimal)
-        return CanonicalDistinctValueResult(
-            value: canonical,
-            changedRepresentation: canonical != value
-        )
-    case .array(let values):
-        var canonical: [FieldValue]?
-        for index in values.indices {
-            let result = try canonicalDistinctValueResult(
-                values[index],
-                fieldName: fieldName
-            )
-            if result.changedRepresentation {
-                if canonical == nil {
-                    canonical = values
-                }
-                canonical?[index] = result.value
-            }
-        }
-        guard let canonical else {
-            return CanonicalDistinctValueResult(
-                value: value,
-                changedRepresentation: false
-            )
-        }
-        return CanonicalDistinctValueResult(
-            value: .array(canonical),
-            changedRepresentation: true
-        )
-    case .object(let object):
-        let fields = object.fields
-        var canonical: [(key: String, value: FieldValue)]?
-        for index in fields.indices {
-            let result = try canonicalDistinctValueResult(
-                fields[index].value,
-                fieldName: fieldName
-            )
-            if result.changedRepresentation {
-                if canonical == nil {
-                    canonical = fields
-                }
-                let field = fields[index]
-                canonical?[index] = (
-                    key: field.key,
-                    value: result.value
-                )
-            }
-        }
-        guard let canonical else {
-            return CanonicalDistinctValueResult(
-                value: value,
-                changedRepresentation: false
-            )
-        }
-        return CanonicalDistinctValueResult(
-            value: .object(try FieldObject(canonical)),
-            changedRepresentation: true
-        )
-    case .null, .bool, .string, .bytes, .date, .time, .dateTime,
-         .timestamp, .timeSpan, .calendarPeriod, .geographicPoint,
-         .geographicPosition, .vector, .uuid, .reference, .rdfTerm:
-        return CanonicalDistinctValueResult(
-            value: value,
-            changedRepresentation: false
-        )
     }
-}
-
-private func canonicalIntegralFieldValue(
-    _ decimal: ExactDecimal
-) -> FieldValue? {
-    guard decimal.scale <= 0 else { return nil }
-    if decimal.coefficient == 0 {
-        return .int64(0)
-    }
-
-    let exponent = -Int64(decimal.scale)
-    guard exponent <= 19 else { return nil }
-
-    var integer = decimal.coefficient
-    for _ in 0..<exponent {
-        let product = integer.multipliedReportingOverflow(by: 10)
-        guard !product.overflow else { return nil }
-        integer = product.partialValue
-    }
-    if let signed = Int64(exactly: integer) {
-        return .int64(signed)
-    }
-    if integer >= 0, let unsigned = UInt64(exactly: integer) {
-        return .uint64(unsigned)
-    }
-    return nil
 }
 
 private func checkedDistinctScannedBytes(

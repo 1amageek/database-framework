@@ -129,8 +129,8 @@ struct MinMaxAggregationQueryTests {
 
         // Execute MIN aggregation query
         let results = try await context.aggregate(MinimumOrder.self)
-            .groupBy(\MinimumOrder.region)
-            .min(\MinimumOrder.amount, as: "minAmount")
+            .groupBy(MinimumOrder.fields.region)
+            .min(MinimumOrder.fields.amount, as: "minAmount")
             .execute()
 
         #expect(results.count == 3, "Should have 3 regions")
@@ -140,7 +140,7 @@ struct MinMaxAggregationQueryTests {
         for result in results {
             guard case .string(let region) = result.groupKey["region"],
                   let minFieldValue = result.aggregates["minAmount"],
-                  case .double(let minAmount) = minFieldValue else {
+                  case .float64(let minAmount) = minFieldValue else {
                 #expect(Bool(false), "Missing expected fields in result")
                 continue
             }
@@ -187,8 +187,8 @@ struct MinMaxAggregationQueryTests {
 
         // Execute MAX aggregation query
         let results = try await context.aggregate(MaximumOrder.self)
-            .groupBy(\MaximumOrder.region)
-            .max(\MaximumOrder.amount, as: "maxAmount")
+            .groupBy(MaximumOrder.fields.region)
+            .max(MaximumOrder.fields.amount, as: "maxAmount")
             .execute()
 
         #expect(results.count == 3, "Should have 3 regions")
@@ -198,7 +198,7 @@ struct MinMaxAggregationQueryTests {
         for result in results {
             guard case .string(let region) = result.groupKey["region"],
                   let maxFieldValue = result.aggregates["maxAmount"],
-                  case .double(let maxAmount) = maxFieldValue else {
+                  case .float64(let maxAmount) = maxFieldValue else {
                 #expect(Bool(false), "Missing expected fields in result")
                 continue
             }
@@ -245,10 +245,10 @@ struct MinMaxAggregationQueryTests {
 
         // Execute mixed aggregation query
         let results = try await context.aggregate(MixedAggregationOrder.self)
-            .groupBy(\MixedAggregationOrder.region)
+            .groupBy(MixedAggregationOrder.fields.region)
             .count(as: "orderCount")
-            .min(\MixedAggregationOrder.amount, as: "minAmount")
-            .max(\MixedAggregationOrder.amount, as: "maxAmount")
+            .min(MixedAggregationOrder.fields.amount, as: "minAmount")
+            .max(MixedAggregationOrder.fields.amount, as: "maxAmount")
             .execute()
 
         #expect(results.count == 3, "Should have 3 regions")
@@ -260,9 +260,9 @@ struct MinMaxAggregationQueryTests {
                   let countFieldValue = result.aggregates["orderCount"],
                   case .int64(let count) = countFieldValue,
                   let minFieldValue = result.aggregates["minAmount"],
-                  case .double(let minAmount) = minFieldValue,
+                  case .float64(let minAmount) = minFieldValue,
                   let maxFieldValue = result.aggregates["maxAmount"],
-                  case .double(let maxAmount) = maxFieldValue else {
+                  case .float64(let maxAmount) = maxFieldValue else {
                 #expect(Bool(false), "Missing expected fields in result")
                 continue
             }
@@ -330,8 +330,8 @@ struct MinMaxAggregationQueryTests {
 
         // Execute MIN aggregation query on Int64 field
         let results = try await context.aggregate(Int64AggregationOrder.self)
-            .groupBy(\Int64AggregationOrder.region)
-            .min(\Int64AggregationOrder.quantity, as: "minQuantity")
+            .groupBy(Int64AggregationOrder.fields.region)
+            .min(Int64AggregationOrder.fields.quantity, as: "minQuantity")
             .execute()
 
         #expect(results.count == 2, "Should have 2 regions")

@@ -247,7 +247,7 @@ struct AggregationIndexPerformanceTests {
             for i in 0..<queryCount {
                 _ = try await database.withTransaction { transaction in
                     try await maintainer.getCount(
-                        groupingValues: [regions[i % regions.count]],
+                        groupingValues: [.string(regions[i % regions.count])],
                         transaction: transaction
                     )
                 }
@@ -514,7 +514,7 @@ struct AggregationIndexPerformanceTests {
             for i in 0..<queryCount {
                 _ = try await database.withTransaction { transaction in
                     try await maintainer.getMin(
-                        groupingValues: [regions[i % regions.count]],
+                        groupingValues: [.string(regions[i % regions.count])],
                         transaction: transaction
                     )
                 }
@@ -598,7 +598,7 @@ struct AggregationIndexPerformanceTests {
             for i in 0..<queryCount {
                 _ = try await database.withTransaction { transaction in
                     try await maintainer.getMax(
-                        groupingValues: [regions[i % regions.count]],
+                        groupingValues: [.string(regions[i % regions.count])],
                         transaction: transaction
                     )
                 }
@@ -690,7 +690,7 @@ struct AggregationIndexPerformanceTests {
             for i in 0..<queryCount {
                 _ = try await database.withTransaction { transaction in
                     try await maintainer.getAverageAsDouble(
-                        groupingValues: [regions[i % regions.count]],
+                        groupingValues: [.string(regions[i % regions.count])],
                         transaction: transaction
                     )
                 }
@@ -704,7 +704,7 @@ struct AggregationIndexPerformanceTests {
         for region in regions {
             let result = try await database.withTransaction { transaction in
                 try await maintainer.getAverageAsDouble(
-                    groupingValues: [region],
+                    groupingValues: [.string(region)],
                     transaction: transaction
                 )
             }
@@ -796,8 +796,8 @@ struct AggregationIndexPerformanceTests {
                 _ = try await database.withTransaction { transaction in
                     try await maintainer.getCount(
                         groupingValues: [
-                            regions[i % regions.count],
-                            categories[i % categories.count]
+                            .string(regions[i % regions.count]),
+                            .string(categories[i % categories.count])
                         ],
                         transaction: transaction
                     )

@@ -131,7 +131,7 @@ private struct SumIndexContext {
     func getOptionalSum(for category: String) async throws -> Double? {
         try await database.withTransaction { transaction in
             try await maintainer.getSumAsDouble(
-                groupingValues: [category],
+                groupingValues: [.string(category)],
                 transaction: transaction
             )
         }

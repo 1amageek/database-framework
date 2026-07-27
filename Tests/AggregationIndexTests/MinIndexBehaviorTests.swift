@@ -83,7 +83,7 @@ private struct MinimumIndexContext {
     func getMin(for category: String) async throws -> Int64 {
         try await database.withTransaction { transaction in
             try await maintainer.getMin(
-                groupingValues: [category],
+                groupingValues: [.string(category)],
                 transaction: transaction
             )
         }

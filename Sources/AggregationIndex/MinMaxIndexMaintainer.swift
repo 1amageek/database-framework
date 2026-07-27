@@ -171,7 +171,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     ///
     /// **Performance**: O(1) - Direct read from Layer 2
     public func getMin(
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> Value {
         let expectedGroupingCount = index.rootExpression.columnCount - 1
@@ -183,7 +183,8 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
         }
 
         // Layer 2: Direct read (O(1))
-        let aggregateKey = layers.aggregated.pack(elements: groupingValues)
+        let storedGrouping = try FieldValue.toTupleElements(groupingValues)
+        let aggregateKey = layers.aggregated.pack(elements: storedGrouping)
         try validateKeySize(aggregateKey)
         guard let valueData = try await transaction.getValue(for: aggregateKey, snapshot: true) else {
             throw AggregationIndexError.noData("No MIN value found for group")
@@ -535,7 +536,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     ///
     /// **Performance**: O(1) - Direct read from Layer 2
     public func getMax(
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> Value {
         let expectedGroupingCount = index.rootExpression.columnCount - 1
@@ -547,7 +548,8 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
         }
 
         // Layer 2: Direct read (O(1))
-        let aggregateKey = layers.aggregated.pack(elements: groupingValues)
+        let storedGrouping = try FieldValue.toTupleElements(groupingValues)
+        let aggregateKey = layers.aggregated.pack(elements: storedGrouping)
         try validateKeySize(aggregateKey)
         guard let valueData = try await transaction.getValue(for: aggregateKey, snapshot: true) else {
             throw AggregationIndexError.noData("No MAX value found for group")

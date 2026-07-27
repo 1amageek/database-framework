@@ -124,7 +124,7 @@ private struct DistinctIndexContext {
     func getDistinctCount(for pageId: String) async throws -> (estimated: Int64, errorRate: Double) {
         try await database.withTransaction { transaction in
             try await maintainer.getDistinctCount(
-                groupingValues: [pageId],
+                groupingValues: [.string(pageId)],
                 transaction: transaction
             )
         }

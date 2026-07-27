@@ -125,7 +125,7 @@ private struct PercentileIndexContext {
         try await database.withTransaction { transaction in
             try await maintainer.getPercentile(
                 percentile: percentile,
-                groupingValues: [endpoint],
+                groupingValues: [.string(endpoint)],
                 transaction: transaction
             )
         }
@@ -135,7 +135,7 @@ private struct PercentileIndexContext {
         try await database.withTransaction { transaction in
             try await maintainer.getPercentiles(
                 percentiles: percentiles,
-                groupingValues: [endpoint],
+                groupingValues: [.string(endpoint)],
                 transaction: transaction
             )
         }
@@ -144,7 +144,7 @@ private struct PercentileIndexContext {
     func getStatistics(for endpoint: String) async throws -> (count: Int64, min: Double, max: Double, median: Double)? {
         try await database.withTransaction { transaction in
             try await maintainer.getStatistics(
-                groupingValues: [endpoint],
+                groupingValues: [.string(endpoint)],
                 transaction: transaction
             )
         }

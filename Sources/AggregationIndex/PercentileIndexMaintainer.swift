@@ -279,7 +279,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
 
     public func getPercentile(
         percentile: Double,
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> Double? {
         try validatePercentiles(CollectionOfOne(percentile))
@@ -294,7 +294,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
 
     public func getPercentiles(
         percentiles: [Double],
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> [Double: Double] {
         try validatePercentiles(percentiles)
@@ -309,7 +309,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
 
     public func getCDF(
         value: Double,
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> Double? {
         try validateConfiguration()
@@ -328,7 +328,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     }
 
     public func getStatistics(
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> (
         count: Int64,
@@ -571,10 +571,12 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     }
 
     private func digest(
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> TDigest? {
-        let group = try makeGroup(groupingValues: groupingValues)
+        let group = try makeGroup(
+            groupingValues: FieldValue.toTupleElements(groupingValues)
+        )
         let membershipMetadata = try await storedMembershipMetadata(
             for: group,
             transaction: transaction,

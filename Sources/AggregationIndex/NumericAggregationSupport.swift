@@ -587,15 +587,25 @@ public protocol GroupingKeySupport: SubspaceIndexMaintainer {
 
 extension GroupingKeySupport {
 
-    /// Build a grouping key from values
+    /// Build a grouping key from canonical database values.
     ///
     /// - Parameter values: The grouping values
     /// - Returns: Packed key bytes
     /// - Throws: If packing fails
     public func buildGroupingKey(
-        _ values: [any TupleElement]
+        _ values: [FieldValue]
     ) throws -> Bytes {
-        try packAndValidate(elements: values)
+        try buildGroupingKey(
+            storedElements: FieldValue.toTupleElements(values)
+        )
+    }
+
+    /// Builds a key from values that have already crossed the canonical
+    /// FieldValue-to-storage boundary.
+    func buildGroupingKey<Elements: Collection>(
+        storedElements: Elements
+    ) throws -> Bytes where Elements.Element == any TupleElement {
+        try packAndValidate(elements: storedElements)
     }
 }
 
@@ -800,7 +810,7 @@ extension CountAggregationMaintainer {
 
     /// Get count for a specific grouping
     public func getCountValue(
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> Int64 {
         guard groupingValues.count == groupingFieldCount else {
@@ -828,7 +838,7 @@ extension CountAggregationMaintainer {
         // scans intentionally begin after that prefix, so a global count must
         // be read directly instead of being treated as a grouped range scan.
         if groupingFieldCount == 0 {
-            let key = try buildGroupingKey([])
+            let key = try buildGroupingKey([] as [FieldValue])
             guard let value = try await transaction.getValue(
                 for: key,
                 snapshot: true

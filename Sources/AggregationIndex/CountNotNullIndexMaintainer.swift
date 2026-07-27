@@ -116,7 +116,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
 
     /// Get the non-null count for a specific grouping
     public func getCount(
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> Int64 {
         try await getCountValue(groupingValues: groupingValues, transaction: transaction)
@@ -151,6 +151,6 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
                 "Count-not-null index '\(index.name)' has inconsistent field metadata"
             )
         }
-        return try buildGroupingKey(fields.grouping)
+        return try buildGroupingKey(storedElements: fields.grouping)
     }
 }

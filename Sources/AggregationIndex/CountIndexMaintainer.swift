@@ -55,10 +55,14 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
         transaction: any TransactionAccess
     ) async throws {
         let oldKey = try oldItem.map { item in
-            try buildGroupingKey(groupingValues(from: item))
+            try buildGroupingKey(
+                storedElements: groupingValues(from: item)
+            )
         }
         let newKey = try newItem.map { item in
-            try buildGroupingKey(groupingValues(from: item))
+            try buildGroupingKey(
+                storedElements: groupingValues(from: item)
+            )
         }
 
         switch (oldKey, newKey) {
@@ -90,7 +94,9 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
         transaction: any TransactionAccess
     ) async throws {
         let groupingValues = try groupingValues(from: item)
-        let countKey = try buildGroupingKey(groupingValues)
+        let countKey = try buildGroupingKey(
+            storedElements: groupingValues
+        )
         try await incrementCount(key: countKey, transaction: transaction)
     }
 
@@ -99,14 +105,14 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
         id: Tuple
     ) async throws -> [Bytes] {
         let groupingValues = try groupingValues(from: item)
-        return [try buildGroupingKey(groupingValues)]
+        return [try buildGroupingKey(storedElements: groupingValues)]
     }
 
     // MARK: - Query Methods
 
     /// Get the count for a specific grouping
     public func getCount(
-        groupingValues: [any TupleElement],
+        groupingValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> Int64 {
         try await getCountValue(groupingValues: groupingValues, transaction: transaction)

@@ -118,9 +118,9 @@ struct CanonicalAggregationReducerTests {
     @Test("non-empty global sketch indexes are read outside subspace ranges")
     func nonEmptyGlobalSketchIndexesAreReadDirectly() async throws {
         let context = try await makeGlobalSketchQueryContext()
-        try context.insert(IndexedGlobalSketchEntity(value: 10))
-        try context.insert(IndexedGlobalSketchEntity(value: 20))
-        try context.insert(IndexedGlobalSketchEntity(value: 20))
+        try context.insert(IndexedGlobalSketchEntity(id: "1", value: 10))
+        try context.insert(IndexedGlobalSketchEntity(id: "2", value: 20))
+        try context.insert(IndexedGlobalSketchEntity(id: "3", value: 20))
         try await context.save()
 
         let query = context
@@ -271,7 +271,7 @@ struct CanonicalAggregationReducerTests {
             throws: AggregationQueryError.nonFiniteNumericValue(field: "value")
         ) {
             try CanonicalAggregationReducer.average(
-                values: [.double(.infinity)],
+                values: [.float64(.infinity)],
                 field: "value"
             )
         }
@@ -366,17 +366,19 @@ struct CanonicalAggregationReducerTests {
         let entities = [
             AggregationReducerEntity(id: "1", group: nil, value: .int64(1)),
             AggregationReducerEntity(id: "2", group: nil, value: .uint64(1)),
-            AggregationReducerEntity(id: "3", group: nil, value: .double(1)),
+            AggregationReducerEntity(id: "3", group: nil, value: .float64(1)),
             AggregationReducerEntity(id: "4", group: nil, value: nil),
         ]
 
         let result = try CanonicalAggregationReducer.aggregate(
             items: entities,
-            aggregation: .distinct(field: "value")
+            aggregation: .distinct(
+                field: FieldIdentity(name: "value", number: 3)
+            )
         )
         let identity = try CanonicalAggregationReducer.groupIdentity(
             item: entities[0],
-            fields: ["group"]
+            fields: [FieldIdentity(name: "group", number: 2)]
         )
 
         #expect(result == .int64(1))
@@ -394,7 +396,7 @@ struct CanonicalAggregationReducerTests {
         #expect(throws: AggregationQueryError.invalidField("missing")) {
             try CanonicalAggregationReducer.groupIdentity(
                 item: entity,
-                fields: ["missing"]
+                fields: [FieldIdentity(name: "missing", number: 99)]
             )
         }
     }
@@ -518,7 +520,7 @@ struct CanonicalAggregationReducerTests {
             )
         }
 
-        #expect(sum == .double(entity.value))
+        #expect(sum == .float64(entity.value))
     }
 
     @Test("materialized floating aggregates preserve compensated contributions")
@@ -576,9 +578,9 @@ struct CanonicalAggregationReducerTests {
             )
             return (sum, average)
         }
-        #expect(initial.0 == .double(1))
+        #expect(initial.0 == .float64(1))
         #expect(initial.1.count == 3)
-        #expect(initial.1.average == .double(1.0 / 3.0))
+        #expect(initial.1.average == .float64(1.0 / 3.0))
 
         try await engine.withTransaction { transaction in
             try await sumMaintainer.updateIndex(
@@ -604,9 +606,9 @@ struct CanonicalAggregationReducerTests {
             )
             return (sum, average)
         }
-        #expect(afterDelete.0 == .double(0))
+        #expect(afterDelete.0 == .float64(0))
         #expect(afterDelete.1.count == 2)
-        #expect(afterDelete.1.average == .double(0))
+        #expect(afterDelete.1.average == .float64(0))
     }
 
     @Test("floating aggregate storage rejects noncanonical payload width")
@@ -863,7 +865,9 @@ struct CanonicalAggregationReducerTests {
             name: name
         )
         let subspace = Subspace(prefix: Tuple(name).pack())
-        let grouping: [any TupleElement] = ["group"]
+        let grouping = try FieldValue.toTupleElements(
+            ["group"] as [FieldValue]
+        )
         let sumKey = subspace.pack(
             elements: grouping,
             appending: "sum"
@@ -983,7 +987,9 @@ struct CanonicalAggregationReducerTests {
         #expect(maximums.first?.max == UInt64.max)
     }
 
-    private func makeSumMaintainer<Value: IndexNumericValue>(
+    private func makeSumMaintainer<
+        Value: IndexNumericValue & FieldValueEncodable
+    >(
         valueType _: Value.Type,
         name: String
     ) -> SumIndexMaintainer<AggregationValueEntity<Value>, Value> {
@@ -1120,7 +1126,9 @@ struct CanonicalAggregationReducerTests {
         )
     }
 
-    private func makeAverageMaintainer<Value: IndexNumericValue>(
+    private func makeAverageMaintainer<
+        Value: IndexNumericValue & FieldValueEncodable
+    >(
         valueType _: Value.Type,
         name: String
     ) -> AverageIndexMaintainer<AggregationValueEntity<Value>, Value> {
@@ -1149,7 +1157,7 @@ struct CanonicalAggregationReducerTests {
     }
 
     private func makeMinimumMaintainer<
-        Value: IndexNumericValue & IndexComparableValue
+        Value: IndexNumericValue & IndexComparableValue & FieldValueEncodable
     >(
         valueType _: Value.Type,
         name: String
@@ -1179,7 +1187,7 @@ struct CanonicalAggregationReducerTests {
     }
 
     private func makeMaximumMaintainer<
-        Value: IndexNumericValue & IndexComparableValue
+        Value: IndexNumericValue & IndexComparableValue & FieldValueEncodable
     >(
         valueType _: Value.Type,
         name: String
@@ -1213,7 +1221,9 @@ private typealias FloatingAggregationEntity = AggregationValueEntity<Double>
 private typealias UnsignedAggregationEntity = AggregationValueEntity<UInt64>
 private typealias SignedAggregationEntity = AggregationValueEntity<Int64>
 
-private struct AggregationValueEntity<Value: IndexNumericValue>: Persistable {
+private struct AggregationValueEntity<
+    Value: IndexNumericValue & FieldValueEncodable
+>: Persistable {
     typealias ID = String
 
     let id: String
@@ -1246,6 +1256,37 @@ private struct AggregationValueEntity<Value: IndexNumericValue>: Persistable {
         }
     }
     static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
+
+    func persistedFieldValue(
+        for field: FieldIdentity
+    ) throws(PersistableEncodingError) -> FieldValue? {
+        switch (field.name, field.number) {
+        case ("id", 1): .string(id)
+        case ("group", 2): .string(group)
+        case ("value", 3): value.fieldValue
+        default: nil
+        }
+    }
+
+    func encodePersistedFields<Output: PersistedFieldOutput>(
+        to output: inout Output
+    ) throws(PersistableEncodingFailure<Output.Failure>) {
+        try output.write(
+            FieldIdentity(name: "id", number: 1),
+            value: id,
+            entity: Self.persistableType
+        )
+        try output.write(
+            FieldIdentity(name: "group", number: 2),
+            value: group,
+            entity: Self.persistableType
+        )
+        try output.write(
+            FieldIdentity(name: "value", number: 3),
+            value: value,
+            entity: Self.persistableType
+        )
+    }
 
     subscript(dynamicMember member: String) -> (any Sendable)? {
         switch member {
@@ -1365,9 +1406,32 @@ private struct AggregationReducerEntity: Persistable {
     static let persistableType = "AggregationReducerEntity"
     static let allFields = ["id", "group", "value"]
     static let indexDescriptors: [IndexDescriptor] = []
+    static let fieldSchemas = [
+        FieldSchema(name: "id", fieldNumber: 1, type: .string),
+        FieldSchema(name: "group", fieldNumber: 2, type: .string, isOptional: true),
+        FieldSchema(name: "value", fieldNumber: 3, type: .float64, isOptional: true),
+    ]
 
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
+    static func fieldNumber(for fieldName: String) -> Int? {
+        switch fieldName {
+        case "id": 1
+        case "group": 2
+        case "value": 3
+        default: nil
+        }
+    }
     static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
+
+    func persistedFieldValue(
+        for field: FieldIdentity
+    ) throws(PersistableEncodingError) -> FieldValue? {
+        switch (field.name, field.number) {
+        case ("id", 1): .string(id)
+        case ("group", 2): group ?? .null
+        case ("value", 3): value ?? .null
+        default: nil
+        }
+    }
 
     subscript(dynamicMember member: String) -> (any Sendable)? {
         switch member {
@@ -1421,9 +1485,32 @@ private struct AggregationTupleEntity: Persistable {
     static let persistableType = "AggregationTupleEntity"
     static let allFields = ["id", "group", "number"]
     static let indexDescriptors: [IndexDescriptor] = []
+    static let fieldSchemas = [
+        FieldSchema(name: "id", fieldNumber: 1, type: .string),
+        FieldSchema(name: "group", fieldNumber: 2, type: .string),
+        FieldSchema(name: "number", fieldNumber: 3, type: .int64),
+    ]
 
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
+    static func fieldNumber(for fieldName: String) -> Int? {
+        switch fieldName {
+        case "id": 1
+        case "group": 2
+        case "number": 3
+        default: nil
+        }
+    }
     static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
+
+    func persistedFieldValue(
+        for field: FieldIdentity
+    ) throws(PersistableEncodingError) -> FieldValue? {
+        switch (field.name, field.number) {
+        case ("id", 1): .string(id)
+        case ("group", 2): .string(group)
+        case ("number", 3): .int64(number)
+        default: nil
+        }
+    }
 
     subscript(dynamicMember member: String) -> (any Sendable)? {
         switch member {

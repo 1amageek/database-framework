@@ -83,7 +83,7 @@ private struct MaximumIndexContext {
     func getMax(for subject: String) async throws -> Int64 {
         try await database.withTransaction { transaction in
             try await maintainer.getMax(
-                groupingValues: [subject],
+                groupingValues: [.string(subject)],
                 transaction: transaction
             )
         }
