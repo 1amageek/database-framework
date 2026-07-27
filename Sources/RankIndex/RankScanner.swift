@@ -1,9 +1,10 @@
 // RankScanner.swift
-// RankIndex - Native descending scanner for rank scores subspace
+// RankIndex - Bounded ordered scanner for the rank scores subspace
 //
 // Replaces the ascending-scan-then-sort pattern (with 100k silent truncation)
-// with direct reverse range scans on FoundationDB. The scores subspace is
-// `[scoresSubspace][score][primaryKey]` — FDB preserves tuple ordering, so
+// with bounded ordered range scans through StorageKit. The scores subspace is
+// `[scoresSubspace][score][primaryKey]`; canonical tuple encoding preserves
+// numeric score ordering, so
 // `reverse: true, limit: k` yields the top-k highest scores in O(k).
 
 #if canImport(FoundationEssentials)
@@ -27,6 +28,7 @@ struct RankScanEntry: Sendable {
 enum RankScannerError: Error, Sendable, Equatable {
     case invalidRange(from: Int, to: Int)
     case negativeIndex(Int)
+    case inconsistentCount(totalCount: Int, returnedCount: Int)
     case keyOutsideScoresSubspace
     case malformedEntry(elementCount: Int)
     case missingElement(index: Int)
@@ -34,9 +36,9 @@ enum RankScannerError: Error, Sendable, Equatable {
 
 /// Scanner for the rank scores subspace.
 ///
-/// **Key structure**: `[scoresSubspace][score][primaryKey...]`. FDB stores
-/// tuples in lexicographic byte order, which preserves numeric ordering for
-/// Tuple-encoded scores.
+/// **Key structure**: `[scoresSubspace][score][primaryKey...]`. StorageKit
+/// orders keys lexicographically, while canonical tuple encoding preserves
+/// numeric ordering for encoded scores.
 ///
 /// **Ordering contract**:
 /// - `top(k)` returns descending-score order (highest first, rank 0 = index 0)
@@ -58,14 +60,7 @@ struct RankScanner {
     func top(k: Int) async throws -> [RankScanEntry] {
         guard k >= 0 else { throw RankScannerError.negativeIndex(k) }
         guard k > 0 else { return [] }
-        let range = scoresSubspace.range()
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
-            limit: k,
-            reverse: true,
-            snapshot: true
-        )
+        let sequence = try await collect(limit: k, reverse: true)
         return try parse(sequence)
     }
 
@@ -76,26 +71,19 @@ struct RankScanner {
     func bottom(k: Int) async throws -> [RankScanEntry] {
         guard k >= 0 else { throw RankScannerError.negativeIndex(k) }
         guard k > 0 else { return [] }
-        let range = scoresSubspace.range()
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
-            limit: k,
-            reverse: false,
-            snapshot: true
-        )
+        let sequence = try await collect(limit: k, reverse: false)
         return try parse(sequence)
     }
 
     /// Rank range [from, to) in descending order. O(to).
-    /// Reads `to` highest entries and drops the first `from`.
+    /// Reads `to` highest storage entries and decodes only the requested page.
     func rangeDescending(from: Int, to: Int) async throws -> [RankScanEntry] {
         guard from >= 0, to > from else {
             throw RankScannerError.invalidRange(from: from, to: to)
         }
-        let all = try await top(k: to)
-        guard all.count > from else { return [] }
-        return Array(all[from..<min(to, all.count)])
+        let sequence = try await collect(limit: to, reverse: true)
+        guard sequence.count > from else { return [] }
+        return try parse(sequence.dropFirst(from))
     }
 
     /// Read the Nth-highest entry (0-based, 0 = highest). O(N+1).
@@ -104,14 +92,48 @@ struct RankScanner {
         guard n >= 0 else {
             throw RankScannerError.negativeIndex(n)
         }
-        let entries = try await top(k: n + 1)
-        guard entries.count == n + 1 else { return nil }
-        return entries[n]
+        let sequence = try await collect(limit: n + 1, reverse: true)
+        guard sequence.count == n + 1, let key = sequence.last?.0 else {
+            return nil
+        }
+        return try Self.decodeEntry(key: key, scoresSubspace: scoresSubspace)
+    }
+
+    /// Returns the descending leaderboard position of the first entry returned
+    /// by `bottom(k)`. The bottom scan itself is ascending by score, so later
+    /// entries decrement this position.
+    static func bottomStartPosition(
+        totalCount: Int,
+        returnedCount: Int
+    ) throws -> Int {
+        guard totalCount >= returnedCount else {
+            throw RankScannerError.inconsistentCount(
+                totalCount: totalCount,
+                returnedCount: returnedCount
+            )
+        }
+        return totalCount - 1
     }
 
     // MARK: - Parsing
 
-    private func parse(_ sequence: [(Bytes, Bytes)]) throws -> [RankScanEntry] {
+    private func collect(
+        limit: Int,
+        reverse: Bool
+    ) async throws -> [(Bytes, Bytes)] {
+        let range = scoresSubspace.range()
+        return try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
+            limit: limit,
+            reverse: reverse,
+            snapshot: true
+        )
+    }
+
+    private func parse<Entries: Collection>(
+        _ sequence: Entries
+    ) throws -> [RankScanEntry] where Entries.Element == (Bytes, Bytes) {
         var entries: [RankScanEntry] = []
         entries.reserveCapacity(sequence.count)
         for (key, _) in sequence {

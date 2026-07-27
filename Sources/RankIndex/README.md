@@ -1,376 +1,144 @@
 # RankIndex
 
-Leaderboard and ranking queries using Range Tree algorithm.
+RankIndex provides persistent leaderboard reads over an exact numeric field.
+It is an index runtime owned by `database-framework`; the model-level index
+declaration and metadata contract are owned by `database-kit`.
 
-## Overview
+## Contract
 
-RankIndex provides efficient ranking operations for leaderboard-style queries. It maintains a score-ordered index with atomic counters for O(1) count operations and O(n log k) top-K queries using a bounded min-heap.
-
-**Algorithms**:
-- **Range Tree (Simplified)**: Score-ordered entries for rank calculation
-- **TopKHeap**: Bounded min-heap for O(n log k) top-K queries
-- **Atomic Counter**: O(1) count queries via FDB atomic operations
-
-**Storage Layout**:
+```text
+model #Index(.rank)
+        |
+        v
+IndexKindMetadata { scoreType }
+        |
+        v
+[index]/scores/[score][primaryKey] = covering value
+[index]/_count                    = atomic Int64
+        |
+        v
+top / bottom / range / percentile / score rank
 ```
-[indexSubspace]/scores/[score][primaryKey] = ''
-[indexSubspace]/_count = Int64 (total entries)
-```
 
-Where `score` is the ranking value (Int64, Double, etc.) and entries are naturally sorted.
+- The score must be an exact numeric `IndexScalarType` supported by the rank
+  maintainer.
+- `scoreType` is the only kind-specific metadata value.
+- A missing or ambiguous rank index is a typed failure. Queries never fall
+  back to an in-memory full scan.
+- A `nil` optional score is sparse: the entity has no rank entry.
+- Non-finite `Float` and `Double` scores are rejected because they do not form
+  the required total ordering.
+- Position zero is the highest score. Equal scores are ordered by their encoded
+  primary key for deterministic traversal; `getRank(score:)` returns the first
+  position occupied by that score because it counts only strictly greater
+  scores.
 
-## Use Cases
-
-### 1. Game Leaderboard
-
-**Scenario**: Display top players by score.
+## Model declaration
 
 ```swift
 @Persistable
 struct Player {
-    var id: String = ULID().ulidString
-    var name: String = ""
-    var score: Int64 = 0
+    var id: String
+    var name: String
+    var score: Int64
 
-    #Index<Player>(
-        type: RankIndexKind(field: \.score)
-    )
+    #Index(.rank, field: \Player.score, name: "player_score_rank")
 }
+```
 
-// Get top 100 players
-let leaderboard = try await context.rank(Player.self)
-    .by(\.score)
+The macro compiles the field identity and `scoreType` into the schema. Runtime
+construction validates that metadata before selecting the concrete generic
+score maintainer.
+
+## Queries
+
+```swift
+let leaders = try await context.rank(Player.self)
+    .by(Player.fields.score)
     .top(100)
     .execute()
 
-for (player, rank) in leaderboard {
-    print("\(rank + 1). \(player.name): \(player.score)")
-}
-```
+let lowest = try await context.rank(Player.self)
+    .by(Player.fields.score)
+    .bottom(10)
+    .execute()
 
-**Performance**: O(n log k) where n = total entries, k = requested count.
+let page = try await context.rank(Player.self)
+    .by(Player.fields.score)
+    .range(from: 100, to: 125)
+    .execute()
 
-### 2. Player Rank Lookup
-
-**Scenario**: Show a player their current rank.
-
-```swift
-// Find player's rank
-let myScore: Int64 = 1500
-let rank = try await maintainer.getRank(score: myScore, transaction: tx)
-print("Your rank: #\(rank + 1)")  // 0-based to 1-based
-
-// Total player count
-let total = try await maintainer.getCount(transaction: tx)
-print("Out of \(total) players")
-```
-
-**Performance**: O(n - rank) - faster for high-ranked players.
-
-### 3. Percentile Queries
-
-**Scenario**: Find the 95th percentile score for matchmaking.
-
-```swift
-// Get 95th percentile score
-let percentile95 = try await maintainer.getPercentile(
-    0.95,
-    transaction: tx
-)
-
-if let score = percentile95 {
-    print("95th percentile score: \(score)")
-}
-
-// Get median score
 let median = try await context.rank(Player.self)
-    .by(\.score)
+    .by(Player.fields.score)
     .percentile(0.5)
     .executeOne()
 ```
 
-**Performance**: O(n log k) where k = targetRank + 1.
+Every result returned by `execute()` includes its zero-based position from the
+top of the complete leaderboard. Bottom queries return entries in ascending
+score order, so their reported positions descend.
 
-### 4. Paginated Leaderboard
+Invalid counts, ranges, percentiles, missing entities, malformed counters, and
+missing indexes are reported as typed errors. They are not converted to empty
+successful results.
 
-**Scenario**: Show leaderboard page by page.
+## Direct maintainer operations
 
-```swift
-// Get ranks 20-29 (page 3)
-let page3 = try await context.rank(Player.self)
-    .by(\.score)
-    .range(from: 20, to: 30)
-    .execute()
-
-for (player, rank) in page3 {
-    print("\(rank + 1). \(player.name): \(player.score)")
-}
-```
-
-### 5. Multi-Region Leaderboard
-
-**Scenario**: Separate leaderboards per region.
+`RankIndexMaintainer<Item, Score>` exposes the storage-level operations used by
+the canonical read executors:
 
 ```swift
-@Persistable
-struct RegionalPlayer {
-    var id: String = ULID().ulidString
-    var name: String = ""
-    var region: String = ""
-    var score: Int64 = 0
-
-    // Index per region (using dynamic directory)
-    #Directory<RegionalPlayer>("game", Field(\.region), "players")
-
-    #Index<RegionalPlayer>(
-        type: RankIndexKind(field: \.score)
-    )
-}
-
-// Query specific region
-let asiaLeaderboard = try await context.rank(RegionalPlayer.self)
-    .partition(\.region, equals: "asia")
-    .by(\.score)
-    .top(100)
-    .execute()
-```
-
-### 6. Sparse Leaderboard (Optional Scores)
-
-**Scenario**: Only rank players who have submitted scores.
-
-```swift
-@Persistable
-struct Tournament {
-    var id: String = ULID().ulidString
-    var playerName: String = ""
-    var submittedScore: Int64? = nil  // nil until submitted
-
-    #Index<Tournament>(
-        type: RankIndexKind(field: \.submittedScore)
-    )
-}
-
-// Players with nil score are NOT indexed
-// Only submitted scores appear in rankings
-```
-
-## Design Patterns
-
-### Type-Safe Score Parameter
-
-RankIndex uses a generic Score type parameter for compile-time safety:
-
-```swift
-// Int64 scores (default)
-RankIndexKind<Player, Int64>(field: \.score)
-
-// Double scores (for ratings like 4.5 stars)
-RankIndexKind<Review, Double>(field: \.rating)
-
-// Int32 scores
-RankIndexKind<Game, Int32>(field: \.level)
-```
-
-**Supported Types**: `Int64`, `Int`, `Int32`, `Double`, `Float`
-
-### TopKHeap Algorithm
-
-For top-K queries, RankIndex uses a bounded min-heap:
-
-```
-Algorithm: Maintain min-heap of size k
-- For each entry in index:
-  - If heap.count < k: insert entry
-  - If entry.score > heap.min: replace heap.min with entry
-- Result: top-k highest scores in O(n log k) time
-
-┌─────────────────────────────────────────────────────────────┐
-│ Min-Heap (k=3)              After processing all entries    │
-│                                                             │
-│      [700]  ← smallest of top-3                             │
-│      /    \                                                 │
-│   [800]  [900]                                              │
-│                                                             │
-│ Final sorted output: [900, 800, 700] (descending)           │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Comparison**:
-- Full sort: O(n log n)
-- TopKHeap: O(n log k)
-- For k << n, this is significantly faster
-
-### Atomic Counter
-
-Total count is maintained using FDB atomic operations:
-
-```swift
-var increment = Int64(1).littleEndian
-let incrementBytes = withUnsafeBytes(of: &increment) { Array($0) }
-var decrement = Int64(-1).littleEndian
-let decrementBytes = withUnsafeBytes(of: &decrement) { Array($0) }
-
-// On insert
-try transaction.atomicOp(
-    key: countKey,
-    param: incrementBytes,
-    mutationType: .add
+let top = try await maintainer.getTopK(k: 20, transaction: transaction)
+let position = try await maintainer.getRank(
+    score: Int64(1_500),
+    transaction: transaction
 )
-
-// On delete
-try transaction.atomicOp(
-    key: countKey,
-    param: decrementBytes,
-    mutationType: .add
+let count = try await maintainer.getCount(transaction: transaction)
+let percentile = try await maintainer.getPercentile(
+    0.95,
+    transaction: transaction
 )
-
-// Query count: O(1)
-let count = try await transaction.getValue(for: countKey)
 ```
 
-**Benefits**:
-- O(1) count queries (no scanning)
-- Concurrent updates without conflicts
-- Exact count (not approximate)
+`getTopK(k:)` accepts zero as an empty request and rejects negative values.
+The query builder requires a positive count for `top` and `bottom`.
 
-### Tie-Breaking
+## Storage and complexity
 
-When multiple entries have the same score, they are ordered by primary key:
+Tuple encoding preserves numeric score ordering. RankIndex therefore uses the
+storage engine's bounded ordered range reads directly; it does not materialize
+the complete index and does not use a heap.
 
-```
-Index entries:
-[scores][1000]["alice"] = ''
-[scores][1000]["bob"] = ''
-[scores][1000]["charlie"] = ''
-[scores][500]["david"] = ''
+| Operation | Storage work | Complexity |
+|---|---|---:|
+| Insert | score key write + atomic count add | O(1) |
+| Delete | score key clear + atomic count add | O(1) |
+| Top K | reverse ordered range, limit K | O(K) |
+| Bottom K | forward ordered range, limit K + count read | O(K) |
+| Range `[from, to)` | reverse ordered range, limit `to` | O(to) |
+| Rank of score | scan keys with strictly greater score | O(rank) |
+| Count | atomic counter read | O(1) |
+| Percentile | count read + bounded reverse range | O(target rank + 1) |
 
-Top-3 result: alice(1000), bob(1000), charlie(1000)
-Rank of david: 3 (three entries above)
-```
+The table describes storage entries read, excluding entity materialization for
+the returned primary keys.
 
-**Note**: Primary key ordering is lexicographic, not insertion order.
+## Consistency and ownership
 
-### Rank Calculation Optimization
+Index entry mutation and the atomic counter update occur in the caller's
+transaction. Reads use the consistency and cache policy selected by canonical
+query execution. A score entry whose entity is missing is an index consistency
+failure, not a row to silently omit.
 
-`getRank()` only scans entries with higher scores:
+The hot path keeps encoded keys and values as `Bytes`. Conversion to model
+values happens only when an output entity is materialized. Ordered range reads
+are bounded at the storage boundary, so top and bottom queries do not create a
+full-index intermediate collection.
 
-```swift
-// To find rank of score 500:
-// Only scan entries where score > 500
-let boundaryKey = scoresSubspace.pack(Tuple(score + 1))
-let sequence = tx.getRange(from: boundaryKey, to: rangeEnd)
-// Count = number of entries with higher score = rank
-```
+## Verification
 
-**Performance**:
-- Rank 0 (highest): O(0) - no scanning needed
-- Rank N: O(N) - scan N entries
-- Worst case: O(n) for lowest score
-
-## Implementation Status
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Top-K query | ✅ Complete | O(n log k) with TopKHeap |
-| Bottom-K query | ✅ Complete | Reverse ordering |
-| Rank lookup | ✅ Complete | O(n - rank) optimized |
-| Percentile query | ✅ Complete | Via getTopK |
-| Count query | ✅ Complete | O(1) atomic counter |
-| Sparse index (nil) | ✅ Complete | nil scores not indexed |
-| Range query | ✅ Complete | Get ranks [from, to) |
-| Full Range Tree | ⚠️ Simplified | Hierarchical buckets not implemented |
-| Reverse iteration | ❌ Workaround | FDB bindings don't support reverse |
-
-### Future Optimization: Full Range Tree
-
-The current implementation is O(n log k) for top-K. A full Range Tree implementation would provide:
-
-```
-Full Range Tree (fdb-record-layer style):
-- Hierarchical bucket counts
-- O(log n) rank lookup
-- O(log n + k) top-K query
-
-For datasets > 100K entries, this would be beneficial.
-Reference: FoundationDB Record Layer RankedSet
-```
-
-## Performance Characteristics
-
-| Operation | Time Complexity | Notes |
-|-----------|----------------|-------|
-| Insert | O(1) | Single key write + atomic add |
-| Delete | O(1) | Single key clear + atomic add |
-| Update | O(1) | Clear old + write new |
-| Top-K | O(n log k) | Bounded heap scan |
-| Rank lookup | O(n - rank) | Partial scan (high ranks faster) |
-| Count | O(1) | Atomic counter read |
-| Percentile | O(n log k) | Via top-K |
-
-### FDB Considerations
-
-- **Key size**: Score (8 bytes) + Primary key
-- **Atomic operations**: Count uses `atomicOp(.add)` for conflict-free updates
-- **Snapshot reads**: Queries use snapshot isolation for consistency
-
-## Benchmark Results
-
-Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:RankIndexTests/RankIndexPerformanceTests`
-
-### Latest Results (2026-04-11)
-
-**Environment**: macOS 26.3, Apple M4 Max, local Docker FoundationDB cluster
-
-#### Top-K Current Implementation
-
-| Metric | Baseline | Optimized | Notes |
-|--------|----------|-----------|-------|
-| **Latency (p50)** | 10.19ms | 10.08ms | Top 100 from 1,000 players |
-| **Latency (p95)** | 10.61ms | 10.61ms | Same current implementation rerun |
-| **Latency (p99)** | 10.77ms | 10.78ms | Stable under repetition |
-| **Throughput** | 97 ops/s | 98 ops/s | Top-K query throughput |
-
-**Note**: Range Tree optimization is not implemented yet. This benchmark captures the current TopKHeap cost and run-to-run variance.
-
-#### Rank Query Scalability
-
-| Query | Latency (p50) | Latency (p95) | Throughput |
-|-------|---------------|---------------|------------|
-| Top-10 | 10.23ms | 10.72ms | 96 ops/s |
-| Top-50 | 10.65ms | 11.02ms | 94 ops/s |
-| Top-100 | 10.50ms | 10.92ms | 93 ops/s |
-
-**Observation**: p95 remained near 11ms across the tested K values.
-
-#### Different K Values
-
-| Query | Latency (p50) | Latency (p95) | Throughput |
-|-------|---------------|---------------|------------|
-| Top-10 | 10.59ms | 11.84ms | 96 ops/s |
-| Top-50 | 10.12ms | 10.33ms | 98 ops/s |
-| Top-100 | 10.19ms | 10.44ms | 94 ops/s |
-| Top-200 | 10.49ms | 10.88ms | 97 ops/s |
-
-These measurements are the current baseline to compare against once Range Tree or span-counter support is added.
-
-### Future Optimization: Skip List with Span Counters
-
-**Current Implementation**: TopKHeap O(n log k)
-**Target Implementation**: Skip List with Span Counters O(log n + k)
-
-```
-Expected improvements for 100K+ entries:
-- Top-K query: 100× faster
-- Rank lookup: O(log n) instead of O(n - rank)
-- Reference: FoundationDB Record Layer RankedSet
-```
-
-*Benchmarks run with Swift Testing `PerformanceBenchmarks` on Apple Silicon Mac and local Docker FoundationDB cluster.*
-
-## References
-
-- [FoundationDB Record Layer RankedSet](https://github.com/FoundationDB/fdb-record-layer) - Production-grade Range Tree
-- [Range Tree](https://en.wikipedia.org/wiki/Range_tree) - Data structure for range queries
-- [Binary Heap](https://en.wikipedia.org/wiki/Binary_heap) - TopKHeap implementation
-- [FDB Atomic Operations](https://apple.github.io/foundationdb/api-general.html#atomic-operations) - Conflict-free counters
+Rank behavior tests cover insert, update, delete, sparse scores, ties, exact
+numeric ordering, counter failures, negative limits, and key decoding. The
+FoundationDB behavior suite exercises the real transaction and ordered-range
+path; pure decoding tests cover malformed keys and count invariants without a
+backend.

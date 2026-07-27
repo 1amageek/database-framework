@@ -356,9 +356,8 @@ enum SchemaEntityEntryCodec {
             writer.writeUInt8(15)
             try writer.writeString(encoding.rawValue)
             try write(level, into: &writer)
-        case .rank(let bucketSize):
+        case .rank:
             writer.writeUInt8(16)
-            try write(bucketSize, into: &writer)
         case .permuted(let pattern):
             writer.writeUInt8(17)
             switch pattern {
@@ -877,9 +876,7 @@ enum SchemaEntityEntryCodec {
                 level: try readInt(from: &reader, field: "level")
             )
         case 16:
-            return .rank(
-                bucketSize: try readInt(from: &reader, field: "bucketSize")
-            )
+            return .rank
         case 17:
             let pattern: PermutationPattern
             switch try reader.readUInt8() {

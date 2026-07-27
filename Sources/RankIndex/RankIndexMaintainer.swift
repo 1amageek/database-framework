@@ -1,7 +1,7 @@
 // RankIndexMaintainer.swift
 // RankIndexLayer - Index maintainer for RANK indexes
 //
-// Maintains rank indexes using Range Tree algorithm for efficient ranking queries.
+// Maintains score-ordered entries and an atomic entry count for rank queries.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -24,26 +24,21 @@ import StorageKit
 /// - Percentile queries (95th percentile)
 /// - Count queries (how many above/below score?)
 ///
-/// **Algorithm**: Range Tree (simplified version)
-/// - Leaf level: Individual score entries
-/// - Count nodes: Hierarchical bucket counts (future optimization)
+/// **Algorithm**: ordered score keys
+/// - Score entries are ordered by the storage engine's tuple encoding
+/// - A single atomic counter stores the total number of indexed entries
 ///
-/// **Index Structure** (simplified):
+/// **Index Structure**:
 /// ```
 /// // Score entries
 /// Key: [indexSubspace]["scores"][score][primaryKey]
 /// Value: '' (empty)
 /// ```
 ///
-/// **Note**: This is a simplified implementation for basic ranking.
-/// For production use with large datasets (>100K items), consider implementing
-/// the full Range Tree algorithm from fdb-record-layer with hierarchical buckets.
-///
 /// **Usage**:
 /// ```swift
 /// let maintainer = RankIndexMaintainer<Player, Int64>(
 ///     index: rankIndex,
-///     bucketSize: 100,
 ///     subspace: rankSubspace,
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
@@ -53,8 +48,6 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
-    private let bucketSize: Int
-
     // Subspace for score entries
     private let scoresSubspace: Subspace
 
@@ -63,14 +56,12 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
 
     public init(
         index: Index,
-        bucketSize: Int,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
-        self.bucketSize = bucketSize
         self.scoresSubspace = subspace.subspace("scores")
         self.countKey = subspace.pack(Tuple("_count"))
     }
@@ -81,7 +72,6 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     /// 1. Remove old score entry (if exists) and decrement count
     /// 2. Add new score entry and increment count
     ///
-    /// **Note**: Full implementation would also update count nodes in Range Tree
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
@@ -133,21 +123,19 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
 
     /// Get top K items (highest scores).
     ///
-    /// **Algorithm**: Native FDB reverse range scan with `limit: k`. O(K).
-    /// The scores subspace is `[subspace]["scores"][score][primaryKey]`, and FDB
-    /// preserves tuple ordering, so `reverse: true` yields highest scores first
+    /// **Algorithm**: bounded reverse storage range scan with `limit: k`. O(K).
+    /// The scores subspace is `[subspace]["scores"][score][primaryKey]`, and
+    /// canonical tuple ordering yields highest scores first when reversed,
     /// without reading more than K entries.
     ///
     /// - Parameters:
     ///   - k: Number of items to return
-    ///   - transaction: FDB transaction
+    ///   - transaction: Storage transaction
     /// - Returns: Array of (score, primaryKey) tuples, sorted by score descending
     public func getTopK(
         k: Int,
         transaction: any TransactionAccess
     ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
-        guard k > 0 else { return [] }
-
         let scanner = RankScanner(scoresSubspace: scoresSubspace, transaction: transaction)
         let entries = try await scanner.top(k: k)
 
@@ -170,14 +158,12 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     ///
     /// **Optimization**: Only scans entries with score > target.
     /// Previous implementation: O(n) full scan.
-    /// Current implementation: O(n - rank) where rank is the result.
-    /// (High scores have low rank, so fewer entries to scan.)
-    ///
-    /// **Note**: Full Range Tree implementation would be O(log n).
+    /// Current implementation: O(rank), where rank is the number of entries
+    /// whose score is strictly greater than the requested score.
     ///
     /// - Parameters:
     ///   - score: Score to find rank for
-    ///   - transaction: FDB transaction
+    ///   - transaction: Storage transaction
     /// - Returns: Rank (0-based, 0 = highest)
     public func getRank(
         score: Score,
@@ -220,7 +206,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     /// Previous implementation: O(n) full scan.
     /// Current implementation: O(1) single key read.
     ///
-    /// - Parameter transaction: FDB transaction
+    /// - Parameter transaction: Storage transaction
     /// - Returns: Total number of entries
     public func getCount(
         transaction: any TransactionAccess
@@ -235,14 +221,12 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     ///
     /// **Type-Safe**: Returns Score type instead of forcing Int64.
     ///
-    /// **Optimization**: Uses getTopK with bounded heap instead of full sort.
-    /// Previous implementation: O(n log n) full scan and sort.
-    /// Current implementation: O(n log k) where k = targetRank + 1.
-    /// For high percentiles (95th), k is small (5% of n), making this much faster.
+    /// Uses the O(1) atomic count and an ordered reverse range read limited to
+    /// `targetRank + 1` entries. The read cost is O(targetRank + 1).
     ///
     /// - Parameters:
     ///   - percentile: Percentile value (0.0 to 1.0, e.g., 0.95 for 95th percentile)
-    ///   - transaction: FDB transaction
+    ///   - transaction: Storage transaction
     /// - Returns: Score at the given percentile, or nil if empty
     public func getPercentile(
         _ percentile: Double,
@@ -269,7 +253,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
             return topOne.first?.score
         }
 
-        // Get top k entries using optimized heap-based method
+        // Read only the prefix ending at the target rank.
         let topK = try await getTopK(k: k, transaction: transaction)
 
         // Return the score at targetRank position (last in the top-k list)

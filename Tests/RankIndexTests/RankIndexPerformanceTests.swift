@@ -36,7 +36,6 @@ private struct BenchmarkContext {
 
         self.maintainer = RankIndexMaintainer<BenchmarkPlayer, Int64>(
             index: index,
-            bucketSize: 100,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
@@ -52,59 +51,11 @@ private struct BenchmarkContext {
 
 // MARK: - Benchmark Player Model
 
-private struct BenchmarkPlayer: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+private struct BenchmarkPlayer {
+    var id: String = UUID().uuidString
     var name: String
     var score: Int64
-
-    init(id: String = UUID().uuidString, name: String, score: Int64) {
-        self.id = id
-        self.name = name
-        self.score = score
-    }
-
-    static var persistableType: String { "BenchmarkPlayer" }
-    static var allFields: [String] { ["id", "name", "score"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "score": return score
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BenchmarkPlayer, Value>) -> String {
-        switch keyPath {
-        case \BenchmarkPlayer.id: return "id"
-        case \BenchmarkPlayer.name: return "name"
-        case \BenchmarkPlayer.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BenchmarkPlayer>) -> String {
-        switch keyPath {
-        case \BenchmarkPlayer.id: return "id"
-        case \BenchmarkPlayer.name: return "name"
-        case \BenchmarkPlayer.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BenchmarkPlayer> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Benchmark Measurement

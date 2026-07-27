@@ -54,7 +54,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0727.1"
+            from: "26.0727.2"
         ),
         .package(
             url: "https://github.com/1amageek/swift-hnsw.git",

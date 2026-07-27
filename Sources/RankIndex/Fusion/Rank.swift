@@ -146,7 +146,10 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
         case .descending:
             direction = .descending
         }
-        let sorted = try RankValueOrdering.sorted(entries, direction: direction)
+        let sorted = try RankValueOrdering.sorted(
+            consume entries,
+            direction: direction
+        )
 
         // Convert rank to score (1st = 1.0, last = 0.0)
         let count = Double(sorted.count)

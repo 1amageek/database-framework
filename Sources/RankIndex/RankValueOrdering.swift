@@ -1,4 +1,5 @@
 import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -60,19 +61,35 @@ enum RankValueOrdering {
     }
 
     static func sorted<Item>(
-        _ entries: [RankValueEntry<Item>],
+        _ entries: consuming [RankValueEntry<Item>],
         direction: RankValueDirection
     ) throws -> [RankValueEntry<Item>] {
+        var result = consume entries
         var identifiers: Set<Bytes> = []
-        identifiers.reserveCapacity(entries.count)
-        for entry in entries {
+        identifiers.reserveCapacity(result.count)
+        for entry in result {
             guard identifiers.insert(entry.identifierKey).inserted else {
                 throw RankValueError.duplicateIdentifier
             }
         }
 
-        return entries.sorted { lhs, rhs in
-            if lhs.value == rhs.value {
+        try result.sort { lhs, rhs in
+            let left = try numericValue(
+                from: lhs.value,
+                fieldName: "rank"
+            )
+            let right = try numericValue(
+                from: rhs.value,
+                fieldName: "rank"
+            )
+            guard let comparison = left.compare(to: right) else {
+                throw RankValueError.nonNumericField(
+                    fieldName: "rank",
+                    actualType: "\(String(reflecting: left)), \(String(reflecting: right))"
+                )
+            }
+
+            if comparison == .equal {
                 switch direction {
                 case .ascending:
                     return lhs.identifierKey.lexicographicallyPrecedes(rhs.identifierKey)
@@ -83,10 +100,11 @@ enum RankValueOrdering {
 
             switch direction {
             case .ascending:
-                return lhs.value < rhs.value
+                return comparison == .lessThan
             case .descending:
-                return rhs.value < lhs.value
+                return comparison == .greaterThan
             }
         }
+        return result
     }
 }

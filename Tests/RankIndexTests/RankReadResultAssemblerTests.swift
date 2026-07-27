@@ -49,23 +49,26 @@ struct RankReadResultAssemblerTests {
     func preservesRankOrder() throws {
         let first = RankReadEntity(id: "first", score: 20)
         let second = RankReadEntity(id: "second", score: 10)
+        let typeCode = RankReadEntity.typeCode(
+            for: RankReadEntity.persistableType
+        )
         let entities = [
             PolymorphicEntity(
                 item: second,
                 typeName: RankReadEntity.persistableType,
-                typeCode: 7
+                typeCode: typeCode
             ),
             PolymorphicEntity(
                 item: first,
                 typeName: RankReadEntity.persistableType,
-                typeCode: 7
+                typeCode: typeCode
             )
         ]
 
         let results = try RankReadResultAssembler.assemble(
             rankedKeys: [
-                (primaryKey: Tuple(Int64(7), "first"), rank: 0),
-                (primaryKey: Tuple(Int64(7), "second"), rank: 1)
+                (primaryKey: Tuple(typeCode, "first"), rank: 0),
+                (primaryKey: Tuple(typeCode, "second"), rank: 1)
             ],
             entities: entities
         )
@@ -76,30 +79,17 @@ struct RankReadResultAssemblerTests {
     }
 }
 
-private struct RankReadEntity: Persistable {
-    typealias ID = String
+@Polymorphable(identifier: "RankReadEntity")
+@PolymorphicDirectory("rank-read-entity")
+private protocol RankReadModel:
+    Polymorphable<RankReadModelPolymorphicGroup>
+{
+    var id: String { get }
+    var score: Int64 { get }
+}
 
+@Persistable
+private struct RankReadEntity: RankReadModel {
     let id: String
     let score: Int64
-
-    static let persistableType = "RankReadEntity"
-    static let allFields = ["id", "score"]
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "score": return score
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(
-        for keyPath: KeyPath<RankReadEntity, Value>
-    ) -> String {
-        switch keyPath {
-        case \RankReadEntity.id: return "id"
-        case \RankReadEntity.score: return "score"
-        default: return String(describing: keyPath)
-        }
-    }
 }

@@ -215,7 +215,16 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             )
             try validateRankCount(count)
             let entries = try await scanner.bottom(k: count)
-            return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: $0.offset) }
+            let countKey = indexSubspace.pack(Tuple("_count"))
+            let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
+            let totalCount = try countBytes.map(RankCounterCodec.decodeInt) ?? 0
+            let startRank = try RankScanner.bottomStartPosition(
+                totalCount: totalCount,
+                returnedCount: entries.count
+            )
+            return entries.enumerated().map {
+                (primaryKey: $0.element.primaryKey, rank: startRank - $0.offset)
+            }
 
         case RankReadParameter.rangeMode:
             let from = try parameters.requireInteger(

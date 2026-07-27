@@ -87,100 +87,14 @@ struct RankUInt64IndexRuntimeTests {
     }
 }
 
-private struct UnsignedRankEntity: Persistable {
-    typealias ID = String
-
+@Persistable
+private struct UnsignedRankEntity {
     let id: String
     let score: UInt64
-
-    static var persistableType: String { "UnsignedRankEntity" }
-    static var allFields: [String] { ["id", "score"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": id
-        case "score": score
-        default: nil
-        }
-    }
-
-    static func fieldName<Value>(
-        for keyPath: KeyPath<UnsignedRankEntity, Value>
-    ) -> String {
-        switch keyPath {
-        case \UnsignedRankEntity.id: "id"
-        case \UnsignedRankEntity.score: "score"
-        default: "\(keyPath)"
-        }
-    }
-
-    static func fieldName(
-        for keyPath: PartialKeyPath<UnsignedRankEntity>
-    ) -> String {
-        switch keyPath {
-        case \UnsignedRankEntity.id: "id"
-        case \UnsignedRankEntity.score: "score"
-        default: "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<UnsignedRankEntity> else {
-            return "\(keyPath)"
-        }
-        return fieldName(for: keyPath)
-    }
 }
 
-private struct FloatingRankEntity: Persistable {
-    typealias ID = String
-
+@Persistable
+private struct FloatingRankEntity {
     let id: String
     let score: Double
-
-    static var persistableType: String { "FloatingRankEntity" }
-    static var allFields: [String] { ["id", "score"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": id
-        case "score": score
-        default: nil
-        }
-    }
-
-    static func fieldName<Value>(
-        for keyPath: KeyPath<FloatingRankEntity, Value>
-    ) -> String {
-        switch keyPath {
-        case \FloatingRankEntity.id: "id"
-        case \FloatingRankEntity.score: "score"
-        default: "\(keyPath)"
-        }
-    }
-
-    static func fieldName(
-        for keyPath: PartialKeyPath<FloatingRankEntity>
-    ) -> String {
-        switch keyPath {
-        case \FloatingRankEntity.id: "id"
-        case \FloatingRankEntity.score: "score"
-        default: "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<FloatingRankEntity> else {
-            return "\(keyPath)"
-        }
-        return fieldName(for: keyPath)
-    }
 }

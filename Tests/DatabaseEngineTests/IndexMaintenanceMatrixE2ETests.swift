@@ -125,7 +125,7 @@ private struct MatrixRankPlayer {
     var name: String = ""
     var score: Int64 = 0
 
-    #Index(.rank(), field: \MatrixRankPlayer.score, name: "matrix_rank_score")
+    #Index(.rank, field: \MatrixRankPlayer.score, name: "matrix_rank_score")
 }
 
 @Persistable
@@ -370,7 +370,7 @@ struct IndexMaintenanceMatrixE2ETests {
         try assertDescriptorShape(
             for: MatrixRankPlayer.self,
             named: "matrix_rank_score",
-            kindIdentifier: IndexDefinition.rank().identifier,
+            kindIdentifier: IndexDefinition.rank.identifier,
             descriptorFields: ["score"]
         )
         try assertDescriptorShape(

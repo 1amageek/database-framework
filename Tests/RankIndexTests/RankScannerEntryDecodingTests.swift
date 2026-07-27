@@ -38,4 +38,31 @@ struct RankScannerEntryDecodingTests {
             try RankScanner.decodeEntry(key: outside, scoresSubspace: subspace)
         }
     }
+
+    @Test("Bottom entries retain descending leaderboard positions")
+    func calculatesBottomPositions() throws {
+        let start = try RankScanner.bottomStartPosition(
+            totalCount: 10,
+            returnedCount: 3
+        )
+
+        #expect(start == 9)
+        #expect(start - 1 == 8)
+        #expect(start - 2 == 7)
+    }
+
+    @Test("An inconsistent atomic count fails explicitly")
+    func rejectsInconsistentCount() {
+        #expect(
+            throws: RankScannerError.inconsistentCount(
+                totalCount: 1,
+                returnedCount: 2
+            )
+        ) {
+            try RankScanner.bottomStartPosition(
+                totalCount: 1,
+                returnedCount: 2
+            )
+        }
+    }
 }

@@ -1,9 +1,6 @@
 import DatabaseKit
 
-func rankIndexMetadata(
-    scoreType: IndexScalarType,
-    bucketSize: Int = 100
-) -> IndexKindMetadata {
+func rankIndexMetadata(scoreType: IndexScalarType) -> IndexKindMetadata {
     IndexKindMetadata(
         identifier: "rank",
         subspaceStructure: .hierarchical,
@@ -14,7 +11,6 @@ func rankIndexMetadata(
         ],
         metadata: [
             "scoreType": .string(scoreType.rawValue),
-            "bucketSize": .int64(Int64(bucketSize)),
         ]
     )
 }

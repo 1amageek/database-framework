@@ -14,59 +14,11 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct RankedPlayer: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct RankedPlayer {
+    var id: String = UUID().uuidString
     var name: String
     var score: Int64
-
-    init(id: String = UUID().uuidString, name: String, score: Int64) {
-        self.id = id
-        self.name = name
-        self.score = score
-    }
-
-    static var persistableType: String { "RankedPlayer" }
-    static var allFields: [String] { ["id", "name", "score"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "score": return score
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<RankedPlayer, Value>) -> String {
-        switch keyPath {
-        case \RankedPlayer.id: return "id"
-        case \RankedPlayer.name: return "name"
-        case \RankedPlayer.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<RankedPlayer>) -> String {
-        switch keyPath {
-        case \RankedPlayer.id: return "id"
-        case \RankedPlayer.name: return "name"
-        case \RankedPlayer.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<RankedPlayer> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Rank Index Context
@@ -94,7 +46,6 @@ private struct RankIndexContext {
 
         self.maintainer = RankIndexMaintainer<RankedPlayer, Int64>(
             index: index,
-            bucketSize: 100,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
@@ -255,6 +206,18 @@ struct RankIndexBehaviorTests {
     }
 
     // MARK: - Top-K Tests
+
+    @Test("getTopK rejects a negative count")
+    func testGetTopKRejectsNegativeCount() async throws {
+        try await FoundationDBScenarioCoordinator.shared.initialize()
+        let ctx = try await RankIndexContext()
+
+        await #expect(throws: RankScannerError.negativeIndex(-1)) {
+            try await ctx.getTopK(k: -1)
+        }
+
+        try await ctx.cleanup()
+    }
 
     @Test("getTopN returns top items")
     func testGetTopNReturnsTopItems() async throws {

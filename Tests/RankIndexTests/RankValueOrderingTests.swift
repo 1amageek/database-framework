@@ -14,7 +14,10 @@ struct RankValueOrderingTests {
             try entry(item: "higher", value: .uint64(higher), identifier: "b")
         ]
 
-        let sorted = try RankValueOrdering.sorted(entries, direction: .descending)
+        let sorted = try RankValueOrdering.sorted(
+            consume entries,
+            direction: .descending
+        )
 
         #expect(sorted.map(\.item) == ["higher", "lower"])
     }
@@ -36,7 +39,10 @@ struct RankValueOrderingTests {
             try entry(item: "signed", value: .int64(-1), identifier: "s")
         ]
 
-        let sorted = try RankValueOrdering.sorted(entries, direction: .descending)
+        let sorted = try RankValueOrdering.sorted(
+            consume entries,
+            direction: .descending
+        )
 
         #expect(sorted.map(\.item) == ["unsigned", "double", "signed"])
     }
@@ -48,8 +54,14 @@ struct RankValueOrderingTests {
             try entry(item: "b", value: .int64(10), identifier: "b")
         ]
 
-        let descending = try RankValueOrdering.sorted(entries, direction: .descending)
-        let ascending = try RankValueOrdering.sorted(entries, direction: .ascending)
+        let descending = try RankValueOrdering.sorted(
+            entries,
+            direction: .descending
+        )
+        let ascending = try RankValueOrdering.sorted(
+            consume entries,
+            direction: .ascending
+        )
 
         #expect(descending.map(\.item) == ["b", "a"])
         #expect(ascending.map(\.item) == ["a", "b"])
@@ -91,7 +103,10 @@ struct RankValueOrderingTests {
         ]
 
         #expect(throws: RankValueError.duplicateIdentifier) {
-            try RankValueOrdering.sorted(entries, direction: .descending)
+            try RankValueOrdering.sorted(
+                consume entries,
+                direction: .descending
+            )
         }
     }
 

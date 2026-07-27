@@ -12,21 +12,22 @@ import StorageKit
 
 /// Builder for ranking queries (leaderboards, top-N, percentiles)
 ///
-/// Uses the RankIndex for efficient O(k) or O(log n) queries. If no RankIndex exists
-/// for the specified field, falls back to in-memory sorting (O(n log n)).
+/// Executes against the RankIndex selected for the requested field. A missing
+/// or ambiguous index is a typed error; execution never falls back to an
+/// in-memory full scan.
 ///
 /// **Usage**:
 /// ```swift
 /// import RankIndex
 ///
 /// let leaderboard = try await context.rank(Player.self)
-///     .by(\.score)
+///     .by(Player.fields.score)
 ///     .top(100)
 ///     .execute()
 /// // Returns: [(item: Player, rank: Int)]
 ///
 /// let median = try await context.rank(Player.self)
-///     .by(\.score)
+///     .by(Player.fields.score)
 ///     .percentile(0.5)
 ///     .executeOne()
 /// // Returns: Player?
@@ -125,14 +126,12 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// Execute the ranking query using the index
     ///
     /// Uses RankIndex for efficient queries:
-    /// - top(k): O(K) native FDB reverse range scan
-    /// - bottom(k): O(K) native FDB forward range scan
+    /// - top(k): O(K) bounded reverse storage range scan
+    /// - bottom(k): O(K) bounded forward storage range scan
     /// - range: O(to) reverse scan then drop first `from`
     /// - percentile: O(1) atomic count + O(targetRank) reverse scan
     ///
-    /// Falls back to in-memory sorting if no RankIndex exists for the field.
-    ///
-    /// - Returns: Array of (item, rank) tuples sorted by rank
+    /// - Returns: Array of (item, rank) tuples in the requested score order
     /// - Throws: Error if execution fails
     public func execute() async throws -> [(item: T, rank: Int)] {
         try validateMode()
@@ -195,7 +194,9 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         case .bottom(let k):
             return try await scanBottom(
                 scanner: scanner,
+                indexSubspace: indexSubspace,
                 k: k,
+                transaction: transaction,
                 cachePolicy: cachePolicy
             )
 
@@ -218,7 +219,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
-    /// Scan top K items (highest scores) using FDB reverse range scan.
+    /// Scan top K items using a bounded reverse storage range read.
     ///
     /// **Algorithm**: `collectRange(reverse: true, limit: k)` reads the K highest
     /// entries directly in O(K). No heap, no truncation, no later sort.
@@ -231,14 +232,28 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         return try await fetchItemsWithRank(entries: entries, startRank: 0, cachePolicy: cachePolicy)
     }
 
-    /// Scan bottom K items (lowest scores) using FDB forward range scan.
+    /// Scan bottom K items using a bounded forward storage range read.
     private func scanBottom(
         scanner: RankScanner,
+        indexSubspace: Subspace,
         k: Int,
+        transaction: any TransactionAccess,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         let entries = try await scanner.bottom(k: k)
-        return try await fetchItemsWithRank(entries: entries, startRank: 0, cachePolicy: cachePolicy)
+        let countKey = indexSubspace.pack(Tuple("_count"))
+        let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
+        let totalCount = try countBytes.map(RankCounterCodec.decodeInt) ?? 0
+        let startRank = try RankScanner.bottomStartPosition(
+            totalCount: totalCount,
+            returnedCount: entries.count
+        )
+        return try await fetchItemsWithRank(
+            entries: entries,
+            startRank: startRank,
+            rankStep: -1,
+            cachePolicy: cachePolicy
+        )
     }
 
     /// Scan items in a rank range [from, to) using reverse scan of `to` entries.
@@ -295,6 +310,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     private func fetchItemsWithRank(
         entries: [RankScanEntry],
         startRank: Int,
+        rankStep: Int = 1,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         let ids = entries.map { $0.primaryKey }
@@ -306,7 +322,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         var results: [(item: T, rank: Int)] = []
         results.reserveCapacity(items.count)
         for (offset, maybeItem) in items.enumerated() {
-            let rank = startRank + offset
+            let rank = startRank + (offset * rankStep)
             guard let item = maybeItem else {
                 throw RankQueryError.missingIndexedEntity(rank: rank)
             }
@@ -417,7 +433,7 @@ public struct RankEntryPoint<T: Persistable>: Sendable {
 
     /// Specify the field to rank by
     ///
-    /// - Parameter keyPath: KeyPath to an exact numeric field
+    /// - Parameter field: Compiled field descriptor for an exact numeric field
     /// - Returns: Rank query builder
     public func by<Value: RankNumericValue>(
         _ field: Field<T, Value>
@@ -442,13 +458,13 @@ extension DatabaseContext {
     /// import RankIndex
     ///
     /// let leaderboard = try await context.rank(Player.self)
-    ///     .by(\.score)
+    ///     .by(Player.fields.score)
     ///     .top(100)
     ///     .execute()
     /// // Returns: [(item: Player, rank: Int)]
     ///
     /// let median = try await context.rank(Player.self)
-    ///     .by(\.score)
+    ///     .by(Player.fields.score)
     ///     .percentile(0.5)
     ///     .executeOne()
     /// // Returns: Player?
