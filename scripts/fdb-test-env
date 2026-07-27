@@ -6,6 +6,7 @@ STATE_DIR="${FDB_TEST_STATE_DIR:-"$ROOT_DIR/.fdb-test"}"
 PORT="${FDB_TEST_PORT:-4699}"
 STATUS_TIMEOUT_SECONDS="${FDB_TEST_STATUS_TIMEOUT_SECONDS:-20}"
 STARTUP_TIMEOUT_SECONDS="${FDB_TEST_STARTUP_TIMEOUT_SECONDS:-90}"
+CONFIGURATION_TIMEOUT_SECONDS="${FDB_TEST_CONFIGURATION_TIMEOUT_SECONDS:-90}"
 MIN_AVAILABLE_SPACE_RATIO="${FDB_TEST_MIN_AVAILABLE_SPACE_RATIO:-0.0}"
 XCODE_TIMEOUT_SECONDS="${FDB_TEST_XCODE_TIMEOUT_SECONDS:-120}"
 EXPECTED_TEST_COUNT="${FDB_TEST_EXPECTED_COUNT:-}"
@@ -37,6 +38,8 @@ Environment:
                       Individual cluster status timeout. Default: 20
   FDB_TEST_STARTUP_TIMEOUT_SECONDS
                       Database availability deadline. Default: 90
+  FDB_TEST_CONFIGURATION_TIMEOUT_SECONDS
+                      Initial cluster configuration deadline. Default: 90
   FDB_TEST_MIN_AVAILABLE_SPACE_RATIO
                       Ephemeral cluster disk reserve ratio. Default: 0.0
   FDB_TEST_XCODE_TIMEOUT_SECONDS
@@ -165,12 +168,12 @@ wait_for_available() {
 
 configure_cluster() {
   local cli="$1"
-  local deadline=$((SECONDS + 30))
+  local deadline=$((SECONDS + CONFIGURATION_TIMEOUT_SECONDS))
   local output="$STATE_DIR/configure.out"
   local error_output="$STATE_DIR/configure.err"
 
   while (( SECONDS < deadline )); do
-    if timeout_cmd 5 "$cli" -C "$CLUSTER_FILE" --exec 'configure new single memory' >"$output" 2>"$error_output"; then
+    if timeout_cmd 10 "$cli" -C "$CLUSTER_FILE" --exec 'configure new single memory' >"$output" 2>"$error_output"; then
       return 0
     fi
 
@@ -197,6 +200,20 @@ inject_cluster_file_into_xctestrun() {
   local xctestrun="$1"
   local configuration_index=0
   local target_count=0
+  local swiftc
+  local toolchain_root
+  local testing_library_path
+  if [[ -n "${TOOLCHAINS:-}" ]]; then
+    swiftc="$(xcrun --toolchain "$TOOLCHAINS" --find swiftc)"
+  else
+    swiftc="$(command -v swiftc)"
+  fi
+  toolchain_root="$(cd "$(dirname "$swiftc")/../.." && pwd)"
+  testing_library_path="$toolchain_root/usr/lib/swift/macosx/testing"
+
+  if [[ ! -f "$testing_library_path/libTesting.dylib" ]]; then
+    testing_library_path=""
+  fi
 
   while plutil -extract "TestConfigurations.$configuration_index.Name" raw \
       "$xctestrun" >/dev/null 2>&1; do
@@ -216,6 +233,13 @@ inject_cluster_file_into_xctestrun() {
         plutil -replace "$cluster_path" -string "$CLUSTER_FILE" "$xctestrun"
       else
         plutil -insert "$cluster_path" -string "$CLUSTER_FILE" "$xctestrun"
+      fi
+
+      if [[ -n "$testing_library_path" ]]; then
+        prepend_testing_library_path \
+          "$xctestrun" \
+          "TestConfigurations.$configuration_index.TestTargets.$target_index.TestingEnvironmentVariables" \
+          "$testing_library_path"
       fi
 
       target_count=$((target_count + 1))
@@ -245,6 +269,12 @@ inject_cluster_file_into_xctestrun() {
     else
       plutil -insert "$cluster_path" -string "$CLUSTER_FILE" "$xctestrun"
     fi
+    if [[ -n "$testing_library_path" ]]; then
+      prepend_testing_library_path \
+        "$xctestrun" \
+        "$top_level_key.TestingEnvironmentVariables" \
+        "$testing_library_path"
+    fi
     target_count=$((target_count + 1))
   done < <(
     plutil -p "$xctestrun" \
@@ -254,6 +284,25 @@ inject_cluster_file_into_xctestrun() {
   if (( target_count == 0 )); then
     echo "error: no test targets found in $xctestrun" >&2
     return 1
+  fi
+}
+
+prepend_testing_library_path() {
+  local xctestrun="$1"
+  local environment_path="$2"
+  local library_path="$3"
+  local variable_path="$environment_path.DYLD_LIBRARY_PATH"
+  local existing_value=""
+
+  if ! plutil -extract "$environment_path" xml1 -o /dev/null \
+      "$xctestrun" >/dev/null 2>&1; then
+    plutil -insert "$environment_path" -xml '<dict/>' "$xctestrun"
+  fi
+
+  if existing_value="$(plutil -extract "$variable_path" raw "$xctestrun" 2>/dev/null)"; then
+    plutil -replace "$variable_path" -string "$library_path:$existing_value" "$xctestrun"
+  else
+    plutil -insert "$variable_path" -string "$library_path" "$xctestrun"
   fi
 }
 
