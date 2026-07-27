@@ -60,7 +60,7 @@ public struct Version: Sendable, Comparable, Hashable, CustomStringConvertible {
     /// Extract database commit version (first 8 bytes, big-endian)
     public var databaseVersion: UInt64 {
         return bytes.prefix(8).withUnsafeBytes {
-            $0.load(as: UInt64.self).bigEndian
+            $0.loadUnaligned(as: UInt64.self).bigEndian
         }
     }
 

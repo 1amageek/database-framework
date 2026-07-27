@@ -14,64 +14,13 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct VersionedDocument: Persistable {
-    typealias ID = String
-
+@Persistable
+struct VersionedDocument {
     var id: String
     var title: String
     var content: String
-    var version: Int
+    var version: Int64
 
-    init(id: String = UUID().uuidString, title: String, content: String, version: Int = 1) {
-        self.id = id
-        self.title = title
-        self.content = content
-        self.version = version
-    }
-
-    static var persistableType: String { "VersionedDocument" }
-    static var allFields: [String] { ["id", "title", "content", "version"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "title": return title
-        case "content": return content
-        case "version": return version
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<VersionedDocument, Value>) -> String {
-        switch keyPath {
-        case \VersionedDocument.id: return "id"
-        case \VersionedDocument.title: return "title"
-        case \VersionedDocument.content: return "content"
-        case \VersionedDocument.version: return "version"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<VersionedDocument>) -> String {
-        switch keyPath {
-        case \VersionedDocument.id: return "id"
-        case \VersionedDocument.title: return "title"
-        case \VersionedDocument.content: return "content"
-        case \VersionedDocument.version: return "version"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<VersionedDocument> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Version Index Context
@@ -255,10 +204,10 @@ struct VersionIndexBehaviorTests {
 
         // Create multiple versions
         for i in 1...5 {
-            let doc = VersionedDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: i)
+            let doc = VersionedDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: Int64(i))
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: i > 1 ? VersionedDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: i-1) : nil,
+                    oldItem: i > 1 ? VersionedDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: Int64(i - 1)) : nil,
                     newItem: doc,
                     transaction: transaction
                 )
@@ -346,10 +295,10 @@ struct VersionIndexBehaviorTests {
 
         // Create 5 versions
         for i in 1...5 {
-            let doc = VersionedDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: i)
+            let doc = VersionedDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: Int64(i))
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: i > 1 ? VersionedDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: i-1) : nil,
+                    oldItem: i > 1 ? VersionedDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: Int64(i - 1)) : nil,
                     newItem: doc,
                     transaction: transaction
                 )
@@ -430,10 +379,10 @@ struct VersionIndexBehaviorTests {
 
         // Create versions with delays to ensure different versionstamps
         for i in 1...3 {
-            let doc = VersionedDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: i)
+            let doc = VersionedDocument(id: "doc1", title: "v\(i)", content: "Version \(i)", version: Int64(i))
             try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.updateIndex(
-                    oldItem: i > 1 ? VersionedDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: i-1) : nil,
+                    oldItem: i > 1 ? VersionedDocument(id: "doc1", title: "v\(i-1)", content: "Version \(i-1)", version: Int64(i - 1)) : nil,
                     newItem: doc,
                     transaction: transaction
                 )

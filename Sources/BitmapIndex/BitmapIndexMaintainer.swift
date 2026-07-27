@@ -11,6 +11,7 @@ import Foundation
 #endif
 import DatabaseKit
 import DatabaseEngine
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for BITMAP_VALUE indexes
@@ -396,11 +397,11 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     ///   - transaction: The transaction to use
     /// - Returns: RoaringBitmap of matching entity IDs
     public func getBitmap(
-        for fieldValues: [any TupleElement],
+        for fieldValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
         try await reader.bitmap(
-            for: fieldValues,
+            for: try FieldValue.toTupleElements(fieldValues),
             transaction: transaction
         )
     }
@@ -412,11 +413,11 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     ///   - transaction: The transaction to use
     /// - Returns: Number of entities with this value
     public func getCount(
-        for fieldValues: [any TupleElement],
+        for fieldValues: [FieldValue],
         transaction: any TransactionAccess
     ) async throws -> Int {
         let bitmap = try await reader.bitmap(
-            for: fieldValues,
+            for: try FieldValue.toTupleElements(fieldValues),
             transaction: transaction
         )
         return bitmap.cardinality
@@ -429,11 +430,16 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     ///   - transaction: The transaction to use
     /// - Returns: Bitmap of entities matching ALL values
     public func andQuery(
-        values: [[any TupleElement]],
+        values: [[FieldValue]],
         transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
-        try await reader.intersection(
-            of: values,
+        var encodedValues: [[any TupleElement]] = []
+        encodedValues.reserveCapacity(values.count)
+        for value in values {
+            encodedValues.append(try FieldValue.toTupleElements(value))
+        }
+        return try await reader.intersection(
+            of: encodedValues,
             transaction: transaction
         )
     }
@@ -445,11 +451,16 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     ///   - transaction: The transaction to use
     /// - Returns: Bitmap of entities matching ANY value
     public func orQuery(
-        values: [[any TupleElement]],
+        values: [[FieldValue]],
         transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
-        try await reader.union(
-            of: values,
+        var encodedValues: [[any TupleElement]] = []
+        encodedValues.reserveCapacity(values.count)
+        for value in values {
+            encodedValues.append(try FieldValue.toTupleElements(value))
+        }
+        return try await reader.union(
+            of: encodedValues,
             transaction: transaction
         )
     }
@@ -476,7 +487,20 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     /// - Returns: Array of distinct field values
     public func getAllDistinctValues(
         transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
-        try await reader.distinctValues(transaction: transaction)
+    ) async throws -> [[FieldValue]] {
+        let storedValues = try await reader.distinctValues(
+            transaction: transaction
+        )
+        var values: [[FieldValue]] = []
+        values.reserveCapacity(storedValues.count)
+        for storedValue in storedValues {
+            var decodedValue: [FieldValue] = []
+            decodedValue.reserveCapacity(storedValue.count)
+            for element in storedValue {
+                decodedValue.append(try FieldValue(tupleElement: element))
+            }
+            values.append(decodedValue)
+        }
+        return values
     }
 }

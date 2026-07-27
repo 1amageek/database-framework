@@ -14,64 +14,13 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct ScalarIndexedUser: Persistable {
-    typealias ID = String
-
+@Persistable
+struct ScalarIndexedUser {
     var id: String
     var email: String
     var age: Int64
     var city: String
 
-    init(id: String = UUID().uuidString, email: String, age: Int64, city: String) {
-        self.id = id
-        self.email = email
-        self.age = age
-        self.city = city
-    }
-
-    static var persistableType: String { "ScalarIndexedUser" }
-    static var allFields: [String] { ["id", "email", "age", "city"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "email": return email
-        case "age": return age
-        case "city": return city
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<ScalarIndexedUser, Value>) -> String {
-        switch keyPath {
-        case \ScalarIndexedUser.id: return "id"
-        case \ScalarIndexedUser.email: return "email"
-        case \ScalarIndexedUser.age: return "age"
-        case \ScalarIndexedUser.city: return "city"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<ScalarIndexedUser>) -> String {
-        switch keyPath {
-        case \ScalarIndexedUser.id: return "id"
-        case \ScalarIndexedUser.email: return "email"
-        case \ScalarIndexedUser.age: return "age"
-        case \ScalarIndexedUser.city: return "city"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<ScalarIndexedUser> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Scalar Index Context

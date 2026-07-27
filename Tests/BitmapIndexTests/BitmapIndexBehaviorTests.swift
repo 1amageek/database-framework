@@ -14,63 +14,15 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct BitmapIndexedProduct: Persistable {
-    typealias ID = String
-
+@Persistable
+struct BitmapIndexedProduct {
     var id: String
     var category: String
     var brand: String
     var inStock: Bool
 
-    init(id: String = UUID().uuidString, category: String, brand: String, inStock: Bool = true) {
-        self.id = id
-        self.category = category
-        self.brand = brand
-        self.inStock = inStock
-    }
-
-    static var persistableType: String { "BitmapIndexedProduct" }
-    static var allFields: [String] { ["id", "category", "brand", "inStock"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "category": return category
-        case "brand": return brand
-        case "inStock": return inStock
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BitmapIndexedProduct, Value>) -> String {
-        switch keyPath {
-        case \BitmapIndexedProduct.id: return "id"
-        case \BitmapIndexedProduct.category: return "category"
-        case \BitmapIndexedProduct.brand: return "brand"
-        case \BitmapIndexedProduct.inStock: return "inStock"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BitmapIndexedProduct>) -> String {
-        switch keyPath {
-        case \BitmapIndexedProduct.id: return "id"
-        case \BitmapIndexedProduct.category: return "category"
-        case \BitmapIndexedProduct.brand: return "brand"
-        case \BitmapIndexedProduct.inStock: return "inStock"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BitmapIndexedProduct> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
+    init(id: String, category: String, brand: String) {
+        self.init(id: id, category: category, brand: brand, inStock: true)
     }
 }
 
@@ -115,23 +67,29 @@ private struct BitmapIndexContext {
 
     func getBitmap(for value: String) async throws -> RoaringBitmap {
         try await database.withTransaction { transaction in
-            try await maintainer.getBitmap(for: [value], transaction: transaction)
+            try await maintainer.getBitmap(
+                for: [.string(value)],
+                transaction: transaction
+            )
         }
     }
 
     func getCount(for value: String) async throws -> Int {
         try await database.withTransaction { transaction in
-            try await maintainer.getCount(for: [value], transaction: transaction)
+            try await maintainer.getCount(
+                for: [.string(value)],
+                transaction: transaction
+            )
         }
     }
 
-    func andQuery(values: [[any TupleElement]]) async throws -> RoaringBitmap {
+    func andQuery(values: [[FieldValue]]) async throws -> RoaringBitmap {
         try await database.withTransaction { transaction in
             try await maintainer.andQuery(values: values, transaction: transaction)
         }
     }
 
-    func orQuery(values: [[any TupleElement]]) async throws -> RoaringBitmap {
+    func orQuery(values: [[FieldValue]]) async throws -> RoaringBitmap {
         try await database.withTransaction { transaction in
             try await maintainer.orQuery(values: values, transaction: transaction)
         }
@@ -146,7 +104,13 @@ private struct BitmapIndexContext {
     func getAllDistinctValues() async throws -> [String] {
         try await database.withTransaction { transaction in
             let values = try await maintainer.getAllDistinctValues(transaction: transaction)
-            return values.compactMap { $0.first as? String }
+            return values.compactMap { value in
+                guard let first = value.first,
+                      case .string(let string) = first else {
+                    return nil
+                }
+                return string
+            }
         }
     }
 }
@@ -648,10 +612,16 @@ struct BitmapIndexMaintainerBehaviorTests {
 
         // Get bitmaps and perform AND
         let electronicsBitmap = try await database.withTransaction { transaction in
-            try await categoryMaintainer.getBitmap(for: ["electronics"], transaction: transaction)
+            try await categoryMaintainer.getBitmap(
+                for: [.string("electronics")],
+                transaction: transaction
+            )
         }
         let sonyBitmap = try await database.withTransaction { transaction in
-            try await brandMaintainer.getBitmap(for: ["Sony"], transaction: transaction)
+            try await brandMaintainer.getBitmap(
+                for: [.string("Sony")],
+                transaction: transaction
+            )
         }
 
         let intersection = electronicsBitmap && sonyBitmap

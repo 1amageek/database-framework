@@ -14,64 +14,13 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct VersionedBenchmarkDocument: Persistable {
-    typealias ID = String
-
+@Persistable
+struct VersionedBenchmarkDocument {
     var id: String
     var title: String
     var content: String
-    var version: Int
+    var version: Int64
 
-    init(id: String = UUID().uuidString, title: String, content: String, version: Int = 1) {
-        self.id = id
-        self.title = title
-        self.content = content
-        self.version = version
-    }
-
-    static var persistableType: String { "VersionedBenchmarkDocument" }
-    static var allFields: [String] { ["id", "title", "content", "version"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "title": return title
-        case "content": return content
-        case "version": return version
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<VersionedBenchmarkDocument, Value>) -> String {
-        switch keyPath {
-        case \VersionedBenchmarkDocument.id: return "id"
-        case \VersionedBenchmarkDocument.title: return "title"
-        case \VersionedBenchmarkDocument.content: return "content"
-        case \VersionedBenchmarkDocument.version: return "version"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<VersionedBenchmarkDocument>) -> String {
-        switch keyPath {
-        case \VersionedBenchmarkDocument.id: return "id"
-        case \VersionedBenchmarkDocument.title: return "title"
-        case \VersionedBenchmarkDocument.content: return "content"
-        case \VersionedBenchmarkDocument.version: return "version"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<VersionedBenchmarkDocument> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Benchmark Measurement
@@ -263,7 +212,7 @@ struct VersionIndexPerformanceTests {
                         id: "doc-\(docIndex)",
                         title: "Doc \(docIndex) v\(versionNum)",
                         content: "Version \(versionNum) content",
-                        version: versionNum
+                        version: Int64(versionNum)
                     )
 
                     try await ctx.database.withTransaction { transaction in
@@ -308,7 +257,7 @@ struct VersionIndexPerformanceTests {
                     id: "doc-\(docIndex)",
                     title: "Doc \(docIndex) v\(versionNum)",
                     content: "Version \(versionNum)",
-                    version: versionNum
+                    version: Int64(versionNum)
                 )
 
                 try await ctx.database.withTransaction { transaction in
@@ -359,7 +308,7 @@ struct VersionIndexPerformanceTests {
                     id: "doc-\(docIndex)",
                     title: "Doc \(docIndex) v\(versionNum)",
                     content: "Version \(versionNum) with some content",
-                    version: versionNum
+                    version: Int64(versionNum)
                 )
 
                 try await ctx.database.withTransaction { transaction in
@@ -428,7 +377,7 @@ struct VersionIndexPerformanceTests {
                     id: docId,
                     title: "Doc v\(versionNum)",
                     content: "Version \(versionNum) content",
-                    version: versionNum
+                    version: Int64(versionNum)
                 )
 
                 try await ctx.database.withTransaction { transaction in
@@ -475,7 +424,7 @@ struct VersionIndexPerformanceTests {
                     id: docId,
                     title: "Doc v\(versionNum)",
                     content: "Version \(versionNum) content",
-                    version: versionNum
+                    version: Int64(versionNum)
                 )
 
                 try await ctx.database.withTransaction { transaction in
@@ -614,7 +563,7 @@ struct VersionIndexPerformanceTests {
                     id: docId,
                     title: "Doc v\(versionNum)",
                     content: String(repeating: "Content ", count: 10), // ~80 bytes content
-                    version: versionNum
+                    version: Int64(versionNum)
                 )
 
                 try await ctx.database.withTransaction { transaction in
@@ -687,7 +636,7 @@ struct VersionIndexPerformanceTests {
                                 id: "concurrent-doc-\(docIndex)",
                                 title: "Doc \(docIndex) v\(versionNum)",
                                 content: "Version \(versionNum)",
-                                version: versionNum
+                                version: Int64(versionNum)
                             )
 
                             try await ctx.database.withTransaction { transaction in

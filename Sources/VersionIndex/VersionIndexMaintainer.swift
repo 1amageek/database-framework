@@ -255,7 +255,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
         // Build value: [timestamp(8 bytes)][item data]
         let timestamp = Date().timeIntervalSince1970
-        var value = withUnsafeBytes(of: timestamp.bitPattern) { Bytes($0) }
+        var value = ByteConversion.uint64ToBytes(timestamp.bitPattern)
         value.append(contentsOf: itemData)
 
         // Use atomicOp with setVersionstampedKey
@@ -290,7 +290,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
         // Value: [timestamp(8 bytes)] only (empty item data = deletion marker)
         let timestamp = Date().timeIntervalSince1970
-        let value = withUnsafeBytes(of: timestamp.bitPattern) { Bytes($0) }
+        let value = ByteConversion.uint64ToBytes(timestamp.bitPattern)
 
         try transaction.atomicOp(key: key, param: value, mutationType: .setVersionstampedKey)
     }
@@ -376,7 +376,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
             // Extract timestamp from value (first 8 bytes)
             guard value.count >= 8 else { continue }
-            let bitPattern = value.prefix(8).withUnsafeBytes { $0.load(as: UInt64.self) }
+            let bitPattern = try ByteConversion.bytesToUInt64(value[0..<8])
             let timestamp = TimeInterval(bitPattern: bitPattern)
 
             if timestamp < cutoffTime {

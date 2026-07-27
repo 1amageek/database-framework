@@ -48,10 +48,13 @@ struct ScalarUInt64IndexRuntimeTests {
             #expect(computed.count == 1)
             let key = try #require(computed.first)
             let unpacked = try indexSubspace.unpack(key)
-            let decoded = try TupleDecoder.decode(
-                unpacked.element(at: 0),
-                as: UInt64.self
+            let decodedField = try FieldValue(
+                tupleElement: unpacked.element(at: 0)
             )
+            guard case .uint64(let decoded) = decodedField else {
+                Issue.record("Expected a UInt64 field value")
+                continue
+            }
 
             #expect(decoded == value)
             keys.append(key)
@@ -62,51 +65,8 @@ struct ScalarUInt64IndexRuntimeTests {
     }
 }
 
-private struct UnsignedScalarEntity: Persistable {
-    typealias ID = String
-
-    let id: String
-    let value: UInt64
-
-    static var persistableType: String { "UnsignedScalarEntity" }
-    static var allFields: [String] { ["id", "value"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": id
-        case "value": value
-        default: nil
-        }
-    }
-
-    static func fieldName<Value>(
-        for keyPath: KeyPath<UnsignedScalarEntity, Value>
-    ) -> String {
-        switch keyPath {
-        case \UnsignedScalarEntity.id: "id"
-        case \UnsignedScalarEntity.value: "value"
-        default: "\(keyPath)"
-        }
-    }
-
-    static func fieldName(
-        for keyPath: PartialKeyPath<UnsignedScalarEntity>
-    ) -> String {
-        switch keyPath {
-        case \UnsignedScalarEntity.id: "id"
-        case \UnsignedScalarEntity.value: "value"
-        default: "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<UnsignedScalarEntity> else {
-            return "\(keyPath)"
-        }
-        return fieldName(for: keyPath)
-    }
+@Persistable
+private struct UnsignedScalarEntity {
+    var id: String
+    var value: UInt64
 }

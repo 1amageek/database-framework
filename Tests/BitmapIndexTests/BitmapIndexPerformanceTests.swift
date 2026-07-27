@@ -14,64 +14,13 @@ import TestSupport
 
 // MARK: - Test Model
 
-private struct BitmapBenchmarkProduct: Persistable {
-    typealias ID = String
-
+@Persistable
+private struct BitmapBenchmarkProduct {
     var id: String
     var category: String
     var brand: String
     var status: String
 
-    init(id: String = UUID().uuidString, category: String, brand: String, status: String = "active") {
-        self.id = id
-        self.category = category
-        self.brand = brand
-        self.status = status
-    }
-
-    static var persistableType: String { "BitmapBenchmarkProduct" }
-    static var allFields: [String] { ["id", "category", "brand", "status"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "category": return category
-        case "brand": return brand
-        case "status": return status
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BitmapBenchmarkProduct, Value>) -> String {
-        switch keyPath {
-        case \BitmapBenchmarkProduct.id: return "id"
-        case \BitmapBenchmarkProduct.category: return "category"
-        case \BitmapBenchmarkProduct.brand: return "brand"
-        case \BitmapBenchmarkProduct.status: return "status"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BitmapBenchmarkProduct>) -> String {
-        switch keyPath {
-        case \BitmapBenchmarkProduct.id: return "id"
-        case \BitmapBenchmarkProduct.category: return "category"
-        case \BitmapBenchmarkProduct.brand: return "brand"
-        case \BitmapBenchmarkProduct.status: return "status"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BitmapBenchmarkProduct> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Bitmap Benchmark Context
@@ -803,7 +752,7 @@ struct BitmapIndexFDBPerformanceTests {
         print("Insert 1000 entities (100 categories): \(String(format: "%.2f", insertMs))ms")
 
         // Query distinct values
-        var distinctValues: [[any TupleElement]]!
+        var distinctValues: [[FieldValue]]!
         let (distinctMs, _) = try await benchmark("Get all distinct values", iterations: 10) {
             distinctValues = try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.getAllDistinctValues(transaction: transaction)
