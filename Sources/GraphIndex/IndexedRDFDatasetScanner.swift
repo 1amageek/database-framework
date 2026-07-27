@@ -69,7 +69,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         var intermediateReservation: DatabaseIntermediateReservation?
         var rows: [RDFDatasetScanStorageRow] = []
         var seenRows = Set<RDFDatasetScanStorageRow>()
-        var seenMergedRows = Set<RDFDatasetScanStorageRow>()
+        var seenMergedTriples = Set<RDFTriple>()
         var physicalScanCount = 0
 
         scanLoop: for source in sources {
@@ -132,26 +132,27 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                         }
                         try workMeter.consume(at: .deduplication)
                         if mergesNamedGraphs {
+                            let triple = quad.triple
+                            guard seenMergedTriples.insert(triple).inserted else {
+                                return
+                            }
                             let row = RDFDatasetScanStorageRow(
-                                quad: quad.triple.quad,
+                                quad: triple.quad,
                                 coveringValue: value,
                                 storedFieldNames: source.storedFieldNames
                             )
-                            if !seenMergedRows.contains(row) {
-                                let metrics = try RDFDatasetScanRetainedMetrics.measure(
-                                    row.quad,
-                                    mergesNamedGraphs: true,
-                                    coveringValueByteCount: value.count,
-                                    storedFieldNames: source.storedFieldNames
-                                )
-                                try reserveIntermediate(
-                                    metrics,
-                                    workMeter: workMeter,
-                                    reservation: &intermediateReservation
-                                )
-                                seenMergedRows.insert(row)
-                                rows.append(row)
-                            }
+                            let metrics = try RDFDatasetScanRetainedMetrics.measure(
+                                row.quad,
+                                mergesNamedGraphs: true,
+                                coveringValueByteCount: value.count,
+                                storedFieldNames: source.storedFieldNames
+                            )
+                            try reserveIntermediate(
+                                metrics,
+                                workMeter: workMeter,
+                                reservation: &intermediateReservation
+                            )
+                            rows.append(row)
                         } else {
                             let row = RDFDatasetScanStorageRow(
                                 quad: quad,
