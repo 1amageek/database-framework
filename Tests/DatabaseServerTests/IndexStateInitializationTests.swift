@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
@@ -108,7 +109,7 @@ struct IndexStateInitializationTests {
         let entitySubspace: Subspace
         let indexName: String
 
-        var entityRange: (begin: Bytes, end: Bytes) {
+        var entityRange: (begin: ByteString, end: ByteString) {
             entitySubspace.range()
         }
     }

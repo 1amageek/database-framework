@@ -6,6 +6,7 @@
 // This can significantly reduce I/O when the source index contains
 // all the information needed for the target index.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -100,7 +101,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     private let throttler: AdaptiveThrottler
 
     /// Progress tracking key
-    private let progressKey: Bytes
+    private let progressKey: ByteString
 
     // MARK: - Metrics
 
@@ -146,7 +147,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         self.lifecycleStore = lifecycleStore
         self.throttler = AdaptiveThrottler(
             configuration: throttleConfiguration,
-            clock: container.engine.monotonicClock
+            clock: container.monotonicClock
         )
         self.state = Mutex(State())
 
@@ -290,7 +291,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                 // Process batch and save progress atomically in same transaction
                 let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
-                    var lastProcessedKey: Bytes? = nil
+                    var lastProcessedKey: ByteString? = nil
 
                     // Use .iterator for adaptive batching that respects transaction limits
                     let sequence = try await transaction.collectRange(
@@ -397,7 +398,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                 // Process batch and save progress atomically in same transaction
                 let (itemsInBatch, dataFetches, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
-                    var lastProcessedKey: Bytes? = nil
+                    var lastProcessedKey: ByteString? = nil
                     var dataFetches = 0
 
                     // Use .iterator for adaptive batching that respects transaction limits
@@ -505,7 +506,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Helper Methods
 
     /// Extract primary key from source index entry
-    private func extractPrimaryKey(from key: Bytes, sourceSubspace: Subspace) throws -> Tuple? {
+    private func extractPrimaryKey(from key: ByteString, sourceSubspace: Subspace) throws -> Tuple? {
         let indexTuple = try sourceSubspace.unpack(key)
 
         // Primary key is typically the last element(s) of the index key
@@ -522,7 +523,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     }
 
     /// Extract field values from source index entry
-    private func extractFieldValues(from key: Bytes, value: Bytes, sourceSubspace: Subspace) throws -> [any TupleElement] {
+    private func extractFieldValues(from key: ByteString, value: ByteString, sourceSubspace: Subspace) throws -> [any TupleElement] {
         let indexTuple = try sourceSubspace.unpack(key)
 
         // Field values are all elements except the last (which is the PK)
@@ -604,8 +605,8 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
 
         // Collect sample using reservoir sampling
         // Move reservoir and itemsSeen inside transaction to avoid Sendable capture issues
-        let reservoir: [(key: Bytes, value: Bytes)] = try await container.engine.withTransaction(configuration: .batch) { transaction in
-            var reservoir: [(key: Bytes, value: Bytes)] = []
+        let reservoir: [(key: ByteString, value: ByteString)] = try await container.engine.withTransaction(configuration: .batch) { transaction in
+            var reservoir: [(key: ByteString, value: ByteString)] = []
             var itemsSeen = 0
 
             let sequence = try await transaction.collectRange(

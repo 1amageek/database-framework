@@ -42,7 +42,7 @@ struct MinMaxBatchBenchmark {
 
     private func makeContext() async throws -> DatabaseContext {
         do {
-            try await database.removeDirectory(path: ["benchmarks", "sales"])
+            try await database.removeNamespace(path: ["benchmarks", "sales"])
         } catch {
             // Ignore missing benchmark directories so each benchmark starts clean.
         }

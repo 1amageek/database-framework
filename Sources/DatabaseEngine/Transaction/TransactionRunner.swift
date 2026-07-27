@@ -6,6 +6,7 @@
 
 import Metrics
 import StorageKit
+import StorageKitSystemClock
 import Synchronization
 
 private enum TransactionDeadlineRaceResult<Value: Sendable>: Sendable {
@@ -20,7 +21,7 @@ private struct TransactionAttemptResult<Value: Sendable>: Sendable {
 }
 
 private struct EffectiveTransactionDeadline: Sendable {
-    let instant: ContinuousClock.Instant
+    let instant: StorageInstant
     let timeoutMilliseconds: UInt64
     let source: TransactionExecutionDeadlineExceeded.Source
 }
@@ -146,6 +147,7 @@ internal struct TransactionRunner: Sendable {
 
     /// StorageEngine is internally thread-safe (manages backend connections).
     private let database: any StorageEngine
+    private let clock: any StorageMonotonicClock
 
     private let logger: DatabaseLogger
 
@@ -165,9 +167,11 @@ internal struct TransactionRunner: Sendable {
 
     init(
         database: any StorageEngine,
+        clock: any StorageMonotonicClock = SystemStorageClock(),
         logging: DatabaseLoggingConfiguration = .disabled
     ) {
         self.database = database
+        self.clock = clock
         self.logger = logging.logger(
             label: "com.database.framework.transaction-runner"
         )
@@ -205,7 +209,7 @@ internal struct TransactionRunner: Sendable {
         let timeoutMilliseconds = configuration.timeout.flatMap {
             $0 == 0 ? nil : $0
         }
-        let startedAt = database.monotonicClock.now
+        let startedAt = clock.now
         let configuredDeadline = timeoutMilliseconds.map {
             EffectiveTransactionDeadline(
                 instant: startedAt.advanced(by: .milliseconds($0)),
@@ -409,7 +413,6 @@ internal struct TransactionRunner: Sendable {
         }
 
         try ensureBeforeDeadline(deadline)
-        let clock = database.monotonicClock
         let raceState = TransactionDeadlineRaceState()
         return try await withThrowingTaskGroup(
             of: TransactionDeadlineRaceResult<T>.self,
@@ -464,7 +467,7 @@ internal struct TransactionRunner: Sendable {
         _ deadline: EffectiveTransactionDeadline?
     ) throws {
         guard let deadline,
-              database.monotonicClock.now >= deadline.instant else {
+              clock.now >= deadline.instant else {
             return
         }
         throw Self.timeoutError(deadline)
@@ -482,7 +485,7 @@ internal struct TransactionRunner: Sendable {
     private func remainingMilliseconds(
         until deadline: EffectiveTransactionDeadline
     ) throws -> Int {
-        let remaining = database.monotonicClock.now.duration(
+        let remaining = clock.now.duration(
             to: deadline.instant
         )
         guard remaining > .zero else {
@@ -663,7 +666,6 @@ internal struct TransactionRunner: Sendable {
             initialDelayMs: initialDelayMs,
             maxDelayMs: maxDelayMs
         )
-        let clock = database.monotonicClock
         let wake = clock.now.advanced(by: .milliseconds(delayMs))
         if let deadline, wake >= deadline.instant {
             try await clock.sleep(until: deadline.instant)

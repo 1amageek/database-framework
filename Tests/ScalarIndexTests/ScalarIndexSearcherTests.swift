@@ -1,3 +1,4 @@
+import DatabaseTypes
 import Synchronization
 import Testing
 import DatabaseKit
@@ -6,14 +7,14 @@ import StorageKit
 @testable import ScalarIndex
 
 private final class ScalarIndexSearchReader: StorageReader, Sendable {
-    private let entries = Mutex<[(key: Bytes, value: Bytes)]>([])
+    private let entries = Mutex<[(key: ByteString, value: ByteString)]>([])
     let indexSubspace = Subspace(prefix: [0x49])
 
     func addEntry(
         indexName: String,
         keyValues: [any TupleElement],
         identifier: String,
-        coveringValue: Bytes = []
+        coveringValue: ByteString = []
     ) {
         var elements = keyValues
         elements.append(identifier)
@@ -45,8 +46,8 @@ private final class ScalarIndexSearchReader: StorageReader, Sendable {
         startInclusive: Bool,
         endInclusive: Bool,
         reverse: Bool
-    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
-        var matches: [(key: Bytes, value: Bytes)] = []
+    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
+        var matches: [(key: ByteString, value: ByteString)] = []
         for entry in entries.withLock({ $0 }) {
             guard entry.key.starts(with: subspace.prefix) else {
                 continue
@@ -85,7 +86,7 @@ private final class ScalarIndexSearchReader: StorageReader, Sendable {
 
     func scanSubspace(
         _ subspace: Subspace
-    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
+    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
         scanRange(
             subspace: subspace,
             start: nil,
@@ -96,7 +97,7 @@ private final class ScalarIndexSearchReader: StorageReader, Sendable {
         )
     }
 
-    func getValue(key: Bytes) async throws -> Bytes? {
+    func getValue(key: ByteString) async throws -> ByteString? {
         entries.withLock {
             $0.first(where: { $0.key == key })?.value
         }
@@ -184,7 +185,7 @@ struct ScalarIndexSearcherTests {
     @Test("Covering bytes remain in their owned representation")
     func coveringValueSearch() async throws {
         let reader = ScalarIndexSearchReader()
-        let coveringValue: Bytes = [0x44, 0x42, 0x49, 0x58]
+        let coveringValue: ByteString = [0x44, 0x42, 0x49, 0x58]
         reader.addEntry(
             indexName: "category",
             keyValues: ["electronics"],

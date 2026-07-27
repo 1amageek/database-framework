@@ -616,8 +616,8 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         // Build range selectors
-        let beginKey: Bytes
-        let endKey: Bytes
+        let beginKey: ByteString
+        let endKey: ByteString
 
         if let min {
             let minTuple = try min.toTupleElement()
@@ -625,7 +625,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
             if minInclusive {
                 beginKey = packed
             } else {
-                beginKey = incrementKey(packed)
+                beginKey = try strinc(packed)
             }
         } else {
             beginKey = indexSubspace.prefix
@@ -635,12 +635,12 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
             let maxTuple = try max.toTupleElement()
             let packed = indexSubspace.pack(Tuple(maxTuple))
             if maxInclusive {
-                endKey = incrementKey(packed)
+                endKey = try strinc(packed)
             } else {
                 endKey = packed
             }
         } else {
-            endKey = incrementKey(indexSubspace.prefix)
+            endKey = try strinc(indexSubspace.prefix)
         }
 
         var results: [Tuple] = []
@@ -668,22 +668,4 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         return results
     }
 
-    /// Increment the last byte of a key (for range end)
-    private func incrementKey(_ key: Bytes) -> Bytes {
-        var result = key
-        if result.isEmpty {
-            result.append(0x00)
-        } else {
-            var i = result.count - 1
-            while i >= 0 {
-                if result[i] < 0xFF {
-                    result[i] += 1
-                    return result
-                }
-                i -= 1
-            }
-            result.append(0x00)
-        }
-        return result
-    }
 }

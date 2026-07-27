@@ -184,7 +184,7 @@ struct RoaringBitmapPerformanceTests {
             bitmap.add(i)
         }
 
-        var bytes: Bytes!
+        var bytes: ByteString!
         let (serializeMs, _) = try await benchmark("Serialize 10,000", iterations: 100) {
             bytes = try bitmap.serializedBytes()
         }

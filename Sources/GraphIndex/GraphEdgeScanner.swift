@@ -487,7 +487,7 @@ public struct GraphEdgeScanner: Sendable {
         case .defaultGraph:
             switch strategy {
             case .namedGraphStore:
-                return (true, Bytes())
+                return (true, ByteString())
             case .adjacency, .tripleStore, .hexastore:
                 return (true, nil)
             case .quadStore:
@@ -592,14 +592,14 @@ public struct GraphEdgeScanner: Sendable {
     private func scanRange(
         subspace: Subspace,
         prefixElements: [any TupleElement]
-    ) throws -> (begin: Bytes, end: Bytes) {
+    ) throws -> (begin: ByteString, end: ByteString) {
         guard !prefixElements.isEmpty else { return subspace.range() }
         let prefix = Subspace(prefix: subspace.pack(Tuple(prefixElements)))
         return try prefix.prefixRange()
     }
 
     package func decodeEdge(
-        _ key: Bytes,
+        _ key: ByteString,
         ordering: GraphIndexOrdering,
         subspace: Subspace
     ) throws -> EdgeInfo {
@@ -722,7 +722,7 @@ public struct GraphEdgeScanner: Sendable {
     }
 
     private func decodeRDFEdge(
-        _ key: Bytes,
+        _ key: ByteString,
         ordering: GraphIndexOrdering
     ) throws -> EdgeInfo {
         let encoded: RDFQuadIndexEncodedQuad
@@ -818,12 +818,12 @@ public struct GraphEdgeScanner: Sendable {
         case .quadStore:
             throw GraphIndexError.invalidScanState
         case .namedGraphStore:
-            if let bytes = element as? Bytes, bytes.isEmpty {
+            if let bytes = element as? ByteString, bytes.isEmpty {
                 return nil
             }
             guard let value = element as? String else {
                 throw GraphIndexError.unexpectedElementType(
-                    expected: "String or empty Bytes default-graph discriminator",
+                    expected: "String or empty ByteString default-graph discriminator",
                     actual: String(describing: type(of: element))
                 )
             }
@@ -1010,14 +1010,14 @@ public struct GraphEdgeBatchSequence: AsyncSequence, Sendable {
 
 package struct GraphEdgeEntry: Sendable {
     package let edge: EdgeInfo
-    package let value: Bytes
+    package let value: ByteString
 }
 
 package struct GraphEdgePreparedScan: Sendable {
     package let ordering: GraphIndexOrdering
     package let subspace: Subspace
-    package let begin: Bytes
-    package let end: Bytes
+    package let begin: ByteString
+    package let end: ByteString
 }
 
 package struct GraphEdgeEntrySequence: AsyncSequence, Sendable {

@@ -1,4 +1,5 @@
 #if SQLITE
+import DatabaseTypes
 import Testing
 import Foundation
 import Database
@@ -50,9 +51,9 @@ private func countKeys(
 }
 
 private func value(
-    for key: Bytes,
+    for key: ByteString,
     engine: any StorageEngine
-) async throws -> Bytes? {
+) async throws -> ByteString? {
     try await engine.withTransaction { transaction in
         try await transaction.getValue(for: key, snapshot: true)
     }

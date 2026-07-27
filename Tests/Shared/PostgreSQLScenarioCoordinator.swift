@@ -9,6 +9,7 @@
 // - `POSTGRES_TEST_PASSWORD` (optional, default: "test")
 // - `POSTGRES_TEST_DB` (optional, default: "database_framework_test")
 //
+import DatabaseTypes
 import Foundation
 import StorageKit
 import PostgreSQLStorage
@@ -147,8 +148,8 @@ public actor PostgreSQLScenarioCoordinator {
                 // Clean all data on startup
                 try await engine.withTransaction { tx in
                     try tx.clearRange(
-                        beginKey: Bytes(),
-                        endKey: Bytes([0xFF])
+                        beginKey: ByteString(),
+                        endKey: ByteString([0xFF])
                     )
                 }
 
@@ -212,8 +213,8 @@ public actor PostgreSQLScenarioCoordinator {
         let pgEngine = try engine
         try await pgEngine.withTransaction { tx in
             try tx.clearRange(
-                beginKey: Bytes(),
-                endKey: Bytes([0xFF])
+                beginKey: ByteString(),
+                endKey: ByteString([0xFF])
             )
         }
     }

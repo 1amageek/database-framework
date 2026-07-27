@@ -80,7 +80,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     private var dataSubspace: Subspace { subspace.subspace("data") }
     private var idsSubspace: Subspace { subspace.subspace("ids") }
     private var pksSubspace: Subspace { subspace.subspace("pks") }
-    private var nextIdKey: Bytes { subspace.subspace("meta").pack(Tuple("nextId")) }
+    private var nextIdKey: ByteString { subspace.subspace("meta").pack(Tuple("nextId")) }
     private var reader: BitmapIndexReader { BitmapIndexReader(subspace: subspace) }
 
     // MARK: - Initialization
@@ -95,7 +95,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         self.idExpression = idExpression
     }
 
-    internal static func valueTransition(oldValueKey: Bytes?, newValueKey: Bytes?) -> ValueTransition {
+    internal static func valueTransition(oldValueKey: ByteString?, newValueKey: ByteString?) -> ValueTransition {
         switch (oldValueKey, newValueKey) {
         case (nil, nil):
             return .unchanged
@@ -244,7 +244,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         // Sparse index: if field value is nil, no index entry
         let fieldValues: [any TupleElement]
         do {
@@ -258,7 +258,7 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
 
     // MARK: - Private Helpers
 
-    private func optionalFieldValueKey(_ values: [any TupleElement]?) throws -> Bytes? {
+    private func optionalFieldValueKey(_ values: [any TupleElement]?) throws -> ByteString? {
         guard let values else {
             return nil
         }
@@ -377,12 +377,12 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     }
 
     /// Make a key from field values for comparison
-    private func makeFieldValueKey(_ values: [any TupleElement]) throws -> Bytes {
+    private func makeFieldValueKey(_ values: [any TupleElement]) throws -> ByteString {
         return Tuple(values).pack()
     }
 
     /// Pack primary key for comparison
-    private func packPrimaryKey(_ pk: Tuple) throws -> Bytes {
+    private func packPrimaryKey(_ pk: Tuple) throws -> ByteString {
         return pk.pack()
     }
 

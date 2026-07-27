@@ -3,6 +3,7 @@
 //
 // Maintains counts with checked transactional read/replace mutations.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -103,7 +104,7 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         let groupingValues = try groupingValues(from: item)
         return [try buildGroupingKey(storedElements: groupingValues)]
     }

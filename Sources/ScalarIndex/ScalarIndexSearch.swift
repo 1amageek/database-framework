@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseEngine
 import StorageKit
 
@@ -102,7 +103,9 @@ public struct ScalarIndexSearcher: Sendable {
         using reader: StorageReader
     ) async throws -> [IndexEntry] {
         let prefixSubspace = Subspace(
-            prefix: subspace.prefix + Tuple(prefix).pack()
+            prefix: subspace.prefix.appending(
+                contentsOf: Tuple(prefix).pack()
+            )
         )
         var results: [IndexEntry] = []
 
@@ -129,8 +132,8 @@ public struct ScalarIndexSearcher: Sendable {
     }
 
     private func indexEntry(
-        key: Bytes,
-        value: Bytes,
+        key: ByteString,
+        value: ByteString,
         subspace: Subspace
     ) throws -> IndexEntry {
         let tuple = try subspace.unpack(key)

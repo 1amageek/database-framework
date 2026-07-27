@@ -356,7 +356,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         // Fetch items by primary keys
         let items = try await queryContext.fetchItems(ids: tuples, type: T.self, cachePolicy: cachePolicy)
 
-        var itemByIdentifier: [Bytes: T] = [:]
+        var itemByIdentifier: [ByteString: T] = [:]
         itemByIdentifier.reserveCapacity(items.count)
         for item in items {
             itemByIdentifier[try item.persistableIdentifierTuple().pack()] = item
@@ -500,7 +500,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             let ids = results.map { Tuple($0.primaryKey) }
             let items = try await self.queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
 
-            var itemByIdentifier: [Bytes: T] = [:]
+            var itemByIdentifier: [ByteString: T] = [:]
             itemByIdentifier.reserveCapacity(items.count)
             for item in items {
                 let identifier = try item.persistableIdentifierTuple()

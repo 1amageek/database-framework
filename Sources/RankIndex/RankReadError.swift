@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 
 public enum RankReadError: Error, Sendable, Equatable {
@@ -8,7 +9,7 @@ public enum RankReadError: Error, Sendable, Equatable {
     case invalidCount(Int)
     case unsupportedSortExpression
     case invalidPersistableIdentifier(typeName: String)
-    case duplicateFetchedEntity(primaryKey: Bytes)
-    case missingFetchedEntity(primaryKey: Bytes)
+    case duplicateFetchedEntity(primaryKey: ByteString)
+    case missingFetchedEntity(primaryKey: ByteString)
     case missingRankEntry(rank: Int)
 }

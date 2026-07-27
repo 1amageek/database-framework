@@ -3,6 +3,7 @@
 //
 // Maintains score-ordered entries and an atomic entry count for rank queries.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -52,7 +53,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     private let scoresSubspace: Subspace
 
     // Key for atomic entry count (O(1) count queries)
-    private let countKey: Bytes
+    private let countKey: ByteString
 
     public init(
         index: Index,
@@ -114,7 +115,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         if let key = try buildScoreKey(for: item, id: id) {
             return [key]
         }
@@ -182,8 +183,9 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
         let scoreElement = try TupleEncoder.encode(score)
 
         // Build prefix for this score, then append 0xFF to get past all entries with this score.
-        var scorePrefixEnd = scoresSubspace.pack(Tuple(scoreElement))
-        scorePrefixEnd.append(0xFF)
+        let scorePrefixEnd = try strinc(
+            scoresSubspace.pack(Tuple(scoreElement))
+        )
 
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(scorePrefixEnd),
@@ -274,7 +276,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
-    private func buildScoreKey(for item: Item, id: Tuple? = nil) throws -> Bytes? {
+    private func buildScoreKey(for item: Item, id: Tuple? = nil) throws -> ByteString? {
         // Evaluate index expression using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
         // Sparse index: if score field is nil, return nil (no index entry)

@@ -102,7 +102,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             )
         case .compact:
             guard let compaction = context.databaseTransaction.storageAccess
-                as? any DatabaseStorageCompactionTransaction else {
+                as? any StorageCompactionTransaction else {
                 throw DatabaseMaintenanceRuntimeError.compactionUnavailable
             }
             let effectiveWorkUnits = min(
@@ -295,7 +295,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             .compaction(backendContinuation)
         ):
             guard let compaction = context.databaseTransaction.storageAccess
-                as? any DatabaseStorageCompactionTransaction else {
+                as? any StorageCompactionTransaction else {
                 throw DatabaseMaintenanceRuntimeError.compactionUnavailable
             }
             let effectiveWorkUnits = min(
@@ -312,8 +312,8 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             let result = try await compaction.stageCompactionSlice(
                 maximumWorkUnits: effectiveWorkUnits,
                 continuation: backendContinuation.map {
-                    DatabaseStorageCompactionContinuation(
-                        bytes: Bytes(retaining: $0)
+                    StorageCompactionContinuation(
+                        bytes: $0
                     )
                 }
             )
@@ -344,7 +344,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 completedWorkUnits: result.workUnitsConsumed,
                 state: DatabaseMaintenanceJobState(
                     value: .compaction(
-                        continuation: ByteString(retaining: backend.bytes)
+                        continuation: backend.bytes
                     )
                 )
             )
@@ -423,7 +423,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
     }
 
     private func validateCompactionResult(
-        _ result: DatabaseStorageCompactionResult,
+        _ result: StorageCompactionResult,
         maximumWorkUnits: UInt64
     ) throws {
         guard result.workUnitsConsumed <= maximumWorkUnits else {

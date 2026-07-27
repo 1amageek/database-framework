@@ -3,6 +3,7 @@
 // TransactionComprehensiveTests.swift
 // Comprehensive tests for Transaction infrastructure
 
+import DatabaseTypes
 import Testing
 import StorageKit
 import FDBStorage
@@ -29,11 +30,11 @@ struct TransactionComprehensiveTests {
 
         // Test: Read with 10 separate getRange() calls in same transaction
         let results = try await runner.run(configuration: .default) { tx in
-            var allResults: [[(Bytes, Bytes)]] = []
+            var allResults: [[(ByteString, ByteString)]] = []
 
             // 10 separate getRange() calls
             for batch in 0..<10 {
-                var batchResults: [(Bytes, Bytes)] = []
+                var batchResults: [(ByteString, ByteString)] = []
                 let start = batch * 5
                 let end = start + 5
 
@@ -244,7 +245,7 @@ struct TransactionComprehensiveTests {
         try await runner.run(configuration: .default) { tx in
             for i in 0..<1000 {
                 let key = [0, 8] + withUnsafeBytes(of: i.bigEndian) { Array($0) }
-                try tx.setValue([UInt8(i % 256)], for: Bytes(key))
+                try tx.setValue([UInt8(i % 256)], for: ByteString(key))
             }
         }
 

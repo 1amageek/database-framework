@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -16,12 +17,12 @@ private struct PercentileIndexSubspaces: Sendable {
 
 private struct PercentileIndexGroup: Sendable {
     let memberSubspace: Subspace
-    let summaryKey: Bytes
-    let membershipMetadataKey: Bytes
+    let summaryKey: ByteString
+    let membershipMetadataKey: ByteString
 }
 
 private struct PercentileIndexContribution: Sendable {
-    let memberKey: Bytes
+    let memberKey: ByteString
     let value: Double
     let group: PercentileIndexGroup
 }
@@ -102,7 +103,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
         if let newContribution {
             appendPercentileGroup(newContribution.group, to: &affectedGroups)
         }
-        var groupWasPresent: [Bytes: Bool] = [:]
+        var groupWasPresent: [ByteString: Bool] = [:]
         groupWasPresent.reserveCapacity(affectedGroups.count)
         for group in affectedGroups {
             groupWasPresent[group.summaryKey] = try await validateStoredGroup(
@@ -212,8 +213,8 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
         }
 
         var groups: [PercentileIndexBatchGroup] = []
-        var groupIndices: [Bytes: Int] = [:]
-        var groupWasPresent: [Bytes: Bool] = [:]
+        var groupIndices: [ByteString: Int] = [:]
+        var groupWasPresent: [ByteString: Bool] = [:]
         groupIndices.reserveCapacity(
             Swift.min(contributions.count, maximumGroupsPerQuery)
         )
@@ -269,7 +270,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         try validateConfiguration()
         guard let contribution = try contribution(for: item) else {
             return []
@@ -378,7 +379,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
             grouping: [FieldValue],
             values: [Double: Double]
         )] = []
-        var groups: [Bytes: PercentileIndexReadGroup] = [:]
+        var groups: [ByteString: PercentileIndexReadGroup] = [:]
         var scannedMemberCountGroups = 0
         var scannedSummaryGroups = 0
         var scannedBytes = 0
@@ -626,7 +627,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
         }
     }
 
-    private func decodeDigest(_ bytes: Bytes) throws -> TDigest {
+    private func decodeDigest(_ bytes: ByteString) throws -> TDigest {
         let digest: TDigest
         do {
             digest = try TDigest.decode(from: bytes)

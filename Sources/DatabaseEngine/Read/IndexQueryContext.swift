@@ -622,7 +622,7 @@ internal struct DatabaseStorageReaderAdapter: StorageReader {
         startInclusive: Bool,
         endInclusive: Bool,
         reverse: Bool
-    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
+    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
         store.scanRangeRaw(
             subspace: subspace,
             start: start,
@@ -633,13 +633,13 @@ internal struct DatabaseStorageReaderAdapter: StorageReader {
         )
     }
 
-    func getValue(key: Bytes) async throws -> Bytes? {
+    func getValue(key: ByteString) async throws -> ByteString? {
         try await store.getValueRaw(key: key)
     }
 
     func scanSubspace(
         _ subspace: Subspace
-    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
+    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
         return scanRange(
             subspace: subspace,
             start: nil,
@@ -665,7 +665,7 @@ extension DatabaseDataStore {
         reverse: Bool,
         limit: Int? = nil,
         streamingMode: StreamingMode? = nil
-    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
+    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
         let mode = streamingMode ?? StreamingMode.forQuery(limit: limit)
         let effectiveLimit = limit ?? 0
 
@@ -673,8 +673,8 @@ extension DatabaseDataStore {
             Task {
                 do {
                     try await self.container.engine.withTransaction(configuration: .default) { transaction in
-                        let beginKey: Bytes
-                        let endKey: Bytes
+                        let beginKey: ByteString
+                        let endKey: ByteString
 
                         if let startTuple = start {
                             let packed = subspace.pack(startTuple)
@@ -730,15 +730,15 @@ extension DatabaseDataStore {
     }
 
     /// Get a single value by key (raw access)
-    func getValueRaw(key: Bytes) async throws -> Bytes? {
+    func getValueRaw(key: ByteString) async throws -> ByteString? {
         return try await self.container.engine.withTransaction(configuration: .default) { transaction in
             return try await transaction.getValue(for: key, snapshot: true)
         }
     }
 
     /// Return the first key strictly greater than one exact key.
-    private func keyAfter(_ key: Bytes) -> Bytes {
-        key + [0x00]
+    private func keyAfter(_ key: ByteString) -> ByteString {
+        key.appending(0x00)
     }
 }
 

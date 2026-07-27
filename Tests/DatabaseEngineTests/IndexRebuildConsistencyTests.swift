@@ -114,7 +114,7 @@ struct IndexRebuildConsistencyTests {
     }
 
     private func cleanup(container: DBContainer, path: [String]) async throws {
-        try await container.engine.removeDirectory(path: path)
+        try await container.engine.removeNamespace(path: path)
         // Reinitialize indexes after directory removal.
         try await container.ensureIndexesReady()
     }

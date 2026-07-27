@@ -4,6 +4,7 @@
 // This file is part of FullTextIndex module, not DatabaseEngine.
 // DatabaseEngine does not know about FullTextIndexKind.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -206,7 +207,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         }
 
         // Match items with scores
-        var scoresByIdentifier: [Bytes: Double] = [:]
+        var scoresByIdentifier: [ByteString: Double] = [:]
         scoresByIdentifier.reserveCapacity(scoredIds.count)
         for result in scoredIds {
             scoresByIdentifier[
@@ -264,7 +265,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 transaction: transaction
             )
         case .any:
-            var idToElements: [Bytes: [any TupleElement]] = [:]
+            var idToElements: [ByteString: [any TupleElement]] = [:]
             for group in termGroups {
                 let matches = try await searchTermsAND(
                     group,
@@ -360,8 +361,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<Bytes>? = nil
-        var idToElements: [Bytes: [any TupleElement]] = [:]
+        var intersection: Set<ByteString>? = nil
+        var idToElements: [ByteString: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchTerm(
@@ -369,7 +370,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 termsSubspace: termsSubspace,
                 transaction: transaction
             )
-            var currentSet: Set<Bytes> = []
+            var currentSet: Set<ByteString> = []
 
             for elements in results {
                 let idKey = elementsToStableKey(elements)
@@ -402,7 +403,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var idToElements: [Bytes: [any TupleElement]] = [:]
+        var idToElements: [ByteString: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchTerm(
@@ -587,7 +588,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
 
     private func elementsToStableKey(
         _ elements: [any TupleElement]
-    ) -> Bytes {
+    ) -> ByteString {
         Tuple(elements).pack()
     }
 
@@ -617,7 +618,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         return result
     }
 
-    private func bytesToInt64(_ bytes: Bytes) throws -> Int64 {
+    private func bytesToInt64(_ bytes: ByteString) throws -> Int64 {
         try ByteConversion.bytesToInt64(bytes)
     }
 }

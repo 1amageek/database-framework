@@ -200,11 +200,11 @@ struct MigrationTests {
 
     private func cleanup(container: DBContainer) async throws {
         do {
-            try await container.engine.removeDirectory(path: ["test", "migration"])
+            try await container.engine.removeNamespace(path: ["test", "migration"])
         } catch {
         }
         do {
-            try await container.engine.removeDirectory(path: ["_metadata"])
+            try await container.engine.removeNamespace(path: ["_metadata"])
         } catch {
         }
     }
@@ -222,7 +222,7 @@ struct MigrationTests {
 
     private func clearMetadata(in database: any StorageEngine) async throws {
         do {
-            try await database.removeDirectory(path: ["_metadata"])
+            try await database.removeNamespace(path: ["_metadata"])
         } catch {
         }
     }
@@ -568,7 +568,7 @@ struct MigrationTests {
             )
             let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
 
-            let metadataSubspace = try await container.engine.createOrOpenDirectory(path: ["_metadata"])
+            let metadataSubspace = try await container.engine.resolveOrCreateNamespace(path: ["_metadata"])
 
             let context = MigrationContext(
                 container: container,
@@ -589,7 +589,7 @@ struct MigrationTests {
             for entity in entities {
                 let identifier = try entity.persistableIdentifierTuple()
                 let key = itemSubspace.pack(identifier)
-                let data: Bytes? = try await container.engine.withTransaction { tx in
+                let data: ByteString? = try await container.engine.withTransaction { tx in
                     let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
                     return try await storage.read(for: key, snapshot: false)
                 }
@@ -623,7 +623,7 @@ struct MigrationTests {
             )
             let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
 
-            let metadataSubspace = try await container.engine.createOrOpenDirectory(path: ["_metadata"])
+            let metadataSubspace = try await container.engine.resolveOrCreateNamespace(path: ["_metadata"])
 
             let context = MigrationContext(
                 container: container,
@@ -658,7 +658,7 @@ struct MigrationTests {
             )
             let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
 
-            let metadataSubspace = try await container.engine.createOrOpenDirectory(path: ["_metadata"])
+            let metadataSubspace = try await container.engine.resolveOrCreateNamespace(path: ["_metadata"])
 
             let context = MigrationContext(
                 container: container,
@@ -680,7 +680,7 @@ struct MigrationTests {
             // Check update
             let updateIdentifier = try updateEntity.persistableIdentifierTuple()
             let updateKey = itemSubspace.pack(updateIdentifier)
-            let updateData: Bytes? = try await container.engine.withTransaction { tx in
+            let updateData: ByteString? = try await container.engine.withTransaction { tx in
                 let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
                 return try await storage.read(for: updateKey, snapshot: false)
             }
@@ -693,7 +693,7 @@ struct MigrationTests {
             // Check delete
             let deleteIdentifier = try deleteEntity.persistableIdentifierTuple()
             let deleteKey = itemSubspace.pack(deleteIdentifier)
-            let deleteData: Bytes? = try await container.engine.withTransaction { tx in
+            let deleteData: ByteString? = try await container.engine.withTransaction { tx in
                 let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
                 return try await storage.read(for: deleteKey, snapshot: false)
             }

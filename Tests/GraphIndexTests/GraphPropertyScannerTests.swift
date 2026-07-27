@@ -90,8 +90,8 @@ struct GraphPropertyScannerTests {
             security: .disabled,
         )
 
-        if try await database.directoryExists(path: ["graph_property_scanner_social_edges"]) {
-            try await database.removeDirectory(path: ["graph_property_scanner_social_edges"])
+        if try await database.namespaceExists(path: ["graph_property_scanner_social_edges"]) {
+            try await database.removeNamespace(path: ["graph_property_scanner_social_edges"])
         }
         try await container.ensureIndexesReady()
 

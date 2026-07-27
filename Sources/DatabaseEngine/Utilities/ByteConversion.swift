@@ -4,6 +4,7 @@
 // Provides type-safe conversion between numeric types and byte arrays
 // for use with FoundationDB atomic operations.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -41,9 +42,9 @@ public enum ByteConversion {
     /// - Parameter value: The Int64 value to convert
     /// - Returns: 8-byte array in little-endian format
     @inlinable
-    public static func int64ToBytes(_ value: Int64) -> Bytes {
+    public static func int64ToBytes(_ value: Int64) -> ByteString {
         var littleEndian = value.littleEndian
-        return Bytes.copying(count: MemoryLayout<Int64>.size) { destination in
+        return ByteString.copying(count: MemoryLayout<Int64>.size) { destination in
             withUnsafeBytes(of: &littleEndian) { source in
                 destination.copyMemory(from: source)
             }
@@ -57,7 +58,7 @@ public enum ByteConversion {
     /// - Throws: `ByteConversionError.invalidByteCount` for malformed storage.
     @inlinable
     public static func bytesToInt64(
-        _ bytes: Bytes
+        _ bytes: ByteString
     ) throws(ByteConversionError) -> Int64 {
         guard bytes.count == MemoryLayout<Int64>.size else {
             throw .invalidByteCount(
@@ -82,7 +83,7 @@ public enum ByteConversion {
     @inlinable
     public static func doubleToScaledBytes(
         _ value: Double
-    ) throws(ByteConversionError) -> Bytes {
+    ) throws(ByteConversionError) -> ByteString {
         guard value.isFinite else { throw .nonFiniteDouble }
         let scaled = value * scaleFactor
         guard scaled >= Double(Int64.min), scaled < -Double(Int64.min) else {
@@ -97,7 +98,7 @@ public enum ByteConversion {
     /// - Returns: Decoded Double value.
     @inlinable
     public static func scaledBytesToDouble(
-        _ bytes: Bytes
+        _ bytes: ByteString
     ) throws(ByteConversionError) -> Double {
         Double(try bytesToInt64(bytes)) / scaleFactor
     }
@@ -109,9 +110,9 @@ public enum ByteConversion {
     /// - Parameter value: The UInt64 value to convert
     /// - Returns: 8-byte array in little-endian format
     @inlinable
-    public static func uint64ToBytes(_ value: UInt64) -> Bytes {
+    public static func uint64ToBytes(_ value: UInt64) -> ByteString {
         var littleEndian = value.littleEndian
-        return Bytes.copying(count: MemoryLayout<UInt64>.size) { destination in
+        return ByteString.copying(count: MemoryLayout<UInt64>.size) { destination in
             withUnsafeBytes(of: &littleEndian) { source in
                 destination.copyMemory(from: source)
             }
@@ -125,7 +126,7 @@ public enum ByteConversion {
     /// - Throws: `ByteConversionError.invalidByteCount` for malformed storage.
     @inlinable
     public static func bytesToUInt64(
-        _ bytes: Bytes
+        _ bytes: ByteString
     ) throws(ByteConversionError) -> UInt64 {
         guard bytes.count == MemoryLayout<UInt64>.size else {
             throw .invalidByteCount(

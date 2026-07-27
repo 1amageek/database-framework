@@ -88,8 +88,8 @@ struct SPARQLPropertyFilterEdgeCaseTests {
             security: .disabled,
         )
 
-        if try await database.directoryExists(path: ["sparql_property_filter_edge_case_tests"]) {
-            try await database.removeDirectory(path: ["sparql_property_filter_edge_case_tests"])
+        if try await database.namespaceExists(path: ["sparql_property_filter_edge_case_tests"]) {
+            try await database.removeNamespace(path: ["sparql_property_filter_edge_case_tests"])
         }
         try await container.ensureIndexesReady()
 

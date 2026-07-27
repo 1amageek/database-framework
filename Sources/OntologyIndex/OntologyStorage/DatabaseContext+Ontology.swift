@@ -5,6 +5,7 @@
 //
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -62,7 +63,7 @@ public struct OntologyContextAPI: Sendable {
     private let context: DatabaseContext
 
     /// Ontology subspace key prefix
-    private static let ontologyPrefix = Bytes("O".utf8)
+    private static let ontologyPrefix = ByteString(utf8: "O")
 
     // MARK: - Initialization
 

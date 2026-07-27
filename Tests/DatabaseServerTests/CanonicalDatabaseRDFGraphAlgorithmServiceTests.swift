@@ -174,16 +174,11 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
         let subspace = Subspace(prefix: Tuple("malformed-rdf-graph").pack())
         let malformed = subspace.subspace(Int64(8)).pack(
             Tuple([
-                Bytes(
-                    retaining: RDFQuadIndexPhysicalLayout
-                        .defaultGraphDiscriminator
-                ),
-                Bytes([0x01]),
-                Bytes(retaining: try RDFTermStorageFormat.encode(predicate)),
-                Bytes(
-                    retaining: try RDFTermStorageFormat.encode(
-                        try RDFTerm.iri(validating: "urn:node:B")
-                    )
+                RDFQuadIndexPhysicalLayout.defaultGraphDiscriminator,
+                ByteString([0x01]),
+                try RDFTermStorageFormat.encode(predicate),
+                try RDFTermStorageFormat.encode(
+                    try RDFTerm.iri(validating: "urn:node:B")
                 ),
             ])
         )

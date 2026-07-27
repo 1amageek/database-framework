@@ -273,7 +273,7 @@ struct PropertyGraphDefinitionCatalogTests {
         let key = try makeStorage().key(for: graphName)
 
         try await engine.withTransaction(configuration: .batch) { transaction in
-            try transaction.setValue(Bytes(retaining: encoded), for: key)
+            try transaction.setValue(encoded, for: key)
         }
 
         await #expect(
@@ -402,7 +402,7 @@ struct PropertyGraphDefinitionCatalogTests {
         )
         let key = try makeStorage().key(for: graphName)
         try await engine.withTransaction(configuration: .batch) { transaction in
-            try transaction.setValue(Bytes(retaining: encoded), for: key)
+            try transaction.setValue(encoded, for: key)
         }
     }
 

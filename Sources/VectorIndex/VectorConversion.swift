@@ -157,12 +157,12 @@ public struct VectorConversion: Sendable {
     ///
     /// - Parameter floats: Float array
     /// - Returns: Byte array
-    public static func floatArrayToBytes(_ floats: [Float]) -> Bytes {
+    public static func floatArrayToBytes(_ floats: [Float]) -> ByteString {
         let byteCount = floats.count * MemoryLayout<Float>.stride
         guard !floats.isEmpty else {
-            return Bytes()
+            return ByteString()
         }
-        return Bytes.copying(count: byteCount) { output in
+        return ByteString.copying(count: byteCount) { output in
 #if _endian(little)
             floats.withUnsafeBufferPointer { input in
                 output.copyMemory(from: UnsafeRawBufferPointer(input))
@@ -184,7 +184,7 @@ public struct VectorConversion: Sendable {
     ///
     /// - Parameter bytes: Byte array
     /// - Returns: Float array
-    public static func bytesToFloatArray(_ bytes: Bytes) -> [Float] {
+    public static func bytesToFloatArray(_ bytes: ByteString) -> [Float] {
         let count = bytes.count / MemoryLayout<Float>.stride
         var floats = [Float](repeating: 0, count: count)
         guard count > 0 else {
@@ -217,7 +217,7 @@ public struct VectorConversion: Sendable {
     /// Decode a Float array from a validated little-endian binary payload.
     ///
     /// Maintainers should use this method when reading persisted vector payloads.
-    public static func decodeFloatArray(_ bytes: Bytes, expectedCount: Int) throws -> [Float] {
+    public static func decodeFloatArray(_ bytes: ByteString, expectedCount: Int) throws -> [Float] {
         guard bytes.count == expectedCount * 4 else {
             throw VectorIndexError.invalidStructure(
                 "Vector payload length \(bytes.count) does not match expected dimension \(expectedCount)"
@@ -227,22 +227,22 @@ public struct VectorConversion: Sendable {
     }
 
     /// Convert UInt64 to bytes (little-endian)
-    public static func uint64ToBytes(_ value: UInt64) -> Bytes {
+    public static func uint64ToBytes(_ value: UInt64) -> ByteString {
         ByteConversion.uint64ToBytes(value)
     }
 
     /// Convert bytes to UInt64 (little-endian)
-    public static func bytesToUInt64(_ bytes: Bytes) throws -> UInt64 {
+    public static func bytesToUInt64(_ bytes: ByteString) throws -> UInt64 {
         try ByteConversion.bytesToUInt64(bytes)
     }
 
     /// Convert Int64 to bytes (little-endian)
-    public static func int64ToBytes(_ value: Int64) -> Bytes {
+    public static func int64ToBytes(_ value: Int64) -> ByteString {
         ByteConversion.int64ToBytes(value)
     }
 
     /// Convert bytes to Int64 (little-endian)
-    public static func bytesToInt64(_ bytes: Bytes) throws -> Int64 {
+    public static func bytesToInt64(_ bytes: ByteString) throws -> Int64 {
         try ByteConversion.bytesToInt64(bytes)
     }
 }

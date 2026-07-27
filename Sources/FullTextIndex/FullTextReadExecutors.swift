@@ -441,7 +441,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        var entityByID: [Bytes: PolymorphicEntity] = [:]
+        var entityByID: [ByteString: PolymorphicEntity] = [:]
         entityByID.reserveCapacity(entities.count)
         for entity in entities {
             let identifier = try entity.item.persistableIdentifierTuple()
@@ -729,7 +729,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func statistic(
-        key: Bytes,
+        key: ByteString,
         transaction: any TransactionAccess
     ) async throws -> Int64 {
         guard let value = try await transaction.getValue(
@@ -784,7 +784,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 transaction: transaction
             )
         case .any:
-            var idToElements: [Bytes: [any TupleElement]] = [:]
+            var idToElements: [ByteString: [any TupleElement]] = [:]
             for group in termGroups {
                 let matches = try await searchTermsAND(
                     group,
@@ -838,8 +838,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<Bytes>? = nil
-        var idToElements: [Bytes: [any TupleElement]] = [:]
+        var intersection: Set<ByteString>? = nil
+        var idToElements: [ByteString: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchTerm(
@@ -847,7 +847,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 termsSubspace: termsSubspace,
                 transaction: transaction
             )
-            var currentSet: Set<Bytes> = []
+            var currentSet: Set<ByteString> = []
 
             for elements in results {
                 let idKey = stableKey(Tuple(elements))
@@ -879,7 +879,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var idToElements: [Bytes: [any TupleElement]] = [:]
+        var idToElements: [ByteString: [any TupleElement]] = [:]
         for term in terms {
             let results = try await searchTerm(
                 term,
@@ -957,7 +957,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         )
     }
 
-    private func stableKey(_ tuple: Tuple) -> Bytes {
+    private func stableKey(_ tuple: Tuple) -> ByteString {
         tuple.pack()
     }
 

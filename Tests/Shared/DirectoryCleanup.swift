@@ -5,9 +5,9 @@ public func ensureDirectoryRemoved(
     from engine: any StorageEngine,
     path: [String]
 ) async throws {
-    guard try await engine.directoryExists(path: path) else {
+    guard try await engine.namespaceExists(path: path) else {
         return
     }
 
-    try await engine.removeDirectory(path: path)
+    try await engine.removeNamespace(path: path)
 }

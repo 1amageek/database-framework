@@ -13,7 +13,7 @@ struct PersistableIdentifierTupleElement: TupleElement {
     }
 
     static func decodeTuple(
-        from bytes: Bytes,
+        from bytes: ByteString,
         at offset: inout Int
     ) throws -> Self {
         guard offset > 0 else {

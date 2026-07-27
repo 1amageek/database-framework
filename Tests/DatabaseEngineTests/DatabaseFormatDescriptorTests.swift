@@ -1,10 +1,11 @@
+import DatabaseTypes
 import StorageKit
 import Testing
 @testable import DatabaseEngine
 
 @Suite("Database Format Descriptor Tests")
 struct DatabaseFormatDescriptorTests {
-    private let goldenV1: Bytes = [
+    private let goldenV1: ByteString = [
         0x44, 0x42, 0x46, 0x4D, 0x01, 0x00, 0x01, 0x01, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
@@ -29,20 +30,28 @@ struct DatabaseFormatDescriptorTests {
             }
         }
         #expect(throws: DatabaseFormatDescriptorError.self) {
-            _ = try DatabaseFormatDescriptor.deserialize(goldenV1 + [0x00])
+            _ = try DatabaseFormatDescriptor.deserialize(
+                goldenV1.appending(0x00)
+            )
         }
     }
 
     @Test("Magic, descriptor version, and checksum corruption are distinct")
     func rejectsCorruptedFields() {
-        var invalidMagic = goldenV1
-        invalidMagic[0] ^= 0xFF
+        let invalidMagic = replacingByte(
+            in: goldenV1,
+            at: 0,
+            with: goldenV1[0] ^ 0xFF
+        )
         #expect(throws: DatabaseFormatDescriptorError.invalidMagic) {
             _ = try DatabaseFormatDescriptor.deserialize(invalidMagic)
         }
 
-        var invalidVersion = goldenV1
-        invalidVersion[4] = 0x02
+        let invalidVersion = replacingByte(
+            in: goldenV1,
+            at: 4,
+            with: 0x02
+        )
         #expect(
             throws: DatabaseFormatDescriptorError
                 .unsupportedDescriptorVersion(0x02)
@@ -50,10 +59,26 @@ struct DatabaseFormatDescriptorTests {
             _ = try DatabaseFormatDescriptor.deserialize(invalidVersion)
         }
 
-        var invalidPayload = goldenV1
-        invalidPayload[20] ^= 0x01
+        let invalidPayload = replacingByte(
+            in: goldenV1,
+            at: 20,
+            with: goldenV1[20] ^ 0x01
+        )
         #expect(throws: DatabaseFormatDescriptorError.self) {
             _ = try DatabaseFormatDescriptor.deserialize(invalidPayload)
+        }
+    }
+
+    private func replacingByte(
+        in source: ByteString,
+        at index: Int,
+        with replacement: UInt8
+    ) -> ByteString {
+        ByteString.copying(count: source.count) { destination in
+            source.withUnsafeBytes { bytes in
+                destination.copyMemory(from: bytes)
+            }
+            destination[index] = replacement
         }
     }
 }

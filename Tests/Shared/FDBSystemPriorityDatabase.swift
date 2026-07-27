@@ -1,4 +1,5 @@
 #if FOUNDATION_DB
+import DatabaseTypes
 import FoundationDB
 
 /// Test-only FoundationDB wrapper that forces system-priority transactions.
@@ -18,7 +19,7 @@ public final class FDBSystemPriorityDatabase: DatabaseProtocol, Sendable {
         public func getValue<Key: FDB.ByteInput>(
             for key: Key,
             snapshot: Bool
-        ) async throws -> FDB.ByteString? {
+        ) async throws -> ByteString? {
             try await underlying.getValue(for: key, snapshot: snapshot)
         }
 
@@ -43,7 +44,7 @@ public final class FDBSystemPriorityDatabase: DatabaseProtocol, Sendable {
         public func getKey(
             selector: FDB.KeySelector,
             snapshot: Bool
-        ) async throws -> FDB.ByteString {
+        ) async throws -> ByteString {
             try await underlying.getKey(selector: selector, snapshot: snapshot)
         }
 
@@ -107,7 +108,7 @@ public final class FDBSystemPriorityDatabase: DatabaseProtocol, Sendable {
             beginKey: Begin,
             endKey: End,
             chunkSize: Int64
-        ) async throws -> [FDB.ByteString] {
+        ) async throws -> [ByteString] {
             try await underlying.getRangeSplitPoints(
                 beginKey: beginKey,
                 endKey: endKey,

@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 
 internal enum DeterministicHash {
@@ -39,9 +40,9 @@ internal struct DeterministicHasher: Sendable {
     }
 
     @usableFromInline
-    func finalizeToBytes() -> Bytes {
+    func finalizeToBytes() -> ByteString {
         let hash = finalize()
-        return Bytes.copying(count: MemoryLayout<UInt64>.size) { output in
+        return ByteString.copying(count: MemoryLayout<UInt64>.size) { output in
             for offset in 0..<MemoryLayout<UInt64>.size {
                 output[offset] = UInt8(
                     truncatingIfNeeded: hash >> UInt64(offset * 8)

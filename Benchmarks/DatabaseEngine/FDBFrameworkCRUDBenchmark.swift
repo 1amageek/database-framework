@@ -57,7 +57,7 @@ private struct CRUDBenchmarkContext: Sendable {
 
     func cleanup() async throws {
         do {
-            try await engine.removeDirectory(path: ["test", "performance", runID, "crud-entities"])
+            try await engine.removeNamespace(path: ["test", "performance", runID, "crud-entities"])
         } catch {
             // Ignore missing directory for empty/failed runs.
         }
@@ -87,7 +87,7 @@ private struct CRUDBenchmarkContext: Sendable {
     }
 
     func rawWrite(id: String) async throws {
-        let value = Bytes(repeating: 0x42, count: 72)
+        let value = ByteString(repeating: 0x42, count: 72)
         let key = rawSubspace.pack(Tuple([id]))
         try await engine.withTransaction { transaction in
             try transaction.setValue(value, for: key)

@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseEngine
 import StorageKit
 
@@ -16,8 +17,8 @@ struct AggregationMembershipMetadata: Sendable, Equatable {
 /// member keys and the exact bytes a future rebuild must scan. All reads and
 /// limit checks complete before the first write to the transaction view.
 func incrementAggregationMembership(
-    key: Bytes,
-    metadataKey: Bytes,
+    key: ByteString,
+    metadataKey: ByteString,
     maximumMembers: Int,
     maximumScanBytes: Int,
     transaction: any TransactionAccess
@@ -97,8 +98,8 @@ func incrementAggregationMembership(
 /// present to absent. A missing member or metadata frame is corruption, not an
 /// idempotent success. All validation completes before the first write.
 func decrementAggregationMembership(
-    key: Bytes,
-    metadataKey: Bytes,
+    key: ByteString,
+    metadataKey: ByteString,
     maximumMembers: Int,
     maximumScanBytes: Int,
     transaction: any TransactionAccess
@@ -156,7 +157,7 @@ func decrementAggregationMembership(
     return false
 }
 
-func decodeAggregationMembershipCount(_ bytes: Bytes) throws -> Int64 {
+func decodeAggregationMembershipCount(_ bytes: ByteString) throws -> Int64 {
     let count = try ByteConversion.bytesToInt64(bytes)
     guard count > 0 else {
         throw AggregationStorageError.nonPositiveStoredCount(count)
@@ -166,10 +167,10 @@ func decodeAggregationMembershipCount(_ bytes: Bytes) throws -> Int64 {
 
 func encodeAggregationMembershipMetadata(
     _ metadata: AggregationMembershipMetadata
-) throws -> Bytes {
+) throws -> ByteString {
     try validateAggregationMembershipMetadataShape(metadata)
 
-    return Bytes.copying(
+    return ByteString.copying(
         count: AggregationMembershipMetadata.encodedByteCount
     ) { destination in
         guard let baseAddress = destination.baseAddress else {
@@ -189,7 +190,7 @@ func encodeAggregationMembershipMetadata(
 }
 
 func decodeAggregationMembershipMetadata(
-    _ bytes: Bytes,
+    _ bytes: ByteString,
     maximumMembers: Int,
     maximumScanBytes: Int
 ) throws -> AggregationMembershipMetadata {
@@ -250,7 +251,7 @@ private func validateAggregationMembershipMetadataShape(
     }
 }
 
-func aggregationMemberScanByteCount(for memberKey: Bytes) throws -> Int64 {
+func aggregationMemberScanByteCount(for memberKey: ByteString) throws -> Int64 {
     let (byteCount, overflow) = memberKey.count.addingReportingOverflow(
         MemoryLayout<Int64>.size
     )

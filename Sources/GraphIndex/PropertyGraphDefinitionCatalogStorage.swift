@@ -18,7 +18,7 @@ package struct PropertyGraphDefinitionCatalogStorage: Sendable {
 
     package func key(
         for graphName: String
-    ) throws(PropertyGraphDefinitionCatalogError) -> Bytes {
+    ) throws(PropertyGraphDefinitionCatalogError) -> ByteString {
         guard !graphName.isEmpty else {
             throw .emptyGraphName
         }
@@ -56,7 +56,7 @@ package struct PropertyGraphDefinitionCatalogStorage: Sendable {
 
     package func encode(
         _ definition: CreateGraphStatement
-    ) throws(PropertyGraphDefinitionCatalogError) -> Bytes {
+    ) throws(PropertyGraphDefinitionCatalogError) -> ByteString {
         let encoded: ByteString
         do {
             encoded = try PropertyGraphDefinitionStorageFormat.encode(
@@ -72,11 +72,11 @@ package struct PropertyGraphDefinitionCatalogStorage: Sendable {
                 maximum: databaseMaximumValueSize
             )
         }
-        return Bytes(retaining: encoded)
+        return encoded
     }
 
     package func decode(
-        _ value: Bytes,
+        _ value: ByteString,
         expectedGraphName: String
     ) throws(PropertyGraphDefinitionCatalogError) -> CreateGraphStatement {
         guard value.count <= databaseMaximumValueSize else {
@@ -89,7 +89,7 @@ package struct PropertyGraphDefinitionCatalogStorage: Sendable {
             )
         }
 
-        let encoded = ByteString(retaining: value)
+        let encoded = value
         let definition: CreateGraphStatement
         do {
             definition = try PropertyGraphDefinitionStorageFormat.decode(

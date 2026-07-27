@@ -55,9 +55,9 @@ private func countKeys(
 }
 
 private func value(
-    for key: Bytes,
+    for key: ByteString,
     engine: any StorageEngine
-) async throws -> Bytes? {
+) async throws -> ByteString? {
     try await engine.withTransaction { transaction in
         try await transaction.getValue(for: key, snapshot: true)
     }
@@ -307,12 +307,12 @@ struct MigrationExecutionFDBTests {
         typeNames: [String]
     ) async throws {
         do {
-            try await database.removeDirectory(path: ["test", "migration"])
+            try await database.removeNamespace(path: ["test", "migration"])
         } catch {
         }
 
         do {
-            try await database.removeDirectory(path: ["_metadata"])
+            try await database.removeNamespace(path: ["_metadata"])
         } catch {
         }
 

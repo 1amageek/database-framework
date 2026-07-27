@@ -116,7 +116,7 @@ struct FieldValueTupleCodecTests {
 
             var cursor = TupleCursor(bytes: packed)
             let element = try cursor.requireNext()
-            let payload = try #require(element as? Bytes)
+            let payload = try #require(element as? ByteString)
             #expect(payload.count == packed.count - 2)
             #expect(try FieldValue(tupleElement: payload) == value)
         }
@@ -124,7 +124,7 @@ struct FieldValueTupleCodecTests {
 
     @Test("malformed RDF payloads fail with a typed error")
     func malformedRDFPayloadFails() {
-        let payload = Bytes([
+        let payload = ByteString([
             0x44, 0x56, 0x42, 0x01,
             0x3D,
             0x11, 0x11,
@@ -143,7 +143,7 @@ struct FieldValueTupleCodecTests {
     @Test("untagged byte and tuple values are rejected")
     func untaggedValuesFail() {
         #expect(throws: FieldValueTupleCodecError.invalidEnvelopeMagic) {
-            _ = try FieldValue(tupleElement: Bytes([0x01, 0x02]))
+            _ = try FieldValue(tupleElement: ByteString([0x01, 0x02]))
         }
         #expect(
             throws: FieldValueTupleCodecError.unsupportedElementType(
@@ -238,7 +238,7 @@ struct FieldValueTupleCodecTests {
 
     @Test("truncated arrays and malformed nibble payloads fail")
     func malformedCompositePayloadsFail() {
-        let truncatedArray = Bytes([
+        let truncatedArray = ByteString([
             0x44, 0x56, 0x42, 0x01,
             0x3A,
             0x20,
@@ -249,7 +249,7 @@ struct FieldValueTupleCodecTests {
             _ = try FieldValue(tupleElement: truncatedArray)
         }
 
-        let malformedData = Bytes([
+        let malformedData = ByteString([
             0x44, 0x56, 0x42, 0x01,
             0x2F,
             0x02, 0x01,
@@ -260,7 +260,7 @@ struct FieldValueTupleCodecTests {
             _ = try FieldValue(tupleElement: malformedData)
         }
 
-        let invalidUTF8 = Bytes([
+        let invalidUTF8 = ByteString([
             0x44, 0x56, 0x42, 0x01,
             0x3A,
             0x2E, 0x11, 0x11, 0x01,
@@ -278,7 +278,7 @@ struct FieldValueTupleCodecTests {
 
     private func assertSymmetricFailure(
         value: FieldValue,
-        packed: Bytes,
+        packed: ByteString,
         limits: FieldValueTupleCodecLimits,
         expected: FieldValueTupleCodecError
     ) {

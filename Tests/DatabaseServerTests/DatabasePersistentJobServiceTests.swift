@@ -1912,8 +1912,8 @@ struct DatabasePersistentJobServiceTests {
         container: DBContainer,
         component: String,
         jobID: DatabaseTypes.UUID
-    ) async throws -> Bytes {
-        let root = try await container.engine.createOrOpenDirectory(
+    ) async throws -> ByteString {
+        let root = try await container.engine.resolveOrCreateNamespace(
             path: ["database-framework", "persistent-jobs"]
         )
         return root.subspace(component).pack(Tuple(jobID))
@@ -1923,8 +1923,8 @@ struct DatabasePersistentJobServiceTests {
         container: DBContainer,
         jobID: DatabaseTypes.UUID,
         index: UInt32
-    ) async throws -> Bytes {
-        let root = try await container.engine.createOrOpenDirectory(
+    ) async throws -> ByteString {
+        let root = try await container.engine.resolveOrCreateNamespace(
             path: ["database-framework", "persistent-jobs"]
         )
         return root.subspace("result-chunks").pack(
@@ -1953,7 +1953,7 @@ struct DatabasePersistentJobServiceTests {
             }
             let decoded = try ServerPayloadDecoder.decode(
                 type,
-                from: ByteString(retaining: stored),
+                from: stored,
                 limits: .default
             )
             let replacement = try ServerPayloadEncoder.encode(
@@ -1961,7 +1961,7 @@ struct DatabasePersistentJobServiceTests {
                 limits: .default
             )
             try transaction.setValue(
-                Bytes(retaining: replacement),
+                replacement,
                 for: key
             )
         }
@@ -2411,7 +2411,7 @@ struct DatabasePersistentJobServiceTests {
 
     private struct CheckpointedCancellationOperation:
         PersistentJobTestOperation {
-        static let checkpointKey = Bytes("job-checkpointed-progress".utf8)
+        static let checkpointKey = ByteString(utf8: "job-checkpointed-progress")
         static let unsuccessfulOutcomeStateMarkerID =
             "job-checkpointed-unsuccessful-outcome"
 

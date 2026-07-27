@@ -1,5 +1,6 @@
 #if !os(WASI)
 #if FOUNDATION_DB
+import DatabaseTypes
 import Testing
 import Foundation
 import StorageKit
@@ -108,7 +109,7 @@ struct StorageInvariantTests {
 
             // Seed non-envelope item bytes and orphan blobs.
             try await database.withTransaction { tx in
-                try tx.setValue(Bytes("raw".utf8), for: key) // NOT an ItemEnvelope
+                try tx.setValue(ByteString(utf8: "raw"), for: key) // NOT an ItemEnvelope
 
                 let blobBase = blobsSubspace.subspace(Tuple([key]))
                 try tx.setValue([0xAA], for: blobBase.pack(Tuple([Int32(0)])))
@@ -118,7 +119,7 @@ struct StorageInvariantTests {
             // Overwrite via ItemStorage.
             try await database.withTransaction { tx in
                 let storage = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
-                try await storage.write(Bytes("new".utf8), for: key)
+                try await storage.write(ByteString(utf8: "new"), for: key)
             }
 
             // Orphan blobs must be gone.
@@ -156,7 +157,7 @@ struct StorageInvariantTests {
 
             // Seed non-envelope item bytes and orphan blobs.
             try await database.withTransaction { tx in
-                try tx.setValue(Bytes("raw".utf8), for: key) // NOT an ItemEnvelope
+                try tx.setValue(ByteString(utf8: "raw"), for: key) // NOT an ItemEnvelope
 
                 let blobBase = blobsSubspace.subspace(Tuple([key]))
                 try tx.setValue([0xAA], for: blobBase.pack(Tuple([Int32(0)])))
@@ -207,7 +208,7 @@ struct StorageInvariantTests {
                 let writer = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
                 for i in 0..<5 {
                     let key = itemsSubspace.pack(Tuple("k\(i)"))
-                    try await writer.write(Bytes("v\(i)".utf8), for: key)
+                    try await writer.write(ByteString(utf8: "v\(i)"), for: key)
                 }
 
                 // Allow up to 2 calls because AsyncKVSequence may prefetch the next batch.
@@ -233,7 +234,7 @@ struct StorageInvariantTests {
     func itemEnvelopeHeaderContainsCanonicalContract() throws {
         #expect(ItemEnvelope.headerSize == 27)
 
-        let payload: Bytes = [0x01, 0x02]
+        let payload: ByteString = [0x01, 0x02]
         let checksum = ItemChecksum.crc32c(payload)
         let bytes = try ItemEnvelope.inline(
             payload: payload,
@@ -242,7 +243,7 @@ struct StorageInvariantTests {
             checksum: checksum
         ).serialize()
         #expect(bytes.count == ItemEnvelope.headerSize + 2)
-        #expect(Array(bytes.prefix(4)) == ItemEnvelope.magic)
+        #expect(bytes.prefix(4) == ItemEnvelope.magic)
         #expect(bytes[4] == ItemEnvelope.currentVersion)
         #expect(bytes[5] == ItemEnvelope.StorageKind.inline.rawValue)
         #expect(bytes[6] == ItemPayloadEncoding.identity.rawValue)

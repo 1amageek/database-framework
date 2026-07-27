@@ -212,10 +212,10 @@ public enum PersistableIdentifierKeyCodec {
             return .string(value)
 
         case .bytes:
-            guard let value = element as? Bytes else {
+            guard let value = element as? ByteString else {
                 throw .invalidTupleValue(expected: expectedType)
             }
-            return .bytes(ByteString(retaining: value))
+            return .bytes(value)
 
         case .uuid:
             guard let value = element as? TupleUUID else {

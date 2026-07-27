@@ -3,6 +3,7 @@
 //
 // Design: Follows GraphEdgeScanner pattern for centralized scanning logic.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -82,7 +83,7 @@ public final class SpatialCellScanner: Sendable {
         transaction: any TransactionAccess
     ) async throws -> (keys: [Tuple], limitReason: LimitReason?) {
         var results: [Tuple] = []
-        var seenIds: Set<Bytes> = []
+        var seenIds: Set<ByteString> = []
         var limitReason: LimitReason? = nil
 
         let effectiveLimit = limit ?? Int.max
@@ -161,7 +162,7 @@ public final class SpatialCellScanner: Sendable {
         transaction: any TransactionAccess
     ) async throws -> (keys: [Tuple], limitReason: LimitReason?) {
         var results: [Tuple] = []
-        var seenIds: Set<Bytes> = []
+        var seenIds: Set<ByteString> = []
         var limitReason: LimitReason? = nil
 
         let effectiveLimit = limit ?? Int.max
@@ -233,7 +234,7 @@ public final class SpatialCellScanner: Sendable {
         transaction: any TransactionAccess
     ) async throws -> (keys: [(key: Tuple, distance: Double)], limitReason: LimitReason?) {
         var results: [(key: Tuple, distance: Double)] = []
-        var seenIds: Set<Bytes> = []
+        var seenIds: Set<ByteString> = []
         var limitReason: LimitReason? = nil
 
         let effectiveLimit = limit ?? Int.max

@@ -62,11 +62,11 @@ struct DatabaseContextFoundationDBTests {
     /// Clean up test data - call at START of each test that modifies data
     /// Uses DirectoryLayer.remove() to handle old format data
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.directoryExists(path: ["fdb_context_test_users"]) {
-            try await container.engine.removeDirectory(path: ["fdb_context_test_users"])
+        if try await container.engine.namespaceExists(path: ["fdb_context_test_users"]) {
+            try await container.engine.removeNamespace(path: ["fdb_context_test_users"])
         }
-        if try await container.engine.directoryExists(path: ["fdb_context_test_products"]) {
-            try await container.engine.removeDirectory(path: ["fdb_context_test_products"])
+        if try await container.engine.namespaceExists(path: ["fdb_context_test_products"]) {
+            try await container.engine.removeNamespace(path: ["fdb_context_test_products"])
         }
     }
 

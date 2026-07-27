@@ -1,6 +1,7 @@
 // HNSWGraphCache.swift
 // VectorIndex - In-memory cache for loaded HNSW graph snapshots
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -17,10 +18,10 @@ import SwiftHNSW
 /// resolve a different key and load the new graph from storage.
 internal final class HNSWGraphCache: Sendable {
     internal struct Key: Hashable, Sendable {
-        let subspacePrefix: Bytes
+        let subspacePrefix: ByteString
         let dimensions: Int
         let metric: String
-        let metadata: Bytes
+        let metadata: ByteString
     }
 
     internal final class Snapshot: Sendable {

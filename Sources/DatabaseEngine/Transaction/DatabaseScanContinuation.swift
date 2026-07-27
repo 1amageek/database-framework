@@ -11,7 +11,7 @@ public struct DatabaseScanContinuation: Sendable, Hashable {
 
     package let entity: String
     package let partitionPath: [String]
-    package let storageKey: Bytes
+    package let storageKey: ByteString
 
     public init(
         encodedBytes: ByteString,
@@ -40,13 +40,13 @@ public struct DatabaseScanContinuation: Sendable, Hashable {
         self.encodedBytes = encodedBytes
         self.entity = entity
         self.partitionPath = partitionPath
-        self.storageKey = Bytes(retaining: key)
+        self.storageKey = key
     }
 
     package init(
         entity: String,
         partitionPath: [String],
-        storageKey: Bytes,
+        storageKey: ByteString,
         limits: StorageFrameLimits = .default
     ) throws {
         let encodedBytes = try StorageFrameEncoder.encode(
@@ -62,7 +62,7 @@ public struct DatabaseScanContinuation: Sendable, Hashable {
                 for component in partitionPath {
                     try writer.writeString(component)
                 }
-                try writer.writeBytes(ByteString(retaining: storageKey))
+                try writer.writeBytes(storageKey)
             }
 
         self.encodedBytes = encodedBytes

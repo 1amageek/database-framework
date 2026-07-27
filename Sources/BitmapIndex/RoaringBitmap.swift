@@ -5,6 +5,7 @@
 // Software Library", Software: Practice and Experience, 2016
 // https://arxiv.org/abs/1603.06549
 
+import DatabaseTypes
 import StorageKit
 
 /// Roaring Bitmap implementation for efficient set operations
@@ -730,7 +731,7 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
     ///   - UInt16 high part
     ///   - UInt8 container type (0=array, 1=bitmap, 2=run)
     ///   - Container data (format depends on type)
-    public func serializedBytes() throws(RoaringBitmapFormatError) -> Bytes {
+    public func serializedBytes() throws(RoaringBitmapFormatError) -> ByteString {
         let sortedContainers = containers.sorted { $0.key < $1.key }
         var byteCount = 8
 
@@ -767,7 +768,7 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
             }
         }
 
-        return Bytes.copying(count: byteCount) { output in
+        return ByteString.copying(count: byteCount) { output in
             var encoder = RoaringBitmapRepresentationEncoder(output: output)
             encoder.write(UInt8(0x52))
             encoder.write(UInt8(0x42))
@@ -802,7 +803,7 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
     }
 
     /// Creates a bitmap by borrowing the persisted bytes for the duration of decoding.
-    public init(serializedBytes bytes: Bytes) throws(RoaringBitmapFormatError) {
+    public init(serializedBytes bytes: ByteString) throws(RoaringBitmapFormatError) {
         let decoded: Result<RoaringBitmap, RoaringBitmapFormatError> = bytes.withUnsafeBytes { input in
             var decoder = RoaringBitmapRepresentationDecoder(input: input)
             do {
@@ -877,7 +878,7 @@ private struct ContainerIterator {
     }
 }
 
-// `output` is the final allocation owned by `Bytes.copying`. The encoder exists
+// `output` is the final allocation owned by `ByteString.copying`. The encoder exists
 // only inside that synchronous initialization closure, so the pointer cannot
 // escape and every byte in the allocation is initialized exactly once.
 private struct RoaringBitmapRepresentationEncoder {
@@ -907,7 +908,7 @@ private struct RoaringBitmapRepresentationEncoder {
     }
 }
 
-// `input` is borrowed from the `Bytes` argument and this decoder is created and
+// `input` is borrowed from the `ByteString` argument and this decoder is created and
 // consumed entirely inside `withUnsafeBytes`. Bounds are checked before every
 // load, unaligned loads are explicit, and the pointer never crosses suspension
 // or Sendable boundaries.

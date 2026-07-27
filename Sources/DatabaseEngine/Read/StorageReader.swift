@@ -1,6 +1,7 @@
 // StorageReader.swift
 // Low-level storage access abstraction for index reads
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -42,13 +43,13 @@ public protocol StorageReader: Sendable {
         startInclusive: Bool,
         endInclusive: Bool,
         reverse: Bool
-    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error>
+    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error>
 
     /// Get a single value by key
     ///
     /// - Parameter key: The full key
     /// - Returns: The value if found, nil otherwise
-    func getValue(key: Bytes) async throws -> Bytes?
+    func getValue(key: ByteString) async throws -> ByteString?
 }
 
 // MARK: - Default Implementations
@@ -58,7 +59,7 @@ extension StorageReader {
     public func scanSubspace(
         _ subspace: Subspace,
         reverse: Bool = false
-    ) -> AsyncThrowingStream<(key: Bytes, value: Bytes), Error> {
+    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
         scanRange(
             subspace: subspace,
             start: nil,
@@ -97,12 +98,12 @@ public struct IndexEntry: Sendable {
     public let keyValues: Tuple
 
     /// Canonical DBIX bytes stored in the index value.
-    public let coveringValue: Bytes
+    public let coveringValue: ByteString
 
     public init(
         itemID: Tuple,
         keyValues: Tuple = Tuple(),
-        coveringValue: Bytes = []
+        coveringValue: ByteString = []
     ) {
         self.itemID = itemID
         self.keyValues = keyValues
@@ -113,7 +114,7 @@ public struct IndexEntry: Sendable {
     public init(
         itemID: any TupleElement,
         keyValues: Tuple = Tuple(),
-        coveringValue: Bytes = []
+        coveringValue: ByteString = []
     ) {
         self.itemID = Tuple([itemID])
         self.keyValues = keyValues

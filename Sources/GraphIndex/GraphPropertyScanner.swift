@@ -195,7 +195,7 @@ public struct GraphPropertyScanner: Sendable {
     }
 
     package func decodeProperties(
-        _ value: Bytes
+        _ value: ByteString
     ) throws -> [String: FieldValue] {
         guard !storedFieldNames.isEmpty else { return [:] }
         return try CoveringValueBuilder.decode(

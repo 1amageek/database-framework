@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseKit
 import DatabaseWire
 import StorageKit
@@ -5,7 +6,7 @@ import StorageKit
 enum DatabaseSchemaFingerprint {
     private static let formatVersion: UInt16 = 1
 
-    static func compute(_ schema: Schema) throws -> Bytes {
+    static func compute(_ schema: Schema) throws -> ByteString {
         let projection = try StorageFrameEncoder.encode {
             writer throws(StorageFrameError) in
             try writer.writeString("database-framework.schema")
@@ -28,7 +29,7 @@ enum DatabaseSchemaFingerprint {
         }
         var accumulator = SHA256Accumulator()
         accumulator.update(projection)
-        return Bytes(retaining: accumulator.finalize())
+        return accumulator.finalize()
     }
 
     private static func write(

@@ -35,7 +35,7 @@ struct DatabaseUUIDTupleEncodingTests {
 
     @Test("Database UUID rejects offsets outside the encoded bytes")
     func rejectsOutOfBoundsOffsets() {
-        let encoded = Bytes([TupleTypeCode.uuid.rawValue])
+        let encoded = ByteString([TupleTypeCode.uuid.rawValue])
 
         for invalidOffset in [2, Int.max] {
             var offset = invalidOffset
@@ -50,7 +50,7 @@ struct DatabaseUUIDTupleEncodingTests {
 
     @Test("Database UUID rejects a truncated tuple payload")
     func rejectsTruncatedPayload() {
-        let encoded = Bytes(
+        let encoded = ByteString(
             [TupleTypeCode.uuid.rawValue] + Array(repeating: 0, count: 15)
         )
         var offset = 1

@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseWire
 import StorageKit
 
@@ -5,7 +6,7 @@ import StorageKit
 
 /// Compare two byte arrays lexicographically
 /// - Returns: true if lhs < rhs
-private func bytesLessThan(_ lhs: Bytes, _ rhs: Bytes) -> Bool {
+private func bytesLessThan(_ lhs: ByteString, _ rhs: ByteString) -> Bool {
     let minLength = min(lhs.count, rhs.count)
     for i in 0..<minLength {
         if lhs[i] < rhs[i] { return true }
@@ -16,24 +17,24 @@ private func bytesLessThan(_ lhs: Bytes, _ rhs: Bytes) -> Bool {
 
 /// Compare two byte arrays lexicographically
 /// - Returns: true if lhs <= rhs
-private func bytesLessThanOrEqual(_ lhs: Bytes, _ rhs: Bytes) -> Bool {
+private func bytesLessThanOrEqual(_ lhs: ByteString, _ rhs: ByteString) -> Bool {
     return lhs == rhs || bytesLessThan(lhs, rhs)
 }
 
 /// Compare two byte arrays lexicographically
 /// - Returns: true if lhs > rhs
-private func bytesGreaterThan(_ lhs: Bytes, _ rhs: Bytes) -> Bool {
+private func bytesGreaterThan(_ lhs: ByteString, _ rhs: ByteString) -> Bool {
     return bytesLessThan(rhs, lhs)
 }
 
 /// Compare two byte arrays lexicographically
 /// - Returns: true if lhs >= rhs
-private func bytesGreaterThanOrEqual(_ lhs: Bytes, _ rhs: Bytes) -> Bool {
+private func bytesGreaterThanOrEqual(_ lhs: ByteString, _ rhs: ByteString) -> Bool {
     return lhs == rhs || bytesGreaterThan(lhs, rhs)
 }
 
 /// Return the maximum of two byte arrays
-private func bytesMax(_ lhs: Bytes, _ rhs: Bytes) -> Bytes {
+private func bytesMax(_ lhs: ByteString, _ rhs: ByteString) -> ByteString {
     return bytesGreaterThanOrEqual(lhs, rhs) ? lhs : rhs
 }
 
@@ -49,20 +50,20 @@ private func bytesMax(_ lhs: Bytes, _ rhs: Bytes) -> Bytes {
 /// **Reference**: FDB Record Layer's `ScanProperties` and continuation handling
 public struct RangeContinuation: Sendable, Equatable {
     /// Beginning of the range (inclusive)
-    public let rangeBegin: Bytes
+    public let rangeBegin: ByteString
 
     /// End of the range (exclusive)
-    public let rangeEnd: Bytes
+    public let rangeEnd: ByteString
 
     /// Last successfully processed key (nil if not started)
     /// Next batch starts AFTER this key (firstGreaterThan)
-    public var lastProcessedKey: Bytes?
+    public var lastProcessedKey: ByteString?
 
     /// Whether this range has been fully processed
     public var isComplete: Bool
 
     /// Initialize a new range continuation
-    public init(begin: Bytes, end: Bytes) {
+    public init(begin: ByteString, end: ByteString) {
         self.rangeBegin = begin
         self.rangeEnd = end
         self.lastProcessedKey = nil
@@ -73,10 +74,10 @@ public struct RangeContinuation: Sendable, Equatable {
     ///
     /// If we have a continuation, start AFTER it (exclusive).
     /// Otherwise start at the range beginning (inclusive).
-    public var nextBatchBegin: Bytes {
+    public var nextBatchBegin: ByteString {
         if let lastKey = lastProcessedKey {
             // Add a zero byte to make it "first greater than lastKey"
-            return lastKey + [0x00]
+            return lastKey.appending(0x00)
         }
         return rangeBegin
     }
@@ -110,17 +111,17 @@ public struct RangeSet: Sendable {
     /// A single range of keys.
     public struct Range: Sendable, Equatable {
         /// Beginning of range (inclusive)
-        public let begin: Bytes
+        public let begin: ByteString
 
         /// End of range (exclusive)
-        public let end: Bytes
+        public let end: ByteString
 
-        public init(begin: Bytes, end: Bytes) {
+        public init(begin: ByteString, end: ByteString) {
             self.begin = begin
             self.end = end
         }
 
-        public func contains(_ key: Bytes) -> Bool {
+        public func contains(_ key: ByteString) -> Bool {
             return bytesGreaterThanOrEqual(key, begin) && bytesLessThan(key, end)
         }
 
@@ -137,7 +138,7 @@ public struct RangeSet: Sendable {
     // MARK: - Initialization
 
     /// Initialize with a single range
-    public init(initialRange: (begin: Bytes, end: Bytes)) {
+    public init(initialRange: (begin: ByteString, end: ByteString)) {
         self.continuations = [RangeContinuation(begin: initialRange.begin, end: initialRange.end)]
     }
 
@@ -192,13 +193,13 @@ public struct RangeSet: Sendable {
         public let rangeIndex: Int
 
         /// Beginning of batch (inclusive)
-        public let begin: Bytes
+        public let begin: ByteString
 
         /// End of batch (exclusive) - this is the range end, not batch end
         /// Actual batch end is controlled by getRange(limit:)
-        public let end: Bytes
+        public let end: ByteString
 
-        public init(rangeIndex: Int, begin: Bytes, end: Bytes) {
+        public init(rangeIndex: Int, begin: ByteString, end: ByteString) {
             self.rangeIndex = rangeIndex
             self.begin = begin
             self.end = end
@@ -233,7 +234,7 @@ public struct RangeSet: Sendable {
     ///   - isComplete: True if the range is fully processed (count < limit)
     public mutating func recordProgress(
         rangeIndex: Int,
-        lastProcessedKey: Bytes,
+        lastProcessedKey: ByteString,
         isComplete: Bool
     ) throws {
         guard continuations.indices.contains(rangeIndex) else {

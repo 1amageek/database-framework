@@ -31,7 +31,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
     ) async throws -> DatabaseCoordinatedOperationResponse {
         let deadline = DatabaseExecutionDeadline(
             timeoutMilliseconds: timeoutMilliseconds,
-            clock: context.container.engine.monotonicClock
+            clock: context.container.monotonicClock
         )
         let executed = try await executePrepared(
             operation: operation,
@@ -67,7 +67,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
     ) async throws -> DatabaseCoordinatedOperationResponse {
         let deadline = DatabaseExecutionDeadline(
             timeoutMilliseconds: timeoutMilliseconds,
-            clock: context.container.engine.monotonicClock
+            clock: context.container.monotonicClock
         )
         try stateStore.validate(container: context.container)
         let idempotencyKey = try validatedIdempotencyKey(
@@ -274,7 +274,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
     ) async throws -> DatabasePreparedOperationResponse<Operation> {
         let deadline = DatabaseExecutionDeadline(
             timeoutMilliseconds: timeoutMilliseconds,
-            clock: context.container.engine.monotonicClock
+            clock: context.container.monotonicClock
         )
         let executed = try await executePrepared(
             operation: Operation.operation.identifier,

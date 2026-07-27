@@ -1,10 +1,11 @@
+import DatabaseTypes
 import DatabaseKit
 import StorageKit
 
 enum DatabaseEntityIndexSliceExecutor {
     struct Result: Sendable {
         let processed: UInt64
-        let lastProcessedKey: Bytes?
+        let lastProcessedKey: ByteString?
         let hasMore: Bool
     }
 
@@ -13,7 +14,7 @@ enum DatabaseEntityIndexSliceExecutor {
         container: DBContainer,
         storeSubspace: Subspace,
         index: Index,
-        lastProcessedKey: Bytes?,
+        lastProcessedKey: ByteString?,
         maximumWorkUnits: Int,
         transaction: any TransactionAccess
     ) async throws -> Result {
@@ -31,7 +32,7 @@ enum DatabaseEntityIndexSliceExecutor {
                 .subspace(SubspaceKey.items)
                 .subspace(T.persistableType)
             let range = itemTypeSubspace.range()
-            let begin = lastProcessedKey.map { $0 + [0] } ?? range.begin
+            let begin = lastProcessedKey.map { $0.appending(0) } ?? range.begin
             let storage = container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: storeSubspace.subspace(SubspaceKey.blobs)
@@ -44,7 +45,7 @@ enum DatabaseEntityIndexSliceExecutor {
             )
             var batch: [(item: T, id: Tuple)] = []
             batch.reserveCapacity(maximumWorkUnits)
-            var lastKey: Bytes?
+            var lastKey: ByteString?
             var hasMore = false
 
             for try await (key, data) in sequence {

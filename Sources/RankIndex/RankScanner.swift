@@ -7,6 +7,7 @@
 // numeric score ordering, so
 // `reverse: true, limit: k` yields the top-k highest scores in O(k).
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -120,7 +121,7 @@ struct RankScanner {
     private func collect(
         limit: Int,
         reverse: Bool
-    ) async throws -> [(Bytes, Bytes)] {
+    ) async throws -> [(ByteString, ByteString)] {
         let range = scoresSubspace.range()
         return try await transaction.collectRange(
             from: .firstGreaterOrEqual(range.begin),
@@ -133,7 +134,7 @@ struct RankScanner {
 
     private func parse<Entries: Collection>(
         _ sequence: Entries
-    ) throws -> [RankScanEntry] where Entries.Element == (Bytes, Bytes) {
+    ) throws -> [RankScanEntry] where Entries.Element == (ByteString, ByteString) {
         var entries: [RankScanEntry] = []
         entries.reserveCapacity(sequence.count)
         for (key, _) in sequence {
@@ -145,7 +146,7 @@ struct RankScanner {
     }
 
     static func decodeEntry(
-        key: Bytes,
+        key: ByteString,
         scoresSubspace: Subspace
     ) throws -> RankScanEntry {
         guard scoresSubspace.contains(key) else {

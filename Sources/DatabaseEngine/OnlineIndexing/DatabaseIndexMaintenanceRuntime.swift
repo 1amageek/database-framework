@@ -187,10 +187,10 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             )
         }
         try transaction.setValue(
-            Bytes(retaining: try StorageFrameCodec.encode(
+            try StorageFrameCodec.encode(
                 updated,
                 limits: storageLimits
-            )),
+            ),
             for: key
         )
         return DatabaseIndexRebuildSlice(
@@ -237,10 +237,10 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             detail: detail
         )
         try transaction.setValue(
-            Bytes(retaining: try StorageFrameCodec.encode(
+            try StorageFrameCodec.encode(
                 failed,
                 limits: storageLimits
-            )),
+            ),
             for: key
         )
     }
@@ -288,16 +288,16 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             phase: .building
         )
         try transaction.setValue(
-            Bytes(retaining: try StorageFrameCodec.encode(
+            try StorageFrameCodec.encode(
                 state,
                 limits: storageLimits
-            )),
+            ),
             for: rebuildStateKey(target: target)
         )
     }
 
     private func loadRebuildState(
-        key: Bytes,
+        key: ByteString,
         entity: String,
         index: String,
         transaction: any TransactionAccess
@@ -311,7 +311,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         do {
             let state = try StorageFrameCodec.decode(
                 DatabaseIndexRebuildState.self,
-                from: ByteString(retaining: bytes),
+                from: bytes,
                 limits: storageLimits
             )
             guard state.entity == entity, state.index == index else {
@@ -381,7 +381,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         case open(any TransactionAccess)
     }
 
-    private func rebuildStateKey(target: Target) -> Bytes {
+    private func rebuildStateKey(target: Target) -> ByteString {
         target.subspace
             .subspace(SubspaceKey.metadata)
             .subspace("index-rebuild")

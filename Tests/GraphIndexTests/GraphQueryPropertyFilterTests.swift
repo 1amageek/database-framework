@@ -69,8 +69,8 @@ struct GraphQueryPropertyFilterTests {
 
 
         let path = ["test", "social_edges_query"]
-        if try await database.directoryExists(path: path) {
-            try await database.removeDirectory(path: path)
+        if try await database.namespaceExists(path: path) {
+            try await database.removeNamespace(path: path)
         }
         try await container.ensureIndexesReady()
 

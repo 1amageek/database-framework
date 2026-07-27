@@ -4,6 +4,7 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -149,7 +150,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
         return [codesSubspace.pack(id)]
     }
@@ -327,7 +328,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws {
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
         let key = codesSubspace.pack(id)
-        try transaction.setValue(Bytes(codes), for: key)
+        try transaction.setValue(ByteString(codes), for: key)
     }
 
     /// Store codebooks
@@ -413,7 +414,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
         let encoder = JSONEncoder()
         let data = try encoder.encode(metadata)
-        try transaction.setValue(Bytes(data), for: metadataKey)
+        try transaction.setValue(ByteString(retaining: data), for: metadataKey)
     }
 
     /// Load metadata
@@ -451,7 +452,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     // MARK: - Serialization Helpers
 
     /// Convert float array to bytes using VectorConversion
-    private func floatArrayToBytes(_ floats: [Float]) -> Bytes {
+    private func floatArrayToBytes(_ floats: [Float]) -> ByteString {
         VectorConversion.floatArrayToBytes(floats)
     }
 

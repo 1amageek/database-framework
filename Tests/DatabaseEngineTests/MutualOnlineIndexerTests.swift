@@ -5,6 +5,7 @@
 //
 // Reference: FDB Entity Layer mutual indexing strategy
 
+import DatabaseTypes
 import Testing
 import TestHeartbeat
 import StorageKit
@@ -387,8 +388,8 @@ struct MutualIndexerProgressTests {
 
     @Test("Progress survives restart")
     func testProgressResumability() throws {
-        let begin: Bytes = [0x00]
-        let end: Bytes = [0xFF]
+        let begin: ByteString = [0x00]
+        let end: ByteString = [0xFF]
 
         // Create a rangeSet with initial range
         let rangeSet = RangeSet(initialRange: (begin: begin, end: end))

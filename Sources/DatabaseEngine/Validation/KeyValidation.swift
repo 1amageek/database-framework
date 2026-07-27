@@ -1,6 +1,7 @@
 // KeyValidation.swift
 // DatabaseEngine - Portable key and value size validation
 
+import DatabaseTypes
 import StorageKit
 
 // MARK: - Portable Storage Limits
@@ -43,7 +44,7 @@ public enum DatabaseStorageLimitError:
 /// - Parameter key: The key bytes to validate
 /// - Throws: `DatabaseStorageLimitError.keyTooLarge` if key exceeds 10KB
 @inlinable
-public func validateKeySize(_ key: Bytes) throws {
+public func validateKeySize(_ key: ByteString) throws {
     if key.count > databaseMaximumKeySize {
         throw DatabaseStorageLimitError.keyTooLarge(
             size: key.count,
@@ -57,7 +58,7 @@ public func validateKeySize(_ key: Bytes) throws {
 /// - Parameter value: The value bytes to validate
 /// - Throws: `DatabaseStorageLimitError.valueTooLarge` if value exceeds 100KB
 @inlinable
-public func validateValueSize(_ value: Bytes) throws {
+public func validateValueSize(_ value: ByteString) throws {
     if value.count > databaseMaximumValueSize {
         throw DatabaseStorageLimitError.valueTooLarge(
             size: value.count,
@@ -72,7 +73,7 @@ public func validateValueSize(_ value: Bytes) throws {
 /// - Returns: The validated key
 /// - Throws: `DatabaseStorageLimitError.keyTooLarge` if key exceeds 10KB
 @inlinable
-public func validatedKey(_ key: Bytes) throws -> Bytes {
+public func validatedKey(_ key: ByteString) throws -> ByteString {
     try validateKeySize(key)
     return key
 }
@@ -83,7 +84,7 @@ public func validatedKey(_ key: Bytes) throws -> Bytes {
 /// - Returns: The validated value
 /// - Throws: `DatabaseStorageLimitError.valueTooLarge` if value exceeds 100KB
 @inlinable
-public func validatedValue(_ value: Bytes) throws -> Bytes {
+public func validatedValue(_ value: ByteString) throws -> ByteString {
     try validateValueSize(value)
     return value
 }

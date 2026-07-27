@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 import DatabaseKit
 
@@ -148,7 +149,7 @@ public protocol IndexMaintainer<Item>: Sendable {
     func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes]
+    ) async throws -> [ByteString]
 
     /// Compute expected index keys for an item with transaction access
     ///
@@ -171,7 +172,7 @@ public protocol IndexMaintainer<Item>: Sendable {
         for item: Item,
         id: Tuple,
         transaction: any TransactionAccess
-    ) async throws -> [Bytes]
+    ) async throws -> [ByteString]
 }
 
 // MARK: - Default Implementations
@@ -197,7 +198,7 @@ extension IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         throw IndexVerificationError.expectedKeysUnsupported(
             maintainerType: String(reflecting: Self.self)
         )
@@ -210,7 +211,7 @@ extension IndexMaintainer {
         for item: Item,
         id: Tuple,
         transaction: any TransactionAccess
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         return try await computeIndexKeys(for: item, id: id)
     }
 }

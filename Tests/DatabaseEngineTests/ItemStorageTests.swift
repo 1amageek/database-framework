@@ -3,6 +3,7 @@
 // ItemStorageTests.swift
 // DatabaseEngine Tests - ItemStorage integration tests (compression + splitting)
 
+import DatabaseTypes
 import Testing
 import TestHeartbeat
 import Foundation
@@ -30,6 +31,14 @@ struct ItemStorageTests {
         return (items, blobs)
     }
 
+    private func randomByteString(count: Int) -> ByteString {
+        ByteString.copying(count: count) { destination in
+            for index in destination.indices {
+                destination[index] = UInt8.random(in: 0...255)
+            }
+        }
+    }
+
     // MARK: - Basic Write/Read Tests
 
     @Test("Write and read small data")
@@ -38,7 +47,7 @@ struct ItemStorageTests {
         let (itemsSubspace, blobsSubspace) = createTestSubspaces()
         let key = itemsSubspace.pack(Tuple(["small"]))
 
-        let testData = Bytes("Hello, World!".utf8)
+        let testData = ByteString(utf8: "Hello, World!")
 
         // Write and read in same transaction to ensure same blobsSubspace
         try await database.withTransaction { transaction in
@@ -69,7 +78,7 @@ struct ItemStorageTests {
         let key = itemsSubspace.pack(Tuple(["medium"]))
 
         // Compressible data (repeated pattern)
-        let testData = Bytes(repeating: 0x41, count: 10_000)
+        let testData = ByteString(repeating: 0x41, count: 10_000)
 
         try await database.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
@@ -99,10 +108,7 @@ struct ItemStorageTests {
         let key = itemsSubspace.pack(Tuple(["large"]))
 
         // Large random data (200KB) - won't compress well, will trigger splitting
-        var testData = Bytes()
-        for _ in 0..<200_000 {
-            testData.append(UInt8.random(in: 0...255))
-        }
+        let testData = randomByteString(count: 200_000)
 
         try await database.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
@@ -133,7 +139,7 @@ struct ItemStorageTests {
         let (itemsSubspace, blobsSubspace) = createTestSubspaces()
         let key = itemsSubspace.pack(Tuple(["delete_small"]))
 
-        let testData = Bytes("Delete me".utf8)
+        let testData = ByteString(utf8: "Delete me")
 
         try await database.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
@@ -166,10 +172,7 @@ struct ItemStorageTests {
         let key = itemsSubspace.pack(Tuple(["delete_large"]))
 
         // Large random data that will be split
-        var testData = Bytes()
-        for _ in 0..<300_000 {
-            testData.append(UInt8.random(in: 0...255))
-        }
+        let testData = randomByteString(count: 300_000)
 
         try await database.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
@@ -225,7 +228,7 @@ struct ItemStorageTests {
         let (itemsSubspace, blobsSubspace) = createTestSubspaces()
         let key = itemsSubspace.pack(Tuple(["exists"]))
 
-        let testData = Bytes("I exist".utf8)
+        let testData = ByteString(utf8: "I exist")
 
         try await database.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
@@ -281,7 +284,7 @@ struct ItemStorageTests {
             }
         }
         """
-        let testData = Bytes(json.utf8)
+        let testData = ByteString(utf8: json)
 
         try await database.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
@@ -314,9 +317,10 @@ struct ItemStorageTests {
         let key = itemsSubspace.pack(Tuple(["binary"]))
 
         // Create varied binary data
-        var testData = Bytes()
-        for i in 0..<50_000 {
-            testData.append(UInt8(truncatingIfNeeded: i * 7 + 13))
+        let testData = ByteString.copying(count: 50_000) { destination in
+            for index in destination.indices {
+                destination[index] = UInt8(truncatingIfNeeded: index * 7 + 13)
+            }
         }
 
         try await database.withTransaction { transaction in
@@ -346,7 +350,7 @@ struct ItemStorageTests {
         let (itemsSubspace, blobsSubspace) = createTestSubspaces()
         let key = itemsSubspace.pack(Tuple(["empty"]))
 
-        let testData = Bytes()
+        let testData = ByteString()
 
         try await database.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
@@ -388,10 +392,7 @@ struct ItemStorageTests {
         let key = itemsSubspace.pack(Tuple(["overwrite"]))
 
         // First write: large random data that will be split
-        var firstData = Bytes()
-        for _ in 0..<200_000 {
-            firstData.append(UInt8.random(in: 0...255))
-        }
+        let firstData = randomByteString(count: 200_000)
 
         try await database.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
@@ -410,7 +411,7 @@ struct ItemStorageTests {
         #expect(blobCountAfterFirst > 0, "First write should create blobs")
 
         // Second write: small data (inline) - should clean up old blobs
-        let secondData = Bytes("Small replacement".utf8)
+        let secondData = ByteString(utf8: "Small replacement")
 
         try await database.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
@@ -451,7 +452,7 @@ struct ItemStorageTests {
         let dataKey = itemsSubspace.pack(Tuple(["data"]))
         let indexKey = itemsSubspace.pack(Tuple(["index", "value1"]))
 
-        let testData = Bytes("Entity data".utf8)
+        let testData = ByteString(utf8: "Entity data")
 
         // Write entity via storage, index via underlying
         try await database.withTransaction { transaction in
@@ -461,7 +462,7 @@ struct ItemStorageTests {
             try await storage.write(testData, for: dataKey)
 
             // Index entry - uses underlying directly (empty value)
-            try storage.storageAccess.setValue(Bytes(), for: indexKey)
+            try storage.storageAccess.setValue(ByteString(), for: indexKey)
         }
 
         // Verify both exist
@@ -492,7 +493,7 @@ struct ItemStorageTests {
 
         let keys = (0..<5).map { itemsSubspace.pack(Tuple(["key\($0)"])) }
         let values = (0..<5).map {
-            Bytes(repeating: UInt8($0 + 0x41), count: 1000 * ($0 + 1))
+            ByteString(repeating: UInt8($0 + 0x41), count: 1000 * ($0 + 1))
         }
 
         // Write all

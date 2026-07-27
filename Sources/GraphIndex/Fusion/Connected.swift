@@ -4,6 +4,7 @@
 // This file is part of GraphIndex module, not DatabaseEngine.
 // Provides graph-based filtering and scoring for Fusion queries.
 
+import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
 import ScalarIndex
@@ -474,7 +475,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         }
 
         // Deduplicate IDs by packed representation
-        var seenPacked: Set<Bytes> = []
+        var seenPacked: Set<ByteString> = []
         var uniqueIds: [Tuple] = []
         for id in allIds {
             let packed = id.pack()

@@ -161,7 +161,7 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         return try buildIndexKeys(for: item)
     }
 
@@ -171,7 +171,7 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ///
     /// **Sparse index behavior**:
     /// If any required field (from, to) is nil, returns an empty array (no index entries).
-    private func buildIndexKeys(for item: Item) throws -> [Bytes] {
+    private func buildIndexKeys(for item: Item) throws -> [ByteString] {
         // Sparse index: if any required field is nil, skip indexing
         let from: any TupleElement
         let edge: any TupleElement
@@ -209,8 +209,8 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         edge: any TupleElement,
         to: any TupleElement,
         graph: (any TupleElement)?
-    ) throws -> [Bytes] {
-        var keys: [Bytes] = []
+    ) throws -> [ByteString] {
+        var keys: [ByteString] = []
         keys.reserveCapacity(2)
 
         // [out]/[from]/[edge]/[to]{/[graph]}
@@ -242,8 +242,8 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         edge: any TupleElement,
         to: any TupleElement,
         graph: (any TupleElement)?
-    ) throws -> [Bytes] {
-        var keys: [Bytes] = []
+    ) throws -> [ByteString] {
+        var keys: [ByteString] = []
         keys.reserveCapacity(3)
 
         // [spo]/[from]/[edge]/[to]{/[graph]}
@@ -278,8 +278,8 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         edge: any TupleElement,
         to: any TupleElement,
         graph: (any TupleElement)?
-    ) throws -> [Bytes] {
-        var keys: [Bytes] = []
+    ) throws -> [ByteString] {
+        var keys: [ByteString] = []
         keys.reserveCapacity(6)
 
         // SPO: [from]/[edge]/[to]{/[graph]}
@@ -333,13 +333,13 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         edge: any TupleElement,
         to: any TupleElement,
         graph: (any TupleElement)?
-    ) throws -> [Bytes] {
-        var keys: [Bytes] = []
+    ) throws -> [ByteString] {
+        var keys: [ByteString] = []
         keys.reserveCapacity(3)
 
         // An empty byte value is disjoint from every property-graph String,
         // including the valid empty identifier.
-        let graphElement: any TupleElement = graph ?? Bytes()
+        let graphElement: any TupleElement = graph ?? ByteString()
 
         let gspoKey = strategySubspaces.gspo.pack(Tuple([graphElement, from, edge, to]))
         try validateKeySize(gspoKey)

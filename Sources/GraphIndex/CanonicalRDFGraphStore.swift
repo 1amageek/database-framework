@@ -19,8 +19,8 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private enum CatalogRemoval {
         case none
-        case key(Bytes)
-        case range(begin: Bytes, end: Bytes)
+        case key(ByteString)
+        case range(begin: ByteString, end: ByteString)
 
         var requiresWrite: Bool {
             switch self {
@@ -30,7 +30,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
         }
     }
 
-    private static let emptyValue = Bytes()
+    private static let emptyValue = ByteString()
 
     private let physicalCodec: RDFQuadIndexPhysicalCodec
     private let scanner: IndexedRDFDatasetScanner
@@ -173,7 +173,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             snapshot: false
         ) != nil
 
-        var catalogKeyToInsert: Bytes?
+        var catalogKeyToInsert: ByteString?
         if let graph = quad.graph {
             catalogKeyToInsert = try await missingCatalogKeyAfterIntegrityCheck(
                 for: graph,
@@ -318,7 +318,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
         for graph: RDFGraphName,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> Bytes? {
+    ) async throws -> ByteString? {
         let key = try catalogCodec.key(for: graph)
         try workMeter.consume(at: .storageRow)
         if let marker = try await transaction.getValue(
@@ -402,7 +402,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private func write(
         _ plan: RDFQuadIndexWritePlan,
-        reusingPrimaryKey primaryKey: Bytes,
+        reusingPrimaryKey primaryKey: ByteString,
         transaction: any TransactionAccess
     ) throws {
         try plan.forEachEntry { entry in
@@ -415,7 +415,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private func clear(
         _ plan: RDFQuadIndexWritePlan,
-        reusingPrimaryKey primaryKey: Bytes,
+        reusingPrimaryKey primaryKey: ByteString,
         transaction: any TransactionAccess
     ) throws {
         try plan.forEachEntry { entry in
@@ -561,7 +561,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     private func physicalRange(
         for scope: RDFGraphMutationScope,
         ordering: GraphIndexOrdering
-    ) throws -> (begin: Bytes, end: Bytes) {
+    ) throws -> (begin: ByteString, end: ByteString) {
         switch scope {
         case .allGraphs:
             do {
@@ -609,7 +609,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     private func graphPrefixRange(
         component: RDFQuadIndexComponentWritePlan,
         ordering: GraphIndexOrdering
-    ) throws -> (begin: Bytes, end: Bytes) {
+    ) throws -> (begin: ByteString, end: ByteString) {
         guard ordering.isGraphFirst else {
             do {
                 return try physicalCodec.subspace(for: ordering).range()
@@ -628,7 +628,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private func encode(
         _ entry: RDFQuadIndexEntryWritePlan
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         let keyByteCount: Int
         do {
             let tupleByteCount = try entry.encodedTupleByteCount()
@@ -653,7 +653,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
                 maximum: databaseMaximumKeySize
             )
         }
-        let key: Bytes
+        let key: ByteString
         do {
             key = try physicalCodec.encode(entry)
         } catch let error {

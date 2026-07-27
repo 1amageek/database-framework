@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 
 /// Canonical v1 envelope for persisted database entities.
@@ -14,7 +15,7 @@ import StorageKit
 /// subspace. Deserialization returns inline content as a view into the owned
 /// envelope buffer.
 public struct ItemEnvelope: Sendable, Equatable {
-    public static let magic: Bytes = [0x49, 0x54, 0x45, 0x4D]
+    public static let magic: ByteString = [0x49, 0x54, 0x45, 0x4D]
     public static let currentVersion: UInt8 = 1
     public static let headerSize = 27
 
@@ -24,7 +25,7 @@ public struct ItemEnvelope: Sendable, Equatable {
     }
 
     public enum Content: Sendable, Equatable {
-        case inline(Bytes)
+        case inline(ByteString)
         case external(ExternalRef)
     }
 
@@ -37,7 +38,7 @@ public struct ItemEnvelope: Sendable, Equatable {
     public let content: Content
 
     public static func inline(
-        payload: Bytes,
+        payload: ByteString,
         encoding: ItemPayloadEncoding,
         plainByteCount: UInt64,
         checksum: UInt32
@@ -102,7 +103,7 @@ public struct ItemEnvelope: Sendable, Equatable {
     }
 
     /// Produces the final persisted value in one allocation.
-    public func serialize() -> Bytes {
+    public func serialize() -> ByteString {
         let contentByteCount: Int
         switch content {
         case .inline(let payload):
@@ -111,7 +112,7 @@ public struct ItemEnvelope: Sendable, Equatable {
             contentByteCount = ExternalRef.serializedSize
         }
 
-        return Bytes.copying(count: Self.headerSize + contentByteCount) { output in
+        return ByteString.copying(count: Self.headerSize + contentByteCount) { output in
             output[0] = Self.magic[0]
             output[1] = Self.magic[1]
             output[2] = Self.magic[2]
@@ -137,7 +138,7 @@ public struct ItemEnvelope: Sendable, Equatable {
     }
 
     /// Parses and structurally validates an envelope without copying its inline payload.
-    public static func deserialize(_ bytes: Bytes) throws -> ItemEnvelope {
+    public static func deserialize(_ bytes: ByteString) throws -> ItemEnvelope {
         guard bytes.count >= headerSize else {
             throw ItemEnvelopeError.invalidHeader
         }
@@ -196,7 +197,7 @@ public struct ItemEnvelope: Sendable, Equatable {
         )
     }
 
-    public static func isEnvelope(_ bytes: Bytes) -> Bool {
+    public static func isEnvelope(_ bytes: ByteString) -> Bool {
         bytes.count >= headerSize
             && bytes[0] == magic[0]
             && bytes[1] == magic[1]
@@ -233,13 +234,13 @@ public struct ItemEnvelope: Sendable, Equatable {
             try validate(storedByteCount: storedByteCount)
         }
 
-        public func serialize() -> Bytes {
-            Bytes.copying(count: Self.serializedSize) { output in
+        public func serialize() -> ByteString {
+            ByteString.copying(count: Self.serializedSize) { output in
                 write(to: output, at: 0)
             }
         }
 
-        public static func deserialize(_ bytes: Bytes) throws -> ExternalRef {
+        public static func deserialize(_ bytes: ByteString) throws -> ExternalRef {
             guard bytes.count == serializedSize else {
                 throw ItemEnvelopeError.invalidExternalRef
             }
@@ -310,7 +311,7 @@ public struct ItemEnvelope: Sendable, Equatable {
         }
     }
 
-    private static func readUInt64(_ bytes: Bytes, at offset: Int) -> UInt64 {
+    private static func readUInt64(_ bytes: ByteString, at offset: Int) -> UInt64 {
         var value: UInt64 = 0
         for index in 0..<8 {
             value = (value << 8) | UInt64(bytes[offset + index])
@@ -318,7 +319,7 @@ public struct ItemEnvelope: Sendable, Equatable {
         return value
     }
 
-    private static func readUInt32(_ bytes: Bytes, at offset: Int) -> UInt32 {
+    private static func readUInt32(_ bytes: ByteString, at offset: Int) -> UInt32 {
         var value: UInt32 = 0
         for index in 0..<4 {
             value = (value << 8) | UInt32(bytes[offset + index])

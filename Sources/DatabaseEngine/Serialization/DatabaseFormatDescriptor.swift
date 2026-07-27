@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 
 /// Immutable physical format contract stored with every database store.
@@ -5,7 +6,7 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
     public static let descriptorVersion: UInt8 = 1
     public static let serializedSize = 45
 
-    private static let magic: Bytes = [0x44, 0x42, 0x46, 0x4D]
+    private static let magic: ByteString = [0x44, 0x42, 0x46, 0x4D]
     private static let checksumOffset = 41
 
     public let persistableFormatVersion: UInt16
@@ -33,8 +34,8 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
     }
 
     /// Encodes the fixed-size descriptor in one allocation.
-    public func serialize() -> Bytes {
-        Bytes.copying(count: Self.serializedSize) { output in
+    public func serialize() -> ByteString {
+        ByteString.copying(count: Self.serializedSize) { output in
             output[0] = Self.magic[0]
             output[1] = Self.magic[1]
             output[2] = Self.magic[2]
@@ -77,7 +78,7 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
     }
 
     public static func deserialize(
-        _ bytes: Bytes
+        _ bytes: ByteString
     ) throws -> DatabaseFormatDescriptor {
         guard bytes.count == serializedSize else {
             throw DatabaseFormatDescriptorError.invalidSize(
@@ -199,11 +200,11 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
         }
     }
 
-    private static func readUInt16(_ bytes: Bytes, at offset: Int) -> UInt16 {
+    private static func readUInt16(_ bytes: ByteString, at offset: Int) -> UInt16 {
         (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
     }
 
-    private static func readUInt32(_ bytes: Bytes, at offset: Int) -> UInt32 {
+    private static func readUInt32(_ bytes: ByteString, at offset: Int) -> UInt32 {
         var value: UInt32 = 0
         for index in 0..<4 {
             value = (value << 8) | UInt32(bytes[offset + index])
@@ -211,7 +212,7 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
         return value
     }
 
-    private static func readUInt64(_ bytes: Bytes, at offset: Int) -> UInt64 {
+    private static func readUInt64(_ bytes: ByteString, at offset: Int) -> UInt64 {
         var value: UInt64 = 0
         for index in 0..<8 {
             value = (value << 8) | UInt64(bytes[offset + index])

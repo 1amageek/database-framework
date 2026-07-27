@@ -343,8 +343,8 @@ struct DirectoryMigrationTests {
 
     private func cleanDirectories(engine: any StorageEngine) async throws {
         for path in [["directory_migration_test_legacy"], ["directory_migration_test_current"]] {
-            if try await engine.directoryExists(path: path) {
-                try await engine.removeDirectory(path: path)
+            if try await engine.namespaceExists(path: path) {
+                try await engine.removeNamespace(path: path)
             }
         }
     }
@@ -505,8 +505,8 @@ struct DirectoryMigrationTests {
             try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
             for path in [["directory_indexed_migration_test_legacy"], ["directory_indexed_migration_test_current"]] {
-                if try await engine.directoryExists(path: path) {
-                    try await engine.removeDirectory(path: path)
+                if try await engine.namespaceExists(path: path) {
+                    try await engine.removeNamespace(path: path)
                 }
             }
 
@@ -579,8 +579,8 @@ struct DirectoryMigrationTests {
             #expect(targetIndexCount == 1)
 
             for path in [["directory_indexed_migration_test_legacy"], ["directory_indexed_migration_test_current"]] {
-                if try await engine.directoryExists(path: path) {
-                    try await engine.removeDirectory(path: path)
+                if try await engine.namespaceExists(path: path) {
+                    try await engine.removeNamespace(path: path)
                 }
             }
         }
@@ -592,8 +592,8 @@ struct DirectoryMigrationTests {
             try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
             for path in [["directory_add_idx_test_legacy"], ["directory_add_idx_test_current"]] {
-                if try await engine.directoryExists(path: path) {
-                    try await engine.removeDirectory(path: path)
+                if try await engine.namespaceExists(path: path) {
+                    try await engine.removeNamespace(path: path)
                 }
             }
 
@@ -639,8 +639,8 @@ struct DirectoryMigrationTests {
             #expect(targetIndexCount == 1)
 
             for path in [["directory_add_idx_test_legacy"], ["directory_add_idx_test_current"]] {
-                if try await engine.directoryExists(path: path) {
-                    try await engine.removeDirectory(path: path)
+                if try await engine.namespaceExists(path: path) {
+                    try await engine.removeNamespace(path: path)
                 }
             }
         }
@@ -652,8 +652,8 @@ struct DirectoryMigrationTests {
             try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
             for path in [["directory_rem_idx_test_legacy"], ["directory_rem_idx_test_current"]] {
-                if try await engine.directoryExists(path: path) {
-                    try await engine.removeDirectory(path: path)
+                if try await engine.namespaceExists(path: path) {
+                    try await engine.removeNamespace(path: path)
                 }
             }
 
@@ -724,8 +724,8 @@ struct DirectoryMigrationTests {
             #expect(rows.count == 1)
 
             for path in [["directory_rem_idx_test_legacy"], ["directory_rem_idx_test_current"]] {
-                if try await engine.directoryExists(path: path) {
-                    try await engine.removeDirectory(path: path)
+                if try await engine.namespaceExists(path: path) {
+                    try await engine.removeNamespace(path: path)
                 }
             }
         }
@@ -737,8 +737,8 @@ struct DirectoryMigrationTests {
             try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
             for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"]] {
-                if try await engine.directoryExists(path: path) {
-                    try await engine.removeDirectory(path: path)
+                if try await engine.namespaceExists(path: path) {
+                    try await engine.removeNamespace(path: path)
                 }
             }
 
@@ -762,8 +762,8 @@ struct DirectoryMigrationTests {
             }
 
             for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"]] {
-                if try await engine.directoryExists(path: path) {
-                    try await engine.removeDirectory(path: path)
+                if try await engine.namespaceExists(path: path) {
+                    try await engine.removeNamespace(path: path)
                 }
             }
         }

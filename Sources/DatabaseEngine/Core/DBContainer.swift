@@ -101,6 +101,11 @@ public final class DBContainer: Sendable {
     /// Configuration
     public let configuration: DBConfiguration
 
+    /// Container-scoped monotonic time source.
+    public var monotonicClock: any StorageMonotonicClock {
+        configuration.monotonicClock
+    }
+
     /// Container-scoped runtime extensions and operation dependencies.
     public let runtimeConfiguration: DatabaseRuntimeConfiguration
 
@@ -273,7 +278,7 @@ public final class DBContainer: Sendable {
         let partitionCatalog = try await DatabasePartitionCatalog(
             engine: resolvedEngine
         )
-        let metadataSubspace = try await resolvedEngine.createOrOpenDirectory(
+        let metadataSubspace = try await resolvedEngine.resolveOrCreateNamespace(
             path: ["_metadata"]
         )
         return PreparedStorage(
@@ -437,7 +442,7 @@ public final class DBContainer: Sendable {
         }
         try directoryPath.validate()
 
-        let subspace = try await engine.directoryService.createOrOpen(
+        let subspace = try await engine.namespaceResolver.resolveOrCreate(
             path: directoryPath.resolve(),
             transaction: transaction
         )
@@ -468,7 +473,7 @@ public final class DBContainer: Sendable {
             directoryPath = try AnyDirectoryPath(for: type)
         }
         try directoryPath.validate()
-        return try await engine.directoryService.open(
+        return try await engine.namespaceResolver.resolveExisting(
             path: directoryPath.resolve(),
             transaction: transaction
         )
@@ -493,14 +498,14 @@ public final class DBContainer: Sendable {
         }
         try directoryPath.validate()
         let components = directoryPath.resolve()
-        guard try await engine.directoryService.exists(
+        guard try await engine.namespaceResolver.namespaceExists(
             path: components,
             transaction: transaction
         ) else {
             return nil
         }
 
-        let subspace = try await engine.directoryService.open(
+        let subspace = try await engine.namespaceResolver.resolveExisting(
             path: components,
             transaction: transaction
         )
@@ -709,7 +714,7 @@ public final class DBContainer: Sendable {
             }
         }
 
-        return try await engine.createOrOpenDirectory(path: path)
+        return try await engine.resolveOrCreateNamespace(path: path)
     }
 
     /// Resolve the directory for a Polymorphable protocol (type-erased version)
@@ -735,7 +740,7 @@ public final class DBContainer: Sendable {
             }
         }
 
-        return try await engine.createOrOpenDirectory(path: path)
+        return try await engine.resolveOrCreateNamespace(path: path)
     }
 
     /// Resolve a polymorphic group by its logical identifier.
@@ -752,7 +757,7 @@ public final class DBContainer: Sendable {
     public func resolvePolymorphicDirectory(for identifier: String) async throws -> Subspace {
         let group = try polymorphicGroup(identifier: identifier)
         let path = try group.resolvedDirectoryPath()
-        return try await engine.createOrOpenDirectory(path: path)
+        return try await engine.resolveOrCreateNamespace(path: path)
     }
 
     /// Resolves a polymorphic projection directory in the caller-owned
@@ -762,7 +767,7 @@ public final class DBContainer: Sendable {
         transaction: any TransactionAccess
     ) async throws -> Subspace {
         let group = try polymorphicGroup(identifier: identifier)
-        return try await engine.directoryService.createOrOpen(
+        return try await engine.namespaceResolver.resolveOrCreate(
             path: group.resolvedDirectoryPath(),
             transaction: transaction
         )
@@ -776,13 +781,13 @@ public final class DBContainer: Sendable {
     ) async throws -> Subspace? {
         let group = try polymorphicGroup(identifier: identifier)
         let path = try group.resolvedDirectoryPath()
-        guard try await engine.directoryService.exists(
+        guard try await engine.namespaceResolver.namespaceExists(
             path: path,
             transaction: transaction
         ) else {
             return nil
         }
-        return try await engine.directoryService.open(
+        return try await engine.namespaceResolver.resolveExisting(
             path: path,
             transaction: transaction
         )
@@ -1184,7 +1189,7 @@ extension DBContainer {
             .pack(Tuple("version"))
         var staticStores: [(
             entity: String,
-            range: (begin: Bytes, end: Bytes),
+            range: (begin: ByteString, end: ByteString),
             lifecycleStore: IndexLifecycleStore,
             indexNames: [String]
         )] = []

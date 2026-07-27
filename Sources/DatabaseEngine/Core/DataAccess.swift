@@ -153,7 +153,7 @@ public struct DataAccess: Sendable {
     /// - Parameter item: The item to serialize
     /// - Returns: Serialized bytes
     /// - Throws: Error if serialization fails
-    public static func serialize<Item: Persistable>(_ item: Item) throws -> Bytes {
+    public static func serialize<Item: Persistable>(_ item: Item) throws -> ByteString {
         try PersistableStorageCodec.encode(item)
     }
 
@@ -162,7 +162,7 @@ public struct DataAccess: Sendable {
     /// - Parameter bytes: The bytes to deserialize
     /// - Returns: Deserialized item
     /// - Throws: Error if deserialization fails
-    public static func deserialize<Item: Persistable>(_ bytes: Bytes) throws -> Item {
+    public static func deserialize<Item: Persistable>(_ bytes: ByteString) throws -> Item {
         try PersistableStorageCodec.decode(Item.self, from: bytes)
     }
 
@@ -176,7 +176,7 @@ public struct DataAccess: Sendable {
     /// - Returns: Deserialized item (type-erased)
     /// - Throws: Error if deserialization fails
     public static func deserializeAny(
-        _ bytes: Bytes,
+        _ bytes: ByteString,
         as type: any Persistable.Type
     ) throws -> any Persistable {
         try PersistableStorageCodec.decodeAny(type, from: bytes)

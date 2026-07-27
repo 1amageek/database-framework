@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 import Synchronization
 import Testing
@@ -117,9 +118,12 @@ struct TransactionDeadlineAndCleanupTests {
     @Test("Expired inherited deadline rejects before transaction creation")
     func expiredInheritedDeadlineRejectsAdmission() async throws {
         let engine = DeadlineControlledEngine()
-        let runner = TransactionRunner(database: engine)
+        let clock = FixedStorageClock(
+            now: StorageInstant(durationSinceReference: .milliseconds(1))
+        )
+        let runner = TransactionRunner(database: engine, clock: clock)
         let deadline = TransactionExecutionDeadline(
-            instant: ContinuousClock().now.advanced(by: .milliseconds(-1)),
+            instant: StorageInstant(durationSinceReference: .zero),
             timeoutMilliseconds: .max
         )
 
@@ -136,6 +140,12 @@ struct TransactionDeadlineAndCleanupTests {
 
         #expect(engine.snapshot.created == 0)
     }
+}
+
+private struct FixedStorageClock: StorageMonotonicClock {
+    let now: StorageInstant
+
+    func sleep(until deadline: StorageInstant) async throws {}
 }
 
 private enum DeadlineCancellationError: Error, Sendable {
@@ -200,8 +210,12 @@ private final class DeadlineControlledEngine: StorageEngine, Sendable {
         )
     }
 
-    var directoryService: any DirectoryService {
-        underlying.directoryService
+    var namespaceResolver: any NamespaceResolver {
+        underlying.namespaceResolver
+    }
+
+    var namespaceCatalog: (any NamespaceCatalog)? {
+        underlying.namespaceCatalog
     }
 }
 
@@ -232,7 +246,7 @@ private final class DeadlineControlledTransaction: Transaction, Sendable {
         try underlying.configureMutationByteLimit(maximumBytes: maximumBytes)
     }
 
-    func getValue(for key: Bytes, snapshot: Bool) async throws -> Bytes? {
+    func getValue(for key: ByteString, snapshot: Bool) async throws -> ByteString? {
         try await underlying.getValue(for: key, snapshot: snapshot)
     }
 
@@ -254,21 +268,21 @@ private final class DeadlineControlledTransaction: Transaction, Sendable {
         )
     }
 
-    func setValue(_ value: Bytes, for key: Bytes) throws {
+    func setValue(_ value: ByteString, for key: ByteString) throws {
         try underlying.setValue(value, for: key)
     }
 
-    func clear(key: Bytes) throws {
+    func clear(key: ByteString) throws {
         try underlying.clear(key: key)
     }
 
-    func clearRange(beginKey: Bytes, endKey: Bytes) throws {
+    func clearRange(beginKey: ByteString, endKey: ByteString) throws {
         try underlying.clearRange(beginKey: beginKey, endKey: endKey)
     }
 
     func atomicOp(
-        key: Bytes,
-        param: Bytes,
+        key: ByteString,
+        param: ByteString,
         mutationType: MutationType
     ) throws {
         try underlying.atomicOp(

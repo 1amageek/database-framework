@@ -1,6 +1,8 @@
 #if !os(WASI)
+import DatabaseTypes
 import Testing
 import StorageKit
+import StorageKitSystemClock
 import Synchronization
 @testable import DatabaseEngine
 
@@ -9,8 +11,8 @@ struct TransactionRunnerRetryTests {
     @Test("Batch configuration reaches the body on a portable backend")
     func batchConfigurationRunsOnInMemoryBackend() async throws {
         let engine = InMemoryEngine()
-        let key: Bytes = [0xA0]
-        let value: Bytes = [0x01]
+        let key: ByteString = [0xA0]
+        let value: ByteString = [0x01]
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setValue(value, for: key)
@@ -246,9 +248,10 @@ struct TransactionRunnerRetryTests {
     @Test("Inherited deadline bounds a transaction without a relative timeout")
     func inheritedDeadlineBoundsUnconfiguredTimeout() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .success)
-        let runner = TransactionRunner(database: engine)
+        let clock = SystemStorageClock()
+        let runner = TransactionRunner(database: engine, clock: clock)
         let deadline = TransactionExecutionDeadline(
-            instant: ContinuousClock().now.advanced(by: .milliseconds(10)),
+            instant: clock.now.advanced(by: .milliseconds(10)),
             timeoutMilliseconds: 10
         )
 
@@ -273,9 +276,10 @@ struct TransactionRunnerRetryTests {
     @Test("Expired inherited deadline fails before transaction creation")
     func expiredInheritedDeadlinePrecedesTransactionCreation() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .success)
-        let runner = TransactionRunner(database: engine)
+        let clock = SystemStorageClock()
+        let runner = TransactionRunner(database: engine, clock: clock)
         let deadline = TransactionExecutionDeadline(
-            instant: ContinuousClock().now.advanced(by: .milliseconds(-1)),
+            instant: clock.now.advanced(by: .milliseconds(-1)),
             timeoutMilliseconds: .max
         )
 
@@ -296,10 +300,11 @@ struct TransactionRunnerRetryTests {
     @Test("Inherited deadline is shared by every retry attempt")
     func inheritedDeadlineSpansRetries() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .success)
-        let runner = TransactionRunner(database: engine)
+        let clock = SystemStorageClock()
+        let runner = TransactionRunner(database: engine, clock: clock)
         let attempts = AttemptCounter()
         let deadline = TransactionExecutionDeadline(
-            instant: ContinuousClock().now.advanced(by: .milliseconds(100)),
+            instant: clock.now.advanced(by: .milliseconds(100)),
             timeoutMilliseconds: 100
         )
 
@@ -358,7 +363,7 @@ struct TransactionRunnerRetryTests {
     func mutationAggregateOverflowRollsBack() async throws {
         let engine = InMemoryEngine()
         let runner = TransactionRunner(database: engine)
-        let key: Bytes = [0xA0]
+        let key: ByteString = [0xA0]
 
         do {
             let _: Void = try await runner.run(
@@ -386,7 +391,7 @@ struct TransactionRunnerRetryTests {
         let engine = InMemoryEngine()
         let runner = TransactionRunner(database: engine)
         let attempts = AttemptCounter()
-        let key: Bytes = [0xA1]
+        let key: ByteString = [0xA1]
 
         try await runner.run(
             configuration: TransactionConfiguration(
@@ -412,7 +417,7 @@ struct TransactionRunnerRetryTests {
     func detachedTaskCannotBypassMutationAdmission() async throws {
         let engine = InMemoryEngine()
         let runner = TransactionRunner(database: engine)
-        let key: Bytes = [0xA2]
+        let key: ByteString = [0xA2]
 
         do {
             let _: Void = try await runner.run(
@@ -679,8 +684,12 @@ private final class FlakyCreateTransactionEngine: StorageEngine, Sendable {
         }
     }
 
-    var directoryService: any DirectoryService {
-        engine.directoryService
+    var namespaceResolver: any NamespaceResolver {
+        engine.namespaceResolver
+    }
+
+    var namespaceCatalog: (any NamespaceCatalog)? {
+        engine.namespaceCatalog
     }
 }
 
@@ -777,8 +786,12 @@ private final class RecordingTransactionEngine: StorageEngine, Sendable {
         )
     }
 
-    var directoryService: any DirectoryService {
-        underlying.directoryService
+    var namespaceResolver: any NamespaceResolver {
+        underlying.namespaceResolver
+    }
+
+    var namespaceCatalog: (any NamespaceCatalog)? {
+        underlying.namespaceCatalog
     }
 }
 
@@ -812,7 +825,7 @@ private final class RecordingTransaction: Transaction, Sendable {
         try underlying.configureMutationByteLimit(maximumBytes: maximumBytes)
     }
 
-    func getValue(for key: Bytes, snapshot: Bool) async throws -> Bytes? {
+    func getValue(for key: ByteString, snapshot: Bool) async throws -> ByteString? {
         try await underlying.getValue(for: key, snapshot: snapshot)
     }
 
@@ -834,21 +847,21 @@ private final class RecordingTransaction: Transaction, Sendable {
         )
     }
 
-    func setValue(_ value: Bytes, for key: Bytes) throws {
+    func setValue(_ value: ByteString, for key: ByteString) throws {
         try underlying.setValue(value, for: key)
     }
 
-    func clear(key: Bytes) throws {
+    func clear(key: ByteString) throws {
         try underlying.clear(key: key)
     }
 
-    func clearRange(beginKey: Bytes, endKey: Bytes) throws {
+    func clearRange(beginKey: ByteString, endKey: ByteString) throws {
         try underlying.clearRange(beginKey: beginKey, endKey: endKey)
     }
 
     func atomicOp(
-        key: Bytes,
-        param: Bytes,
+        key: ByteString,
+        param: ByteString,
         mutationType: MutationType
     ) throws {
         try underlying.atomicOp(key: key, param: param, mutationType: mutationType)

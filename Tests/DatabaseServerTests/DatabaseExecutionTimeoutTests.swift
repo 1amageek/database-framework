@@ -8,10 +8,10 @@ struct DatabaseExecutionTimeoutTests {
     @Test("An expired deadline never starts the operation")
     func expiredDeadlineRejectsBeforeOperationStart() async throws {
         let starts = TimeoutOperationCounter()
-        let clock = SystemStorageClock()
-        let deadline = clock.now.advanced(
-            by: .milliseconds(-1)
+        let clock = FixedTimeoutClock(
+            now: StorageInstant(durationSinceReference: .milliseconds(1))
         )
+        let deadline = StorageInstant(durationSinceReference: .zero)
 
         do {
             let _: Void = try await DatabaseExecutionTimeout.run(
@@ -30,6 +30,12 @@ struct DatabaseExecutionTimeoutTests {
 
         #expect(starts.value == 0)
     }
+}
+
+private struct FixedTimeoutClock: StorageMonotonicClock {
+    let now: StorageInstant
+
+    func sleep(until deadline: StorageInstant) async throws {}
 }
 
 private final class TimeoutOperationCounter: Sendable {

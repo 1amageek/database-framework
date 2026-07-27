@@ -1,3 +1,4 @@
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -76,8 +77,8 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     private let configuration: ScrubberConfiguration
 
     // Progress tracking keys
-    private let phase1ProgressKey: Bytes
-    private let phase2ProgressKey: Bytes
+    private let phase1ProgressKey: ByteString
+    private let phase2ProgressKey: ByteString
 
     // MARK: - Metrics
 
@@ -304,7 +305,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
             var entriesScanned = 0
             var danglingDetected = 0
             var danglingRepaired = 0
-            var lastProcessedKey: Bytes? = nil
+            var lastProcessedKey: ByteString? = nil
             var bytesScanned = 0
 
             // Use limit + .iterator for efficient batch scrubbing
@@ -462,7 +463,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
             var itemsScanned = 0
             var missingDetected = 0
             var missingRepaired = 0
-            var lastProcessedKey: Bytes? = nil
+            var lastProcessedKey: ByteString? = nil
             var bytesScanned = 0
 
             // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
@@ -560,7 +561,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     /// Load saved progress
-    private func loadProgress(key: Bytes) async throws -> RangeSet? {
+    private func loadProgress(key: ByteString) async throws -> RangeSet? {
         return try await container.engine.withTransaction(
             configuration: transactionConfiguration
         ) { transaction in
@@ -573,7 +574,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     }
 
     /// Save progress
-    private func saveProgress(_ rangeSet: RangeSet, key: Bytes) async throws {
+    private func saveProgress(_ rangeSet: RangeSet, key: ByteString) async throws {
         try await container.engine.withTransaction(
             configuration: transactionConfiguration
         ) { transaction in
@@ -652,7 +653,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     }
 
     private func sleep(milliseconds: Int) async throws {
-        try await container.engine.monotonicClock.sleep(
+        try await container.monotonicClock.sleep(
             for: .milliseconds(Int64(milliseconds))
         )
     }

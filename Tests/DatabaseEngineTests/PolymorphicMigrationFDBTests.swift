@@ -489,7 +489,7 @@ struct PolymorphicMigrationFDBTests {
             ["_metadata"],
         ] {
             do {
-                try await database.removeDirectory(path: path)
+                try await database.removeNamespace(path: path)
             } catch {
             }
         }

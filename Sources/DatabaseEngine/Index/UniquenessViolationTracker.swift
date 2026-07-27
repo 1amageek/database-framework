@@ -4,6 +4,7 @@
 // Reference: FDB Record Layer IndexingMerger.java (violation tracking during merge)
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/IndexingMerger.java
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -115,7 +116,7 @@ public final class UniquenessViolationTracker: Sendable {
     public func recordViolation(
         indexName: String,
         persistableType: String,
-        valueKey: Bytes,
+        valueKey: ByteString,
         primaryKey: Tuple,
         transaction: any TransactionAccess
     ) async throws {
@@ -192,7 +193,7 @@ public final class UniquenessViolationTracker: Sendable {
     public func recordViolation(
         indexName: String,
         persistableType: String,
-        valueKey: Bytes,
+        valueKey: ByteString,
         existingPrimaryKey: Tuple,
         newPrimaryKey: Tuple,
         transaction: any TransactionAccess
@@ -415,7 +416,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// - Returns: Resolution result
     public func verifyResolution(
         indexName: String,
-        valueKey: Bytes,
+        valueKey: ByteString,
         indexSubspace: Subspace
     ) async throws -> ViolationResolution {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
@@ -431,7 +432,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// Verify if a violation has been resolved within a transaction
     public func verifyResolution(
         indexName: String,
-        valueKey: Bytes,
+        valueKey: ByteString,
         indexSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> ViolationResolution {
@@ -446,10 +447,12 @@ public final class UniquenessViolationTracker: Sendable {
         let violation = try UniquenessViolationCodec.decode(violationData)
 
         // Check actual index for duplicates
-        let valueSubspace = Subspace(prefix: indexSubspace.prefix + valueKey)
+        let valueSubspace = Subspace(
+            prefix: indexSubspace.prefix.appending(contentsOf: valueKey)
+        )
         let (begin, end) = valueSubspace.range()
 
-        var foundPrimaryKeys: [Bytes] = []
+        var foundPrimaryKeys: [ByteString] = []
         let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
         for (key, _) in sequence {
@@ -486,7 +489,7 @@ public final class UniquenessViolationTracker: Sendable {
     ///   - valueKey: The value key to clear
     public func clearViolation(
         indexName: String,
-        valueKey: Bytes
+        valueKey: ByteString
     ) async throws {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.clearViolation(
@@ -500,7 +503,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// Clear a violation entry within a transaction
     public func clearViolation(
         indexName: String,
-        valueKey: Bytes,
+        valueKey: ByteString,
         transaction: any TransactionAccess
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)

@@ -17,11 +17,11 @@ struct RDFGraphIdentityStorageSharingTests {
         let encoded = try RDFTermStorageFormat.encode(term)
         #expect(encoded.allSatisfy { $0 != 0 })
 
-        let packed = Tuple(Bytes(retaining: encoded)).pack()
+        let packed = Tuple(encoded).pack()
         let tuple = try Tuple.unpack(from: packed)
         let element = try tupleElement(tuple, at: 0)
-        guard let decoded = element as? Bytes else {
-            Issue.record("Expected a borrowed Bytes tuple element")
+        guard let decoded = element as? ByteString else {
+            Issue.record("Expected a borrowed ByteString tuple element")
             return
         }
 
@@ -35,7 +35,7 @@ struct RDFGraphIdentityStorageSharingTests {
         }
         #expect(
             try RDFTermStorageFormat.decode(
-                ByteString(retaining: decoded)
+                decoded
             ) == term
         )
     }
@@ -49,7 +49,7 @@ struct RDFGraphIdentityStorageSharingTests {
 
         #expect(
             try RDFTermStorageFormat.decode(
-                ByteString(retaining: decoded)
+                decoded
             ) == term
         )
     }
@@ -173,7 +173,7 @@ struct RDFGraphIdentityStorageSharingTests {
                 iri: "https://example.com/graph"
             )
         )
-        var gspoKey: Bytes?
+        var gspoKey: ByteString?
         try RDFQuadIndexWritePlan(quad: quad).forEachEntry { entry in
             guard entry.ordering == .gspo else { return }
             gspoKey = try codec.encode(entry)
@@ -182,7 +182,7 @@ struct RDFGraphIdentityStorageSharingTests {
         let owner = PhysicalKeyBorrowCountingOwner(
             bytes: packedKey.copyBytes()
         )
-        let ownerBackedKey = Bytes(retaining: owner)
+        let ownerBackedKey = ByteString(retaining: owner)
         let keyAddressRange = try #require(
             ownerBackedKey.withUnsafeBytes { buffer in
                 buffer.baseAddress.map { address in
@@ -229,13 +229,13 @@ struct RDFGraphIdentityStorageSharingTests {
 
     private func retainedTupleElement(
         for term: RDFTerm
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         let packed = Tuple(
-            Bytes(retaining: try RDFTermStorageFormat.encode(term))
+            try RDFTermStorageFormat.encode(term)
         ).pack()
         let tuple = try Tuple.unpack(from: packed)
         let element = try tupleElement(tuple, at: 0)
-        guard let decoded = element as? Bytes else {
+        guard let decoded = element as? ByteString else {
             throw RDFGraphIdentityStorageSharingError.unexpectedElementType
         }
         return decoded
@@ -274,7 +274,7 @@ private final class GraphIdentityBorrowCountingOwner: ByteStringOwner {
     }
 }
 
-private final class PhysicalKeyBorrowCountingOwner: BytesOwner {
+private final class PhysicalKeyBorrowCountingOwner: ByteStringOwner {
     let bytes: [UInt8]
     private let state = Mutex(0)
 

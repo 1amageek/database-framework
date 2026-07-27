@@ -47,7 +47,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// is stable for hot point-read paths. Keeping the fully encoded prefix avoids
     /// repeated tuple encoding of the type name on every read.
     private let defaultPersistableType: String?
-    private let defaultPointReadPrefix: Bytes?
+    private let defaultPointReadPrefix: ByteString?
 
     /// Index state manager for checking index readability
     let indexLifecycleStore: IndexLifecycleStore
@@ -85,11 +85,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
         self.metadataSubspace = subspace.subspace(SubspaceKey.metadata)
         self.defaultPersistableType = persistableType
         if let persistableType {
-            var prefix = self.itemSubspace.prefix
-            let encodedType = persistableType.encodeTuple()
-            prefix.reserveCapacity(prefix.count + encodedType.count)
-            prefix.append(contentsOf: encodedType)
-            self.defaultPointReadPrefix = prefix
+            let encodedType = Tuple([persistableType]).pack()
+            self.defaultPointReadPrefix = self.itemSubspace.prefix.appending(
+                contentsOf: encodedType
+            )
         } else {
             self.defaultPointReadPrefix = nil
         }
@@ -363,7 +362,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Tuple conforms to TupleElement, which would create a NESTED tuple
         // encoding (type code 0x05) that doesn't match the flat key structure
         // written by ScalarIndexMaintainer.
-        let valueSubspace = Subspace(prefix: indexSubspaceForIndex.prefix + valueTuple.pack())
+        let valueSubspace = Subspace(
+            prefix: indexSubspaceForIndex.prefix.appending(
+                contentsOf: valueTuple.pack()
+            )
+        )
 
         // Compute key range outside transaction to avoid capturing non-Sendable condition
         let scanRange: IndexScanRange
@@ -483,9 +486,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     /// Represents a pre-computed index scan range (Sendable)
     private enum IndexScanRange: Sendable {
-        case exactMatch(begin: Bytes, end: Bytes, valueSubspace: Subspace)
+        case exactMatch(begin: ByteString, end: ByteString, valueSubspace: Subspace)
         /// Range scan with keyPathsCount to know how many elements are index values vs ID
-        case range(begin: Bytes, end: Bytes, baseSubspace: Subspace, keyPathsCount: Int)
+        case range(begin: ByteString, end: ByteString, baseSubspace: Subspace, keyPathsCount: Int)
     }
 
     /// A scalar comparison encoded for an index-key prefix.
@@ -546,7 +549,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     /// Extract ID from an index key given a value subspace
     private func extractIDFromIndexKey(
-        _ key: Bytes,
+        _ key: ByteString,
         subspace: Subspace
     ) throws -> Tuple? {
         let tuple = try subspace.unpack(key)
@@ -566,7 +569,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     ///   - baseSubspace: The index subspace
     ///   - keyPathsCount: Number of index key paths (determines how many elements are values vs ID)
     private func extractIDFromIndexKey(
-        _ key: Bytes,
+        _ key: ByteString,
         baseSubspace: Subspace,
         keyPathsCount: Int
     ) throws -> Tuple? {
@@ -1011,7 +1014,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Tuple conforms to TupleElement, which would create a NESTED tuple
         // encoding (type code 0x05) that doesn't match the flat key structure
         // written by ScalarIndexMaintainer.
-        let valueSubspace = Subspace(prefix: indexSubspaceForIndex.prefix + valueTuple.pack())
+        let valueSubspace = Subspace(
+            prefix: indexSubspaceForIndex.prefix.appending(
+                contentsOf: valueTuple.pack()
+            )
+        )
 
         // Compute key range
         let scanRange: IndexScanRange
@@ -1327,16 +1334,13 @@ package final class DatabaseDataStore: DataStore, Sendable {
     private func itemKey(
         for persistableType: String,
         id: Tuple
-    ) -> Bytes {
-        let keyPrefix: Bytes
+    ) -> ByteString {
+        let keyPrefix: ByteString
         if persistableType == defaultPersistableType, let defaultPointReadPrefix {
             keyPrefix = defaultPointReadPrefix
         } else {
-            let encodedType = persistableType.encodeTuple()
-            var prefix = itemSubspace.prefix
-            prefix.reserveCapacity(prefix.count + encodedType.count)
-            prefix.append(contentsOf: encodedType)
-            keyPrefix = prefix
+            let encodedType = Tuple([persistableType]).pack()
+            keyPrefix = itemSubspace.prefix.appending(contentsOf: encodedType)
         }
         return Subspace(prefix: keyPrefix).pack(id)
     }
@@ -1376,10 +1380,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let valueTuple = condition.valueTuple
 
         // Build value subspace using flat encoding (see fetchUsingIndexWithTransaction comment)
-        let valueSubspace = Subspace(prefix: indexSubspaceForIndex.prefix + valueTuple.pack())
+        let valueSubspace = Subspace(
+            prefix: indexSubspaceForIndex.prefix.appending(
+                contentsOf: valueTuple.pack()
+            )
+        )
 
-        let beginKey: Bytes
-        let endKey: Bytes
+        let beginKey: ByteString
+        let endKey: ByteString
 
         switch condition.op {
         case .equal:
@@ -1432,19 +1440,23 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let valueTuple = condition.valueTuple
 
         // Compute key range outside transaction to avoid capturing non-Sendable condition
-        let beginKey: Bytes
-        let endKey: Bytes
+        let beginKey: ByteString
+        let endKey: ByteString
 
         switch condition.op {
         case .equal:
             let valueSubspace = Subspace(
-                prefix: indexSubspaceForIndex.prefix + valueTuple.pack()
+                prefix: indexSubspaceForIndex.prefix.appending(
+                    contentsOf: valueTuple.pack()
+                )
             )
             (beginKey, endKey) = valueSubspace.range()
 
         case .greaterThan:
             let valueSubspace = Subspace(
-                prefix: indexSubspaceForIndex.prefix + valueTuple.pack()
+                prefix: indexSubspaceForIndex.prefix.appending(
+                    contentsOf: valueTuple.pack()
+                )
             )
             beginKey = valueSubspace.range().1  // Start after value range
             endKey = indexSubspaceForIndex.range().1
@@ -1459,7 +1471,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         case .lessThanOrEqual:
             let valueSubspace = Subspace(
-                prefix: indexSubspaceForIndex.prefix + valueTuple.pack()
+                prefix: indexSubspaceForIndex.prefix.appending(
+                    contentsOf: valueTuple.pack()
+                )
             )
             beginKey = indexSubspaceForIndex.range().0
             endKey = valueSubspace.range().1

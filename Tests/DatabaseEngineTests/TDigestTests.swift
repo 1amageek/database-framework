@@ -3,6 +3,7 @@
 // TDigestTests.swift
 // Tests for TDigest streaming quantile estimation
 
+import DatabaseTypes
 import Testing
 import TestHeartbeat
 import Foundation
@@ -272,7 +273,7 @@ struct TDigestTests {
 
     @Test("Decode invalid data throws a typed error")
     func testDecodeInvalidData() {
-        let invalidData = Bytes([0, 1, 2, 3])
+        let invalidData = ByteString([0, 1, 2, 3])
         #expect(
             throws: TDigestError.invalidByteCount(expected: 40, actual: 4)
         ) {
@@ -284,9 +285,9 @@ struct TDigestTests {
     func testDecodeRejectsTrailingBytes() throws {
         var digest = TDigest()
         try digest.add(42)
-        var bytes = try digest.encodeBytes()
-        let expectedByteCount = bytes.count
-        bytes.append(0)
+        let encoded = try digest.encodeBytes()
+        let bytes = encoded.appending(0)
+        let expectedByteCount = encoded.count
 
         #expect(
             throws: TDigestError.invalidByteCount(

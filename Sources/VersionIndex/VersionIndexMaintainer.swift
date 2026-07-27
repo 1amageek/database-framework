@@ -3,6 +3,7 @@
 //
 // Maintains version history using FDB versionstamps for global ordering.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -107,7 +108,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         return []
     }
 
@@ -124,12 +125,12 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         primaryKey: [any TupleElement],
         limit: Int? = nil,
         transaction: any TransactionAccess
-    ) async throws -> [(version: Version, data: Bytes)] {
+    ) async throws -> [(version: Version, data: ByteString)] {
         let pkTuple = Tuple(primaryKey)
         let beginKey = subspace.pack(pkTuple)
-        let endKey = beginKey + [0xFF]
+        let endKey = beginKey.appending(0xFF)
 
-        var versions: [(Version, Bytes)] = []
+        var versions: [(Version, ByteString)] = []
 
         if let limit = limit {
             // Reverse scan: fetch newest N versions directly.
@@ -149,7 +150,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
                 let versionBytes = key[(key.count - 10)..<key.count]
                 let version = Version(bytes: versionBytes)
 
-                let data: Bytes
+                let data: ByteString
                 if value.count > 8 {
                     data = value[8..<value.count]
                 } else {
@@ -172,7 +173,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
                 let versionBytes = key[(key.count - 10)..<key.count]
                 let version = Version(bytes: versionBytes)
 
-                let data: Bytes
+                let data: ByteString
                 if value.count > 8 {
                     data = value[8..<value.count]
                 } else {
@@ -191,10 +192,10 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func getLatestVersion(
         primaryKey: [any TupleElement],
         transaction: any TransactionAccess
-    ) async throws -> Bytes? {
+    ) async throws -> ByteString? {
         let pkTuple = Tuple(primaryKey)
         let beginKey = subspace.pack(pkTuple)
-        let endKey = beginKey + [0xFF]
+        let endKey = beginKey.appending(0xFF)
 
         // Use lastLessThan to get the most recent version efficiently
         let lastSelector = KeySelector.lastLessThan(endKey)
@@ -235,28 +236,24 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         let itemData = try DataAccess.serialize(item)
 
         // Build key: [subspace][primaryKey]
-        var key = subspace.pack(primaryKeyTuple)
-        let versionPosition = key.count
+        let keyPrefix = subspace.pack(primaryKeyTuple)
+        let versionPosition = keyPrefix.count
 
         // Validate position fits in UInt32 range
-        guard versionPosition <= Int(UInt32.max) - 10 else {
+        guard versionPosition <= Int(UInt32.max) else {
             throw VersionIndexError.versionKeyTooLong(
                 byteCount: versionPosition
             )
         }
 
-        // Append 10-byte versionstamp placeholder (0xFF)
-        key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
-
-        // Append 4-byte position (little-endian) as required by FDB
-        let position32 = UInt32(versionPosition)
-        let positionBytes = withUnsafeBytes(of: position32.littleEndian) { Bytes($0) }
-        key.append(contentsOf: positionBytes)
+        let key = versionstampedKey(
+            prefix: keyPrefix,
+            versionPosition: UInt32(versionPosition)
+        )
 
         // Build value: [timestamp(8 bytes)][item data]
         let timestamp = Date().timeIntervalSince1970
-        var value = ByteConversion.uint64ToBytes(timestamp.bitPattern)
-        value.append(contentsOf: itemData)
+        let value = versionValue(timestamp: timestamp, itemData: itemData)
 
         // Use atomicOp with setVersionstampedKey
         // FDB will replace 10 bytes at versionPosition with actual versionstamp
@@ -271,22 +268,19 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         let primaryKeyTuple = try resolveItemId(for: item, providedId: nil)
 
         // Build key: [subspace][primaryKey]
-        var key = subspace.pack(primaryKeyTuple)
-        let versionPosition = key.count
+        let keyPrefix = subspace.pack(primaryKeyTuple)
+        let versionPosition = keyPrefix.count
 
-        guard versionPosition <= Int(UInt32.max) - 10 else {
+        guard versionPosition <= Int(UInt32.max) else {
             throw VersionIndexError.versionKeyTooLong(
                 byteCount: versionPosition
             )
         }
 
-        // Append 10-byte versionstamp placeholder
-        key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
-
-        // Append 4-byte position (little-endian)
-        let position32 = UInt32(versionPosition)
-        let positionBytes = withUnsafeBytes(of: position32.littleEndian) { Bytes($0) }
-        key.append(contentsOf: positionBytes)
+        let key = versionstampedKey(
+            prefix: keyPrefix,
+            versionPosition: UInt32(versionPosition)
+        )
 
         // Value: [timestamp(8 bytes)] only (empty item data = deletion marker)
         let timestamp = Date().timeIntervalSince1970
@@ -295,11 +289,58 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         try transaction.atomicOp(key: key, param: value, mutationType: .setVersionstampedKey)
     }
 
+    private func versionstampedKey(
+        prefix: ByteString,
+        versionPosition: UInt32
+    ) -> ByteString {
+        let suffixByteCount = 10 + MemoryLayout<UInt32>.size
+        return ByteString.copying(
+            count: prefix.count + suffixByteCount
+        ) { destination in
+            prefix.withUnsafeBytes { source in
+                UnsafeMutableRawBufferPointer(
+                    rebasing: destination[..<source.count]
+                ).copyMemory(from: source)
+            }
+            UnsafeMutableRawBufferPointer(
+                rebasing: destination[prefix.count..<(prefix.count + 10)]
+            ).initializeMemory(as: UInt8.self, repeating: 0xFF)
+            var littleEndianPosition = versionPosition.littleEndian
+            withUnsafeBytes(of: &littleEndianPosition) { source in
+                UnsafeMutableRawBufferPointer(
+                    rebasing: destination[(prefix.count + 10)...]
+                ).copyMemory(from: source)
+            }
+        }
+    }
+
+    private func versionValue(
+        timestamp: TimeInterval,
+        itemData: ByteString
+    ) -> ByteString {
+        let timestampByteCount = MemoryLayout<UInt64>.size
+        return ByteString.copying(
+            count: timestampByteCount + itemData.count
+        ) { destination in
+            var bits = timestamp.bitPattern.littleEndian
+            withUnsafeBytes(of: &bits) { source in
+                UnsafeMutableRawBufferPointer(
+                    rebasing: destination[..<timestampByteCount]
+                ).copyMemory(from: source)
+            }
+            itemData.withUnsafeBytes { source in
+                UnsafeMutableRawBufferPointer(
+                    rebasing: destination[timestampByteCount...]
+                ).copyMemory(from: source)
+            }
+        }
+    }
+
     /// Get primary key subspace for an item
-    private func getPrimaryKeySubspace(for item: Item) throws -> (subspace: Subspace, beginKey: Bytes, endKey: Bytes) {
+    private func getPrimaryKeySubspace(for item: Item) throws -> (subspace: Subspace, beginKey: ByteString, endKey: ByteString) {
         let primaryKeyTuple = try resolveItemId(for: item, providedId: nil)
         let beginKey = subspace.pack(primaryKeyTuple)
-        let endKey = beginKey + [0xFF]
+        let endKey = beginKey.appending(0xFF)
         return (Subspace(prefix: beginKey), beginKey, endKey)
     }
 
@@ -331,7 +372,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     ) async throws {
         let (_, beginKey, endKey) = try getPrimaryKeySubspace(for: item)
 
-        var versionKeys: [Bytes] = []
+        var versionKeys: [ByteString] = []
 
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
@@ -362,7 +403,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         let (_, beginKey, endKey) = try getPrimaryKeySubspace(for: item)
         let cutoffTime = Date().timeIntervalSince1970 - duration
 
-        var versionsToDelete: [Bytes] = []
+        var versionsToDelete: [ByteString] = []
         var totalCount = 0
 
         let sequence = try await transaction.collectRange(

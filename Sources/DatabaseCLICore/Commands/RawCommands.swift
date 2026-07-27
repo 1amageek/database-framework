@@ -1,4 +1,5 @@
 import Foundation
+import DatabaseTypes
 import StorageKit
 
 /// Read-only handler for bounded raw key-value inspection.
@@ -84,7 +85,7 @@ public struct RawCommands {
         let subspace = Subspace(prefix: prefix)
         let (begin, end) = subspace.range()
 
-        let results: [(key: Bytes, value: Bytes)] = try await database.withTransaction(configuration: .default) { transaction in
+        let results: [(key: ByteString, value: ByteString)] = try await database.withTransaction(configuration: .default) { transaction in
             try await transaction.collectRange(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
@@ -111,7 +112,7 @@ public struct RawCommands {
     /// Supports:
     /// - Simple strings: "mykey" -> UTF-8 bytes
     /// - Tuple format: "(\"mykey\", 123)" -> Tuple encoding
-    private func encodeKey(_ keyString: String) throws -> Bytes {
+    private func encodeKey(_ keyString: String) throws -> ByteString {
         guard !keyString.isEmpty else {
             throw CLIError.invalidArguments("Raw key must not be empty")
         }
@@ -129,7 +130,7 @@ public struct RawCommands {
     }
 
     /// Decode a key for display
-    private func decodeKey(_ key: Bytes) -> String {
+    private func decodeKey(_ key: ByteString) -> String {
         do {
             let elements = try Tuple.unpack(from: key)
             let parts = elements.map { "\($0)" }
@@ -139,7 +140,7 @@ public struct RawCommands {
         }
     }
 
-    private func hexString(_ bytes: Bytes) -> String {
+    private func hexString(_ bytes: ByteString) -> String {
         let digits = Array("0123456789abcdef".utf8)
         var output = [UInt8](repeating: 0, count: bytes.count * 2)
         bytes.withUnsafeBytes { source in

@@ -55,10 +55,10 @@ struct SPARQLIntegrationTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.directoryExists(
+        if try await container.engine.namespaceExists(
             path: ["test", "sparql", "statements"]
         ) {
-            try await container.engine.removeDirectory(
+            try await container.engine.removeNamespace(
                 path: ["test", "sparql", "statements"]
             )
         }

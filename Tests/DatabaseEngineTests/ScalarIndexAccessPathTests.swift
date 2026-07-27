@@ -97,8 +97,8 @@ struct ScalarIndexAccessPathTests {
 
     private func resetStorage(in container: DBContainer) async throws {
         let path = ["test", "scalar_access_path"]
-        if try await container.engine.directoryExists(path: path) {
-            try await container.engine.removeDirectory(path: path)
+        if try await container.engine.namespaceExists(path: path) {
+            try await container.engine.removeNamespace(path: path)
         }
         try await container.ensureIndexesReady()
     }

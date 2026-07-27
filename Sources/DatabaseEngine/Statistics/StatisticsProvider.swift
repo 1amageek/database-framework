@@ -108,8 +108,8 @@ public protocol LiveStatisticsProvider: StatisticsProvider {
     ///   - endKey: End of the range (exclusive)
     /// - Returns: Estimated size in bytes
     func estimatedRangeSizeBytes(
-        beginKey: Bytes,
-        endKey: Bytes
+        beginKey: ByteString,
+        endKey: ByteString
     ) async throws -> Int
 
     /// Get split points to divide a range for parallel processing
@@ -123,10 +123,10 @@ public protocol LiveStatisticsProvider: StatisticsProvider {
     ///   - chunkSize: Target size per chunk in bytes
     /// - Returns: Array of split point keys
     func rangeSplitPoints(
-        beginKey: Bytes,
-        endKey: Bytes,
+        beginKey: ByteString,
+        endKey: ByteString,
         chunkSize: Int
-    ) async throws -> [Bytes]
+    ) async throws -> [ByteString]
 
     /// Estimate row count for an index range based on server-side byte estimation
     ///
@@ -138,8 +138,8 @@ public protocol LiveStatisticsProvider: StatisticsProvider {
     /// - Returns: Estimated row count
     func estimatedRowsInRange(
         index: IndexDescriptor,
-        beginKey: Bytes,
-        endKey: Bytes,
+        beginKey: ByteString,
+        endKey: ByteString,
         avgRowSizeBytes: Int
     ) async throws -> Int
 }
@@ -834,7 +834,7 @@ public struct SearchStatisticsCollector: Sendable {
         let subspace = indexSubspace.subspace(indexName)
         let termsSubspace = subspace.subspace("terms")
 
-        var totalDocs: Set<Bytes> = []
+        var totalDocs: Set<ByteString> = []
         var termFrequencies: [String: Int] = [:]
         var totalTermOccurrences = 0
 
@@ -949,7 +949,7 @@ public struct SearchStatisticsCollector: Sendable {
     // MARK: - Helper Methods
 
     private func parseVectorForStats(
-        from bytes: Bytes,
+        from bytes: ByteString,
         dimensions: Int
     ) throws -> [Float] {
         let elements = try Tuple.unpack(from: bytes)
@@ -1153,8 +1153,8 @@ public final class DatabaseLiveStatisticsProvider: LiveStatisticsProvider, Senda
     // MARK: - LiveStatisticsProvider (server-side)
 
     public func estimatedRangeSizeBytes(
-        beginKey: Bytes,
-        endKey: Bytes
+        beginKey: ByteString,
+        endKey: ByteString
     ) async throws -> Int {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
@@ -1165,10 +1165,10 @@ public final class DatabaseLiveStatisticsProvider: LiveStatisticsProvider, Senda
     }
 
     public func rangeSplitPoints(
-        beginKey: Bytes,
-        endKey: Bytes,
+        beginKey: ByteString,
+        endKey: ByteString,
         chunkSize: Int
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: beginKey,
@@ -1180,8 +1180,8 @@ public final class DatabaseLiveStatisticsProvider: LiveStatisticsProvider, Senda
 
     public func estimatedRowsInRange(
         index: IndexDescriptor,
-        beginKey: Bytes,
-        endKey: Bytes,
+        beginKey: ByteString,
+        endKey: ByteString,
         avgRowSizeBytes: Int
     ) async throws -> Int {
         let sizeBytes = try await estimatedRangeSizeBytes(
@@ -1199,7 +1199,7 @@ public final class DatabaseLiveStatisticsProvider: LiveStatisticsProvider, Senda
     public func subspaceSplitPoints(
         subspace: Subspace,
         chunkSize: Int = 10_000_000  // 10MB default
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         let (begin, end) = subspace.range()
         return try await rangeSplitPoints(
             beginKey: begin,
@@ -1297,10 +1297,10 @@ public struct ParallelScanConfiguration: Sendable {
 /// A range chunk for parallel processing
 public struct RangeChunk: Sendable {
     /// Start key (inclusive)
-    public let beginKey: Bytes
+    public let beginKey: ByteString
 
     /// End key (exclusive)
-    public let endKey: Bytes
+    public let endKey: ByteString
 
     /// Chunk index (0-based)
     public let index: Int
@@ -1309,8 +1309,8 @@ public struct RangeChunk: Sendable {
     public let estimatedSizeBytes: Int?
 
     public init(
-        beginKey: Bytes,
-        endKey: Bytes,
+        beginKey: ByteString,
+        endKey: ByteString,
         index: Int,
         estimatedSizeBytes: Int? = nil
     ) {
@@ -1333,8 +1333,8 @@ extension DatabaseLiveStatisticsProvider {
     ///   - configuration: Parallel scan configuration
     /// - Returns: Array of range chunks for parallel processing
     public func divideRangeForParallelScan(
-        beginKey: Bytes,
-        endKey: Bytes,
+        beginKey: ByteString,
+        endKey: ByteString,
         configuration: ParallelScanConfiguration = .default
     ) async throws -> [RangeChunk] {
         // Get split points from FDB

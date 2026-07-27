@@ -24,7 +24,7 @@ public struct SHACLExecuteHandler: DatabaseOperationEndpointHandler {
         try validatePageLimit(request.page.limit, budget: request.budget)
         return try await DatabaseExecutionTimeout.run(
             milliseconds: request.budget.timeoutMilliseconds,
-            clock: context.container.engine.monotonicClock
+            clock: context.container.monotonicClock
         ) {
             try await service.execute(request, context: context)
                 .operationResult

@@ -437,8 +437,8 @@ struct PolymorphicVectorMigrationFDBTests {
             ["fdb_polymorphic_vector_migration"],
             ["_metadata"],
         ] {
-            if try await database.directoryExists(path: path) {
-                try await database.removeDirectory(path: path)
+            if try await database.namespaceExists(path: path) {
+                try await database.removeNamespace(path: path)
             }
         }
 

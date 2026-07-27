@@ -935,7 +935,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         if let cached = subspaceCache[cacheKey] {
             return cached
         }
-        guard try await container.engine.directoryService.exists(
+        guard try await container.engine.namespaceResolver.namespaceExists(
             path: partitionPath,
             transaction: storageAccess
         ) else {

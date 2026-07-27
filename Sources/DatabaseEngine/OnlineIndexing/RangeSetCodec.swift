@@ -9,7 +9,7 @@ public enum RangeSetCodec {
     public static func encode(
         _ rangeSet: RangeSet,
         limits: StorageFrameLimits = .default
-    ) throws(StorageFrameError) -> Bytes {
+    ) throws(StorageFrameError) -> ByteString {
         let encoded = try StorageFrameEncoder.encode(limits: limits) {
             (writer: inout StorageFrameEncoder) throws(StorageFrameError) in
             for byte in magic {
@@ -19,23 +19,23 @@ public enum RangeSetCodec {
             let continuations = rangeSet.persistedContinuations
             try writer.writeCount(continuations.count)
             for continuation in continuations {
-                try writer.writeBytes(ByteString(retaining: continuation.rangeBegin))
-                try writer.writeBytes(ByteString(retaining: continuation.rangeEnd))
+                try writer.writeBytes(continuation.rangeBegin)
+                try writer.writeBytes(continuation.rangeEnd)
                 try writer.writeOptionalBytes(
-                    continuation.lastProcessedKey.map(ByteString.init(retaining:))
+                    continuation.lastProcessedKey
                 )
                 writer.writeBool(continuation.isComplete)
             }
         }
-        return Bytes(retaining: encoded)
+        return encoded
     }
 
     public static func decode(
-        _ bytes: Bytes,
+        _ bytes: ByteString,
         limits: StorageFrameLimits = .default
     ) throws(StorageFrameError) -> RangeSet {
         var reader = try StorageFrameDecoder(
-            ByteString(retaining: bytes),
+            bytes,
             limits: limits
         )
         for byte in magic {
@@ -52,9 +52,9 @@ public enum RangeSetCodec {
         var continuations: [RangeContinuation] = []
         continuations.reserveCapacity(count)
         for _ in 0..<count {
-            let begin = Bytes(retaining: try reader.readBytes())
-            let end = Bytes(retaining: try reader.readBytes())
-            let lastProcessedKey = try reader.readOptionalBytes().map(Bytes.init(retaining:))
+            let begin = try reader.readBytes()
+            let end = try reader.readBytes()
+            let lastProcessedKey = try reader.readOptionalBytes()
             var continuation = RangeContinuation(begin: begin, end: end)
             continuation.lastProcessedKey = lastProcessedKey
             continuation.isComplete = try reader.readBool()

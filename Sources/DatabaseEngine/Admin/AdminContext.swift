@@ -97,8 +97,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             storageByteCount: storageSize,
             averageDocumentByteCount: avgDocumentSize,
             lastModified: nil,
-            keyRangeStart: ByteString(retaining: begin),
-            keyRangeEnd: ByteString(retaining: end)
+            keyRangeStart: begin,
+            keyRangeEnd: end
         )
     }
 
@@ -395,7 +395,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
     /// Get statistics subspace from DirectoryLayer
     private func getStatisticsSubspace() async throws -> Subspace {
-        return try await container.engine.createOrOpenDirectory(
+        return try await container.engine.resolveOrCreateNamespace(
             path: ["_metadata", "statistics"]
         )
     }

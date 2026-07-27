@@ -391,7 +391,7 @@ struct DatabaseOntologyReasoningProcessorTests {
         )
         let ontologySubspace = try await container.engine.withTransaction {
             transaction in
-            try await container.engine.directoryService.createOrOpen(
+            try await container.engine.namespaceResolver.resolveOrCreate(
                 path: ["database-framework", "ontology-index"],
                 transaction: transaction
             )

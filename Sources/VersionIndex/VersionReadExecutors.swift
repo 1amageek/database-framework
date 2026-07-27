@@ -75,7 +75,7 @@ private struct VersionReadExecutor: IndexReadExecutor {
                 result.item,
                 annotations: [
                     "version": .bytes(
-                        ByteString(retaining: result.version.bytes)
+                        result.version.bytes
                     )
                 ]
             )
@@ -197,7 +197,7 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
                     PolymorphicRowAnnotation.typeName: .string(runtimeType.persistableType),
                     PolymorphicRowAnnotation.typeCode: .int64(typeCode),
                     "version": .bytes(
-                        ByteString(retaining: result.version.bytes)
+                        result.version.bytes
                     )
                 ]
             )

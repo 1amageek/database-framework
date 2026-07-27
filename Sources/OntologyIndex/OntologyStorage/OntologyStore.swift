@@ -83,7 +83,7 @@ public struct OntologyStore: Sendable {
     ) async throws {
         let key = subspace.metadata(metadata.iri).pack(Tuple())
         let data = try JSONEncoder().encode(metadata)
-        try transaction.setValue(Bytes(data), for: key)
+        try transaction.setValue(ByteString(retaining: data), for: key)
     }
 
     /// Delete ontology metadata
@@ -147,7 +147,7 @@ public struct OntologyStore: Sendable {
     ) async throws {
         let key = subspace.classKey(ontologyIRI, classIRI: classDef.iri)
         let data = try classDef.encode()
-        try transaction.setValue(Bytes(data), for: key)
+        try transaction.setValue(ByteString(retaining: data), for: key)
     }
 
     /// Delete class definition
@@ -205,7 +205,7 @@ public struct OntologyStore: Sendable {
     ) async throws {
         let key = subspace.propertyKey(ontologyIRI, propertyIRI: propDef.iri)
         let data = try propDef.encode()
-        try transaction.setValue(Bytes(data), for: key)
+        try transaction.setValue(ByteString(retaining: data), for: key)
     }
 
     /// Delete property definition
@@ -255,7 +255,7 @@ public struct OntologyStore: Sendable {
         for (index, axiom) in axioms.enumerated() {
             let key = subspace.axiomKey(ontologyIRI, axiomID: String(index))
             let bytes = try OWLAxiomStorageFormat.encode(axiom)
-            try transaction.setValue(Bytes(retaining: bytes), for: key)
+            try transaction.setValue(bytes, for: key)
         }
     }
 
@@ -274,7 +274,7 @@ public struct OntologyStore: Sendable {
 
         for (_, value) in stream {
             let axiom = try OWLAxiomStorageFormat.decode(
-                ByteString(retaining: value)
+                value
             )
             axioms.append(axiom)
         }
@@ -445,10 +445,10 @@ public struct OntologyStore: Sendable {
     ) throws {
         // Bidirectional mapping
         let key1 = subspace.inverseKey(ontologyIRI, property: property)
-        try transaction.setValue(Bytes(inverseProperty.utf8), for: key1)
+        try transaction.setValue(ByteString(utf8: inverseProperty), for: key1)
 
         let key2 = subspace.inverseKey(ontologyIRI, property: inverseProperty)
-        try transaction.setValue(Bytes(property.utf8), for: key2)
+        try transaction.setValue(ByteString(utf8: property), for: key2)
     }
 
     /// Get inverse property
@@ -543,7 +543,7 @@ public struct OntologyStore: Sendable {
         let chainID = maxID + 1
         let key = subspace.chainKey(ontologyIRI, targetProperty: targetProperty, chainID: chainID)
         let data = try JSONEncoder().encode(chain)
-        try transaction.setValue(Bytes(data), for: key)
+        try transaction.setValue(ByteString(retaining: data), for: key)
     }
 
     /// Get property chains for a target property
@@ -1002,7 +1002,7 @@ public struct OntologyStore: Sendable {
 
     /// Create an OntologyStore with the standard subspace prefix
     public static func `default`() -> OntologyStore {
-        let baseSubspace = Subspace(prefix: Bytes("O".utf8))
+        let baseSubspace = Subspace(prefix: ByteString(utf8: "O"))
         return OntologyStore(subspace: OntologySubspace(base: baseSubspace))
     }
 }

@@ -5,11 +5,11 @@ import StorageKit
 
 public struct DatabaseMutationStateStore: Sendable {
     private let container: DBContainer
-    private let logicalVersionKey: Bytes
+    private let logicalVersionKey: ByteString
     private let idempotencySubspace: Subspace
 
     public init(container: DBContainer) async throws {
-        let root = try await container.engine.createOrOpenDirectory(
+        let root = try await container.engine.resolveOrCreateNamespace(
             path: ["database-framework", "wire-runtime"]
         )
         self.container = container
@@ -100,7 +100,7 @@ public struct DatabaseMutationStateStore: Sendable {
         let manifest: DatabaseIdempotencyManifest
         do {
             manifest = try DatabaseIdempotencyManifest.decode(
-                ByteString(retaining: metadata),
+                metadata,
                 limits: limits
             )
         } catch {
@@ -212,12 +212,12 @@ public struct DatabaseMutationStateStore: Sendable {
                 (startIndex + lowerBound)..<(startIndex + upperBound)
             ]
             try transaction.setValue(
-                Bytes(retaining: chunk),
+                chunk,
                 for: Self.chunkKey(in: chunks, index: chunkIndex)
             )
         }
         try transaction.setValue(
-            Bytes(retaining: metadata),
+            metadata,
             for: storage.pack(Tuple("metadata"))
         )
     }
@@ -225,12 +225,12 @@ public struct DatabaseMutationStateStore: Sendable {
     private static func chunkKey(
         in chunks: Subspace,
         index: UInt32
-    ) -> Bytes {
+    ) -> ByteString {
         chunks.pack(Tuple(UInt64(index)))
     }
 
-    private static func bigEndianBytes(_ value: UInt64) -> Bytes {
-        Bytes.copying(count: MemoryLayout<UInt64>.size) { output in
+    private static func bigEndianBytes(_ value: UInt64) -> ByteString {
+        ByteString.copying(count: MemoryLayout<UInt64>.size) { output in
             for offset in 0..<MemoryLayout<UInt64>.size {
                 output[offset] = UInt8(
                     truncatingIfNeeded: value >> UInt64((7 - offset) * 8)

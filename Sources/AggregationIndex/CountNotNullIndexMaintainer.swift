@@ -4,6 +4,7 @@
 // Tracks counts of non-null values grouped by other fields.
 // Reference: FDB Record Layer COUNT_NOT_NULL index type
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -107,7 +108,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         guard let key = try contributionKey(from: item) else { return [] }
         return [key]
     }
@@ -142,7 +143,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     /// Returns the grouping key only when the aggregate value contributes.
     /// Value extraction deliberately happens before grouping extraction so a
     /// null aggregate value never fails because an unrelated group path is null.
-    private func contributionKey(from item: Item?) throws -> Bytes? {
+    private func contributionKey(from item: Item?) throws -> ByteString? {
         guard let item,
               let fields = try AggregationFieldExtractor.contribution(
                 from: item,

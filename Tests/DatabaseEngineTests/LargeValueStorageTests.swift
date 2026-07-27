@@ -291,7 +291,7 @@ struct LargeValueStorageTests {
                 let serialized = try DataAccess.serialize(model)
                 let key = itemSubspace.pack(Tuple(id))
                 let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
-                try await storage.write(Bytes(serialized), for: key)
+                try await storage.write(serialized, for: key)
             }
         }
 
@@ -300,7 +300,7 @@ struct LargeValueStorageTests {
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             let (begin, end) = itemSubspace.range()
 
-            var results: [(id: String, data: Bytes)] = []
+            var results: [(id: String, data: ByteString)] = []
             for try await (key, data) in storage.scan(begin: begin, end: end, snapshot: false) {
                 // Extract ID from key using subspace.unpack
                 let idTuple = try itemSubspace.unpack(key)
@@ -358,7 +358,7 @@ struct LargeValueStorageTests {
                 let serialized = try DataAccess.serialize(model)
                 let key = itemSubspace.pack(Tuple(id))
                 let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
-                try await storage.write(Bytes(serialized), for: key)
+                try await storage.write(serialized, for: key)
             }
         }
 
@@ -408,7 +408,7 @@ struct LargeValueStorageTests {
             let serialized = try DataAccess.serialize(model)
             let key = itemSubspace.pack(Tuple(id))
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
-            try await storage.write(Bytes(serialized), for: key)
+            try await storage.write(serialized, for: key)
         }
 
         // Scan with snapshot=true
@@ -493,7 +493,7 @@ struct LargeValueStorageTests {
             serializedSize = serialized.count
             let key = itemSubspace.pack(Tuple(id))
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
-            try await storage.write(Bytes(serialized), for: key)
+            try await storage.write(serialized, for: key)
         }
 
         // Debug: Verify serialized size triggers splitting (>90KB)

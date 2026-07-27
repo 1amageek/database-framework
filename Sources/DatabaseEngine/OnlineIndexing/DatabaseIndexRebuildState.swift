@@ -12,7 +12,7 @@ package struct DatabaseIndexRebuildState: StorageFrameValue, Hashable {
     package let index: String
     package let generation: DatabaseTypes.UUID
     package let phase: Phase
-    package let lastProcessedKey: Bytes?
+    package let lastProcessedKey: ByteString?
     package let indexedEntityCount: UInt64
     package let detail: String?
 
@@ -21,7 +21,7 @@ package struct DatabaseIndexRebuildState: StorageFrameValue, Hashable {
         index: String,
         generation: DatabaseTypes.UUID,
         phase: Phase,
-        lastProcessedKey: Bytes? = nil,
+        lastProcessedKey: ByteString? = nil,
         indexedEntityCount: UInt64 = 0,
         detail: String? = nil
     ) {
@@ -43,7 +43,7 @@ package struct DatabaseIndexRebuildState: StorageFrameValue, Hashable {
         writer.writeUInt64(generation.low)
         writer.writeUInt8(phase.rawValue)
         try writer.writeOptionalBytes(
-            lastProcessedKey.map(ByteString.init(retaining:))
+            lastProcessedKey
         )
         writer.writeUInt64(indexedEntityCount)
         try writer.writeOptionalString(detail)
@@ -67,7 +67,7 @@ package struct DatabaseIndexRebuildState: StorageFrameValue, Hashable {
             index: index,
             generation: generation,
             phase: phase,
-            lastProcessedKey: try reader.readOptionalBytes().map(Bytes.init(retaining:)),
+            lastProcessedKey: try reader.readOptionalBytes(),
             indexedEntityCount: try reader.readUInt64(),
             detail: try reader.readOptionalString()
         )

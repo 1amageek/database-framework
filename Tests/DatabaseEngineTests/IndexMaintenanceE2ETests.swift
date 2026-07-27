@@ -109,8 +109,8 @@ struct IndexMaintenanceE2ETests {
 
     private func cleanup(container: DBContainer, paths: [[String]]) async throws {
         for path in paths {
-            if try await container.engine.directoryExists(path: path) {
-                try await container.engine.removeDirectory(path: path)
+            if try await container.engine.namespaceExists(path: path) {
+                try await container.engine.removeNamespace(path: path)
             }
         }
         // Re-initialize indexes after directory removal

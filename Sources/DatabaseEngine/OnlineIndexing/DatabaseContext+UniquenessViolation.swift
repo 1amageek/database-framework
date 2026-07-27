@@ -5,6 +5,7 @@
 // during online index building. It is separated from the core DatabaseContext to
 // follow the extension pattern for optional features.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -196,7 +197,7 @@ extension DatabaseContext {
     public func clearUniquenessViolation<T: Persistable>(
         for type: T.Type,
         indexName: String,
-        valueKey: Bytes
+        valueKey: ByteString
     ) async throws {
         let databaseStore = try await container.store(for: type)
         try await databaseStore.violationTracker.clearViolation(
@@ -217,7 +218,7 @@ extension DatabaseContext {
     public func clearUniquenessViolation<T: Persistable>(
         for type: T.Type,
         indexName: String,
-        valueKey: Bytes,
+        valueKey: ByteString,
         partition: DirectoryPath<T>
     ) async throws {
         let databaseStore = try await container.store(for: type, path: partition)
@@ -288,7 +289,7 @@ extension DatabaseContext {
     public func verifyUniquenessViolationResolution<T: Persistable>(
         for type: T.Type,
         indexName: String,
-        valueKey: Bytes
+        valueKey: ByteString
     ) async throws -> ViolationResolution {
         let databaseStore = try await container.store(for: type)
 
@@ -313,7 +314,7 @@ extension DatabaseContext {
     public func verifyUniquenessViolationResolution<T: Persistable>(
         for type: T.Type,
         indexName: String,
-        valueKey: Bytes,
+        valueKey: ByteString,
         partition: DirectoryPath<T>
     ) async throws -> ViolationResolution {
         let databaseStore = try await container.store(for: type, path: partition)

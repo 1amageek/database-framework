@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 import Synchronization
 
@@ -88,14 +89,14 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
             try underlying.configureMutationByteLimit(maximumBytes: maximumBytes)
         }
 
-        func getValue(for key: Bytes, snapshot: Bool) async throws -> Bytes? {
+        func getValue(for key: ByteString, snapshot: Bool) async throws -> ByteString? {
             try await underlying.getValue(for: key, snapshot: snapshot)
         }
 
         func getKey(
             selector: KeySelector,
             snapshot: Bool
-        ) async throws -> Bytes? {
+        ) async throws -> ByteString? {
             try await underlying.getKey(selector: selector, snapshot: snapshot)
         }
 
@@ -117,24 +118,24 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
             )
         }
 
-        func setValue(_ value: Bytes, for key: Bytes) throws {
+        func setValue(_ value: ByteString, for key: ByteString) throws {
             try underlying.setValue(value, for: key)
             containsMutation.withLock { $0 = true }
         }
 
-        func clear(key: Bytes) throws {
+        func clear(key: ByteString) throws {
             try underlying.clear(key: key)
             containsMutation.withLock { $0 = true }
         }
 
-        func clearRange(beginKey: Bytes, endKey: Bytes) throws {
+        func clearRange(beginKey: ByteString, endKey: ByteString) throws {
             try underlying.clearRange(beginKey: beginKey, endKey: endKey)
             containsMutation.withLock { $0 = true }
         }
 
         func atomicOp(
-            key: Bytes,
-            param: Bytes,
+            key: ByteString,
+            param: ByteString,
             mutationType: MutationType
         ) throws {
             try underlying.atomicOp(
@@ -176,7 +177,7 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
         }
 
         func setOption(
-            to value: Bytes?,
+            to value: ByteString?,
             forOption option: TransactionOption
         ) throws {
             try underlying.setOption(to: value, forOption: option)
@@ -190,8 +191,8 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
         }
 
         func addConflictRange(
-            beginKey: Bytes,
-            endKey: Bytes,
+            beginKey: ByteString,
+            endKey: ByteString,
             type: ConflictRangeType
         ) throws {
             try underlying.addConflictRange(
@@ -202,8 +203,8 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
         }
 
         func getEstimatedRangeSizeBytes(
-            beginKey: Bytes,
-            endKey: Bytes
+            beginKey: ByteString,
+            endKey: ByteString
         ) async throws -> Int {
             try await underlying.getEstimatedRangeSizeBytes(
                 beginKey: beginKey,
@@ -212,10 +213,10 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
         }
 
         func getRangeSplitPoints(
-            beginKey: Bytes,
-            endKey: Bytes,
+            beginKey: ByteString,
+            endKey: ByteString,
             chunkSize: Int
-        ) async throws -> [Bytes] {
+        ) async throws -> [ByteString] {
             try await underlying.getRangeSplitPoints(
                 beginKey: beginKey,
                 endKey: endKey,
@@ -248,8 +249,12 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
         )
     }
 
-    var directoryService: any DirectoryService {
-        underlying.directoryService
+    var namespaceResolver: any NamespaceResolver {
+        underlying.namespaceResolver
+    }
+
+    var namespaceCatalog: (any NamespaceCatalog)? {
+        underlying.namespaceCatalog
     }
 
     func shutdown() {

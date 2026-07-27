@@ -92,11 +92,11 @@ struct SPARQLFunctionIntegrationTests {
         )
 
         // Clean up previous test data
-        if try await database.directoryExists(path: ["sparql_function_test_users"]) {
-            try await database.removeDirectory(path: ["sparql_function_test_users"])
+        if try await database.namespaceExists(path: ["sparql_function_test_users"]) {
+            try await database.removeNamespace(path: ["sparql_function_test_users"])
         }
-        if try await database.directoryExists(path: ["sparql_function_test_rdf"]) {
-            try await database.removeDirectory(path: ["sparql_function_test_rdf"])
+        if try await database.namespaceExists(path: ["sparql_function_test_rdf"]) {
+            try await database.removeNamespace(path: ["sparql_function_test_rdf"])
         }
         try await container.ensureIndexesReady()
 

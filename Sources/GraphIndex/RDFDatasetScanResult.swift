@@ -5,12 +5,12 @@ import StorageKit
 
 package struct RDFDatasetScanStorageRow: Sendable, Hashable {
     package let quad: RDFQuad
-    package let coveringValue: Bytes
+    package let coveringValue: ByteString
     package let storedFieldNames: [String]
 
     package init(
         quad: RDFQuad,
-        coveringValue: Bytes = Bytes(),
+        coveringValue: ByteString = ByteString(),
         storedFieldNames: [String] = []
     ) {
         self.quad = quad

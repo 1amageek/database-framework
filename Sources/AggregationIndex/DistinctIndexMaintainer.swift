@@ -17,12 +17,12 @@ private struct DistinctIndexSubspaces: Sendable {
 
 private struct DistinctIndexGroup: Sendable {
     let memberSubspace: Subspace
-    let summaryKey: Bytes
-    let membershipMetadataKey: Bytes
+    let summaryKey: ByteString
+    let membershipMetadataKey: ByteString
 }
 
 private struct DistinctIndexContribution: Sendable {
-    let memberKey: Bytes
+    let memberKey: ByteString
     let value: FieldValue
     let group: DistinctIndexGroup
 }
@@ -105,7 +105,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
         if let newContribution {
             appendDistinctGroup(newContribution.group, to: &affectedGroups)
         }
-        var groupWasPresent: [Bytes: Bool] = [:]
+        var groupWasPresent: [ByteString: Bool] = [:]
         groupWasPresent.reserveCapacity(affectedGroups.count)
         for group in affectedGroups {
             groupWasPresent[group.summaryKey] = try await validateStoredGroup(
@@ -225,8 +225,8 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
         }
 
         var groups: [DistinctIndexBatchGroup] = []
-        var groupIndices: [Bytes: Int] = [:]
-        var groupWasPresent: [Bytes: Bool] = [:]
+        var groupIndices: [ByteString: Int] = [:]
+        var groupWasPresent: [ByteString: Bool] = [:]
         groupIndices.reserveCapacity(
             Swift.min(contributions.count, maximumGroupsPerQuery)
         )
@@ -289,7 +289,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         try validateConfiguration()
         guard let contribution = try contribution(for: item) else {
             return []
@@ -378,7 +378,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
             estimated: Int64,
             errorRate: Double
         )] = []
-        var groups: [Bytes: DistinctIndexReadGroup] = [:]
+        var groups: [ByteString: DistinctIndexReadGroup] = [:]
         var scannedMemberCountGroups = 0
         var scannedSummaryGroups = 0
         var scannedBytes = 0
@@ -759,7 +759,7 @@ private enum DistinctSummaryCodec {
     private static let headerByteCount = 5
     private static let registerBitCount = 6
 
-    static func encode(_ estimator: HyperLogLog) throws -> Bytes {
+    static func encode(_ estimator: HyperLogLog) throws -> ByteString {
         guard DistinctIndexMaintainerCodecLimits.persistedPrecision.contains(
             estimator.precision
         ) else {
@@ -769,7 +769,7 @@ private enum DistinctSummaryCodec {
         let payloadByteCount = (registerCount * registerBitCount + 7) / 8
         let totalByteCount = headerByteCount + payloadByteCount
 
-        return Bytes.copying(count: totalByteCount) { destination in
+        return ByteString.copying(count: totalByteCount) { destination in
             destination[0] = 0x44
             destination[1] = 0x48
             destination[2] = 0x4C
@@ -800,7 +800,7 @@ private enum DistinctSummaryCodec {
     }
 
     static func decode(
-        _ bytes: Bytes,
+        _ bytes: ByteString,
         expectedPrecision: Int
     ) throws -> HyperLogLog {
         guard bytes.count >= headerByteCount,

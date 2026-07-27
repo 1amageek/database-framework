@@ -4,6 +4,7 @@
 // Reference: FDB Record Layer Remote Fetch optimization
 // Efficiently fetches multiple entities by batching primary key lookups.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -281,7 +282,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
         indexSubspace: Subspace,
         transaction: any TransactionAccess
     ) -> AsyncThrowingStream<Item, Error>
-    where S.Element == (key: Bytes, value: Bytes), S: Sendable {
+    where S.Element == (key: ByteString, value: ByteString), S: Sendable {
         AsyncThrowingStream { continuation in
             Task {
                 var batch: [Tuple] = []
@@ -341,7 +342,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     /// Extract primary key from an index key
     ///
     /// Assumes the primary key is the last element of the index key tuple.
-    private func extractPrimaryKey(from key: Bytes, indexSubspace: Subspace) throws -> Tuple? {
+    private func extractPrimaryKey(from key: ByteString, indexSubspace: Subspace) throws -> Tuple? {
         let tuple = try indexSubspace.unpack(key)
         guard tuple.count > 0 else { return nil }
 

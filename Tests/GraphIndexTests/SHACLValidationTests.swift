@@ -65,8 +65,8 @@ struct SHACLValidationTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.directoryExists(path: ["shacl_validation_tests", "statements"]) {
-            try await container.engine.removeDirectory(path: ["shacl_validation_tests", "statements"])
+        if try await container.engine.namespaceExists(path: ["shacl_validation_tests", "statements"]) {
+            try await container.engine.removeNamespace(path: ["shacl_validation_tests", "statements"])
         }
         try await container.ensureIndexesReady()
         try await container.newContext().shacl.deleteAllShapesGraphs()

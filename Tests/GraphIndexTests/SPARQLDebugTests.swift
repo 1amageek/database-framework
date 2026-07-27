@@ -71,8 +71,8 @@ struct SPARQLDebugTests {
 
         // Clean up directory BEFORE creating container to avoid stale state
         
-        if try await database.directoryExists(path: ["test", "debug_rdf"]) {
-            try await database.removeDirectory(path: ["test", "debug_rdf"])
+        if try await database.namespaceExists(path: ["test", "debug_rdf"]) {
+            try await database.removeNamespace(path: ["test", "debug_rdf"])
         }
 
         // Create container and ensure indexes are ready AFTER cleanup
@@ -175,8 +175,8 @@ struct SPARQLDebugTests {
 
         // Clean up directory BEFORE creating container to avoid stale state
         
-        if try await database.directoryExists(path: ["test", "debug_edge"]) {
-            try await database.removeDirectory(path: ["test", "debug_edge"])
+        if try await database.namespaceExists(path: ["test", "debug_edge"]) {
+            try await database.removeNamespace(path: ["test", "debug_edge"])
         }
 
         // Create container and ensure indexes are ready AFTER cleanup

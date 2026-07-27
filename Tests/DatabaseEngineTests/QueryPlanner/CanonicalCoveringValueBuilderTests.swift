@@ -152,7 +152,7 @@ struct CanonicalCoveringValueBuilderTests {
         let ignoredPayload = ByteString.copying(count: 65_536) { buffer in
             buffer.initializeMemory(as: UInt8.self, repeating: 0xA5)
         }
-        var frame = try PersistableFieldFrameCodec.encode(
+        let encodedFrame = try PersistableFieldFrameCodec.encode(
             magic: [0x54, 0x45, 0x53, 0x54],
             version: 1,
             entity: "Projection",
@@ -176,9 +176,13 @@ struct CanonicalCoveringValueBuilderTests {
             0xA5, 0xA5, 0xA5, 0xA5,
         ]
         let ignoredTagOffset = try #require(
-            firstOffset(of: ignoredValueSignature, in: frame)
+            firstOffset(of: ignoredValueSignature, in: encodedFrame)
         )
-        frame[ignoredTagOffset] = 0xFE
+        let frame = replacingByte(
+            in: encodedFrame,
+            at: ignoredTagOffset,
+            with: 0xFE
+        )
 
         let selected = try PersistableFieldFrameCodec.decodeSelected(
             frame,
@@ -215,7 +219,7 @@ struct CanonicalCoveringValueBuilderTests {
 
     private func firstOffset(
         of signature: [UInt8],
-        in bytes: Bytes
+        in bytes: ByteString
     ) -> Int? {
         guard !signature.isEmpty, signature.count <= bytes.count else {
             return nil
@@ -230,6 +234,19 @@ struct CanonicalCoveringValueBuilderTests {
             if matches { return start }
         }
         return nil
+    }
+
+    private func replacingByte(
+        in source: ByteString,
+        at index: Int,
+        with replacement: UInt8
+    ) -> ByteString {
+        ByteString.copying(count: source.count) { destination in
+            source.withUnsafeBytes { bytes in
+                destination.copyMemory(from: bytes)
+            }
+            destination[index] = replacement
+        }
     }
 }
 #endif

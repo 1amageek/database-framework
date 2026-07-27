@@ -4,6 +4,7 @@
 // Reference: FDB Record Layer mutual indexing strategy
 // Used for bidirectional relationships where each index helps build the other.
 
+import DatabaseTypes
 import StorageKit
 import DatabaseKit
 import Metrics
@@ -80,8 +81,8 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     private let throttleDelayMs: Int
 
     // Progress tracking
-    private let forwardProgressKey: Bytes
-    private let reverseProgressKey: Bytes
+    private let forwardProgressKey: ByteString
+    private let reverseProgressKey: ByteString
 
     // MARK: - Metrics
 
@@ -291,7 +292,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var pairsInBatch = 0
-                    var lastProcessedKey: Bytes? = nil
+                    var lastProcessedKey: ByteString? = nil
 
                     // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
                     let storage = self.container.itemStorageFactory.make(
@@ -380,7 +381,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
             // Throttle if configured
             if throttleDelayMs > 0 {
-                try await container.engine.monotonicClock.sleep(
+                try await container.monotonicClock.sleep(
                     for: .milliseconds(Int64(throttleDelayMs))
                 )
             }
@@ -450,7 +451,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
     // MARK: - Progress Management
 
-    private func loadProgress(key: Bytes) async throws -> RangeSet? {
+    private func loadProgress(key: ByteString) async throws -> RangeSet? {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
@@ -459,7 +460,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         }
     }
 
-    private func saveProgress(_ rangeSet: RangeSet, key: Bytes, _ transaction: any TransactionAccess) throws {
+    private func saveProgress(_ rangeSet: RangeSet, key: ByteString, _ transaction: any TransactionAccess) throws {
         try transaction.setValue(try RangeSetCodec.encode(rangeSet), for: key)
     }
 

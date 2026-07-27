@@ -1,5 +1,6 @@
 #if !os(WASI)
 #if FOUNDATION_DB
+import DatabaseTypes
 import Testing
 import Foundation
 import StorageKit
@@ -203,14 +204,14 @@ struct ResolveDirectoryTests {
 
             // Write test data
             let testKey = subspace.pack(Tuple("test", "key"))
-            let testValue: Bytes = [1, 2, 3, 4, 5]
+            let testValue: ByteString = [1, 2, 3, 4, 5]
 
             try await container.engine.withTransaction { transaction in
                 try transaction.setValue(testValue, for: testKey)
             }
 
             // Read back in a new transaction
-            let readValue: Bytes? = try await container.engine.withTransaction { transaction in
+            let readValue: ByteString? = try await container.engine.withTransaction { transaction in
                 try await transaction.getValue(for: testKey, snapshot: false)
             }
 

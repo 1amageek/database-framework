@@ -1,3 +1,5 @@
+import DatabaseTypes
+
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -5,7 +7,7 @@ import Foundation
 #endif
 import StorageKit
 
-final class GraphSnapshotByteOwner: BytesOwner, Sendable {
+final class GraphSnapshotByteOwner: ByteStringOwner, Sendable {
     private let data: Data
 
     init(data: Data) {

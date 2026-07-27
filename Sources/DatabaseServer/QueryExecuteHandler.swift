@@ -22,7 +22,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         }
         return try await DatabaseExecutionTimeout.run(
             milliseconds: request.budget.timeoutMilliseconds,
-            clock: context.container.engine.monotonicClock
+            clock: context.container.monotonicClock
         ) {
             let workMeter = DatabaseWorkMeter(budget: request.budget)
             let admittedStatement = try DatabaseStatementAdmission(

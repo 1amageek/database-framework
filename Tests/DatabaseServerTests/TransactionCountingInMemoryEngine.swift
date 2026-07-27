@@ -22,8 +22,12 @@ final class TransactionCountingInMemoryEngine: StorageEngine, Sendable {
         return transaction
     }
 
-    var directoryService: any DirectoryService {
-        engine.directoryService
+    var namespaceResolver: any NamespaceResolver {
+        engine.namespaceResolver
+    }
+
+    var namespaceCatalog: (any NamespaceCatalog)? {
+        engine.namespaceCatalog
     }
 
     func shutdown() {

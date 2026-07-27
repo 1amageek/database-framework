@@ -14,7 +14,7 @@ package struct DatabasePartitionCatalog: Sendable {
         engine: any StorageEngine,
         storageLimits: StorageFrameLimits = .default
     ) async throws {
-        let root = try await engine.createOrOpenDirectory(
+        let root = try await engine.resolveOrCreateNamespace(
             path: ["database-framework", "partition-catalog"]
         )
         self.engine = engine
@@ -50,7 +50,7 @@ package struct DatabasePartitionCatalog: Sendable {
             limits: storageLimits
         )
         let key = entryKey(entity: entity, encodedEntry: bytes)
-        let storageBytes = Bytes(retaining: bytes)
+        let storageBytes = bytes
 
         if let existing = try await transaction.getValue(
             for: key,
@@ -98,7 +98,7 @@ package struct DatabasePartitionCatalog: Sendable {
             } catch {
                 throw DatabasePartitionCatalogError.invalidContinuation
             }
-            let lastKey = Bytes(retaining: decoded.lastKey)
+            let lastKey = decoded.lastKey
             guard decoded.entity == entity,
                   scanSpace.contains(lastKey) else {
                 throw DatabasePartitionCatalogError.invalidContinuation
@@ -123,7 +123,7 @@ package struct DatabasePartitionCatalog: Sendable {
                 decodedEntries.append(
                     try decodeEntry(
                         key: row.0,
-                        bytes: ByteString(retaining: row.1)
+                        bytes: row.1
                     )
                 )
             }
@@ -133,7 +133,7 @@ package struct DatabasePartitionCatalog: Sendable {
                 next = try StorageFrameCodec.encode(
                     DatabasePartitionCatalogContinuation(
                         entity: entity,
-                        lastKey: ByteString(retaining: lastKey)
+                        lastKey: lastKey
                     ),
                     limits: storageLimits
                 )
@@ -148,7 +148,7 @@ package struct DatabasePartitionCatalog: Sendable {
     }
 
     private func decodeEntry(
-        key: Bytes,
+        key: ByteString,
         bytes: ByteString
     ) throws -> DatabasePartitionCatalogEntry {
         do {
@@ -196,11 +196,11 @@ package struct DatabasePartitionCatalog: Sendable {
     private func entryKey(
         entity: String,
         encodedEntry: ByteString
-    ) -> Bytes {
+    ) -> ByteString {
         var hasher = SHA256Accumulator()
         hasher.update(encodedEntry)
         let digest = hasher.finalize()
-        let storageDigest = Bytes.copying(count: digest.count) { destination in
+        let storageDigest = ByteString.copying(count: digest.count) { destination in
             digest.withUnsafeBytes { source in
                 destination.copyMemory(from: source)
             }

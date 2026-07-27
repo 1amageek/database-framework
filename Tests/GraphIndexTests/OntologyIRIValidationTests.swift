@@ -118,8 +118,8 @@ struct OntologyIRIValidationTests {
     private func setupContext() async throws -> DatabaseContext {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        if try await database.directoryExists(path: ["ontology_iri_validation_tests"]) {
-            try await database.removeDirectory(path: ["ontology_iri_validation_tests"])
+        if try await database.namespaceExists(path: ["ontology_iri_validation_tests"]) {
+            try await database.removeNamespace(path: ["ontology_iri_validation_tests"])
         }
         let schema = try Schema(
             entities: [
@@ -172,7 +172,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Bytes("O".utf8))))
+        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: ByteString(utf8: "O"))))
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -189,7 +189,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Bytes("O".utf8))))
+        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: ByteString(utf8: "O"))))
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -218,7 +218,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Bytes("O".utf8))))
+        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: ByteString(utf8: "O"))))
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -235,7 +235,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Bytes("O".utf8))))
+        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: ByteString(utf8: "O"))))
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -262,7 +262,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: Bytes("O".utf8))))
+        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: ByteString(utf8: "O"))))
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in

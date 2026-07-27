@@ -130,7 +130,7 @@ transaction. Reads use the consistency and cache policy selected by canonical
 query execution. A score entry whose entity is missing is an index consistency
 failure, not a row to silently omit.
 
-The hot path keeps encoded keys and values as `Bytes`. Conversion to model
+The hot path keeps encoded keys and values as `ByteString`. Conversion to model
 values happens only when an output entity is materialized. Ordered range reads
 are bounded at the storage boundary, so top and bottom queries do not create a
 full-index intermediate collection.

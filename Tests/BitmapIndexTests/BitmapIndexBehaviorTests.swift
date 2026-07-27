@@ -261,8 +261,7 @@ struct RoaringBitmapUnitTests {
     func persistedRepresentationRejectsTrailingInput() throws {
         var original = RoaringBitmap()
         original.add(1)
-        var bytes = try original.serializedBytes()
-        bytes.append(0)
+        let bytes = try original.serializedBytes().appending(0)
 
         #expect(throws: RoaringBitmapFormatError.trailingBytes(1)) {
             _ = try RoaringBitmap(serializedBytes: bytes)
@@ -273,8 +272,13 @@ struct RoaringBitmapUnitTests {
     func persistedRepresentationRejectsUnknownFormatVersion() throws {
         var original = RoaringBitmap()
         original.add(1)
-        var bytes = try original.serializedBytes()
-        bytes[3] = 2
+        let serialized = try original.serializedBytes()
+        let bytes = ByteString.copying(count: serialized.count) { destination in
+            serialized.withUnsafeBytes { source in
+                destination.copyMemory(from: source)
+            }
+            destination[3] = 2
+        }
 
         #expect(throws: RoaringBitmapFormatError.unsupportedFormatVersion(2)) {
             _ = try RoaringBitmap(serializedBytes: bytes)

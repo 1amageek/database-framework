@@ -58,14 +58,12 @@ struct RDFQuadIndexMaintainerTests {
         )
         #expect(keys.count == 6)
 
-        let expectedGraph = Bytes(
-            retaining: try RDFTermStorageFormat.encode(graph)
-        )
+        let expectedGraph = try RDFTermStorageFormat.encode(graph)
         for (offset, subspaceKey) in [2, 3, 4, 8, 9, 10].enumerated() {
             let tuple = try setup.base.subspace(Int64(subspaceKey)).unpack(keys[offset])
             #expect(tuple.count == 4)
             let graphPosition = subspaceKey < 8 ? 3 : 0
-            #expect(tuple[graphPosition] as? Bytes == expectedGraph)
+            #expect(tuple[graphPosition] as? ByteString == expectedGraph)
         }
     }
 
@@ -99,11 +97,8 @@ struct RDFQuadIndexMaintainerTests {
             let tuple = try setup.base.subspace(Int64(subspaceKey)).unpack(keys[offset])
             let graphPosition = subspaceKey < 8 ? 3 : 0
             #expect(
-                (tuple[graphPosition] as? Bytes)
-                    == Bytes(
-                        retaining: RDFQuadIndexPhysicalLayout
-                            .defaultGraphDiscriminator
-                    )
+                (tuple[graphPosition] as? ByteString)
+                    == RDFQuadIndexPhysicalLayout.defaultGraphDiscriminator
             )
         }
     }

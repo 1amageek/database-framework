@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseEngine
 import StorageKit
 
@@ -8,7 +9,7 @@ enum RankCounterError: Error, Sendable, Equatable {
 }
 
 enum RankCounterCodec {
-    static func decode(_ bytes: Bytes) throws(RankCounterError) -> Int64 {
+    static func decode(_ bytes: ByteString) throws(RankCounterError) -> Int64 {
         let value: Int64
         do {
             value = try ByteConversion.bytesToInt64(bytes)
@@ -19,7 +20,7 @@ enum RankCounterCodec {
         return value
     }
 
-    static func decodeInt(_ bytes: Bytes) throws(RankCounterError) -> Int {
+    static func decodeInt(_ bytes: ByteString) throws(RankCounterError) -> Int {
         let value = try decode(bytes)
         guard let result = Int(exactly: value) else {
             throw .exceedsPlatformInt(value)

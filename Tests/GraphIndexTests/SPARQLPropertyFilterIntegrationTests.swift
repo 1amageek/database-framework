@@ -121,10 +121,10 @@ struct SPARQLPropertyFilterIntegrationTests {
         let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialConnection.self, BasicEdge.self]), security: .disabled)
 
 
-        if try await database.directoryExists(
+        if try await database.namespaceExists(
             path: ["test", "sparql_property"]
         ) {
-            try await database.removeDirectory(
+            try await database.removeNamespace(
                 path: ["test", "sparql_property"]
             )
         }
@@ -347,10 +347,10 @@ struct SPARQLPropertyFilterIntegrationTests {
         let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialConnection.self, BasicEdge.self]), security: .disabled)
 
         
-        if try await database.directoryExists(
+        if try await database.namespaceExists(
             path: ["test", "basic_edge"]
         ) {
-            try await database.removeDirectory(
+            try await database.removeNamespace(
                 path: ["test", "basic_edge"]
             )
         }

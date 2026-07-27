@@ -42,7 +42,7 @@ struct CoveringIndexBenchmark {
 
     private func makeContext() async throws -> DatabaseContext {
         do {
-            try await database.removeDirectory(path: ["benchmarks", "users"])
+            try await database.removeNamespace(path: ["benchmarks", "users"])
         } catch {
             // Ignore missing benchmark directories so each benchmark starts clean.
         }

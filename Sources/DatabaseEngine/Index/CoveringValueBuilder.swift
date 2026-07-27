@@ -30,7 +30,7 @@ public enum CoveringValueBuilder {
     public static func build<Item: Persistable>(
         for item: Item,
         index: Index
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         let schemas = try validatedSchemas(for: Item.self)
         let modelFields = Set(schemas.map(\.name))
         let requestedPaths = ["id"] + index.kind.fieldNames + index.storedFieldNames
@@ -76,7 +76,7 @@ public enum CoveringValueBuilder {
 
     /// Decodes the stored-field portion for graph and specialized index readers.
     public static func decode(
-        _ bytes: Bytes,
+        _ bytes: ByteString,
         storedFieldNames: [String]
     ) throws -> [String: FieldValue] {
         guard !storedFieldNames.isEmpty else { return [:] }
@@ -108,7 +108,7 @@ public enum CoveringValueBuilder {
     }
 
     package static func decodeFields(
-        _ bytes: Bytes,
+        _ bytes: ByteString,
         expectedEntity: String
     ) throws -> [PersistableField] {
         guard !bytes.isEmpty else {

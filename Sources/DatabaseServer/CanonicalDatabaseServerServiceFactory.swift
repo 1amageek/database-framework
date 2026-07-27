@@ -41,7 +41,7 @@ public final class CanonicalDatabaseServerServiceFactory:
             wireLimits: context.wireLimits
         )
         let ontologyIndexSubspace = try await context.container.engine
-            .createOrOpenDirectory(
+            .resolveOrCreateNamespace(
                 path: ["database-framework", "ontology-index"]
             )
         let ontologyIndexStore = OntologyStore(

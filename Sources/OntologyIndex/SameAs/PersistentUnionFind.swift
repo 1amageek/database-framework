@@ -7,6 +7,7 @@
 // Reference: Tarjan, R. E. (1975). "Efficiency of a Good But Not Linear Set Union Algorithm"
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/#Individual_Equality
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -131,7 +132,7 @@ public struct PersistentUnionFind: Sendable {
         let root = current
         for node in path {
             let parentKey = subspace.sameAsParentKey(ontologyIRI, individual: node)
-            try transaction.setValue(Bytes(root.utf8), for: parentKey)
+            try transaction.setValue(ByteString(utf8: root), for: parentKey)
         }
 
         return root
@@ -200,7 +201,7 @@ public struct PersistentUnionFind: Sendable {
 
         // Set parent pointer
         let parentKey = subspace.sameAsParentKey(ontologyIRI, individual: attached)
-        try transaction.setValue(Bytes(newRoot.utf8), for: parentKey)
+        try transaction.setValue(ByteString(utf8: newRoot), for: parentKey)
 
         // Update members index
         // Move all members of attached to newRoot
@@ -275,7 +276,7 @@ public struct PersistentUnionFind: Sendable {
         // Only initialize if not already present
         if try await transaction.getValue(for: parentKey, snapshot: false) == nil {
             // Self-loop indicates root
-            try transaction.setValue(Bytes(individual.utf8), for: parentKey)
+            try transaction.setValue(ByteString(utf8: individual), for: parentKey)
             try await setRank(individual, rank: 0, ontologyIRI: ontologyIRI, transaction: transaction)
 
             // Add to own members list
@@ -372,7 +373,7 @@ public struct PersistentUnionFind: Sendable {
         }
         let rankKey = subspace.sameAsRankKey(ontologyIRI, individual: individual)
         let value = encodedRank.littleEndian
-        let data = Bytes.copying(count: MemoryLayout<Int64>.size) { buffer in
+        let data = ByteString.copying(count: MemoryLayout<Int64>.size) { buffer in
             buffer.storeBytes(of: value, as: Int64.self)
         }
         try transaction.setValue(data, for: rankKey)
@@ -412,7 +413,7 @@ public struct PersistentUnionFind: Sendable {
     }
 
     private func memberTupleCursor(
-        for key: Bytes,
+        for key: ByteString,
         subspace: Subspace
     ) throws -> TupleCursor {
         do {

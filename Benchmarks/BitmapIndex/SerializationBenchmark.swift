@@ -1,6 +1,7 @@
 #if FOUNDATION_DB
 import BenchmarkFramework
 import BitmapIndex
+import DatabaseTypes
 import Foundation
 import StorageKit
 import Testing
@@ -37,7 +38,7 @@ struct PersistedRepresentationBenchmark {
     func deserializationPerformance() async throws {
         let sizes = [100, 500, 1_000, 5_000, 10_000]
         let bitmaps = makeBitmaps(sizes: sizes)
-        var representations: [Int: Bytes] = [:]
+        var representations: [Int: ByteString] = [:]
         for (size, bitmap) in bitmaps {
             representations[size] = try bitmap.serializedBytes()
         }

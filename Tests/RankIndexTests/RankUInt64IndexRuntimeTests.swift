@@ -33,7 +33,7 @@ struct RankUInt64IndexRuntimeTests {
             )
         let scoresSubspace = indexSubspace.subspace("scores")
 
-        var keys: [Bytes] = []
+        var keys: [ByteString] = []
         keys.reserveCapacity(scores.count)
         for (offset, score) in scores.enumerated() {
             let entity = UnsignedRankEntity(id: "entity-\(offset)", score: score)

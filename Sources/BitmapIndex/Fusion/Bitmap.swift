@@ -4,6 +4,7 @@
 // This file is part of BitmapIndex module, not DatabaseEngine.
 // DatabaseEngine remains independent of bitmap execution behavior.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -181,7 +182,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
             case .in(let values):
                 // OR query across multiple values
                 var allPks: [Tuple] = []
-                var seen: Set<Bytes> = []
+                var seen: Set<ByteString> = []
 
                 for value in values {
                     let fieldValues = [try TupleEncoder.encode(value)]

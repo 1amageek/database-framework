@@ -3,6 +3,7 @@
 //
 // Provides DatabaseContext extension and query builder for temporal versioning.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -129,7 +130,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
                 throw VersionQueryError.invalidResponse("Missing version annotation")
             }
             return (
-                version: Version(bytes: Bytes(retaining: versionData)),
+                version: Version(bytes: versionData),
                 item: item
             )
         }
@@ -142,7 +143,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
-        let rawResults: [(version: Version, data: Bytes)] = try await queryContext.withTransaction(configuration: configuration) { transaction in
+        let rawResults: [(version: Version, data: ByteString)] = try await queryContext.withTransaction(configuration: configuration) { transaction in
             let maintainer = try self.createMaintainer(
                 indexSubspace: indexSubspace,
                 indexName: indexName

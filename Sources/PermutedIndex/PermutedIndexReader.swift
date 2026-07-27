@@ -18,7 +18,11 @@ struct PermutedIndexReader: Sendable {
         }
         let prefixSubspace = values.isEmpty
             ? subspace
-            : Subspace(prefix: subspace.prefix + Tuple(values).pack())
+            : Subspace(
+                prefix: subspace.prefix.appending(
+                    contentsOf: Tuple(values).pack()
+                )
+            )
         let (begin, end) = prefixSubspace.range()
         var results: [[any TupleElement]] = []
 

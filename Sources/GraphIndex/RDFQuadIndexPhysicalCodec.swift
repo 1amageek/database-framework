@@ -32,7 +32,7 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
     /// Emits a fixed four-component key into one final allocation.
     package func encode(
         _ entry: RDFQuadIndexEntryWritePlan
-    ) throws(RDFQuadIndexPhysicalCodecError) -> Bytes {
+    ) throws(RDFQuadIndexPhysicalCodecError) -> ByteString {
         let target = try subspace(for: entry.ordering)
         let encodedTupleByteCount = try encodedByteCount(
             entry.first,
@@ -56,7 +56,7 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
     package func range(
         prefix: RDFQuadIndexPrefixWritePlan,
         ordering: GraphIndexOrdering
-    ) throws(RDFQuadIndexPhysicalCodecError) -> (begin: Bytes, end: Bytes) {
+    ) throws(RDFQuadIndexPhysicalCodecError) -> (begin: ByteString, end: ByteString) {
         let target = try subspace(for: ordering)
         guard prefix.count > 0 else {
             return target.range()
@@ -118,7 +118,7 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
     /// Decodes borrowed tuple slices and materializes RDF strings only for the
     /// semantic quad returned to the caller.
     package func decodeQuad(
-        key: Bytes,
+        key: ByteString,
         ordering: GraphIndexOrdering
     ) throws(RDFQuadIndexPhysicalCodecError) -> RDFQuad {
         let encoded = try decodeEncodedQuad(key: key, ordering: ordering)
@@ -145,7 +145,7 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
 
     /// Reorders four borrowed tuple slices without materializing RDF strings.
     package func decodeEncodedQuad(
-        key: Bytes,
+        key: ByteString,
         ordering: GraphIndexOrdering
     ) throws(RDFQuadIndexPhysicalCodecError) -> RDFQuadIndexEncodedQuad {
         let orderingSubspace = try subspace(for: ordering)
@@ -164,10 +164,10 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
             throw .unexpectedTrailingTupleData(offset: cursor.consumedByteCount)
         }
 
-        let firstTriple: Bytes
-        let secondTriple: Bytes
-        let thirdTriple: Bytes
-        let encodedGraph: Bytes
+        let firstTriple: ByteString
+        let secondTriple: ByteString
+        let thirdTriple: ByteString
+        let encodedGraph: ByteString
         if ordering.isGraphFirst {
             encodedGraph = first
             firstTriple = second
@@ -180,9 +180,9 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
             encodedGraph = fourth
         }
 
-        let subject: Bytes
-        let predicate: Bytes
-        let object: Bytes
+        let subject: ByteString
+        let predicate: ByteString
+        let object: ByteString
         switch ordering {
         case .spo, .gspo:
             subject = firstTriple
@@ -204,12 +204,12 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
         if encodedGraph.count == 1 && encodedGraph[0] == 0xff {
             graph = nil
         } else {
-            graph = ByteString(retaining: encodedGraph)
+            graph = encodedGraph
         }
         return RDFQuadIndexEncodedQuad(
-            subject: ByteString(retaining: subject),
-            predicate: ByteString(retaining: predicate),
-            object: ByteString(retaining: object),
+            subject: subject,
+            predicate: predicate,
+            object: object,
             graph: graph
         )
     }
@@ -310,7 +310,7 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
     private func requiredBytes(
         from cursor: inout TupleCursor,
         position: Int
-    ) throws(RDFQuadIndexPhysicalCodecError) -> Bytes {
+    ) throws(RDFQuadIndexPhysicalCodecError) -> ByteString {
         do {
             return try cursor.requireBytes()
         } catch TupleError.unexpectedEndOfData {

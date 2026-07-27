@@ -249,7 +249,7 @@ struct VectorAlgorithmMaintainerTests {
     private func collectValues(
         database: InMemoryEngine,
         subspace: Subspace
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
             let entries = try await transaction.collectRange(

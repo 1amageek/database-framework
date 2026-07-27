@@ -365,8 +365,8 @@ public enum FieldValueStableHash {
         private static let c1: UInt64 = 0x87c3_7b91_1142_53d5
         private static let c2: UInt64 = 0x4cf5_ad43_2745_937f
 
-        mutating func update<Bytes: Sequence>(_ bytes: Bytes)
-        where Bytes.Element == UInt8 {
+        mutating func update<ByteSequence: Sequence>(_ bytes: ByteSequence)
+        where ByteSequence.Element == UInt8 {
             for byte in bytes {
                 update(byte: byte)
             }

@@ -496,7 +496,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
 /// The previous `String(data:encoding:)` path rejected malformed UTF-8. This
 /// validator preserves that behavior while avoiding both `Data` and `String`
 /// materialization in the scan loop.
-func containsHNSWMarker(in key: Bytes) -> Bool {
+func containsHNSWMarker(in key: ByteString) -> Bool {
     var index = 0
     var containsMarker = false
     while index < key.count {

@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 
 /// Database-wide source of truth for the immutable physical storage format.
@@ -34,7 +35,7 @@ public struct DatabaseFormatCatalog: Sendable {
             }
 
             let existing = try await transaction.collectRange(
-                from: .firstGreaterOrEqual(Bytes()),
+                from: .firstGreaterOrEqual(ByteString()),
                 to: .firstGreaterOrEqual([0xFF]),
                 limit: 1,
                 snapshot: false,

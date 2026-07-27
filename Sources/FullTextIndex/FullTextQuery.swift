@@ -447,7 +447,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 transaction: transaction
             )
         case .any:
-            var idToElements: [Bytes: [any TupleElement]] = [:]
+            var idToElements: [ByteString: [any TupleElement]] = [:]
             for group in termGroups {
                 let matches = try await searchTermsAND(
                     group,
@@ -476,8 +476,8 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<Bytes>? = nil
-        var idToElements: [Bytes: [any TupleElement]] = [:]
+        var intersection: Set<ByteString>? = nil
+        var idToElements: [ByteString: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchTerm(
@@ -485,7 +485,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 termsSubspace: termsSubspace,
                 transaction: transaction
             )
-            var currentSet: Set<Bytes> = []
+            var currentSet: Set<ByteString> = []
 
             for elements in results {
                 let idKey = elementsToStableKey(elements)
@@ -518,7 +518,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var idToElements: [Bytes: [any TupleElement]] = [:]
+        var idToElements: [ByteString: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchTerm(
@@ -567,7 +567,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     /// Preserve tuple type identity without converting the packed bytes.
     private func elementsToStableKey(
         _ elements: [any TupleElement]
-    ) -> Bytes {
+    ) -> ByteString {
         Tuple(elements).pack()
     }
 
@@ -689,7 +689,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             let items = try await self.queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
 
             // Create a map of id -> score for efficient lookup
-            var idToScore: [Bytes: Double] = [:]
+            var idToScore: [ByteString: Double] = [:]
             for result in scoredResults {
                 let key = FullTextDocumentLookupKey.key(for: result.id)
                 idToScore[key] = result.score

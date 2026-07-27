@@ -1,5 +1,6 @@
 #if !os(WASI)
 #if FOUNDATION_DB
+import DatabaseTypes
 import Testing
 import Foundation
 import StorageKit
@@ -77,9 +78,9 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolation creation and properties")
     func violationCreation() {
-        let valueKey: Bytes = Tuple("test@example.com").pack()
-        let pk1: Bytes = Tuple("user1").pack()
-        let pk2: Bytes = Tuple("user2").pack()
+        let valueKey: ByteString = Tuple("test@example.com").pack()
+        let pk1: ByteString = Tuple("user1").pack()
+        let pk2: ByteString = Tuple("user2").pack()
 
         let violation = UniquenessViolation(
             indexName: "UniqueTestUser_email",
@@ -97,9 +98,9 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolation unpacking")
     func violationUnpacking() throws {
-        let valueKey: Bytes = Tuple("test@example.com").pack()
-        let pk1: Bytes = Tuple("user1").pack()
-        let pk2: Bytes = Tuple("user2").pack()
+        let valueKey: ByteString = Tuple("test@example.com").pack()
+        let pk1: ByteString = Tuple("user1").pack()
+        let pk2: ByteString = Tuple("user2").pack()
 
         let violation = UniquenessViolation(
             indexName: "test_idx",
@@ -118,7 +119,7 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolation valueDescription")
     func violationValueDescription() {
-        let valueKey: Bytes = Tuple("hello", 123).pack()
+        let valueKey: ByteString = Tuple("hello", 123).pack()
 
         let violation = UniquenessViolation(
             indexName: "test_idx",
@@ -134,8 +135,8 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolation storage encoding round-trips")
     func uniquenessViolationStorageEncodingRoundTrips() throws {
-        let valueKey: Bytes = Tuple("test").pack()
-        let pk: Bytes = Tuple("id1").pack()
+        let valueKey: ByteString = Tuple("test").pack()
+        let pk: ByteString = Tuple("id1").pack()
 
         let violation = UniquenessViolation(
             indexName: "idx",
@@ -156,8 +157,8 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolation CustomStringConvertible")
     func violationDescription() {
-        let valueKey: Bytes = Tuple("email@test.com").pack()
-        let pk: Bytes = Tuple("user1").pack()
+        let valueKey: ByteString = Tuple("email@test.com").pack()
+        let pk: ByteString = Tuple("user1").pack()
 
         let violation = UniquenessViolation(
             indexName: "email_idx",

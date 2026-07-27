@@ -21,7 +21,7 @@ public enum StatisticsEntryCodec {
     private static let magic: UInt32 = 0x5441_5453
     private static let version: UInt8 = 1
 
-    public static func encode(_ value: TableStatisticsData) throws -> Bytes {
+    public static func encode(_ value: TableStatisticsData) throws -> ByteString {
         try encode(kind: .table) { writer in
             writer.writeInt64(value.rowCount)
             writer.writeInt64(try int64(value.avgRowSize))
@@ -31,7 +31,7 @@ public enum StatisticsEntryCodec {
         }
     }
 
-    public static func decodeTable(_ bytes: Bytes) throws -> TableStatisticsData {
+    public static func decodeTable(_ bytes: ByteString) throws -> TableStatisticsData {
         var reader = try reader(for: bytes, expected: .table)
         let value = TableStatisticsData(
             rowCount: try reader.readInt64(),
@@ -44,7 +44,7 @@ public enum StatisticsEntryCodec {
         return value
     }
 
-    public static func encode(_ value: FieldStatisticsData) throws -> Bytes {
+    public static func encode(_ value: FieldStatisticsData) throws -> ByteString {
         try encode(kind: .field) { writer in
             try writer.writeString(value.fieldName)
             writer.writeInt64(value.distinctCount)
@@ -58,7 +58,7 @@ public enum StatisticsEntryCodec {
         }
     }
 
-    public static func decodeField(_ bytes: Bytes) throws -> FieldStatisticsData {
+    public static func decodeField(_ bytes: ByteString) throws -> FieldStatisticsData {
         var reader = try reader(for: bytes, expected: .field)
         let value = FieldStatisticsData(
             fieldName: try reader.readString(),
@@ -75,7 +75,7 @@ public enum StatisticsEntryCodec {
         return value
     }
 
-    public static func encode(_ value: IndexStatisticsData) throws -> Bytes {
+    public static func encode(_ value: IndexStatisticsData) throws -> ByteString {
         try encode(kind: .index) { writer in
             try writer.writeString(value.indexName)
             writer.writeInt64(value.entryCount)
@@ -89,7 +89,7 @@ public enum StatisticsEntryCodec {
         }
     }
 
-    public static func decodeIndex(_ bytes: Bytes) throws -> IndexStatisticsData {
+    public static func decodeIndex(_ bytes: ByteString) throws -> IndexStatisticsData {
         var reader = try reader(for: bytes, expected: .index)
         let indexName = try reader.readString()
         let entryCount = try reader.readInt64()
@@ -108,7 +108,7 @@ public enum StatisticsEntryCodec {
         return value
     }
 
-    public static func encode(_ value: VectorStatisticsData) throws -> Bytes {
+    public static func encode(_ value: VectorStatisticsData) throws -> ByteString {
         try encode(kind: .vector) { writer in
             try writer.writeString(value.indexName)
             writer.writeInt64(value.vectorCount)
@@ -128,7 +128,7 @@ public enum StatisticsEntryCodec {
         }
     }
 
-    public static func decodeVector(_ bytes: Bytes) throws -> VectorStatisticsData {
+    public static func decodeVector(_ bytes: ByteString) throws -> VectorStatisticsData {
         var reader = try reader(for: bytes, expected: .vector)
         let indexName = try reader.readString()
         let vectorCount = try reader.readInt64()
@@ -166,7 +166,7 @@ public enum StatisticsEntryCodec {
         return value
     }
 
-    public static func encode(_ value: FullTextStatisticsData) throws -> Bytes {
+    public static func encode(_ value: FullTextStatisticsData) throws -> ByteString {
         try encode(kind: .fullText) { writer in
             try writer.writeString(value.indexName)
             writer.writeInt64(value.totalDocs)
@@ -184,7 +184,7 @@ public enum StatisticsEntryCodec {
         }
     }
 
-    public static func decodeFullText(_ bytes: Bytes) throws -> FullTextStatisticsData {
+    public static func decodeFullText(_ bytes: ByteString) throws -> FullTextStatisticsData {
         var reader = try reader(for: bytes, expected: .fullText)
         let indexName = try reader.readString()
         let totalDocs = try reader.readInt64()
@@ -219,7 +219,7 @@ public enum StatisticsEntryCodec {
         return value
     }
 
-    public static func encode(_ value: SpatialStatisticsData) throws -> Bytes {
+    public static func encode(_ value: SpatialStatisticsData) throws -> ByteString {
         try encode(kind: .spatial) { writer in
             try writer.writeString(value.indexName)
             writer.writeInt64(value.entryCount)
@@ -243,7 +243,7 @@ public enum StatisticsEntryCodec {
         }
     }
 
-    public static func decodeSpatial(_ bytes: Bytes) throws -> SpatialStatisticsData {
+    public static func decodeSpatial(_ bytes: ByteString) throws -> SpatialStatisticsData {
         var reader = try reader(for: bytes, expected: .spatial)
         let indexName = try reader.readString()
         let entryCount = try reader.readInt64()
@@ -288,7 +288,7 @@ public enum StatisticsEntryCodec {
     private static func encode(
         kind: EntryKind,
         _ body: (inout StorageFrameEncoder) throws -> Void
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         let encoded = try StorageFrameEncoder.encodeReportingFailure {
             writer in
             writer.writeUInt32(magic)
@@ -296,14 +296,14 @@ public enum StatisticsEntryCodec {
             writer.writeUInt8(kind.rawValue)
             try body(&writer)
         }
-        return Bytes(retaining: encoded)
+        return encoded
     }
 
     private static func reader(
-        for bytes: Bytes,
+        for bytes: ByteString,
         expected kind: EntryKind
     ) throws -> StorageFrameDecoder {
-        var reader = try StorageFrameDecoder(ByteString(retaining: bytes))
+        var reader = try StorageFrameDecoder(bytes)
         guard try reader.readUInt32() == magic else {
             throw StatisticsStorageError.invalidMagic
         }

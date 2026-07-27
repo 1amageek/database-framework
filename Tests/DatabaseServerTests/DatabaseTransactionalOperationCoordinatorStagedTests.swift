@@ -121,7 +121,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
         let mutationContext = try await CoordinatedMutationContext(
             maximumMutationAggregateBytes: 64
         )
-        let key: Bytes = [0xF0]
+        let key: ByteString = [0xF0]
 
         do {
             _ = try await mutationContext.execute(
@@ -130,7 +130,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 prepare: { 1 },
                 body: { value, context in
                     try context.storageAccess.setValue(
-                        Bytes(repeating: 0, count: 64),
+                        ByteString(repeating: 0, count: 64),
                         for: key
                     )
                     return value

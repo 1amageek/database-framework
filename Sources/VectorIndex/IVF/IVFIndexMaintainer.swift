@@ -4,6 +4,7 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -135,7 +136,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         // IVF stores data in inverted lists, not directly by primary key
         // Return the assignment key for verification
         let assignmentSubspace = subspace.subspace(SubspaceKey.assignments.rawValue)
@@ -393,7 +394,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
         let encoder = JSONEncoder()
         let data = try encoder.encode(metadata)
-        try transaction.setValue(Bytes(data), for: metadataKey)
+        try transaction.setValue(ByteString(retaining: data), for: metadataKey)
     }
 
     /// Load metadata

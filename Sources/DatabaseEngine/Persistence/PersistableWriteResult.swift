@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseKit
 import StorageKit
 
@@ -8,6 +9,6 @@ import StorageKit
 struct PersistableWriteResult: Sendable {
     let model: any Persistable
     let previousModel: (any Persistable)?
-    let encodedValue: Bytes
+    let encodedValue: ByteString
     let identifier: Tuple
 }

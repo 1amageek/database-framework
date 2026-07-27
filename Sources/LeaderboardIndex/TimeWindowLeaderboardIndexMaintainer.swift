@@ -4,6 +4,7 @@
 // Time-windowed ranking with automatic window rotation.
 // Reference: FDB Record Layer TIME_WINDOW_LEADERBOARD index type
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -261,7 +262,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         // Sparse index: if score field is nil, no index entry
         let score: Int64
         let grouping: [any TupleElement]
@@ -355,7 +356,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         grouping: [any TupleElement],
         score: Int64,
         pk: Tuple
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         var elements: [any TupleElement] = [windowId]
         elements.append(contentsOf: grouping)
         elements.append(invertScore(score))
@@ -396,7 +397,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         try await ensureWindowMetadata(windowId: windowId, transaction: transaction)
     }
 
-    private func decodePosition(_ bytes: Bytes, pk: Tuple) throws -> PositionEntry {
+    private func decodePosition(_ bytes: ByteString, pk: Tuple) throws -> PositionEntry {
         let posElements: [any TupleElement]
         do {
             posElements = try Tuple.unpack(from: bytes)
@@ -765,11 +766,11 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         }
 
         let rangeStart = windowSubspace.pack(Tuple(prefixElements))
-        let rangeEnd: Bytes
+        let rangeEnd: ByteString
         do {
             rangeEnd = try strinc(rangeStart)
         } catch {
-            rangeEnd = rangeStart + [0xFF]
+            rangeEnd = rangeStart.appending(0xFF)
         }
 
         // Forward iteration - collect all entries, then return last K
@@ -906,11 +907,11 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         }
 
         let rangeStart = windowSubspace.pack(Tuple(prefixElements))
-        let rangeEnd: Bytes
+        let rangeEnd: ByteString
         do {
             rangeEnd = try strinc(rangeStart)
         } catch {
-            rangeEnd = rangeStart + [0xFF]
+            rangeEnd = rangeStart.appending(0xFF)
         }
 
         let sequence = try await transaction.collectRange(

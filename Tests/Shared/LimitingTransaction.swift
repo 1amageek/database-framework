@@ -1,4 +1,5 @@
 import Foundation
+import DatabaseTypes
 import StorageKit
 import Synchronization
 
@@ -19,7 +20,7 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
     /// Since LimitingTransaction wraps type-erased storage access, range
     /// collection is deferred to the iterator.
     public struct RangeResult: TransactionRangeResult {
-        public typealias Element = (Bytes, Bytes)
+        public typealias Element = (ByteString, ByteString)
 
         private let underlying: (any TransactionAccess)?
         private let begin: KeySelector
@@ -31,7 +32,7 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
         private let error: LimitingError?
 
         /// Create from pre-collected pairs (e.g., when exceeded max calls).
-        init(pairs: [(Bytes, Bytes)]) {
+        init(pairs: [(ByteString, ByteString)]) {
             self.underlying = nil
             self.begin = KeySelector(key: [], orEqual: false, offset: 0)
             self.end = KeySelector(key: [], orEqual: false, offset: 0)
@@ -73,7 +74,7 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
             self.error = nil
         }
 
-        private let _pairs: [(Bytes, Bytes)]?
+        private let _pairs: [(ByteString, ByteString)]?
 
         public func makeAsyncIterator() -> AsyncIterator {
             AsyncIterator(
@@ -94,7 +95,7 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
             private let reverse: Bool
             private let snapshot: Bool
             private let streamingMode: StreamingMode
-            private var pairs: [(Bytes, Bytes)]?
+            private var pairs: [(ByteString, ByteString)]?
             private var index = 0
             private let error: LimitingError?
 
@@ -103,7 +104,7 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
                 begin: KeySelector, end: KeySelector,
                 limit: Int, reverse: Bool,
                 snapshot: Bool, streamingMode: StreamingMode,
-                preFetched: [(Bytes, Bytes)]?,
+                preFetched: [(ByteString, ByteString)]?,
                 error: LimitingError?
             ) {
                 self.underlying = underlying
@@ -117,7 +118,7 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
                 self.error = error
             }
 
-            public mutating func next() async throws -> (Bytes, Bytes)? {
+            public mutating func next() async throws -> (ByteString, ByteString)? {
                 if let error {
                     throw error
                 }
@@ -176,11 +177,11 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
 
     // MARK: - Read
 
-    public func getValue(for key: Bytes, snapshot: Bool) async throws -> Bytes? {
+    public func getValue(for key: ByteString, snapshot: Bool) async throws -> ByteString? {
         try await underlying.getValue(for: key, snapshot: snapshot)
     }
 
-    public func getKey(selector: KeySelector, snapshot: Bool) async throws -> Bytes? {
+    public func getKey(selector: KeySelector, snapshot: Bool) async throws -> ByteString? {
         try await underlying.getKey(selector: selector, snapshot: snapshot)
     }
 
@@ -217,23 +218,23 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
 
     // MARK: - Write
 
-    public func setValue(_ value: Bytes, for key: Bytes) throws {
+    public func setValue(_ value: ByteString, for key: ByteString) throws {
         try underlying.setValue(value, for: key)
     }
 
-    public func clear(key: Bytes) throws {
+    public func clear(key: ByteString) throws {
         try underlying.clear(key: key)
     }
 
-    public func clearRange(beginKey: Bytes, endKey: Bytes) throws {
+    public func clearRange(beginKey: ByteString, endKey: ByteString) throws {
         try underlying.clearRange(beginKey: beginKey, endKey: endKey)
     }
 
     // MARK: - Atomic
 
     public func atomicOp(
-        key: Bytes,
-        param: Bytes,
+        key: ByteString,
+        param: ByteString,
         mutationType: MutationType
     ) throws {
         try underlying.atomicOp(
@@ -259,7 +260,7 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
         try underlying.setOption(forOption: option)
     }
 
-    public func setOption(to value: Bytes?, forOption option: TransactionOption) throws {
+    public func setOption(to value: ByteString?, forOption option: TransactionOption) throws {
         try underlying.setOption(to: value, forOption: option)
     }
 
@@ -269,17 +270,17 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
 
     // MARK: - Conflict Range
 
-    public func addConflictRange(beginKey: Bytes, endKey: Bytes, type: ConflictRangeType) throws {
+    public func addConflictRange(beginKey: ByteString, endKey: ByteString, type: ConflictRangeType) throws {
         try underlying.addConflictRange(beginKey: beginKey, endKey: endKey, type: type)
     }
 
     // MARK: - Statistics
 
-    public func getEstimatedRangeSizeBytes(beginKey: Bytes, endKey: Bytes) async throws -> Int {
+    public func getEstimatedRangeSizeBytes(beginKey: ByteString, endKey: ByteString) async throws -> Int {
         try await underlying.getEstimatedRangeSizeBytes(beginKey: beginKey, endKey: endKey)
     }
 
-    public func getRangeSplitPoints(beginKey: Bytes, endKey: Bytes, chunkSize: Int) async throws -> [Bytes] {
+    public func getRangeSplitPoints(beginKey: ByteString, endKey: ByteString, chunkSize: Int) async throws -> [ByteString] {
         try await underlying.getRangeSplitPoints(beginKey: beginKey, endKey: endKey, chunkSize: chunkSize)
     }
 

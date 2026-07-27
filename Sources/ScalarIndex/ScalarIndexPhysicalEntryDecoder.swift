@@ -7,7 +7,7 @@ public struct ScalarIndexPhysicalEntryDecoder: IndexPhysicalEntryDecoder {
     public init() {}
 
     public func decode(
-        key: Bytes,
+        key: ByteString,
         in indexSubspace: Subspace,
         index: Index
     ) throws -> IndexPhysicalEntry {

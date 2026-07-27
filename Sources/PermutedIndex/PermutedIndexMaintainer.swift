@@ -3,6 +3,7 @@
 //
 // Maintains permuted indexes that reorder compound index fields.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -107,7 +108,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         if let key = try buildPermutedKey(for: item, id: id) {
             return [key]
         }
@@ -189,7 +190,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
-    private func buildPermutedKey(for item: Item, id: Tuple? = nil) throws -> Bytes? {
+    private func buildPermutedKey(for item: Item, id: Tuple? = nil) throws -> ByteString? {
         // Evaluate index expression using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
         // Sparse index: if any field value is nil, return nil (no index entry)

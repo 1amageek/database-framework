@@ -95,7 +95,7 @@ private struct FullTextIndexContext {
         }
     }
 
-    func posting(term: String, id: String) async throws -> Bytes? {
+    func posting(term: String, id: String) async throws -> ByteString? {
         try await database.withTransaction { transaction in
             let key = indexSubspace
                 .subspace("terms")

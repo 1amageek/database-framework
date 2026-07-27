@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 
 /// Persists validated index lifecycle transitions.
@@ -191,7 +192,7 @@ public final class IndexLifecycleStore: Sendable {
     ///   - entityRange: Complete source entity range covered by the indexes.
     public func ensureReadable(
         _ indexNames: [String],
-        entityRange: (begin: Bytes, end: Bytes)
+        entityRange: (begin: ByteString, end: ByteString)
     ) async throws {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.ensureReadable(
@@ -205,7 +206,7 @@ public final class IndexLifecycleStore: Sendable {
     /// Transaction-scoped variant used by atomic schema bootstrap.
     public func ensureReadable(
         _ indexNames: [String],
-        entityRange: (begin: Bytes, end: Bytes),
+        entityRange: (begin: ByteString, end: ByteString),
         transaction: any TransactionAccess
     ) async throws {
         let sourceRows = try await transaction.collectRange(
@@ -255,7 +256,7 @@ public final class IndexLifecycleStore: Sendable {
     /// responsibility of `validateReadableForRead`.
     func initializeMissingStates(
         _ indexNames: [String],
-        entityRange: (begin: Bytes, end: Bytes)
+        entityRange: (begin: ByteString, end: ByteString)
     ) async throws {
         try await container.engine.withTransaction(
             configuration: .batch
@@ -272,7 +273,7 @@ public final class IndexLifecycleStore: Sendable {
     /// for a database mutation.
     func initializeMissingStates(
         _ indexNames: [String],
-        entityRange: (begin: Bytes, end: Bytes),
+        entityRange: (begin: ByteString, end: ByteString),
         transaction: any TransactionAccess
     ) async throws {
         var sourceIsEmpty: Bool?
@@ -322,7 +323,7 @@ public final class IndexLifecycleStore: Sendable {
     /// fail-fast guarantee used during declarative initialization.
     func validateReadableForRead(
         _ indexNames: [String],
-        entityRange: (begin: Bytes, end: Bytes),
+        entityRange: (begin: ByteString, end: ByteString),
         transaction: any TransactionAccess
     ) async throws {
         var sourceIsEmpty: Bool?
@@ -500,7 +501,7 @@ public final class IndexLifecycleStore: Sendable {
     ///
     /// - Parameter indexName: Index name
     /// - Returns: FDB key for storing index state
-    private func makeStateKey(for indexName: String) -> Bytes {
+    private func makeStateKey(for indexName: String) -> ByteString {
         return subspace.subspace("state").pack(Tuple(indexName))
     }
 }

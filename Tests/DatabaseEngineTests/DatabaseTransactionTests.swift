@@ -64,11 +64,11 @@ struct DatabaseTransactionTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.directoryExists(path: ["database_transaction_test_users"]) {
-            try await container.engine.removeDirectory(path: ["database_transaction_test_users"])
+        if try await container.engine.namespaceExists(path: ["database_transaction_test_users"]) {
+            try await container.engine.removeNamespace(path: ["database_transaction_test_users"])
         }
-        if try await container.engine.directoryExists(path: ["database_transaction_test_products"]) {
-            try await container.engine.removeDirectory(path: ["database_transaction_test_products"])
+        if try await container.engine.namespaceExists(path: ["database_transaction_test_products"]) {
+            try await container.engine.removeNamespace(path: ["database_transaction_test_products"])
         }
     }
 

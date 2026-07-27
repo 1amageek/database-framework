@@ -474,7 +474,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     private func stableKey(_ tuple: Tuple) -> String {
         let packed = tuple.pack()
         return QueryLiteralEncoding.base64(
-            ByteString(retaining: packed)
+            packed
         )
     }
 

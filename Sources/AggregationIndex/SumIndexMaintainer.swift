@@ -103,7 +103,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         guard let data = try extractAggregationData(from: item) else {
             return []
         }
@@ -189,9 +189,9 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     public func getAllSums(
         transaction: any TransactionAccess
     ) async throws -> [(grouping: [FieldValue], sum: FieldValue)] {
-        var groupingByIdentity: [Bytes: [any TupleElement]] = [:]
-        var sums: [Bytes: FieldValue] = [:]
-        var counts: [Bytes: Int64] = [:]
+        var groupingByIdentity: [ByteString: [any TupleElement]] = [:]
+        var sums: [ByteString: FieldValue] = [:]
+        var counts: [ByteString: Int64] = [:]
         let range = subspace.range()
         var scannedEntries = 0
         var scannedBytes = 0
@@ -268,8 +268,8 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     // MARK: - Private Helpers
 
     private struct AggregationData {
-        let sumKey: Bytes
-        let countKey: Bytes
+        let sumKey: ByteString
+        let countKey: ByteString
         let numericValue: AggregationNumericValue
     }
 
@@ -361,7 +361,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
 
     private func buildSumKey<Elements: Collection>(
         storedGroupingElements: Elements
-    ) throws -> Bytes where Elements.Element == any TupleElement {
+    ) throws -> ByteString where Elements.Element == any TupleElement {
         try validateGroupingCount(storedGroupingElements.count)
         let key = subspace.pack(
             elements: storedGroupingElements,
@@ -373,7 +373,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
 
     private func buildCountKey<Elements: Collection>(
         storedGroupingElements: Elements
-    ) throws -> Bytes where Elements.Element == any TupleElement {
+    ) throws -> ByteString where Elements.Element == any TupleElement {
         try validateGroupingCount(storedGroupingElements.count)
         let key = subspace.pack(
             elements: storedGroupingElements,

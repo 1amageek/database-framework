@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -42,13 +43,13 @@ public struct OWLClassRDFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         try buildAllKeys(for: item)
     }
 
-    private func buildAllKeys(for item: Item) throws -> [Bytes] {
+    private func buildAllKeys(for item: Item) throws -> [ByteString] {
         let quads = try buildQuads(for: item)
-        var keys: [Bytes] = []
+        var keys: [ByteString] = []
         keys.reserveCapacity(quads.count * 6)
 
         for quad in quads {

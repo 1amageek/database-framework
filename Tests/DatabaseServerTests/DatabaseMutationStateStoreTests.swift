@@ -132,7 +132,7 @@ struct DatabaseMutationStateStoreTests {
         )
         try await storeContext.container.engine.withTransaction { transaction in
             try transaction.setValue(
-                Bytes(retaining: metadata),
+                metadata,
                 for: storeContext.metadataKey
             )
         }
@@ -145,7 +145,7 @@ struct DatabaseMutationStateStoreTests {
         let storeContext = try await makeMutationStateStoreContext(key: "chunk-only")
         try await storeContext.container.engine.withTransaction { transaction in
             try transaction.setValue(
-                Bytes([1]),
+                ByteString([1]),
                 for: storeContext.chunkKey(index: 0)
             )
         }
@@ -176,7 +176,7 @@ struct DatabaseMutationStateStoreTests {
         )
         try await storeContext.container.engine.withTransaction { transaction in
             try transaction.setValue(
-                Bytes([1]),
+                ByteString([1]),
                 for: storeContext.chunkKey(index: 2)
             )
         }
@@ -193,7 +193,7 @@ struct DatabaseMutationStateStoreTests {
         )
         try await storeContext.container.engine.withTransaction { transaction in
             try transaction.setValue(
-                Bytes(repeating: 1, count: 89_999),
+                ByteString(repeating: 1, count: 89_999),
                 for: storeContext.chunkKey(index: 0)
             )
         }
@@ -211,7 +211,7 @@ struct DatabaseMutationStateStoreTests {
         try await storeContext.container.engine.withTransaction { transaction in
             try transaction.clear(key: storeContext.chunkKey(index: 0))
             try transaction.setValue(
-                Bytes([1]),
+                ByteString([1]),
                 for: storeContext.chunks.pack(Tuple("0"))
             )
         }
@@ -228,7 +228,7 @@ struct DatabaseMutationStateStoreTests {
         )
         try await storeContext.container.engine.withTransaction { transaction in
             try transaction.setValue(
-                Bytes(repeating: 0xEE, count: 10_001),
+                ByteString(repeating: 0xEE, count: 10_001),
                 for: storeContext.chunkKey(index: 1)
             )
         }
@@ -353,7 +353,7 @@ struct DatabaseMutationStateStoreTests {
         )
         let root = try await container.engine.withTransaction {
             transaction in
-            try await container.engine.directoryService.createOrOpen(
+            try await container.engine.namespaceResolver.resolveOrCreate(
                 path: ["database-framework", "wire-runtime"],
                 transaction: transaction
             )
@@ -423,7 +423,7 @@ struct DatabaseMutationStateStoreTests {
 
     private func storedChunks(
         in storeContext: MutationStateStoreContext
-    ) async throws -> [(Bytes, Bytes)] {
+    ) async throws -> [(ByteString, ByteString)] {
         try await storeContext.container.engine.withTransaction(
             configuration: .readOnly
         ) { transaction in
@@ -442,7 +442,7 @@ struct DatabaseMutationStateStoreTests {
     ) async throws {
         try await storeContext.container.engine.withTransaction { transaction in
             try transaction.setValue(
-                Bytes(retaining: metadata),
+                metadata,
                 for: storeContext.metadataKey
             )
         }
@@ -489,7 +489,7 @@ struct DatabaseMutationStateStoreTests {
         let key: String
         let entity: Subspace
 
-        var metadataKey: Bytes {
+        var metadataKey: ByteString {
             entity.pack(Tuple("metadata"))
         }
 
@@ -497,7 +497,7 @@ struct DatabaseMutationStateStoreTests {
             entity.subspace("chunks")
         }
 
-        func chunkKey(index: UInt32) -> Bytes {
+        func chunkKey(index: UInt32) -> ByteString {
             chunks.pack(Tuple(UInt64(index)))
         }
     }

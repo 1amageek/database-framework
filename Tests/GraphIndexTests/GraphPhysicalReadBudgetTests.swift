@@ -433,17 +433,14 @@ struct GraphPhysicalReadBudgetTests {
         )
         let key = subspace.subspace(Int64(8)).pack(
             Tuple(
-                Bytes(
-                    retaining: RDFQuadIndexPhysicalLayout
-                        .defaultGraphDiscriminator
-                ),
-                Bytes(retaining: subject),
-                Bytes(retaining: predicate),
-                Bytes(retaining: object)
+                RDFQuadIndexPhysicalLayout.defaultGraphDiscriminator,
+                subject,
+                predicate,
+                object
             )
         )
         try await engine.withTransaction { transaction in
-            try transaction.setValue(Bytes(), for: key)
+            try transaction.setValue(ByteString(), for: key)
         }
 
         try await engine.withTransaction { transaction in
@@ -519,7 +516,7 @@ struct GraphPhysicalReadBudgetTests {
                 let source = "source-\(index)"
                 let target = "target-\(index)"
                 try transaction.setValue(
-                    Bytes(),
+                    ByteString(),
                     for: subspace.subspace(Int64(0)).pack(
                         Tuple(source, "edge", target)
                     )
@@ -537,7 +534,7 @@ struct GraphPhysicalReadBudgetTests {
         try await engine.withTransaction { transaction in
             for edge in edges {
                 try transaction.setValue(
-                    Bytes(),
+                    ByteString(),
                     for: subspace.subspace(Int64(0)).pack(
                         Tuple(edge.source, edge.label, edge.target)
                     )
@@ -576,7 +573,7 @@ struct GraphPhysicalReadBudgetTests {
             state.withLock { $0.callLimits.append(limit) }
         }
 
-        func recordYield(key: Bytes) {
+        func recordYield(key: ByteString) {
             key.withUnsafeBytes { buffer in
                 let range = buffer.baseAddress.map { address in
                     let start = UInt(bitPattern: address)
@@ -592,7 +589,7 @@ struct GraphPhysicalReadBudgetTests {
 
     private final class RecordingTransaction: TransactionAccess, Sendable {
         struct RangeResult: TransactionRangeResult {
-            typealias Element = (Bytes, Bytes)
+            typealias Element = (ByteString, ByteString)
 
             let underlying: any TransactionAccess
             let begin: KeySelector
@@ -652,11 +649,11 @@ struct GraphPhysicalReadBudgetTests {
             underlying.capabilities
         }
 
-        func getValue(for key: Bytes, snapshot: Bool) async throws -> Bytes? {
+        func getValue(for key: ByteString, snapshot: Bool) async throws -> ByteString? {
             try await underlying.getValue(for: key, snapshot: snapshot)
         }
 
-        func getKey(selector: KeySelector, snapshot: Bool) async throws -> Bytes? {
+        func getKey(selector: KeySelector, snapshot: Bool) async throws -> ByteString? {
             try await underlying.getKey(selector: selector, snapshot: snapshot)
         }
 
@@ -681,21 +678,21 @@ struct GraphPhysicalReadBudgetTests {
             )
         }
 
-        func setValue(_ value: Bytes, for key: Bytes) throws {
+        func setValue(_ value: ByteString, for key: ByteString) throws {
             try underlying.setValue(value, for: key)
         }
 
-        func clear(key: Bytes) throws {
+        func clear(key: ByteString) throws {
             try underlying.clear(key: key)
         }
 
-        func clearRange(beginKey: Bytes, endKey: Bytes) throws {
+        func clearRange(beginKey: ByteString, endKey: ByteString) throws {
             try underlying.clearRange(beginKey: beginKey, endKey: endKey)
         }
 
         func atomicOp(
-            key: Bytes,
-            param: Bytes,
+            key: ByteString,
+            param: ByteString,
             mutationType: MutationType
         ) throws {
             try underlying.atomicOp(
@@ -717,7 +714,7 @@ struct GraphPhysicalReadBudgetTests {
             try underlying.setOption(forOption: option)
         }
 
-        func setOption(to value: Bytes?, forOption option: TransactionOption) throws {
+        func setOption(to value: ByteString?, forOption option: TransactionOption) throws {
             try underlying.setOption(to: value, forOption: option)
         }
 
@@ -726,8 +723,8 @@ struct GraphPhysicalReadBudgetTests {
         }
 
         func addConflictRange(
-            beginKey: Bytes,
-            endKey: Bytes,
+            beginKey: ByteString,
+            endKey: ByteString,
             type: ConflictRangeType
         ) throws {
             try underlying.addConflictRange(
@@ -738,8 +735,8 @@ struct GraphPhysicalReadBudgetTests {
         }
 
         func getEstimatedRangeSizeBytes(
-            beginKey: Bytes,
-            endKey: Bytes
+            beginKey: ByteString,
+            endKey: ByteString
         ) async throws -> Int {
             try await underlying.getEstimatedRangeSizeBytes(
                 beginKey: beginKey,
@@ -748,10 +745,10 @@ struct GraphPhysicalReadBudgetTests {
         }
 
         func getRangeSplitPoints(
-            beginKey: Bytes,
-            endKey: Bytes,
+            beginKey: ByteString,
+            endKey: ByteString,
             chunkSize: Int
-        ) async throws -> [Bytes] {
+        ) async throws -> [ByteString] {
             try await underlying.getRangeSplitPoints(
                 beginKey: beginKey,
                 endKey: endKey,

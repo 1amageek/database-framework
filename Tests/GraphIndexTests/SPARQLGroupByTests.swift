@@ -89,8 +89,8 @@ struct SPARQLGroupByTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialEdgeForGroupBy.self]),
             security: .disabled,
         )
-        if try await database.directoryExists(path: ["sparql_group_by_tests"]) {
-            try await database.removeDirectory(path: ["sparql_group_by_tests"])
+        if try await database.namespaceExists(path: ["sparql_group_by_tests"]) {
+            try await database.removeNamespace(path: ["sparql_group_by_tests"])
         }
         try await container.ensureIndexesReady()
         return container

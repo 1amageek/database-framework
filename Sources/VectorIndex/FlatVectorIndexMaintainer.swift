@@ -3,6 +3,7 @@
 //
 // Provides exact nearest neighbor search using brute force linear scan.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -109,7 +110,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         do {
             return [try buildIndexKey(for: item, id: id)]
         } catch DataAccessError.nilValueCannotBeIndexed {
@@ -190,7 +191,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
     // MARK: - Private Methods
 
     /// Build index key using only primary key
-    private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> Bytes {
+    private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> ByteString {
         let primaryKeyTuple: Tuple
         if let providedId = id {
             primaryKeyTuple = providedId
@@ -208,7 +209,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
-    private func buildIndexValue(for item: Item) throws -> Bytes {
+    private func buildIndexValue(for item: Item) throws -> ByteString {
         // Evaluate expression using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
         let fieldValues = try DataAccess.evaluate(

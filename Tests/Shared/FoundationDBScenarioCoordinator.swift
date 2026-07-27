@@ -2,6 +2,7 @@
 // Coordinates FoundationDB initialization and serialized scenario access.
 
 #if FOUNDATION_DB
+import DatabaseTypes
 import Foundation
 import FoundationDB
 import StorageKit
@@ -276,8 +277,8 @@ public actor FoundationDBScenarioCoordinator {
         let engine = try await createConfiguredEngine(systemPriority: true)
         try await engine.withTransaction { transaction in
             try transaction.clearRange(
-                beginKey: Bytes(),
-                endKey: Bytes([0xFF])
+                beginKey: ByteString(),
+                endKey: ByteString([0xFF])
             )
         }
     }

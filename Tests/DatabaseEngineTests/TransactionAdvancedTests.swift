@@ -3,6 +3,7 @@
 // TransactionAdvancedTests.swift
 // Advanced transaction tests: edge cases, concurrency, error handling
 
+import DatabaseTypes
 import Testing
 import StorageKit
 import FDBStorage
@@ -76,7 +77,7 @@ struct TransactionAdvancedTests {
         try await runner.run(configuration: .default) { tx in
             for i in 0..<500 {
                 let key = [0x11] + withUnsafeBytes(of: UInt16(i).bigEndian) { Array($0) }
-                try tx.setValue([UInt8(i % 256)], for: Bytes(key))
+                try tx.setValue([UInt8(i % 256)], for: ByteString(key))
             }
         }
 
@@ -89,8 +90,8 @@ struct TransactionAdvancedTests {
                 let end = [0x11] + withUnsafeBytes(of: UInt16(i + 1).bigEndian) { Array($0) }
 
                 let sequence = tx.getRange(
-                    from: .firstGreaterOrEqual(Bytes(start)),
-                    to: .firstGreaterOrEqual(Bytes(end)),
+                    from: .firstGreaterOrEqual(ByteString(start)),
+                    to: .firstGreaterOrEqual(ByteString(end)),
                     snapshot: true
                 )
 
@@ -187,7 +188,7 @@ struct TransactionAdvancedTests {
         }
 
         let results = try await runner.run(configuration: .default) { tx in
-            var readValues: [Bytes] = []
+            var readValues: [ByteString] = []
 
             for i in 0..<10 {
                 // Read
@@ -314,7 +315,7 @@ struct TransactionAdvancedTests {
                 // Phase 2: Write to levels 0-2
                 for level in 0..<3 {
                     let key = [0x25, UInt8(level)] + withUnsafeBytes(of: UInt16(item).bigEndian) { Array($0) }
-                    try tx.setValue([UInt8(item % 256)], for: Bytes(key))
+                    try tx.setValue([UInt8(item % 256)], for: ByteString(key))
                 }
             }
         }
@@ -350,7 +351,7 @@ struct TransactionAdvancedTests {
         try await runner.run(configuration: .default) { tx in
             for i in 0..<1000 {
                 let key = [0x26] + withUnsafeBytes(of: UInt16(i).bigEndian) { Array($0) }
-                try tx.setValue([UInt8(i % 256)], for: Bytes(key))
+                try tx.setValue([UInt8(i % 256)], for: ByteString(key))
             }
         }
 
@@ -363,8 +364,8 @@ struct TransactionAdvancedTests {
                 let end = [0x26] + withUnsafeBytes(of: UInt16(i + 1).bigEndian) { Array($0) }
 
                 let sequence = tx.getRange(
-                    from: .firstGreaterOrEqual(Bytes(start)),
-                    to: .firstGreaterOrEqual(Bytes(end)),
+                    from: .firstGreaterOrEqual(ByteString(start)),
+                    to: .firstGreaterOrEqual(ByteString(end)),
                     snapshot: true
                 )
 
@@ -515,7 +516,7 @@ struct TransactionAdvancedTests {
         try await runner.run(configuration: .default) { tx in
             for i in 0..<5000 {
                 let key = [0x2A] + withUnsafeBytes(of: UInt16(i).bigEndian) { Array($0) }
-                try tx.setValue([UInt8(i % 256)], for: Bytes(key))
+                try tx.setValue([UInt8(i % 256)], for: ByteString(key))
             }
         }
 

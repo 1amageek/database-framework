@@ -60,13 +60,13 @@ private struct GraphAlgorithmContext {
         try await database.withTransaction(configuration: .batch) { transaction in
             for edge in edges {
                 try transaction.setValue(
-                    Bytes(),
+                    ByteString(),
                     for: indexSubspace.subspace(Int64(0)).pack(
                         Tuple(edge.source, edge.label, edge.target)
                     )
                 )
                 try transaction.setValue(
-                    Bytes(),
+                    ByteString(),
                     for: indexSubspace.subspace(Int64(1)).pack(
                         Tuple(edge.target, edge.label, edge.source)
                     )

@@ -21,16 +21,23 @@ struct SchemaEntityEntryCodecRDFMetadataTests {
     @Test("Invalid persisted RDF metadata is rejected during decoding")
     func invalidRDFMetadataFailsDecoding() throws {
         let graph = try RDFTerm.iri(validating: "urn:valid")
-        var encoded = try SchemaEntityEntryCodec.encode(
+        let persisted = try SchemaEntityEntryCodec.encode(
             try makeEntity(graph: graph)
         )
         let validBytes = Array("urn:valid".utf8)
         let invalidBytes = Array("relative!".utf8)
         let start = try #require(
-            firstOffset(of: validBytes, in: encoded)
+            firstOffset(of: validBytes, in: persisted)
         )
-        for offset in invalidBytes.indices {
-            encoded[start + offset] = invalidBytes[offset]
+        let encoded = ByteString.copying(count: persisted.count) { destination in
+            persisted.withUnsafeBytes { source in
+                destination.copyMemory(from: source)
+            }
+            invalidBytes.withUnsafeBytes { replacement in
+                for offset in replacement.indices {
+                    destination[start + offset] = replacement[offset]
+                }
+            }
         }
 
         #expect(
@@ -74,7 +81,7 @@ struct SchemaEntityEntryCodecRDFMetadataTests {
 
     private func firstOffset(
         of signature: [UInt8],
-        in bytes: Bytes
+        in bytes: ByteString
     ) -> Int? {
         guard !signature.isEmpty, signature.count <= bytes.count else {
             return nil

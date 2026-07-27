@@ -162,7 +162,7 @@ public enum FieldValueTupleCodec {
         switch element {
         case let value as CanonicalFieldValueTupleElement:
             return value.prepared.value
-        case let value as Bytes:
+        case let value as ByteString:
             var decoder = Decoder(bytes: value, limits: limits)
             return try decoder.decodeRoot()
         default:
@@ -499,10 +499,10 @@ public enum FieldValueTupleCodec {
         }
     }
 
-    private static func writeNibbles<Bytes: Sequence>(
-        _ bytes: Bytes,
+    private static func writeNibbles<ByteSequence: Sequence>(
+        _ bytes: ByteSequence,
         to sink: inout TupleEncodingSink
-    ) where Bytes.Element == UInt8 {
+    ) where ByteSequence.Element == UInt8 {
         for byte in bytes {
             sink.writeByte(firstNibble + (byte >> 4))
             sink.writeByte(firstNibble + (byte & 0x0F))
@@ -1120,7 +1120,7 @@ public enum FieldValueTupleCodec {
             let decodedCount: Int
         }
 
-        let bytes: Bytes
+        let bytes: ByteString
         let limits: FieldValueTupleCodecLimits
         var offset = 0
         var objectCount = 0

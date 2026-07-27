@@ -14,7 +14,7 @@ enum UniquenessViolationCodec {
     static func encode(
         _ violation: UniquenessViolation,
         limits: StorageFrameLimits = .default
-    ) throws(StorageFrameError) -> Bytes {
+    ) throws(StorageFrameError) -> ByteString {
         let encoded = try StorageFrameEncoder.encode(limits: limits) {
             (writer: inout StorageFrameEncoder) throws(StorageFrameError) in
             for byte in magic {
@@ -23,22 +23,22 @@ enum UniquenessViolationCodec {
             writer.writeUInt16(version)
             try writer.writeString(violation.indexName)
             try writer.writeString(violation.persistableType)
-            try writer.writeBytes(ByteString(retaining: violation.valueKey))
+            try writer.writeBytes(violation.valueKey)
             try writer.writeCount(violation.primaryKeys.count)
             for primaryKey in violation.primaryKeys {
-                try writer.writeBytes(ByteString(retaining: primaryKey))
+                try writer.writeBytes(primaryKey)
             }
             writer.writeDouble(violation.detectedAt.timeIntervalSince1970)
         }
-        return Bytes(retaining: encoded)
+        return encoded
     }
 
     static func decode(
-        _ bytes: Bytes,
+        _ bytes: ByteString,
         limits: StorageFrameLimits = .default
     ) throws -> UniquenessViolation {
         var reader = try StorageFrameDecoder(
-            ByteString(retaining: bytes),
+            bytes,
             limits: limits
         )
         for byte in magic {
@@ -52,12 +52,12 @@ enum UniquenessViolationCodec {
         }
         let indexName = try reader.readString()
         let persistableType = try reader.readString()
-        let valueKey = Bytes(retaining: try reader.readBytes())
+        let valueKey = try reader.readBytes()
         let count = try reader.readCount()
-        var primaryKeys: [Bytes] = []
+        var primaryKeys: [ByteString] = []
         primaryKeys.reserveCapacity(count)
         for _ in 0..<count {
-            primaryKeys.append(Bytes(retaining: try reader.readBytes()))
+            primaryKeys.append(try reader.readBytes())
         }
         let detectedInterval = try reader.readDouble()
         try reader.ensureFullyRead()

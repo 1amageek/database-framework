@@ -17,7 +17,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         guard !namespace.isEmpty else {
             throw DatabaseRDFDocumentStoreError.emptyIdentifier
         }
-        self.root = try await container.engine.createOrOpenDirectory(
+        self.root = try await container.engine.resolveOrCreateNamespace(
             path: ["database-framework", "rdf-documents", namespace]
         )
         self.wireLimits = wireLimits
@@ -102,13 +102,13 @@ public struct DatabaseRDFDocumentStore: Sendable {
 
         for (index, auxiliary) in canonicalAuxiliary.enumerated() {
             try transaction.setValue(
-                Bytes(auxiliary.utf8),
+                ByteString(utf8: auxiliary),
                 for: document.subspace("auxiliary").pack(Tuple(Int64(index)))
             )
         }
         for (index, encoded) in canonicalQuads.enumerated() {
             try transaction.setValue(
-                Bytes(retaining: encoded),
+                encoded,
                 for: document.subspace("quads").pack(Tuple(Int64(index)))
             )
         }
@@ -120,7 +120,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
             quadCount: UInt64(canonicalQuads.count)
         )
         try transaction.setValue(
-            Bytes(retaining: try encode(metadata)),
+            try encode(metadata),
             for: metadataKey(identifier)
         )
         return revision
@@ -150,7 +150,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         try clear(document.subspace("auxiliary"), transaction: transaction)
         try clear(document.subspace("quads"), transaction: transaction)
         try transaction.setValue(
-            Bytes(retaining: try encode(
+            try encode(
                 Metadata(
                     identifier: identifier,
                     revision: revision,
@@ -158,7 +158,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
                     auxiliaryCount: 0,
                     quadCount: 0
                 )
-            )),
+            ),
             for: metadataKey(identifier)
         )
         return revision
@@ -174,7 +174,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
             return nil
         }
         var reader = DatabaseWireReader(
-            ByteString(retaining: bytes),
+            bytes,
             limits: wireLimits
         )
         guard try reader.readUInt16() == Self.metadataFormatVersion else {
@@ -250,7 +250,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
             values.append(
                 try ServerPayloadDecoder.decode(
                     RDFQuad.self,
-                    from: ByteString(retaining: bytes),
+                    from: bytes,
                     limits: wireLimits
                 )
             )
@@ -325,7 +325,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         root.subspace(identifier)
     }
 
-    private func metadataKey(_ identifier: String) -> Bytes {
+    private func metadataKey(_ identifier: String) -> ByteString {
         documentSubspace(identifier).pack(Tuple("metadata"))
     }
 

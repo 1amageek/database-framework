@@ -50,8 +50,12 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             transactionCount.withLock { $0 }
         }
 
-        var directoryService: any DirectoryService {
-            underlying.directoryService
+        var namespaceResolver: any NamespaceResolver {
+            underlying.namespaceResolver
+        }
+
+        var namespaceCatalog: (any NamespaceCatalog)? {
+            underlying.namespaceCatalog
         }
 
         func resetTransactionCount() {

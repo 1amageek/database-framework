@@ -219,8 +219,8 @@ struct LeaderboardIntegrationTests {
 
     private func cleanup(container: DBContainer) async throws {
         let path = ["test", "leaderboard"]
-        if try await container.engine.directoryExists(path: path) {
-            try await container.engine.removeDirectory(path: path)
+        if try await container.engine.namespaceExists(path: path) {
+            try await container.engine.removeNamespace(path: path)
         }
     }
 

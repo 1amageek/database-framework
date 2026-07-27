@@ -5,7 +5,7 @@ import StorageKit
 /// Strict dynamic decoder for catalog-driven tools without compiled model types.
 public enum DatabaseCatalogFieldDecoder {
     public static func decode(
-        _ bytes: Bytes,
+        _ bytes: ByteString,
         entity: Schema.Entity
     ) throws -> [PersistableField] {
         let fields = try PersistableStorageCodec.decodeFields(

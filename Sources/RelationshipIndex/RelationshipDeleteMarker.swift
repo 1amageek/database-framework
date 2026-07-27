@@ -30,7 +30,7 @@ package enum RelationshipDeleteMarker {
         try transaction.clear(key: try key(identity))
     }
 
-    private static func key(_ identity: EntityReference) throws -> Bytes {
+    private static func key(_ identity: EntityReference) throws -> ByteString {
         root.pack(Tuple([try RelationshipIdentityCodec.encode(identity)]))
     }
 }

@@ -10,6 +10,7 @@
 // Uses the IndexMaintainerFactory contract to delegate maintenance to the
 // provider registered for each index type.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -338,7 +339,7 @@ internal final class IndexMaintenanceService: Sendable {
         values: [any TupleElement],
         id: Tuple,
         keyPathCount: Int
-    ) -> [Bytes] {
+    ) -> [ByteString] {
         let isSingleFieldArrayIndex = keyPathCount == 1 && values.count > 1
 
         if isSingleFieldArrayIndex {

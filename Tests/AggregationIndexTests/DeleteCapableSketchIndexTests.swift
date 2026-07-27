@@ -10,9 +10,9 @@ struct DeleteCapableSketchIndexTests {
     @Test("Membership metadata tracks unique keys and exact scan bytes")
     func membershipMetadataTracksRebuildCost() async throws {
         let engine = InMemoryEngine()
-        let memberA = Bytes([0x01, 0x02, 0x03])
-        let memberB = Bytes([0x04, 0x05, 0x06, 0x07])
-        let metadataKey = Bytes([0xFF])
+        let memberA = ByteString([0x01, 0x02, 0x03])
+        let memberB = ByteString([0x04, 0x05, 0x06, 0x07])
+        let metadataKey = ByteString([0xFF])
         let maximumBytes = 1_024
 
         try await engine.withTransaction { transaction in
@@ -95,9 +95,9 @@ struct DeleteCapableSketchIndexTests {
     @Test("Membership byte limit rejects an unrebuildable ingestion")
     func membershipByteLimitRejectsBeforeCommit() async throws {
         let engine = InMemoryEngine()
-        let firstMember = Bytes(Array(repeating: 0x01, count: 32))
-        let rejectedMember = Bytes(Array(repeating: 0x02, count: 32))
-        let metadataKey = Bytes([0xFE])
+        let firstMember = ByteString(Array(repeating: 0x01, count: 32))
+        let rejectedMember = ByteString(Array(repeating: 0x02, count: 32))
+        let metadataKey = ByteString([0xFE])
         let firstBytes = try aggregationMemberScanByteCount(for: firstMember)
         let maximumBytes = Int(firstBytes * 2 - 1)
 
@@ -159,7 +159,7 @@ struct DeleteCapableSketchIndexTests {
             _ = try encodeAggregationMembershipMetadata(metadata)
         }
 
-        let bytes = Bytes.copying(count: 16) { destination in
+        let bytes = ByteString.copying(count: 16) { destination in
             guard let baseAddress = destination.baseAddress else {
                 preconditionFailure("Fixed metadata frame requires storage")
             }

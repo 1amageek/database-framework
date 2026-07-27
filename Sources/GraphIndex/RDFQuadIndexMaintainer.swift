@@ -74,11 +74,11 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         try buildIndexKeys(for: item)
     }
 
-    private func buildIndexKeys(for item: Item) throws -> [Bytes] {
+    private func buildIndexKeys(for item: Item) throws -> [ByteString] {
         let subject = try requiredTerm(from: item, field: subjectField)
         let predicate = try requiredTerm(from: item, field: predicateField)
         let object = try requiredTerm(from: item, field: objectField)
@@ -90,7 +90,7 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
             graph: graph
         )
         let writePlan = try RDFQuadIndexWritePlan(quad: quad)
-        var keys: [Bytes] = []
+        var keys: [ByteString] = []
         keys.reserveCapacity(6)
         try writePlan.forEachEntry { entry in
             let key = try physicalCodec.encode(entry)

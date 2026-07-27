@@ -34,8 +34,8 @@ struct OrderedRankReadBenchmark {
     }
 
     private func makeContext(playerCount: Int) async throws -> DatabaseContext {
-        if try await database.directoryExists(path: ["benchmarks", "rank_players"]) {
-            try await database.removeDirectory(path: ["benchmarks", "rank_players"])
+        if try await database.namespaceExists(path: ["benchmarks", "rank_players"]) {
+            try await database.removeNamespace(path: ["benchmarks", "rank_players"])
         }
 
         let schema = try Schema(

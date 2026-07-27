@@ -4,6 +4,7 @@
 // Tracks the number of times each entity has been updated.
 // Reference: FDB Record Layer COUNT_UPDATES index type
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -113,7 +114,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         [try packAndValidate(id)]
     }
 

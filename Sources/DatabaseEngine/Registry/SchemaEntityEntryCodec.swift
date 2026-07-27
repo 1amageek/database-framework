@@ -12,22 +12,22 @@ enum SchemaEntityEntryCodec {
     static func encode(
         _ entity: Schema.Entity,
         limits: StorageFrameLimits = .default
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         let encoded = try StorageFrameEncoder.encode(limits: limits) {
             writer throws(StorageFrameError) in
             writer.writeUInt32(magic)
             writer.writeUInt16(version)
             try writeCanonical(entity, into: &writer)
         }
-        return Bytes(retaining: encoded)
+        return encoded
     }
 
     static func decode(
-        _ bytes: Bytes,
+        _ bytes: ByteString,
         limits: StorageFrameLimits = .default
     ) throws -> Schema.Entity {
         var reader = try StorageFrameDecoder(
-            ByteString(retaining: bytes),
+            bytes,
             limits: limits
         )
         let decodedMagic = try reader.readUInt32()

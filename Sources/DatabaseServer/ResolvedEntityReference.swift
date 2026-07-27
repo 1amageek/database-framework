@@ -97,7 +97,7 @@ struct ResolvedEntityReference: Sendable {
 
     struct Key: Sendable, Hashable {
         let entity: String
-        let id: Bytes
+        let id: ByteString
         let partitionPath: [String]
     }
 

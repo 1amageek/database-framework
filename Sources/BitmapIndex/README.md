@@ -364,8 +364,8 @@ struct Article {
 | AND | O(min(n,m)) | Iterate smaller bitmap |
 | OR | O(n + m) | Merge containers |
 | Cardinality | O(containers) | Cached per container |
-| Serialize | O(n) | One final `Bytes` allocation, little-endian binary encoding |
-| Deserialize | O(n) | Borrowed `Bytes` input with bounded validation |
+| Serialize | O(n) | One final `ByteString` allocation, little-endian binary encoding |
+| Deserialize | O(n) | Borrowed `ByteString` input with bounded validation |
 | Get count | O(1) | Direct cardinality |
 | Get items | O(n) | Fetch n primary keys |
 

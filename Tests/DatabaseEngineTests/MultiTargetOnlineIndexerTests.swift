@@ -5,6 +5,7 @@
 //
 // Reference: FDB Entity Layer multi-target indexing strategy
 
+import DatabaseTypes
 import Testing
 import TestHeartbeat
 import StorageKit
@@ -47,8 +48,8 @@ struct RangeSetMultiTargetTests {
 
     @Test("RangeSet creation with initial range")
     func testRangeSetCreation() {
-        let begin: Bytes = [0x00]
-        let end: Bytes = [0xFF]
+        let begin: ByteString = [0x00]
+        let end: ByteString = [0xFF]
 
         let rangeSet = RangeSet(initialRange: (begin: begin, end: end))
 
@@ -57,8 +58,8 @@ struct RangeSetMultiTargetTests {
 
     @Test("RangeSet batch extraction")
     func testRangeSetBatchExtraction() {
-        let begin: Bytes = [0x00]
-        let end: Bytes = [0xFF]
+        let begin: ByteString = [0x00]
+        let end: ByteString = [0xFF]
 
         let rangeSet = RangeSet(initialRange: (begin: begin, end: end))
 
@@ -70,8 +71,8 @@ struct RangeSetMultiTargetTests {
 
     @Test("RangeSet marks completed ranges")
     func testRangeSetMarkCompleted() throws {
-        let begin: Bytes = [0x00]
-        let end: Bytes = [0xFF]
+        let begin: ByteString = [0x00]
+        let end: ByteString = [0xFF]
 
         var rangeSet = RangeSet(initialRange: (begin: begin, end: end))
 
@@ -84,8 +85,8 @@ struct RangeSetMultiTargetTests {
 
     @Test("RangeSet storage encoding round-trips")
     func rangeSetStorageEncodingRoundTrips() throws {
-        let begin: Bytes = [0x00]
-        let end: Bytes = [0xFF]
+        let begin: ByteString = [0x00]
+        let end: ByteString = [0xFF]
 
         let rangeSet = RangeSet(initialRange: (begin: begin, end: end))
 

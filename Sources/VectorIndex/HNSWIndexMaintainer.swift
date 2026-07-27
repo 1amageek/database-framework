@@ -4,6 +4,7 @@
 // Provides high-performance approximate nearest neighbor search using the
 // SwiftHNSW library (https://github.com/1amageek/swift-hnsw).
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -132,8 +133,8 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private let labelsSubspace: Subspace
     private let primaryKeysSubspace: Subspace
     private let graphChunksSubspace: Subspace
-    private let graphMetadataKey: Bytes
-    private let nextLabelKey: Bytes
+    private let graphMetadataKey: ByteString
+    private let nextLabelKey: ByteString
 
     public init(
         index: Index,
@@ -270,7 +271,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         return []
     }
 
@@ -278,7 +279,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         for item: Item,
         id: Tuple,
         transaction: any TransactionAccess
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         guard let label = try await getLabelForPrimaryKey(primaryKey: id, transaction: transaction) else {
             // No label assigned yet — either the item was never indexed (sparse/unseen)
             // or it was deleted. Either way there is no key to verify.
@@ -715,7 +716,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Decode a persisted graph snapshot and surface corruption as a typed vector-index error.
-    private func loadPersistedIndex(from graphBytes: Bytes) throws -> HNSWIndexF32 {
+    private func loadPersistedIndex(from graphBytes: ByteString) throws -> HNSWIndexF32 {
         do {
             return try HNSWIndexF32.load(
                 from: dataRetaining(graphBytes),
@@ -733,7 +734,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Load a graph snapshot from storage without consulting the process cache.
-    private func loadGraphSnapshotData(transaction: any TransactionAccess) async throws -> Bytes? {
+    private func loadGraphSnapshotData(transaction: any TransactionAccess) async throws -> ByteString? {
         guard let metadataBytes = try await transaction.getValue(
             for: graphMetadataKey,
             snapshot: true
@@ -760,7 +761,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let range = graphChunksSubspace.range()
         try transaction.clearRange(beginKey: range.begin, endKey: range.end)
 
-        let graphBytes = Bytes(
+        let graphBytes = ByteString(
             retaining: GraphSnapshotByteOwner(data: graphData)
         )
 
@@ -785,9 +786,9 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Decode chunk metadata and reassemble a graph snapshot.
     private func loadChunkedGraphSnapshot(
-        metadata: Bytes,
+        metadata: ByteString,
         transaction: any TransactionAccess
-    ) async throws -> Bytes {
+    ) async throws -> ByteString {
         let decoded = try decodeGraphMetadata(metadata)
 
         let byteCount = decoded.byteCount
@@ -831,11 +832,11 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         guard loadedByteCount == byteCount else {
             throw VectorIndexError.invalidStructure("HNSW graph snapshot byte count mismatch")
         }
-        return Bytes(output)
+        return ByteString(output)
     }
 
     /// Decode persisted graph metadata.
-    private func decodeGraphMetadata(_ metadata: Bytes) throws -> HNSWGraphMetadata {
+    private func decodeGraphMetadata(_ metadata: ByteString) throws -> HNSWGraphMetadata {
         let tuple = try Tuple.unpack(from: metadata)
         guard tuple.count == 4 || tuple.count == 5,
               let version = tuple[0] as? Int64,
@@ -971,16 +972,16 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     // MARK: - Byte Conversion
 
-    private func uint64ToBytes(_ value: UInt64) -> Bytes {
+    private func uint64ToBytes(_ value: UInt64) -> ByteString {
         VectorConversion.uint64ToBytes(value)
     }
 
-    private func bytesToUInt64(_ bytes: Bytes) throws -> UInt64 {
+    private func bytesToUInt64(_ bytes: ByteString) throws -> UInt64 {
         try VectorConversion.bytesToUInt64(bytes)
     }
 
-    /// Creates a read-only Data view while retaining the Bytes owner.
-    private func dataRetaining(_ bytes: Bytes) -> Data {
+    /// Creates a read-only Data view while retaining the ByteString owner.
+    private func dataRetaining(_ bytes: ByteString) -> Data {
         guard !bytes.isEmpty else {
             return Data()
         }

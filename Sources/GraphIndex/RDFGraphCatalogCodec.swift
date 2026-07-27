@@ -6,7 +6,7 @@ import StorageKit
 /// Physical codec for persistent named-graph identity. The graph term is
 /// streamed directly into the final tuple key allocation.
 package struct RDFGraphCatalogCodec: Sendable {
-    package static let marker: Bytes = [1]
+    package static let marker: ByteString = [1]
 
     private let subspace: Subspace
 
@@ -14,13 +14,13 @@ package struct RDFGraphCatalogCodec: Sendable {
         self.subspace = subspace
     }
 
-    package var range: (begin: Bytes, end: Bytes) {
+    package var range: (begin: ByteString, end: ByteString) {
         subspace.range()
     }
 
     package func key(
         for graph: RDFGraphName
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         let plan: RDFTermStorageEncoding
         do {
             plan = try RDFTermStorageFormat.encodingPlan(
@@ -46,7 +46,7 @@ package struct RDFGraphCatalogCodec: Sendable {
                 maximum: databaseMaximumKeySize
             )
         }
-        let key: Bytes
+        let key: ByteString
         do {
             key = try subspace.pack(
                 encodedTupleByteCount: tupleByteCount
@@ -71,7 +71,7 @@ package struct RDFGraphCatalogCodec: Sendable {
     }
 
     package func decodeGraph(
-        from key: Bytes
+        from key: ByteString
     ) throws -> RDFGraphName {
         var cursor: TupleCursor
         do {
@@ -80,7 +80,7 @@ package struct RDFGraphCatalogCodec: Sendable {
             throw RDFGraphStoreError.catalogPrefixMismatch
         }
 
-        let bytes: Bytes
+        let bytes: ByteString
         do {
             bytes = try cursor.requireBytes()
         } catch TupleError.unexpectedEndOfData {
@@ -99,7 +99,7 @@ package struct RDFGraphCatalogCodec: Sendable {
         let term: RDFTerm
         do {
             term = try RDFTermStorageFormat.decode(
-                ByteString(retaining: bytes),
+                bytes,
                 role: .graphName
             )
         } catch let error {
@@ -113,7 +113,7 @@ package struct RDFGraphCatalogCodec: Sendable {
     }
 
     package func validateMarker(
-        _ value: Bytes
+        _ value: ByteString
     ) throws {
         guard value == Self.marker else {
             throw RDFGraphStoreError.invalidCatalogMarker

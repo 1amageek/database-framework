@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -21,7 +22,7 @@ enum RankReadResultAssembler {
         rankedKeys: [(primaryKey: Tuple, rank: Int)],
         entities: [PolymorphicEntity]
     ) throws -> [(entity: PolymorphicEntity, rank: Int)] {
-        var entityByID: [Bytes: PolymorphicEntity] = [:]
+        var entityByID: [ByteString: PolymorphicEntity] = [:]
         entityByID.reserveCapacity(entities.count)
         for entity in entities {
             let key = try entityKey(for: entity)
@@ -43,7 +44,7 @@ enum RankReadResultAssembler {
         return ordered
     }
 
-    private static func entityKey(for entity: PolymorphicEntity) throws -> Bytes {
+    private static func entityKey(for entity: PolymorphicEntity) throws -> ByteString {
         let identifier = try entity.item.persistableIdentifierTuple()
         return try PolymorphicIdentifierKey.tuple(
             for: type(of: entity.item),

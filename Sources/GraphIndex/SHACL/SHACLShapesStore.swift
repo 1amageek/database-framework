@@ -36,7 +36,7 @@ struct SHACLShapesStore: Sendable {
         subspace.subspace(SubspaceKey.graphs.rawValue)
     }
 
-    private func graphKey(_ iri: String) -> Bytes {
+    private func graphKey(_ iri: String) -> ByteString {
         graphsSubspace.pack(Tuple(iri))
     }
 
@@ -54,11 +54,8 @@ struct SHACLShapesStore: Sendable {
         transaction: any TransactionAccess
     ) throws {
         let frame = try SHACLShapesGraphStorageFormat.encode(graph)
-        // TransactionAccess currently owns `[UInt8]` values. This is the one
-        // required storage-adapter copy from the exact-size semantic frame.
-        let data = frame.withUnsafeBytes { Bytes($0) }
         let key = graphKey(graph.iri)
-        try transaction.setValue(data, for: key)
+        try transaction.setValue(frame, for: key)
     }
 
     // MARK: - Get
@@ -77,9 +74,7 @@ struct SHACLShapesStore: Sendable {
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
             return nil
         }
-        return try SHACLShapesGraphStorageFormat.decode(
-            ByteString(retaining: data)
-        )
+        return try SHACLShapesGraphStorageFormat.decode(data)
     }
 
     // MARK: - List

@@ -3,6 +3,7 @@
 //
 // Maintains full-text indexes using inverted index structure.
 
+import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -69,8 +70,8 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private let dfSubspace: Subspace
 
     // BM25 statistics keys
-    private let statsNKey: Bytes
-    private let statsTotalLengthKey: Bytes
+    private let statsNKey: ByteString
+    private let statsTotalLengthKey: ByteString
 
     private var termNormalizer: FullTextTermNormalizer {
         FullTextTermNormalizer(
@@ -245,7 +246,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         // Sparse index: if text field is nil, no index entries expected
         let text: String
         do {
@@ -257,7 +258,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         let tokens = tokenize(text)
 
-        var keys: [Bytes] = []
+        var keys: [ByteString] = []
         var seenTerms: Set<String> = []
 
         for token in tokens {
@@ -317,12 +318,12 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<Bytes>? = nil
-        var idToElements: [Bytes: [any TupleElement]] = [:]
+        var intersection: Set<ByteString>? = nil
+        var idToElements: [ByteString: [any TupleElement]] = [:]
 
         for term in terms {
             let results = try await searchNormalizedTerm(term, transaction: transaction)
-            var currentSet: Set<Bytes> = []
+            var currentSet: Set<ByteString> = []
 
             for elements in results {
                 let idKey = elementsToStableKey(elements)
@@ -366,7 +367,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let termGroups = normalizeQueryTermGroups(terms)
         guard !termGroups.isEmpty else { return [] }
 
-        var idToElements: [Bytes: [any TupleElement]] = [:]
+        var idToElements: [ByteString: [any TupleElement]] = [:]
 
         for normalizedTerms in termGroups {
             let results = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
@@ -413,7 +414,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
             let docId = Tuple(docElements)
 
             // Build all term keys upfront using same subspace structure as indexing
-            let termKeys: [(index: Int, key: Bytes)] = terms.enumerated().map { (index, term) in
+            let termKeys: [(index: Int, key: ByteString)] = terms.enumerated().map { (index, term) in
                 (index, termsSubspace.subspace(term).pack(docId))
             }
 
@@ -571,7 +572,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ///
     /// Key structure: [termsSubspace][term][id]
     /// Using subspace nesting ensures consistent key format for indexing and search.
-    private func buildTermKey(term: String, id: Tuple) throws -> Bytes {
+    private func buildTermKey(term: String, id: Tuple) throws -> ByteString {
         let safeTerm = truncateTerm(term)
         let termSubspace = termsSubspace.subspace(safeTerm)
         let key = termSubspace.pack(id)
@@ -584,7 +585,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Positions are omitted when the index does not support phrase search.
     /// Tuple packing owns the final storage buffer; no intermediate packed
     /// buffers are materialized.
-    private func postingValue(positions: [Int]) -> Bytes {
+    private func postingValue(positions: [Int]) -> ByteString {
         var elements: [any TupleElement] = []
         elements.reserveCapacity(storePositions ? positions.count + 1 : 1)
         elements.append(Int64(positions.count))
@@ -597,11 +598,11 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Preserve tuple type identity while using the packed bytes directly as a
-    /// hash key. `Bytes` retains its immutable storage without materializing a
+    /// hash key. `ByteString` retains its immutable storage without materializing a
     /// `Data` or Base64 representation.
     private func elementsToStableKey(
         _ elements: [any TupleElement]
-    ) -> Bytes {
+    ) -> ByteString {
         Tuple(elements).pack()
     }
 
@@ -731,7 +732,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
             matchingDocs = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
         case .any:
             let groups = normalizeQueryTermGroups(terms)
-            var idToElements: [Bytes: [any TupleElement]] = [:]
+            var idToElements: [ByteString: [any TupleElement]] = [:]
             for group in groups {
                 let matches = try await searchNormalizedTermsAND(group, transaction: transaction)
                 for elements in matches {

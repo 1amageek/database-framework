@@ -4,7 +4,7 @@ import StorageKit
 public struct DatabaseExecutionDeadline: Sendable {
     public let timeoutMilliseconds: UInt32
 
-    private let deadline: ContinuousClock.Instant
+    private let deadline: StorageInstant
     private let clock: any StorageMonotonicClock
 
     public init(

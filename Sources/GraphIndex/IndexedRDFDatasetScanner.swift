@@ -95,7 +95,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                     graphConstraint: graphConstraint,
                     ordering: ordering
                 )
-                let range: (begin: Bytes, end: Bytes)
+                let range: (begin: ByteString, end: ByteString)
                 do {
                     range = try source.physicalCodec.range(
                         prefix: prefix,
@@ -293,7 +293,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
     ) async throws {
         try workMeter.consume(at: .indexScan)
         let ordering = GraphIndexOrdering.gspo
-        let fullRange: (begin: Bytes, end: Bytes)
+        let fullRange: (begin: ByteString, end: ByteString)
         do {
             fullRange = try source.physicalCodec.range(
                 prefix: RDFQuadIndexPrefixWritePlan(),
@@ -372,7 +372,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
     private func graphRange(
         _ graph: RDFGraphName,
         source: RDFDatasetSource
-    ) throws -> (begin: Bytes, end: Bytes) {
+    ) throws -> (begin: ByteString, end: ByteString) {
         var prefix = RDFQuadIndexPrefixWritePlan()
         try prefix.append(
             try RDFQuadIndexComponentWritePlan(
@@ -543,7 +543,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
     }
 
     private func decodeQuad(
-        key: Bytes,
+        key: ByteString,
         source: RDFDatasetSource,
         ordering: GraphIndexOrdering
     ) throws -> RDFQuad {

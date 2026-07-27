@@ -56,8 +56,8 @@ struct SPARQLFunctionDebugTests {
 
     private func makeContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        if try await database.directoryExists(path: ["sparql_debug_functions"]) {
-            try await database.removeDirectory(path: ["sparql_debug_functions"])
+        if try await database.namespaceExists(path: ["sparql_debug_functions"]) {
+            try await database.removeNamespace(path: ["sparql_debug_functions"])
         }
 
         let schema = try Schema(

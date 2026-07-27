@@ -80,7 +80,7 @@ public struct GraphIdentity: Sendable, Hashable, Comparable {
         case .propertyGraph(let value):
             return value
         case .rdf(let encoded, _):
-            return Bytes(retaining: encoded)
+            return encoded
         }
     }
 

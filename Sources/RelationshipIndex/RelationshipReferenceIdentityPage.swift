@@ -3,11 +3,11 @@ import StorageKit
 
 public struct RelationshipReferenceIdentityPage: Sendable {
     public let identities: [EntityReference]
-    public let continuation: Bytes?
+    public let continuation: ByteString?
 
     public init(
         identities: [EntityReference],
-        continuation: Bytes?
+        continuation: ByteString?
     ) {
         self.identities = identities
         self.continuation = continuation

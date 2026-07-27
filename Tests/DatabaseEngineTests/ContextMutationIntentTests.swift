@@ -76,15 +76,15 @@ struct ContextMutationIntentTests {
     }
 
     private func cleanupUsers(_ container: DBContainer) async throws {
-        if try await container.engine.directoryExists(path: ["context_delete_insert_same_id", "users"]) {
-            try await container.engine.removeDirectory(path: ["context_delete_insert_same_id", "users"])
+        if try await container.engine.namespaceExists(path: ["context_delete_insert_same_id", "users"]) {
+            try await container.engine.removeNamespace(path: ["context_delete_insert_same_id", "users"])
         }
         try await container.ensureIndexesReady()
     }
 
     private func cleanupArticles(_ container: DBContainer) async throws {
-        if try await container.engine.directoryExists(path: ["context_delete_insert_same_id", "articles"]) {
-            try await container.engine.removeDirectory(path: ["context_delete_insert_same_id", "articles"])
+        if try await container.engine.namespaceExists(path: ["context_delete_insert_same_id", "articles"]) {
+            try await container.engine.removeNamespace(path: ["context_delete_insert_same_id", "articles"])
         }
         try await container.ensureIndexesReady()
     }

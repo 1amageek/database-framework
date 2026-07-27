@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 
 /// Portable CRC32C used to reject corrupted entity payloads before decoding.
@@ -12,7 +13,7 @@ enum ItemChecksum {
         return crc
     }
 
-    static func crc32c(_ bytes: Bytes) -> UInt32 {
+    static func crc32c(_ bytes: ByteString) -> UInt32 {
         bytes.withUnsafeBytes { source in
             crc32c(source)
         }

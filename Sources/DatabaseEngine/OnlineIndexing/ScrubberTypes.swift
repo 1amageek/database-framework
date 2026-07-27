@@ -1,3 +1,4 @@
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -223,7 +224,7 @@ public struct ScrubberIssue: Sendable {
     public let type: IssueType
 
     /// Index key where issue was found
-    public let indexKey: Bytes
+    public let indexKey: ByteString
 
     /// Primary key extracted from index key
     public let primaryKey: [any TupleElement]
@@ -246,7 +247,7 @@ public struct ScrubberIssue: Sendable {
     /// Initialize a scrubber issue
     public init(
         type: IssueType,
-        indexKey: Bytes,
+        indexKey: ByteString,
         primaryKey: [any TupleElement],
         repaired: Bool,
         context: String?

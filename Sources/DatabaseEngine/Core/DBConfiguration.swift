@@ -4,6 +4,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
+import StorageKitSystemClock
 #if FOUNDATION_DB
 import FDBStorage
 #endif
@@ -79,6 +80,9 @@ public struct DBConfiguration: Sendable {
     /// Container-scoped operational logging policy.
     public let logging: DatabaseLoggingConfiguration
 
+    /// Monotonic time source for framework scheduling, deadlines, and retries.
+    public let monotonicClock: any StorageMonotonicClock
+
     // MARK: - Initialization
 
     /// Create database configuration
@@ -92,13 +96,15 @@ public struct DBConfiguration: Sendable {
         backend: StorageBackend,
         indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
-        logging: DatabaseLoggingConfiguration = .system
+        logging: DatabaseLoggingConfiguration = .system,
+        monotonicClock: any StorageMonotonicClock = SystemStorageClock()
     ) {
         self.name = name
         self.backend = backend
         self.indexConfigurations = indexConfigurations
         self.itemStorage = itemStorage
         self.logging = logging
+        self.monotonicClock = monotonicClock
     }
 }
 

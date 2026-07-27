@@ -6,6 +6,7 @@
 //
 // Reference: W3C SHACL https://www.w3.org/TR/shacl/
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -64,7 +65,7 @@ public struct SHACLContextAPI: Sendable {
     private let context: DatabaseContext
 
     /// SHACL subspace key prefix
-    private static let shaclPrefix = Bytes("S".utf8)
+    private static let shaclPrefix = ByteString(utf8: "S")
 
     internal init(context: DatabaseContext) {
         self.context = context

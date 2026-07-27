@@ -40,12 +40,12 @@ public struct UniquenessViolation: Sendable, Equatable {
     /// The duplicate value (packed tuple bytes)
     ///
     /// Use `unpackedValue()` to get the tuple elements.
-    public let valueKey: Bytes
+    public let valueKey: ByteString
 
     /// All primary keys that have this duplicate value
     ///
     /// Contains at least 2 entries (otherwise it's not a violation).
-    public let primaryKeys: [Bytes]
+    public let primaryKeys: [ByteString]
 
     /// When the violation was first detected
     public let detectedAt: Date
@@ -55,8 +55,8 @@ public struct UniquenessViolation: Sendable, Equatable {
     public init(
         indexName: String,
         persistableType: String,
-        valueKey: Bytes,
-        primaryKeys: [Bytes],
+        valueKey: ByteString,
+        primaryKeys: [ByteString],
         detectedAt: Date = Date()
     ) {
         self.indexName = indexName

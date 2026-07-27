@@ -4,6 +4,7 @@
 // Reference: FDB Record Layer FDBRecordContext instrumentation
 // Provides comprehensive metrics for transaction operations.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -21,7 +22,7 @@ import Synchronization
 /// let (result, metrics) = try await database.withInstrumentedTransaction { tx in
 ///     // operations...
 /// }
-/// print("Reads: \(metrics.readCount), Bytes read: \(metrics.bytesRead)")
+/// print("Reads: \(metrics.readCount), bytes read: \(metrics.bytesRead)")
 /// ```
 public struct TransactionMetrics: Sendable, CustomStringConvertible {
     /// Number of read operations (getValue, getRange)
@@ -80,7 +81,7 @@ public struct TransactionMetrics: Sendable, CustomStringConvertible {
         """
         TransactionMetrics:
           Reads: \(readCount), Writes: \(writeCount)
-          Bytes read: \(bytesRead), Bytes written: \(bytesWritten)
+          Bytes read: \(bytesRead), bytes written: \(bytesWritten)
           Range scans: \(rangeScanCount), Empty scans: \(emptyScanCount)
           Scanned KVs: \(scannedKeyValueCount)
           Committed: \(committed), Rolled back: \(rolledBack)
@@ -175,7 +176,7 @@ public final class InstrumentedTransaction: Sendable {
     // MARK: - Read Operations
 
     /// Get a value and record metrics
-    public func getValue(for key: Bytes, snapshot: Bool = false) async throws -> Bytes? {
+    public func getValue(for key: ByteString, snapshot: Bool = false) async throws -> ByteString? {
         let startTime = MonotonicClock.now()
         let result = try await transaction.getValue(for: key, snapshot: snapshot)
         let elapsed = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
@@ -201,7 +202,7 @@ public final class InstrumentedTransaction: Sendable {
         reverse: Bool = false,
         snapshot: Bool = false,
         streamingMode: StreamingMode = .wantAll
-    ) async throws -> [(Bytes, Bytes)] {
+    ) async throws -> [(ByteString, ByteString)] {
         state.withLock { state in
             state.rangeScanCount += 1
         }
@@ -239,7 +240,7 @@ public final class InstrumentedTransaction: Sendable {
     // MARK: - Write Operations
 
     /// Set a value (metrics recorded as pending until commit)
-    public func setValue(_ value: Bytes, for key: Bytes) throws {
+    public func setValue(_ value: ByteString, for key: ByteString) throws {
         try transaction.setValue(value, for: key)
 
         // Record as pending (only finalized on commit)
@@ -250,7 +251,7 @@ public final class InstrumentedTransaction: Sendable {
     }
 
     /// Clear a key (metrics recorded as pending until commit)
-    public func clear(key: Bytes) throws {
+    public func clear(key: ByteString) throws {
         try transaction.clear(key: key)
 
         pendingWrites.withLock { pending in
@@ -260,7 +261,7 @@ public final class InstrumentedTransaction: Sendable {
     }
 
     /// Clear a range (metrics recorded as pending until commit)
-    public func clearRange(beginKey: Bytes, endKey: Bytes) throws {
+    public func clearRange(beginKey: ByteString, endKey: ByteString) throws {
         try transaction.clearRange(beginKey: beginKey, endKey: endKey)
 
         pendingWrites.withLock { pending in
@@ -271,8 +272,8 @@ public final class InstrumentedTransaction: Sendable {
 
     /// Perform an atomic operation
     public func atomicOp(
-        key: Bytes,
-        param: Bytes,
+        key: ByteString,
+        param: ByteString,
         mutationType: MutationType
     ) throws {
         try transaction.atomicOp(key: key, param: param, mutationType: mutationType)
@@ -431,10 +432,10 @@ extension StoreTimerEvent {
     /// Number of writes in a transaction
     public static let transactionWrites = StoreTimerEvent(name: "transaction_writes", isCount: true)
 
-    /// Bytes read in a transaction
+    /// Bytes read in a transaction.
     public static let transactionBytesRead = StoreTimerEvent(name: "transaction_bytes_read", isSize: true)
 
-    /// Bytes written in a transaction
+    /// Bytes written in a transaction.
     public static let transactionBytesWritten = StoreTimerEvent(name: "transaction_bytes_written", isSize: true)
 
     /// Number of empty scans (no results)
@@ -583,7 +584,7 @@ public struct AggregatedMetricsSummary: Sendable, CustomStringConvertible {
           Total retries: \(totalRetries)
           Reads: \(totalReads) (avg: \(DatabaseTextFormatting.fixedDecimal(avgReadsPerTransaction, fractionDigits: 1))/tx)
           Writes: \(totalWrites) (avg: \(DatabaseTextFormatting.fixedDecimal(avgWritesPerTransaction, fractionDigits: 1))/tx)
-          Bytes read: \(totalBytesRead), Bytes written: \(totalBytesWritten)
+          Bytes read: \(totalBytesRead), bytes written: \(totalBytesWritten)
           Range scans: \(totalRangeScans), Empty scans: \(totalEmptyScans)
           Duration: avg=\(DatabaseTextFormatting.fixedDecimal(avgDurationMs, fractionDigits: 2))ms, min=\(DatabaseTextFormatting.fixedDecimal(minDurationMs, fractionDigits: 2))ms, max=\(DatabaseTextFormatting.fixedDecimal(maxDurationMs, fractionDigits: 2))ms
         """

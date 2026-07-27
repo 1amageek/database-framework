@@ -1,3 +1,4 @@
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -625,7 +626,7 @@ public struct MigrationContext: Sendable {
                 let batchBegin = begin
                 let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(
                     configuration: .batch
-                ) { transaction -> (Int, Bytes?) in
+                ) { transaction -> (Int, ByteString?) in
                     let storage = self.container.itemStorageFactory.make(
                         transaction: transaction,
                         blobsSubspace: blobsSubspace
@@ -638,12 +639,12 @@ public struct MigrationContext: Sendable {
                     )
 
                     // SQLite cannot mutate a transaction while its range cursor
-                    // is open. The batch is bounded by `batchSize`; `Bytes`
+                    // is open. The batch is bounded by `batchSize`; `ByteString`
                     // retains the backend-owned storage without materializing
                     // `[UInt8]` or `Data`. Reading the complete bounded page
                     // first also preserves the transaction's range conflict
                     // before index writes begin.
-                    var batch: [(key: Bytes, data: Bytes)] = []
+                    var batch: [(key: ByteString, data: ByteString)] = []
                     batch.reserveCapacity(batchSize)
                     for try await element in scanSequence {
                         batch.append(element)
@@ -668,7 +669,7 @@ public struct MigrationContext: Sendable {
                 guard itemsInBatch == batchSize, let lastProcessedKey else {
                     break
                 }
-                begin = lastProcessedKey + [0]
+                begin = lastProcessedKey.appending(0)
             }
         }
     }
@@ -904,16 +905,16 @@ public struct MigrationContext: Sendable {
 
         // Exact count via full scan
         var totalCount = 0
-        var lastKey: Bytes? = nil
+        var lastKey: ByteString? = nil
         let batchSize = 10000  // Use large batches for counting
 
         while true {
             let currentLastKey = lastKey
-            let (batchCount, newLastKey): (Int, Bytes?) = try await container.engine.withTransaction(configuration: .batch) { transaction in
-                let rangeBegin = currentLastKey.map { Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
+            let (batchCount, newLastKey): (Int, ByteString?) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+                let rangeBegin = currentLastKey.map { $0.appending(0x00) } ?? beginKey
 
                 var count = 0
-                var lastKeyInBatch: Bytes? = nil
+                var lastKeyInBatch: ByteString? = nil
 
                 // Use limit and wantAll mode to reduce round-trips for counting
                 let sequence = try await transaction.collectRange(
@@ -1139,21 +1140,21 @@ public enum DatabaseRuntimeError: Error, CustomStringConvertible {
 	                    let (beginKey, endKey) = itemPrefix.range()
 	                    let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
-	                    var lastKey: Bytes? = nil
+	                    var lastKey: ByteString? = nil
                     while !Task.isCancelled {
                         // Capture lastKey for Sendable closure
                         let currentLastKey = lastKey
 
 	                        // Each batch is a separate transaction
-	                        let batch: [(key: Bytes, value: Bytes)] = try await container.engine.withTransaction(configuration: .batch) { transaction in
-	                            let rangeBegin = currentLastKey.map { $0 + [0x00] } ?? beginKey
+	                        let batch: [(key: ByteString, value: ByteString)] = try await container.engine.withTransaction(configuration: .batch) { transaction in
+	                            let rangeBegin = currentLastKey.map { $0.appending(0x00) } ?? beginKey
 
 	                            let storage = self.container.itemStorageFactory.make(
 	                                transaction: transaction,
 	                                blobsSubspace: blobsSubspace
 	                            )
 
-	                            var results: [(key: Bytes, value: Bytes)] = []
+	                            var results: [(key: ByteString, value: ByteString)] = []
 	                            for try await (key, value) in storage.scan(
 	                                begin: rangeBegin,
 	                                end: endKey,

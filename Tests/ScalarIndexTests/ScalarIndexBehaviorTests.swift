@@ -72,10 +72,10 @@ private struct ScalarIndexContext {
         }
     }
 
-    func getIndexKeys() async throws -> [Bytes] {
-        try await database.withTransaction { transaction -> [Bytes] in
+    func getIndexKeys() async throws -> [ByteString] {
+        try await database.withTransaction { transaction -> [ByteString] in
             let (begin, end) = indexSubspace.range()
-            var keys: [Bytes] = []
+            var keys: [ByteString] = []
             for (key, _) in try await transaction.collectRange(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),

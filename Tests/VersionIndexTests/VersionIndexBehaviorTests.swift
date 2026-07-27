@@ -71,7 +71,7 @@ private struct VersionIndexContext {
         }
     }
 
-    func getVersionHistory(primaryKey: [any TupleElement], limit: Int? = nil) async throws -> [(version: Version, data: Bytes)] {
+    func getVersionHistory(primaryKey: [any TupleElement], limit: Int? = nil) async throws -> [(version: Version, data: ByteString)] {
         try await database.withTransaction { transaction in
             try await maintainer.getVersionHistory(
                 primaryKey: primaryKey,
@@ -81,7 +81,7 @@ private struct VersionIndexContext {
         }
     }
 
-    func getLatestVersion(primaryKey: [any TupleElement]) async throws -> Bytes? {
+    func getLatestVersion(primaryKey: [any TupleElement]) async throws -> ByteString? {
         try await database.withTransaction { transaction in
             try await maintainer.getLatestVersion(
                 primaryKey: primaryKey,

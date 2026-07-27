@@ -110,10 +110,10 @@ public struct StoreTimerEvent: Hashable, Sendable, CustomStringConvertible {
     /// Time to deserialize an entity
     public static let deserialize = StoreTimerEvent(name: "deserialize")
 
-    /// Bytes serialized
+    /// Bytes serialized.
     public static let bytesSerialized = StoreTimerEvent(name: "bytes_serialized", isSize: true)
 
-    /// Bytes deserialized
+    /// Bytes deserialized.
     public static let bytesDeserialized = StoreTimerEvent(name: "bytes_deserialized", isSize: true)
 
     // MARK: - Compression

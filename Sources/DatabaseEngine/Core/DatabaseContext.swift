@@ -1081,7 +1081,7 @@ public final class DatabaseContext: Sendable {
     // MARK: - Autosave
 
     private func scheduleAutosave() {
-        let clock = container.engine.monotonicClock
+        let clock = container.monotonicClock
         Task { [weak self, clock] in
             do {
                 try await clock.sleep(for: .milliseconds(10))
@@ -1300,6 +1300,7 @@ extension DatabaseContext {
         // Use TransactionRunner with context's own ReadVersionCache
         let runner = TransactionRunner(
             database: container.engine,
+            clock: container.monotonicClock,
             logging: container.configuration.logging
         )
         return try await runner.run(
@@ -1350,6 +1351,7 @@ extension DatabaseContext {
 
         let runner = TransactionRunner(
             database: container.engine,
+            clock: container.monotonicClock,
             logging: container.configuration.logging
         )
         return try await runner.run(

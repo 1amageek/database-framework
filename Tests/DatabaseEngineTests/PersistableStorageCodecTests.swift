@@ -53,21 +53,37 @@ struct PersistableStorageCodecTests {
 
     @Test("Envelope validation rejects invalid magic and version")
     func rejectsInvalidEnvelope() throws {
-        var invalidMagic = try DataAccess.serialize(
+        let validFrame = try DataAccess.serialize(
             RelationshipTarget(name: "target")
         )
-        invalidMagic[0] = 0
+        let invalidMagic = replacingBytes(
+            in: validFrame,
+            at: [(index: 0, byte: 0)]
+        )
         #expect(throws: PersistableFieldFrameError.invalidMagic) {
             let _: RelationshipTarget = try DataAccess.deserialize(invalidMagic)
         }
 
-        var invalidVersion = try DataAccess.serialize(
-            RelationshipTarget(name: "target")
+        let invalidVersion = replacingBytes(
+            in: validFrame,
+            at: [(index: 4, byte: 2), (index: 5, byte: 0)]
         )
-        invalidVersion[4] = 2
-        invalidVersion[5] = 0
         #expect(throws: PersistableFieldFrameError.unsupportedVersion(2)) {
             let _: RelationshipTarget = try DataAccess.deserialize(invalidVersion)
+        }
+    }
+
+    private func replacingBytes(
+        in source: ByteString,
+        at replacements: [(index: Int, byte: UInt8)]
+    ) -> ByteString {
+        ByteString.copying(count: source.count) { destination in
+            source.withUnsafeBytes { bytes in
+                destination.copyMemory(from: bytes)
+            }
+            for replacement in replacements {
+                destination[replacement.index] = replacement.byte
+            }
         }
     }
 

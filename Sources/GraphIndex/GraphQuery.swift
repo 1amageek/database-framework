@@ -330,7 +330,7 @@ public struct GraphQueryExecutor: Sendable {
         return base.subspace(key)
     }
 
-    private func buildScanRange(ordering: GraphIndexOrdering, subspace: Subspace) -> (begin: Bytes, end: Bytes) {
+    private func buildScanRange(ordering: GraphIndexOrdering, subspace: Subspace) -> (begin: ByteString, end: ByteString) {
         var prefixElements: [any TupleElement] = []
         let elementOrder = ordering.elementOrder
         let patterns = [fromPattern, edgePattern, toPattern]
@@ -376,7 +376,7 @@ public struct GraphQueryExecutor: Sendable {
         return result
     }
 
-    private func parseKey(_ key: Bytes, ordering: GraphIndexOrdering, subspace: Subspace) throws -> GraphEdge? {
+    private func parseKey(_ key: ByteString, ordering: GraphIndexOrdering, subspace: Subspace) throws -> GraphEdge? {
         let tuple = try subspace.unpack(key)
 
         guard tuple.count >= 3 else {

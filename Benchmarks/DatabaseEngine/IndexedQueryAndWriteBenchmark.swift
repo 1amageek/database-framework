@@ -132,7 +132,7 @@ private struct IndexedBenchmarkContext: Sendable {
             ["test", "performance", "triple-index-entities"],
         ] {
             do {
-                try await engine.removeDirectory(path: path)
+                try await engine.removeNamespace(path: path)
             } catch {
                 // Ignore missing directory when the strategy did not materialize it.
             }

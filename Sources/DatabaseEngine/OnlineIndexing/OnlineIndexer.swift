@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 import DatabaseKit
 import Metrics
@@ -79,7 +80,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     private let throttleDelayMs: Int
 
     // Progress tracking
-    private let progressKey: Bytes
+    private let progressKey: ByteString
 
     // Uniqueness enforcement
     private let metadataSubspace: Subspace
@@ -298,7 +299,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
 
                     var itemsInBatch = 0
-                    var lastProcessedKey: Bytes? = nil
+                    var lastProcessedKey: ByteString? = nil
 
                     // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
                     let storage = self.container.itemStorageFactory.make(
@@ -384,7 +385,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
             // Throttle if configured
             if throttleDelayMs > 0 {
-                try await container.engine.monotonicClock.sleep(
+                try await container.monotonicClock.sleep(
                     for: .milliseconds(Int64(throttleDelayMs))
                 )
             }
@@ -537,7 +538,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         }
 
         // Build chunk ranges from split points
-        var chunks: [(begin: Bytes, end: Bytes)] = []
+        var chunks: [(begin: ByteString, end: ByteString)] = []
         var prevPoint = begin
         for point in splitPoints {
             chunks.append((begin: prevPoint, end: point))
@@ -549,7 +550,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         let existingProgress = try await progress.loadProgress(chunkCount: chunks.count)
 
         // Build list of chunks to process (skip completed ones)
-        var chunksToProcess: [(index: Int, begin: Bytes, end: Bytes, startKey: Bytes?)] = []
+        var chunksToProcess: [(index: Int, begin: ByteString, end: ByteString, startKey: ByteString?)] = []
         for (idx, chunk) in chunks.enumerated() {
             if let chunkProgress = existingProgress[idx] {
                 switch chunkProgress.status {
@@ -558,7 +559,9 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     continue
                 case .inProgress:
                     // Resume from last processed key
-                    let startKey = chunkProgress.lastProcessedKey.map { $0 + [0x00] }
+                    let startKey = chunkProgress.lastProcessedKey.map {
+                        $0.appending(0x00)
+                    }
                     chunksToProcess.append((index: idx, begin: chunk.begin, end: chunk.end, startKey: startKey))
                 case .notStarted:
                     chunksToProcess.append((index: idx, begin: chunk.begin, end: chunk.end, startKey: nil))
@@ -659,13 +662,13 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// - Returns: Number of items processed
     private func processChunkWithProgress(
         chunkIndex: Int,
-        begin: Bytes,
-        end: Bytes,
+        begin: ByteString,
+        end: ByteString,
         itemTypeSubspace: Subspace,
         progress: ParallelBuildProgress
     ) async throws -> Int {
         var itemsProcessed = 0
-        var lastKey: Bytes? = nil
+        var lastKey: ByteString? = nil
         var currentBegin = begin
 
         // Mark chunk as in-progress
@@ -676,9 +679,9 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             // Capture current begin for Sendable closure
             let rangeBegin = currentBegin
 
-            let (batchCount, newLastKey): (Int, Bytes?) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+            let (batchCount, newLastKey): (Int, ByteString?) = try await container.engine.withTransaction(configuration: .batch) { transaction in
                 var count = 0
-                var processedKey: Bytes? = nil
+                var processedKey: ByteString? = nil
 
                 // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
                 let storage = self.container.itemStorageFactory.make(
@@ -737,7 +740,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
             // Update current begin for next batch
             if let newLastKey = newLastKey {
-                currentBegin = newLastKey + [0x00]
+                currentBegin = newLastKey.appending(0x00)
             }
 
             // If we processed fewer than batchSize, we've reached the end of this chunk
@@ -747,7 +750,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
             // Throttle if configured
             if throttleDelayMs > 0 {
-                try await container.engine.monotonicClock.sleep(
+                try await container.monotonicClock.sleep(
                     for: .milliseconds(Int64(throttleDelayMs))
                 )
             }
@@ -780,7 +783,7 @@ extension OnlineIndexer: CustomStringConvertible {
 /// **Data Layout**:
 /// ```
 /// [indexSubspace]/_build/[indexName]/[chunkIndex]
-///   → Tuple(status: Int, lastProcessedKey: Bytes?)
+///   → Tuple(status: Int, lastProcessedKey: ByteString?)
 /// ```
 ///
 /// **Thread Safety**:
@@ -797,7 +800,7 @@ internal final class ParallelBuildProgress: Sendable {
     /// Progress data for a single chunk
     struct ChunkProgress: Sendable {
         let status: ChunkStatus
-        let lastProcessedKey: Bytes?
+        let lastProcessedKey: ByteString?
 
         static let notStarted = ChunkProgress(status: .notStarted, lastProcessedKey: nil)
     }
@@ -858,7 +861,7 @@ internal final class ParallelBuildProgress: Sendable {
     func updateProgress(
         chunkIndex: Int,
         status: ChunkStatus,
-        lastKey: Bytes?
+        lastKey: ByteString?
     ) async throws {
         let key = progressSubspace.pack(Tuple(chunkIndex))
         let value = encodeProgress(status: status, lastKey: lastKey)
@@ -878,7 +881,7 @@ internal final class ParallelBuildProgress: Sendable {
     func updateProgress(
         chunkIndex: Int,
         status: ChunkStatus,
-        lastKey: Bytes?,
+        lastKey: ByteString?,
         transaction: any TransactionAccess
     ) throws {
         let key = progressSubspace.pack(Tuple(chunkIndex))
@@ -899,7 +902,7 @@ internal final class ParallelBuildProgress: Sendable {
 
     // MARK: - Private Helpers
 
-    private func extractChunkIndex(from key: Bytes) throws -> Int {
+    private func extractChunkIndex(from key: ByteString) throws -> Int {
         let tuple = try progressSubspace.unpack(key)
         guard tuple.count == 1,
               let index = try tuple.element(at: 0) as? Int64,
@@ -909,7 +912,7 @@ internal final class ParallelBuildProgress: Sendable {
         return converted
     }
 
-    private func encodeProgress(status: ChunkStatus, lastKey: Bytes?) -> Bytes {
+    private func encodeProgress(status: ChunkStatus, lastKey: ByteString?) -> ByteString {
         if let lastKey = lastKey {
             return Tuple(status.rawValue, lastKey).pack()
         } else {
@@ -917,7 +920,7 @@ internal final class ParallelBuildProgress: Sendable {
         }
     }
 
-    private func decodeProgress(from data: Bytes) throws -> ChunkProgress {
+    private func decodeProgress(from data: ByteString) throws -> ChunkProgress {
         let elements = try Tuple.unpack(from: data)
         guard elements.count == 1 || elements.count == 2,
               let statusRaw = elements[0] as? Int64,
@@ -925,9 +928,9 @@ internal final class ParallelBuildProgress: Sendable {
               let status = ChunkStatus(rawValue: statusValue) else {
             throw OnlineIndexBuildError.corruptedProgress
         }
-        let lastKey: Bytes?
+        let lastKey: ByteString?
         if elements.count == 2 {
-            guard let bytes = elements[1] as? Bytes else {
+            guard let bytes = elements[1] as? ByteString else {
                 throw OnlineIndexBuildError.corruptedProgress
             }
             lastKey = bytes

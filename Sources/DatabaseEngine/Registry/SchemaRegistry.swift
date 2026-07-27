@@ -4,6 +4,7 @@
 /// Stores entity metadata under `(_schema, entityName)`.
 /// Enables CLI and dynamic tools to discover and decode data without compiled types.
 
+import DatabaseTypes
 import StorageKit
 import DatabaseKit
 
@@ -181,7 +182,7 @@ public struct SchemaRegistry: Sendable {
     // MARK: - Key Construction
 
     /// Build FDB key for a schema entry: (_schema, typeName) as Tuple
-    private static func key(for typeName: String) -> Bytes {
+    private static func key(for typeName: String) -> ByteString {
         Tuple([catalogPrefix, typeName]).pack()
     }
 

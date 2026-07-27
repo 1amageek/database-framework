@@ -18,7 +18,7 @@ public enum DatabaseExecutionTimeout {
     }
 
     static func run<Value: Sendable>(
-        until deadline: ContinuousClock.Instant,
+        until deadline: StorageInstant,
         timeoutMilliseconds: UInt32,
         clock: any StorageMonotonicClock,
         operation: @escaping @Sendable () async throws -> Value

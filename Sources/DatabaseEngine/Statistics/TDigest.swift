@@ -10,6 +10,7 @@
 // - Supports merging for distributed computation
 // - Memory: ~10KB per instance (compression=100)
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -468,11 +469,11 @@ public struct TDigest: Sendable, Equatable {
 
     // MARK: - Serialization
 
-    /// Encodes one strict v1 binary frame directly into final `Bytes` storage.
+    /// Encodes one strict v1 binary frame directly into final `ByteString` storage.
     ///
     /// Format: `TDG1`, compression, total weight, min, max, centroid count,
     /// followed by `(mean, weight)` centroid pairs. All numbers are little-endian.
-    public func encodeBytes() throws(TDigestError) -> Bytes {
+    public func encodeBytes() throws(TDigestError) -> ByteString {
         var copy = self
         if !copy.buffer.isEmpty {
             copy.compress()
@@ -487,7 +488,7 @@ public struct TDigest: Sendable, Equatable {
         }
         let byteCount = headerByteCount + copy.centroids.count * 16
 
-        return Bytes.copying(count: byteCount) { destination in
+        return ByteString.copying(count: byteCount) { destination in
             destination[0] = 0x54
             destination[1] = 0x44
             destination[2] = 0x47
@@ -527,10 +528,10 @@ public struct TDigest: Sendable, Equatable {
         }
     }
 
-    /// Decodes a strict v1 binary frame from borrowed `Bytes` storage.
+    /// Decodes a strict v1 binary frame from borrowed `ByteString` storage.
     /// Scalar reads are unaligned loads; no `Data` or scalar sub-buffers are made.
     public static func decode(
-        from bytes: Bytes
+        from bytes: ByteString
     ) throws(TDigestError) -> TDigest {
         let headerByteCount = 40
         guard bytes.count >= headerByteCount else {
@@ -713,7 +714,7 @@ private func writeTDigestUInt32(
     }
 }
 
-private func readTDigestUInt64(_ bytes: Bytes, at offset: Int) -> UInt64 {
+private func readTDigestUInt64(_ bytes: ByteString, at offset: Int) -> UInt64 {
     bytes.withUnsafeBytes { source in
         UInt64(
             littleEndian: source.loadUnaligned(
@@ -724,7 +725,7 @@ private func readTDigestUInt64(_ bytes: Bytes, at offset: Int) -> UInt64 {
     }
 }
 
-private func readTDigestUInt32(_ bytes: Bytes, at offset: Int) -> UInt32 {
+private func readTDigestUInt32(_ bytes: ByteString, at offset: Int) -> UInt32 {
     bytes.withUnsafeBytes { source in
         UInt32(
             littleEndian: source.loadUnaligned(

@@ -34,7 +34,7 @@ struct ScalarUInt64IndexRuntimeTests {
                 configurations: []
             )
 
-        var keys: [Bytes] = []
+        var keys: [ByteString] = []
         keys.reserveCapacity(values.count)
         for (offset, value) in values.enumerated() {
             let entity = UnsignedScalarEntity(

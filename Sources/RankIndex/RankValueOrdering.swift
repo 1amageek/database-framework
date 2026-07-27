@@ -11,7 +11,7 @@ enum RankValueDirection: Sendable {
 struct RankValueEntry<Item> {
     let item: Item
     let value: FieldValue
-    let identifierKey: Bytes
+    let identifierKey: ByteString
 }
 
 enum RankValueOrdering {
@@ -49,7 +49,7 @@ enum RankValueOrdering {
 
     /// Encodes the identifier once and retains the owned bytes throughout sort.
     /// The byte order is the same order used by rank index keys.
-    static func identifierKey<ID>(for identifier: ID) throws -> Bytes {
+    static func identifierKey<ID>(for identifier: ID) throws -> ByteString {
         do {
             let element = try TupleEncoder.encode(identifier)
             return Tuple(element).pack()
@@ -65,7 +65,7 @@ enum RankValueOrdering {
         direction: RankValueDirection
     ) throws -> [RankValueEntry<Item>] {
         var result = consume entries
-        var identifiers: Set<Bytes> = []
+        var identifiers: Set<ByteString> = []
         identifiers.reserveCapacity(result.count)
         for entry in result {
             guard identifiers.insert(entry.identifierKey).inserted else {

@@ -9,6 +9,7 @@
 // - Lazy connection acquisition
 // - Empty BYTEA handling
 
+import DatabaseTypes
 import Testing
 import Foundation
 import StorageKit
@@ -28,13 +29,13 @@ struct PGCounter: Equatable {
 /// Collect range scan results from a concrete transaction type
 private func collectRange(
     _ tx: some Transaction,
-    begin: Bytes,
-    end: Bytes,
+    begin: ByteString,
+    end: ByteString,
     limit: Int = 0,
     reverse: Bool = false
-) async throws -> [(key: Bytes, value: Bytes)] {
+) async throws -> [(key: ByteString, value: ByteString)] {
     let seq = tx.getRange(begin: begin, end: end, limit: limit, reverse: reverse)
-    var result: [(key: Bytes, value: Bytes)] = []
+    var result: [(key: ByteString, value: ByteString)] = []
     for try await (key, value) in seq { result.append((key: key, value: value)) }
     return result
 }
@@ -142,7 +143,7 @@ struct PostgreSQLConcurrencyTests {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let key: Bytes = [0x99, 0x01, 0x02]
+            let key: ByteString = [0x99, 0x01, 0x02]
 
             // Write empty value
             let tx1 = try engine.createTransaction()
@@ -171,22 +172,20 @@ struct PostgreSQLConcurrencyTests {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let prefix: Bytes = [0xAA]
-            let endPrefix: Bytes = [0xAB]
+            let prefix: ByteString = [0xAA]
+            let endPrefix: ByteString = [0xAB]
 
             // Insert multiple keys with same prefix
             let tx1 = try engine.createTransaction()
             for i: UInt8 in 0..<10 {
-                var key = prefix
-                key.append(i)
-                try tx1.setValue(Bytes([i]), for: key)
+                let key = prefix.appending(i)
+                try tx1.setValue(ByteString([i]), for: key)
             }
             try await tx1.commit()
 
             // Range scan
             let tx2 = try engine.createTransaction()
-            var begin = prefix
-            begin.append(0x00)
+            let begin = prefix.appending(0x00)
             let results = try await collectRange(tx2, begin: begin, end: endPrefix)
             try await tx2.cancel()
 
@@ -204,22 +203,20 @@ struct PostgreSQLConcurrencyTests {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let prefix: Bytes = [0xBB]
-            let endPrefix: Bytes = [0xBC]
+            let prefix: ByteString = [0xBB]
+            let endPrefix: ByteString = [0xBC]
 
             // Insert ordered keys
             let tx1 = try engine.createTransaction()
             for i: UInt8 in 0..<5 {
-                var key = prefix
-                key.append(i)
-                try tx1.setValue(Bytes([i]), for: key)
+                let key = prefix.appending(i)
+                try tx1.setValue(ByteString([i]), for: key)
             }
             try await tx1.commit()
 
             // Reverse range scan
             let tx2 = try engine.createTransaction()
-            var begin = prefix
-            begin.append(0x00)
+            let begin = prefix.appending(0x00)
             let results = try await collectRange(
                 tx2,
                 begin: begin,
@@ -231,7 +228,7 @@ struct PostgreSQLConcurrencyTests {
             #expect(results.count == 5)
             // Verify reverse order
             for i in 0..<results.count {
-                #expect(results[i].value == Bytes([UInt8(4 - i)]))
+                #expect(results[i].value == ByteString([UInt8(4 - i)]))
             }
 
             // Cleanup
@@ -246,22 +243,20 @@ struct PostgreSQLConcurrencyTests {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
 
-            let prefix: Bytes = [0xCC]
-            let endPrefix: Bytes = [0xCD]
+            let prefix: ByteString = [0xCC]
+            let endPrefix: ByteString = [0xCD]
 
             // Insert 10 keys
             let tx1 = try engine.createTransaction()
             for i: UInt8 in 0..<10 {
-                var key = prefix
-                key.append(i)
-                try tx1.setValue(Bytes([i]), for: key)
+                let key = prefix.appending(i)
+                try tx1.setValue(ByteString([i]), for: key)
             }
             try await tx1.commit()
 
             // Scan with limit 3
             let tx2 = try engine.createTransaction()
-            var begin = prefix
-            begin.append(0x00)
+            let begin = prefix.appending(0x00)
             let results = try await collectRange(
                 tx2,
                 begin: begin,

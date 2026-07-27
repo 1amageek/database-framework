@@ -255,7 +255,7 @@ public final class StatisticsStorage: Sendable {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             // Delete table stats (single key range)
             let tableKey = self.statsSubspace.subspace("table").pack(Tuple([typeName]))
-            let tableKeyEnd = tableKey + [0x00]
+            let tableKeyEnd = tableKey.appending(0x00)
             try transaction.clearRange(beginKey: tableKey, endKey: tableKeyEnd)
 
             // Delete all field stats
@@ -269,7 +269,7 @@ public final class StatisticsStorage: Sendable {
     public func deleteIndexStatistics(indexName: String) async throws {
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             let key = self.statsSubspace.subspace("index").pack(Tuple([indexName]))
-            let keyEnd = key + [0x00]
+            let keyEnd = key.appending(0x00)
             try transaction.clearRange(beginKey: key, endKey: keyEnd)
         }
     }

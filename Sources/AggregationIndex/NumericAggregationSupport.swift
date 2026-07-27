@@ -92,12 +92,12 @@ enum AggregationNumericAccumulatorValue: Sendable, Equatable {
 private enum AggregationWideIntegerCodec {
     static let encodedByteCount = MemoryLayout<UInt64>.size * 2
 
-    static func encode(_ value: Int128) -> Bytes {
+    static func encode(_ value: Int128) -> ByteString {
         encode(UInt128(bitPattern: value))
     }
 
-    static func encode(_ value: UInt128) -> Bytes {
-        Bytes.copying(count: encodedByteCount) { destination in
+    static func encode(_ value: UInt128) -> ByteString {
+        ByteString.copying(count: encodedByteCount) { destination in
             guard let baseAddress = destination.baseAddress else {
                 preconditionFailure(
                     "Wide integer aggregate state requires storage"
@@ -116,11 +116,11 @@ private enum AggregationWideIntegerCodec {
         }
     }
 
-    static func decodeSigned(_ bytes: Bytes) throws -> Int128 {
+    static func decodeSigned(_ bytes: ByteString) throws -> Int128 {
         Int128(bitPattern: try decodeUnsigned(bytes))
     }
 
-    static func decodeUnsigned(_ bytes: Bytes) throws -> UInt128 {
+    static func decodeUnsigned(_ bytes: ByteString) throws -> UInt128 {
         guard bytes.count == encodedByteCount else {
             throw AggregationStorageError.invalidWideIntegerByteCount(
                 bytes.count
@@ -185,9 +185,9 @@ private struct AggregationFloatingPointState: Sendable, Equatable {
         return value
     }
 
-    func encode() throws -> Bytes {
+    func encode() throws -> ByteString {
         _ = try total()
-        return Bytes.copying(count: Self.encodedByteCount) { destination in
+        return ByteString.copying(count: Self.encodedByteCount) { destination in
             guard let baseAddress = destination.baseAddress else {
                 preconditionFailure(
                     "Floating-point aggregate state requires storage"
@@ -206,7 +206,7 @@ private struct AggregationFloatingPointState: Sendable, Equatable {
         }
     }
 
-    static func decode(_ bytes: Bytes) throws -> Self {
+    static func decode(_ bytes: ByteString) throws -> Self {
         guard bytes.count == encodedByteCount else {
             throw AggregationStorageError.invalidFloatingPointStateByteCount(
                 bytes.count
@@ -322,7 +322,7 @@ public enum NumericValueExtractor {
 }
 
 struct AggregationStorageKey {
-    let groupingIdentity: Bytes
+    let groupingIdentity: ByteString
     let groupingElements: [any TupleElement]
     let marker: String
 }
@@ -349,7 +349,7 @@ func checkedAggregationScannedBytes(
 /// scan path therefore does not re-encode every grouping tuple just to build a
 /// dictionary key.
 func decodeAggregationStorageKey(
-    _ key: Bytes,
+    _ key: ByteString,
     in subspace: Subspace
 ) throws -> AggregationStorageKey {
     var cursor = try subspace.tupleCursor(for: key)
@@ -410,8 +410,8 @@ extension NumericAggregationMutationSupport {
     /// Mutates the sum and membership count as one invariant-preserving pair.
     /// Both entries are read and validated before either write is staged.
     func mutateNumericAggregate(
-        sumKey: Bytes,
-        countKey: Bytes,
+        sumKey: ByteString,
+        countKey: ByteString,
         removing oldValue: AggregationNumericValue?,
         adding newValue: AggregationNumericValue?,
         transaction: any TransactionAccess
@@ -446,7 +446,7 @@ extension NumericAggregationMutationSupport {
             count = try checkedAggregationSum(count, 1)
         }
 
-        let encodedResult: Bytes
+        let encodedResult: ByteString
         switch try numericStorageKind {
         case .signedInteger:
             let current: Int128
@@ -594,7 +594,7 @@ extension GroupingKeySupport {
     /// - Throws: If packing fails
     public func buildGroupingKey(
         _ values: [FieldValue]
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         try buildGroupingKey(
             storedElements: FieldValue.toTupleElements(values)
         )
@@ -604,7 +604,7 @@ extension GroupingKeySupport {
     /// FieldValue-to-storage boundary.
     func buildGroupingKey<Elements: Collection>(
         storedElements: Elements
-    ) throws -> Bytes where Elements.Element == any TupleElement {
+    ) throws -> ByteString where Elements.Element == any TupleElement {
         try packAndValidate(elements: storedElements)
     }
 }
@@ -656,11 +656,11 @@ extension AggregationQuerySupport {
     ///
     /// - Parameter bytes: The stored bytes
     /// - Returns: The Int64 value
-    public func readInt64Value(_ bytes: Bytes) throws -> Int64 {
+    public func readInt64Value(_ bytes: ByteString) throws -> Int64 {
         try ByteConversion.bytesToInt64(bytes)
     }
 
-    public func readUInt64Value(_ bytes: Bytes) throws -> UInt64 {
+    public func readUInt64Value(_ bytes: ByteString) throws -> UInt64 {
         try ByteConversion.bytesToUInt64(bytes)
     }
 
@@ -668,12 +668,12 @@ extension AggregationQuerySupport {
     ///
     /// - Parameter bytes: The stored bytes
     /// - Returns: The Double value
-    public func readDoubleValue(_ bytes: Bytes) throws -> Double {
+    public func readDoubleValue(_ bytes: ByteString) throws -> Double {
         try AggregationFloatingPointState.decode(bytes).total()
     }
 
     public func readStoredNumericValue(
-        _ bytes: Bytes
+        _ bytes: ByteString
     ) throws -> AggregationNumericValue {
         switch try readStoredNumericAccumulator(bytes) {
         case .signedInteger(let value):
@@ -692,7 +692,7 @@ extension AggregationQuerySupport {
     }
 
     func readStoredNumericAccumulator(
-        _ bytes: Bytes
+        _ bytes: ByteString
     ) throws -> AggregationNumericAccumulatorValue {
         switch try numericStorageKind {
         case .signedInteger:
@@ -718,7 +718,7 @@ extension AggregationQuerySupport {
     ///
     /// - Parameter bytes: The stored bytes
     /// - Returns: Double representation of the value
-    public func readNumericValue(_ bytes: Bytes) throws -> Double {
+    public func readNumericValue(_ bytes: ByteString) throws -> Double {
         switch try readStoredNumericValue(bytes) {
         case .signedInteger(let integer):
             guard let value = Double(exactly: integer) else {
@@ -765,7 +765,7 @@ extension CountAggregationMaintainer {
 
     /// Increment count for a grouping key
     public func incrementCount(
-        key: Bytes,
+        key: ByteString,
         transaction: any TransactionAccess
     ) async throws {
         let current: Int64
@@ -780,7 +780,7 @@ extension CountAggregationMaintainer {
 
     /// Decrement count for a grouping key
     public func decrementCount(
-        key: Bytes,
+        key: ByteString,
         transaction: any TransactionAccess
     ) async throws {
         guard let bytes = try await transaction.getValue(for: key) else {
@@ -800,7 +800,7 @@ extension CountAggregationMaintainer {
     ///
     /// Zero is represented by the absence of a key so scans cannot surface
     /// empty groups as materialized aggregate results.
-    public func readStoredCount(_ bytes: Bytes) throws -> Int64 {
+    public func readStoredCount(_ bytes: ByteString) throws -> Int64 {
         let count = try ByteConversion.bytesToInt64(bytes)
         guard count > 0 else {
             throw AggregationStorageError.nonPositiveStoredCount(count)

@@ -296,7 +296,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let catalogError = error as? DatabasePartitionCatalogError {
             return Self.map(catalogError)
         }
-        if let compactionError = error as? DatabaseStorageCompactionError {
+        if let compactionError = error as? StorageCompactionError {
             return Self.map(compactionError)
         }
         if let registryError = error as? DatabaseResumableOperationRegistryError {
@@ -1217,7 +1217,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
     }
 
     private static func map(
-        _ error: DatabaseStorageCompactionError
+        _ error: StorageCompactionError
     ) -> RemoteOperationError {
         let category: OperationErrorCategory
         let code: String

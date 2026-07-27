@@ -15,6 +15,7 @@ private typealias PlatformDate = Foundation.Date
 private typealias PlatformUUID = Foundation.UUID
 #endif
 import StorageKit
+import StorageKitFoundation
 import DatabaseKit
 import DatabaseTypes
 
@@ -34,9 +35,9 @@ import DatabaseTypes
 /// | Double | Double | IEEE 754 (FDB preserves order) |
 /// | Float | Double | Widened |
 /// | Bool | Bool | Direct |
-/// | Date | Date | fdb-swift-bindings handles encoding |
-/// | UUID | UUID | Direct |
-/// | Data | [UInt8] | Converted to byte array |
+/// | Date | Date | StorageKit encodes the absolute time value |
+/// | UUID | Foundation UUID | StorageKit decodes the tuple as canonical `DatabaseTypes.UUID` |
+/// | Data | ByteString | Copied once into canonical immutable storage |
 ///
 /// **Reference**: FoundationDB Tuple Layer Specification
 ///
@@ -127,19 +128,15 @@ public struct TupleEncoder: Sendable {
         case let uuidValue as PlatformUUID:
             return uuidValue
         case let databaseBytes as ByteString:
-            return Bytes(retaining: databaseBytes)
-        case let storageBytes as Bytes:
-            return storageBytes
+            return databaseBytes
         case let dataValue as PlatformData:
-            return Bytes(
-                retaining: ByteString.copying(count: dataValue.count) { output in
-                    dataValue.withUnsafeBytes { source in
-                        output.copyMemory(from: source)
-                    }
+            return ByteString.copying(count: dataValue.count) { output in
+                dataValue.withUnsafeBytes { source in
+                    output.copyMemory(from: source)
                 }
-            )
+            }
         case let bytesValue as [UInt8]:
-            return Bytes(bytesValue)
+            return ByteString(bytesValue)
         case let tupleValue as Tuple:
             return tupleValue
 

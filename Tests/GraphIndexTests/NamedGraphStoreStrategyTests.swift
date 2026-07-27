@@ -51,7 +51,7 @@ struct NamedGraphStoreStrategyTests {
         return (maintainer, indexSubspace)
     }
 
-    private func unpack(_ key: Bytes, from subspace: Subspace) throws -> [any TupleElement] {
+    private func unpack(_ key: ByteString, from subspace: Subspace) throws -> [any TupleElement] {
         let tuple = try subspace.unpack(key)
         return try Tuple.unpack(from: tuple.pack())
     }
@@ -107,7 +107,7 @@ struct NamedGraphStoreStrategyTests {
         #expect(keys.count == 3)
 
         let gspo = try unpack(keys[0], from: setup.indexSubspace.subspace(Int64(8)))
-        #expect(gspo[0] as? Bytes == Bytes())
+        #expect(gspo[0] as? ByteString == ByteString())
         #expect(gspo[1] as? String == "Alice")
         #expect(gspo[2] as? String == "knows")
         #expect(gspo[3] as? String == "Bob")

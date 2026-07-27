@@ -52,7 +52,7 @@ public enum RelationshipReferenceCatalog {
         }
         var identities: [EntityReference] = []
         identities.reserveCapacity(limit)
-        var continuation: Bytes?
+        var continuation: ByteString?
         while identities.count < limit {
             let page = try await referrerPage(
                 of: target,
@@ -73,7 +73,7 @@ public enum RelationshipReferenceCatalog {
     public static func referrerPage(
         of target: EntityReference,
         descriptor: RelationshipDescriptor,
-        continuation: Bytes?,
+        continuation: ByteString?,
         limit: Int,
         transaction: any TransactionAccess
     ) async throws -> RelationshipReferenceIdentityPage {
@@ -112,9 +112,9 @@ public enum RelationshipReferenceCatalog {
 
     private static func entryKey(
         target: EntityReference,
-        ownerBytes: Bytes,
+        ownerBytes: ByteString,
         descriptor: RelationshipDescriptor
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         try referenceSubspace(target: target, descriptor: descriptor)
             .pack(Tuple([ownerBytes]))
     }

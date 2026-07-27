@@ -100,7 +100,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         guard let data = try extractAggregationData(from: item) else {
             return []
         }
@@ -191,11 +191,11 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
         count: Int64,
         average: FieldValue
     )] {
-        var sumData: [Bytes: (
+        var sumData: [ByteString: (
             grouping: [any TupleElement],
             sum: AggregationNumericAccumulatorValue
         )] = [:]
-        var countData: [Bytes: Int64] = [:]
+        var countData: [ByteString: Int64] = [:]
 
         let range = subspace.range()
         var scannedEntries = 0
@@ -317,8 +317,8 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     }
 
     private struct AggregationData {
-        let sumKey: Bytes
-        let countKey: Bytes
+        let sumKey: ByteString
+        let countKey: ByteString
         let numericValue: AggregationNumericValue
     }
 
@@ -410,7 +410,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
 
     private func buildSumKey<Elements: Collection>(
         storedGroupingElements: Elements
-    ) throws -> Bytes where Elements.Element == any TupleElement {
+    ) throws -> ByteString where Elements.Element == any TupleElement {
         try validateGroupingCount(storedGroupingElements.count)
         let key = subspace.pack(
             elements: storedGroupingElements,
@@ -422,7 +422,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
 
     private func buildCountKey<Elements: Collection>(
         storedGroupingElements: Elements
-    ) throws -> Bytes where Elements.Element == any TupleElement {
+    ) throws -> ByteString where Elements.Element == any TupleElement {
         try validateGroupingCount(storedGroupingElements.count)
         let key = subspace.pack(
             elements: storedGroupingElements,

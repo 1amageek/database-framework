@@ -1,8 +1,9 @@
+import DatabaseTypes
 import StorageKit
 
 enum FullTextStorageDecoder {
     static func posting(
-        from value: Bytes,
+        from value: ByteString,
         positionsStored: Bool,
         term: String
     ) throws -> (termFrequency: Int, positions: [Int]) {
@@ -43,7 +44,7 @@ enum FullTextStorageDecoder {
     }
 
     static func documentMetadata(
-        from value: Bytes
+        from value: ByteString
     ) throws -> (uniqueTermCount: Int64, docLength: Int64) {
         do {
             let tuple = try Tuple.unpack(from: value)
@@ -63,7 +64,7 @@ enum FullTextStorageDecoder {
     }
 
     static func facetValue(
-        from key: Bytes,
+        from key: ByteString,
         in subspace: Subspace,
         field: String
     ) throws -> String {
@@ -80,7 +81,7 @@ enum FullTextStorageDecoder {
         }
     }
 
-    static func documentFacetValues(from value: Bytes, field: String) throws -> [String] {
+    static func documentFacetValues(from value: ByteString, field: String) throws -> [String] {
         do {
             let tuple = try Tuple.unpack(from: value)
             var values: [String] = []
@@ -100,7 +101,7 @@ enum FullTextStorageDecoder {
     }
 
     static func autocompleteSuggestionTerm(
-        from key: Bytes,
+        from key: ByteString,
         in subspace: Subspace,
         field: String,
         prefix: String
@@ -125,7 +126,7 @@ enum FullTextStorageDecoder {
     }
 
     static func autocompleteTerm(
-        from key: Bytes,
+        from key: ByteString,
         in subspace: Subspace,
         field: String
     ) throws -> String {

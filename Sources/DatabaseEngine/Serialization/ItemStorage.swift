@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 
 /// Canonical entity storage bound to one transaction and one blob subspace.
@@ -26,10 +27,10 @@ public struct ItemStorage: Sendable {
     /// All fallible validation and envelope construction happens before old
     /// blob mutations are cleared. The enclosing transaction remains the
     /// atomicity boundary for chunks, envelope, indexes, and relationships.
-    public func write(_ data: Bytes, for key: Bytes) async throws {
+    public func write(_ data: ByteString, for key: ByteString) async throws {
         try validatePlainByteCount(data.count)
 
-        let payload: Bytes
+        let payload: ByteString
         switch configuration.encoding {
         case .identity:
             payload = data
@@ -80,9 +81,9 @@ public struct ItemStorage: Sendable {
 
     /// Reads, structurally validates, and checksum-verifies one entity.
     public func read(
-        for key: Bytes,
+        for key: ByteString,
         snapshot: Bool = false
-    ) async throws -> Bytes? {
+    ) async throws -> ByteString? {
         guard let envelopeBytes = try await transaction.getValue(
             for: key,
             snapshot: snapshot
@@ -97,22 +98,22 @@ public struct ItemStorage: Sendable {
     }
 
     public func exists(
-        for key: Bytes,
+        for key: ByteString,
         snapshot: Bool = false
     ) async throws -> Bool {
         try await transaction.getValue(for: key, snapshot: snapshot) != nil
     }
 
     /// Deletes both the item envelope and every possible external chunk.
-    public func delete(for key: Bytes) async throws {
+    public func delete(for key: ByteString) async throws {
         try clearAllBlobs(for: key)
         try transaction.clear(key: key)
     }
 
     /// Opens a lazy scan over canonical item envelopes.
     public func scan(
-        begin: Bytes,
-        end: Bytes,
+        begin: ByteString,
+        end: ByteString,
         snapshot: Bool = false,
         limit: Int = 0,
         reverse: Bool = false
@@ -208,18 +209,18 @@ public struct ItemStorage: Sendable {
         return count
     }
 
-    private func blobPrefix(for key: Bytes) -> Subspace {
+    private func blobPrefix(for key: ByteString) -> Subspace {
         blobsSubspace.subspace(Tuple([key]))
     }
 
-    private func clearAllBlobs(for key: Bytes) throws {
+    private func clearAllBlobs(for key: ByteString) throws {
         let (begin, end) = blobPrefix(for: key).range()
         try transaction.clearRange(beginKey: begin, endKey: end)
     }
 
     private func writeChunks(
-        _ payload: Bytes,
-        for key: Bytes,
+        _ payload: ByteString,
+        for key: ByteString,
         chunkCount: Int
     ) throws {
         let blobBase = blobPrefix(for: key)
@@ -233,7 +234,7 @@ public struct ItemStorage: Sendable {
                 throw ItemStorageError.invalidChunkLayout
             }
             let chunkKey = blobBase.pack(Tuple([encodedIndex]))
-            // Bytes slicing is a constant-time view. The transaction owns any
+            // ByteString slicing is a constant-time view. The transaction owns any
             // copy required by its backend lifetime after this synchronous call.
             try transaction.setValue(payload[offset..<end], for: chunkKey)
             offset = end
@@ -244,17 +245,17 @@ public struct ItemStorage: Sendable {
     }
 
     fileprivate func decodeStoredValue(
-        _ envelopeBytes: Bytes,
-        for key: Bytes,
+        _ envelopeBytes: ByteString,
+        for key: ByteString,
         snapshot: Bool
-    ) async throws -> Bytes {
+    ) async throws -> ByteString {
         guard ItemEnvelope.isEnvelope(envelopeBytes) else {
             throw ItemStorageError.notEnvelopeFormat
         }
         let envelope = try ItemEnvelope.deserialize(envelopeBytes)
         try validate(envelope)
 
-        let storedPayload: Bytes
+        let storedPayload: ByteString
         switch envelope.content {
         case .inline(let payload):
             storedPayload = payload
@@ -267,7 +268,7 @@ public struct ItemStorage: Sendable {
             )
         }
 
-        let plainPayload: Bytes
+        let plainPayload: ByteString
         switch envelope.encoding {
         case .identity:
             plainPayload = storedPayload
@@ -283,11 +284,11 @@ public struct ItemStorage: Sendable {
     }
 
     private func loadChunks(
-        for key: Bytes,
+        for key: ByteString,
         envelope: ItemEnvelope,
         reference: ItemEnvelope.ExternalRef,
         snapshot: Bool
-    ) async throws -> Bytes {
+    ) async throws -> ByteString {
         guard let totalSize = Int(exactly: envelope.storedByteCount),
               let chunkCount = Int(exactly: reference.chunkCount),
               let chunkSize = Int(exactly: reference.chunkByteCount) else {
@@ -338,17 +339,17 @@ public struct ItemStorage: Sendable {
                 actual: UInt64(loadedByteCount)
             )
         }
-        return Bytes(owningExact: output)
+        return ByteString(output)
     }
 }
 
 /// Lazy entity scan that preserves backend-native key/value ownership.
 public struct ItemScanSequence: AsyncSequence, Sendable {
-    public typealias Element = (key: Bytes, data: Bytes)
+    public typealias Element = (key: ByteString, data: ByteString)
 
     private let storage: ItemStorage
-    private let begin: Bytes
-    private let end: Bytes
+    private let begin: ByteString
+    private let end: ByteString
     private let snapshot: Bool
     private let limit: Int
     private let reverse: Bool
@@ -356,8 +357,8 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
 
     init(
         storage: ItemStorage,
-        begin: Bytes,
-        end: Bytes,
+        begin: ByteString,
+        end: ByteString,
         snapshot: Bool,
         limit: Int,
         reverse: Bool,

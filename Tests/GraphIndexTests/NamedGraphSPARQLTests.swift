@@ -226,10 +226,10 @@ struct NamedGraphSPARQLTests {
     private func seededContext() async throws -> DatabaseContext {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        if try await database.directoryExists(
+        if try await database.namespaceExists(
             path: ["named_graph_sparql_tests"]
         ) {
-            try await database.removeDirectory(
+            try await database.removeNamespace(
                 path: ["named_graph_sparql_tests"]
             )
         }

@@ -8,6 +8,7 @@
 // would indicate a storage-kit / FDB bug; success points the investigation
 // back into the framework layers.
 
+import DatabaseTypes
 import Testing
 import Foundation
 import StorageKit
@@ -31,8 +32,8 @@ struct RawTransactionRYWTests {
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "ryw", String(testId)).pack())
         let key = subspace.pack(Tuple("k"))
-        let v1 = Bytes([0x01, 0x02, 0x03])
-        let v2 = Bytes([0xAA, 0xBB, 0xCC])
+        let v1 = ByteString([0x01, 0x02, 0x03])
+        let v2 = ByteString([0xAA, 0xBB, 0xCC])
 
         // Seed: write V1 and commit
         try await engine.withTransaction { transaction in
@@ -40,7 +41,7 @@ struct RawTransactionRYWTests {
         }
 
         // In a single transaction: clear, setValue, read. Then commit.
-        let readWithinTx = try await engine.withTransaction { transaction -> Bytes? in
+        let readWithinTx = try await engine.withTransaction { transaction -> ByteString? in
             try transaction.clear(key: key)
             try transaction.setValue(v2, for: key)
             return try await transaction.getValue(for: key, snapshot: false)
@@ -49,7 +50,7 @@ struct RawTransactionRYWTests {
         #expect(readWithinTx == v2, "RYW must return new value inside same tx (got \(String(describing: readWithinTx)))")
 
         // Fresh transaction: read after commit
-        let readAfterCommit = try await engine.withTransaction { transaction -> Bytes? in
+        let readAfterCommit = try await engine.withTransaction { transaction -> ByteString? in
             try await transaction.getValue(for: key, snapshot: false)
         }
 
@@ -73,8 +74,8 @@ struct RawTransactionRYWTests {
         let subspace = Subspace(prefix: Tuple("test", "ryw", String(testId)).pack())
         let keyA = subspace.pack(Tuple("A"))
         let keyB = subspace.pack(Tuple("B"))
-        let v1 = Bytes([0x11])
-        let v2 = Bytes([0x22])
+        let v1 = ByteString([0x11])
+        let v2 = ByteString([0x22])
 
         // Seed: write A=V1
         try await engine.withTransaction { transaction in
@@ -88,14 +89,14 @@ struct RawTransactionRYWTests {
         }
 
         // Fresh tx: range scan entire subspace
-        let collected: [(Bytes, Bytes)] = try await engine.withTransaction { transaction -> [(Bytes, Bytes)] in
+        let collected: [(ByteString, ByteString)] = try await engine.withTransaction { transaction -> [(ByteString, ByteString)] in
             let (begin, end) = subspace.range()
             let seq = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 snapshot: false
             )
-            var out: [(Bytes, Bytes)] = []
+            var out: [(ByteString, ByteString)] = []
             for (k, v) in seq {
                 out.append((k, v))
             }

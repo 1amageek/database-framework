@@ -50,7 +50,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-types.git",
-            from: "26.0726.0"
+            from: "26.0727.5"
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
@@ -62,7 +62,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            from: "26.0727.0"
+            from: "26.0727.1"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
@@ -83,6 +83,14 @@ let package = Package(
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
+                .product(
+                    name: "StorageKitFoundation",
+                    package: "storage-kit"
+                ),
+                .product(
+                    name: "StorageKitSystemClock",
+                    package: "storage-kit"
+                ),
                 .product(name: "FDBStorage", package: "storage-kit",
                          condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
                 .product(name: "Logging", package: "swift-log"),
@@ -109,6 +117,11 @@ let package = Package(
                 "DatabaseMath",
                 "DatabaseEngine",
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(
+                    name: "DatabaseTypesFoundation",
+                    package: "database-types"
+                ),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SwiftHNSW", package: "swift-hnsw"),
@@ -121,6 +134,7 @@ let package = Package(
                 "DatabaseMath",
                 "DatabaseEngine",
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -153,6 +167,7 @@ let package = Package(
                 "DatabaseMath",
                 "DatabaseEngine",
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -172,6 +187,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -205,6 +221,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -214,6 +231,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -224,6 +242,7 @@ let package = Package(
                 "DatabaseMath",
                 "DatabaseEngine",
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -233,6 +252,11 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(
+                    name: "DatabaseTypesFoundation",
+                    package: "database-types"
+                ),
                 .product(name: "StorageKit", package: "storage-kit"),
             ]
         ),
@@ -306,6 +330,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
                          condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
@@ -390,7 +415,7 @@ let package = Package(
                     condition: .when(platforms: hostPlatforms)
                 ),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "StorageKitEmbeddedCore", package: "storage-kit"),
+                .product(name: "StorageKitSystemClock", package: "storage-kit"),
                 .target(name: "ScalarIndex", condition: .when(platforms: hostPlatforms)),
                 .target(name: "VectorIndex", condition: .when(platforms: hostPlatforms)),
                 .target(name: "FullTextIndex", condition: .when(platforms: hostPlatforms)),

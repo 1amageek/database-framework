@@ -108,8 +108,8 @@ struct PolymorphicFetchTests {
             ["polymorphic_fetch_tests_reports"],
             ["polymorphic_fetch_tests_shared"],
         ] {
-            if try await container.engine.directoryExists(path: path) {
-                try await container.engine.removeDirectory(path: path)
+            if try await container.engine.namespaceExists(path: path) {
+                try await container.engine.removeNamespace(path: path)
             }
         }
         try await container.ensureIndexesReady()
@@ -129,7 +129,9 @@ struct PolymorphicFetchTests {
         if let valuePrefix {
             let value = try FieldValue.string(valuePrefix).toTupleElement()
             indexSubspace = Subspace(
-                prefix: indexSubspace.prefix + Tuple(value).pack()
+                prefix: indexSubspace.prefix.appending(
+                    contentsOf: Tuple(value).pack()
+                )
             )
         }
 

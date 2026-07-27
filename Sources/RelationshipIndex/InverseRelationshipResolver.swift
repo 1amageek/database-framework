@@ -16,7 +16,7 @@ public struct InverseRelationshipResolver: Sendable {
         from ownerType: Owner.Type,
         via field: Field<Owner, PersistableReference<Target>?>,
         limit: Int,
-        continuation: Bytes? = nil
+        continuation: ByteString? = nil
     ) async throws -> RelationshipPage<Owner> {
         try await referencedBy(
             target,
@@ -33,7 +33,7 @@ public struct InverseRelationshipResolver: Sendable {
         from ownerType: Owner.Type,
         via field: Field<Owner, PersistableReference<Target>>,
         limit: Int,
-        continuation: Bytes? = nil
+        continuation: ByteString? = nil
     ) async throws -> RelationshipPage<Owner> {
         try await referencedBy(
             target,
@@ -50,7 +50,7 @@ public struct InverseRelationshipResolver: Sendable {
         from ownerType: Owner.Type,
         via field: Field<Owner, [PersistableReference<Target>]>,
         limit: Int,
-        continuation: Bytes? = nil
+        continuation: ByteString? = nil
     ) async throws -> RelationshipPage<Owner> {
         try await referencedBy(
             target,
@@ -68,7 +68,7 @@ public struct InverseRelationshipResolver: Sendable {
         fieldName: String,
         cardinality: RelationshipCardinality,
         limit: Int,
-        continuation: Bytes?
+        continuation: ByteString?
     ) async throws -> RelationshipPage<Owner> {
         let matching = Owner.relationshipDescriptors.filter {
             $0.propertyName == fieldName

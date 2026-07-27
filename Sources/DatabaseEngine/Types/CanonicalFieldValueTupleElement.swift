@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseKit
 import StorageKit
 
@@ -20,10 +21,10 @@ package struct CanonicalFieldValueTupleElement: TupleElement {
     }
 
     package static func decodeTuple(
-        from bytes: Bytes,
+        from bytes: ByteString,
         at offset: inout Int
     ) throws -> CanonicalFieldValueTupleElement {
-        let payload = try Bytes.decodeTuple(from: bytes, at: &offset)
+        let payload = try ByteString.decodeTuple(from: bytes, at: &offset)
         let value = try FieldValueTupleCodec.decode(payload)
         return try CanonicalFieldValueTupleElement(
             prepared: FieldValueTupleCodec.prepareComposite(

@@ -63,7 +63,7 @@ struct PlainItem: Hashable {
 }
 
 private func containsSubsequence(
-    _ haystack: borrowing Bytes,
+    _ haystack: borrowing ByteString,
     _ needle: borrowing [UInt8]
 ) -> Bool {
     guard needle.count <= haystack.count else { return false }
@@ -78,9 +78,9 @@ private func containsSubsequence(
 private func findEntries(
     engine: any StorageEngine,
     containing term: RDFTerm
-) async throws -> [Bytes] {
+) async throws -> [ByteString] {
     let needle = try RDFTermStorageFormat.encode(term).copyBytes()
-    var matched: [Bytes] = []
+    var matched: [ByteString] = []
     try await engine.withTransaction { transaction in
         for (key, _) in try await transaction.collectRange(
             from: .firstGreaterOrEqual([0x00]),

@@ -143,7 +143,7 @@ struct RDFQuadIndexPhysicalCodecTests {
             predicate,
             object,
             graph,
-            Bytes([0x01])
+            ByteString([0x01])
         ))
         do {
             _ = try codec.decodeQuad(key: trailing, ordering: .spo)
@@ -335,7 +335,7 @@ struct RDFQuadIndexPhysicalCodecTests {
         for quad: RDFQuad,
         ordering: GraphIndexOrdering,
         base: Subspace
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         let components = try referenceComponents(for: quad, ordering: ordering)
         return base.subspace(subspaceKey(for: ordering)).pack(
             Tuple(components.map { $0 as any TupleElement })
@@ -345,7 +345,7 @@ struct RDFQuadIndexPhysicalCodecTests {
     private func referenceComponents(
         for quad: RDFQuad,
         ordering: GraphIndexOrdering
-    ) throws -> [Bytes] {
+    ) throws -> [ByteString] {
         let subject = try encoded(
             quad.subject.term,
             role: .subject
@@ -355,13 +355,11 @@ struct RDFQuadIndexPhysicalCodecTests {
             role: .predicate
         )
         let object = try encoded(quad.object, role: .object)
-        let graph: Bytes
+        let graph: ByteString
         if let value = quad.graph {
             graph = try encoded(value.term, role: .graphName)
         } else {
-            graph = Bytes(
-                retaining: RDFQuadIndexPhysicalLayout.defaultGraphDiscriminator
-            )
+            graph = RDFQuadIndexPhysicalLayout.defaultGraphDiscriminator
         }
         switch ordering {
         case .spo: return [subject, predicate, object, graph]
@@ -376,10 +374,10 @@ struct RDFQuadIndexPhysicalCodecTests {
     }
 
     private func referenceRange(
-        components: [Bytes],
+        components: [ByteString],
         ordering: GraphIndexOrdering,
         base: Subspace
-    ) throws -> (begin: Bytes, end: Bytes) {
+    ) throws -> (begin: ByteString, end: ByteString) {
         let orderingSubspace = base.subspace(subspaceKey(for: ordering))
         guard !components.isEmpty else {
             return orderingSubspace.range()
@@ -409,11 +407,11 @@ struct RDFQuadIndexPhysicalCodecTests {
     private func encoded(
         _ term: RDFTerm,
         role: RDFTermRole
-    ) throws -> Bytes {
-        Bytes(retaining: try RDFTermStorageFormat.encode(
+    ) throws -> ByteString {
+        try RDFTermStorageFormat.encode(
             term,
             role: role
-        ))
+        )
     }
 
     private func expectScan(

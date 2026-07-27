@@ -86,7 +86,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         if let key = try buildIndexKey(for: item, id: id) {
             return [key]
         }
@@ -188,7 +188,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// **Sparse index behavior**:
     /// If the coordinate field is nil, returns nil (no index entry).
     ///
-    private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> Bytes? {
+    private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> ByteString? {
         guard let expression = index.rootExpression as? FieldKeyExpression,
               let fieldNumber = Item.fieldNumber(for: expression.fieldName) else {
             throw SpatialIndexMaintenanceError.invalidFieldExpression(

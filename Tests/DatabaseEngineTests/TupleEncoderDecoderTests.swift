@@ -3,6 +3,7 @@
 // TupleEncoderDecoderTests.swift
 // DatabaseEngine Tests - TupleEncoder and TupleDecoder tests
 
+import DatabaseTypes
 import Testing
 import TestHeartbeat
 import Foundation
@@ -168,20 +169,20 @@ struct TupleEncoderTests {
         #expect((result as? Foundation.UUID) == uuid)
     }
 
-    // MARK: - Data/Bytes Encoding
+    // MARK: - Data/ByteString Encoding
 
-    @Test("encodes Data to Bytes")
+    @Test("encodes Data to ByteString")
     func testDataEncoding() throws {
         let data = Data([0x01, 0x02, 0x03])
         let result = try TupleEncoder.encode(data)
-        #expect((result as? Bytes) == Bytes([0x01, 0x02, 0x03]))
+        #expect((result as? ByteString) == ByteString([0x01, 0x02, 0x03]))
     }
 
-    @Test("encodes [UInt8] to Bytes")
+    @Test("encodes [UInt8] to ByteString")
     func testBytesEncoding() throws {
         let bytes: [UInt8] = [0xFF, 0x00, 0xAB]
         let result = try TupleEncoder.encode(bytes)
-        #expect((result as? Bytes) == Bytes(bytes))
+        #expect((result as? ByteString) == ByteString(bytes))
     }
 
     // MARK: - Tuple Encoding
@@ -322,7 +323,8 @@ struct TupleEncoderTests {
         #expect((unpackedElements[1] as? Int64) == 42)
         #expect((unpackedElements[2] as? Double) == 3.14)
         #expect((unpackedElements[3] as? Bool) == true)
-        #expect((unpackedElements[4] as? Foundation.UUID) == uuidValue)
+        #expect(unpackedElements[4] is DatabaseTypes.UUID)
+        #expect(try TupleDecoder.decodeUUID(unpackedElements[4]) == uuidValue)
     }
 
     // MARK: - Edge Cases
@@ -480,18 +482,18 @@ struct TupleDecoderTests {
 
     // MARK: - Data Decoding
 
-    @Test("decodes Data from Bytes")
+    @Test("decodes Data from ByteString")
     func testDecodeData() throws {
-        let element: any TupleElement = Bytes([0x01, 0x02, 0x03])
+        let element: any TupleElement = ByteString([0x01, 0x02, 0x03])
         let result = try TupleDecoder.decodeData(element)
         #expect(result == Data([0x01, 0x02, 0x03]))
     }
 
-    @Test("decodes Bytes from Bytes")
+    @Test("decodes ByteString from ByteString")
     func testDecodeBytes() throws {
-        let element: any TupleElement = Bytes([0xFF, 0x00, 0xAB])
+        let element: any TupleElement = ByteString([0xFF, 0x00, 0xAB])
         let result = try TupleDecoder.decodeBytes(element)
-        #expect(result == Bytes([0xFF, 0x00, 0xAB]))
+        #expect(result == ByteString([0xFF, 0x00, 0xAB]))
     }
 
     // MARK: - UUID Decoding

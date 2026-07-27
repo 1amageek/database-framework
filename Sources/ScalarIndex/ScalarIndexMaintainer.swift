@@ -3,6 +3,7 @@
 //
 // Maintains standard B-tree-like indexes for ordering and range queries.
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -149,7 +150,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexUniquenessMaintaine
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         return try buildIndexKeys(for: item, id: id)
     }
 
@@ -183,8 +184,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexUniquenessMaintaine
             for values: [any TupleElement]
         ) async throws -> IndexUniquenessConflict? {
             let valueKey = subspace.pack(Tuple(values))
-            var rangeEnd = valueKey
-            rangeEnd.append(0xFF)
+            let rangeEnd = try strinc(valueKey)
             let entries = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(valueKey),
                 to: .firstGreaterOrEqual(rangeEnd),
@@ -254,7 +254,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexUniquenessMaintaine
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
-    private func buildIndexKeys(for item: Item, id: Tuple? = nil) throws -> [Bytes] {
+    private func buildIndexKeys(for item: Item, id: Tuple? = nil) throws -> [ByteString] {
         // Extract field values using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
         //
@@ -300,7 +300,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexUniquenessMaintaine
 
         if isSingleFieldArrayIndex {
             // Array field: create one key per element
-            var keys: [Bytes] = []
+            var keys: [ByteString] = []
             for value in fieldValues {
                 var allElements: [any TupleElement] = [value]
 

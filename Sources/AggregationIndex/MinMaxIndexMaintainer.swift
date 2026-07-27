@@ -158,7 +158,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         guard let contribution = try contribution(for: item, id: id) else {
             return []
         }
@@ -278,12 +278,12 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
 
     private struct Contribution {
         let grouping: [any TupleElement]
-        let individualKey: Bytes
-        let storedValue: Bytes
+        let individualKey: ByteString
+        let storedValue: ByteString
     }
 
     private func decodeAggregateValue(
-        _ bytes: Bytes
+        _ bytes: ByteString
     ) throws -> (value: Value, itemId: Tuple) {
         var cursor = TupleCursor(bytes: bytes)
         let minimum = try cursor.requireNext()
@@ -525,7 +525,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [Bytes] {
+    ) async throws -> [ByteString] {
         guard let contribution = try contribution(for: item, id: id) else {
             return []
         }
@@ -645,12 +645,12 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
 
     private struct Contribution {
         let grouping: [any TupleElement]
-        let individualKey: Bytes
-        let storedValue: Bytes
+        let individualKey: ByteString
+        let storedValue: ByteString
     }
 
     private func decodeAggregateValue(
-        _ bytes: Bytes
+        _ bytes: ByteString
     ) throws -> (value: Value, itemId: Tuple) {
         var cursor = TupleCursor(bytes: bytes)
         let maximum = try cursor.requireNext()

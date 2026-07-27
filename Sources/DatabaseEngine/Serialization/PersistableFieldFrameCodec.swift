@@ -10,7 +10,7 @@ public enum PersistableFieldFrameCodec {
         entity: String,
         fields: [PersistableField],
         limits: StorageFrameLimits = .default
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         guard magic.count == 4 else {
             throw PersistableFieldFrameError.invalidMagicLength(actual: magic.count)
         }
@@ -25,7 +25,7 @@ public enum PersistableFieldFrameCodec {
                 to: &writer
             )
         }
-        return Bytes(retaining: bytes)
+        return bytes
     }
 
     public static func encodedByteCount(
@@ -79,7 +79,7 @@ public enum PersistableFieldFrameCodec {
     }
 
     public static func decode(
-        _ bytes: Bytes,
+        _ bytes: ByteString,
         magic: [UInt8],
         version: UInt16,
         expectedEntity: String? = nil,
@@ -96,7 +96,7 @@ public enum PersistableFieldFrameCodec {
         }
 
         var reader = try StorageFrameDecoder(
-            ByteString(retaining: bytes),
+            bytes,
             limits: limits
         )
         for byte in magic {
@@ -151,7 +151,7 @@ public enum PersistableFieldFrameCodec {
     /// Decodes only selected root fields while structurally skipping every
     /// other length-delimited value without materializing it.
     public static func decodeSelected(
-        _ bytes: Bytes,
+        _ bytes: ByteString,
         magic: [UInt8],
         version: UInt16,
         selectedFieldNames: Set<String>,
@@ -169,7 +169,7 @@ public enum PersistableFieldFrameCodec {
         }
 
         var reader = try StorageFrameDecoder(
-            ByteString(retaining: bytes),
+            bytes,
             limits: limits
         )
         for byte in magic {

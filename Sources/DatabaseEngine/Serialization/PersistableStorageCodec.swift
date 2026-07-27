@@ -1,3 +1,4 @@
+import DatabaseTypes
 import DatabaseKit
 import StorageKit
 
@@ -18,7 +19,7 @@ public enum PersistableStorageCodec {
 
     public static func encode(
         _ model: any Persistable
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         let modelType = type(of: model)
         try requireCompiledSchema(modelType)
         let fields = try PersistableFieldEncoder.encode(model)
@@ -48,7 +49,7 @@ public enum PersistableStorageCodec {
     public static func encode(
         entity: String,
         fields: [PersistableField]
-    ) throws -> Bytes {
+    ) throws -> ByteString {
         try PersistableFieldFrameCodec.encode(
             magic: magic,
             version: formatVersion,
@@ -60,7 +61,7 @@ public enum PersistableStorageCodec {
 
     public static func decode<Model: Persistable>(
         _ type: Model.Type,
-        from bytes: Bytes
+        from bytes: ByteString
     ) throws -> Model {
         try requireCompiledSchema(type)
         let fields = try decodeFields(
@@ -72,7 +73,7 @@ public enum PersistableStorageCodec {
 
     public static func decodeAny(
         _ type: any Persistable.Type,
-        from bytes: Bytes
+        from bytes: ByteString
     ) throws -> any Persistable {
         try requireCompiledSchema(type)
         let fields = try decodeFields(
@@ -84,7 +85,7 @@ public enum PersistableStorageCodec {
 
     /// Decodes a bounded canonical DBRC v1 frame for dynamic catalog tooling.
     public static func decodeFields(
-        from bytes: Bytes,
+        from bytes: ByteString,
         expectedEntity: String? = nil
     ) throws -> (entity: String, fields: [PersistableField]) {
         try PersistableFieldFrameCodec.decode(

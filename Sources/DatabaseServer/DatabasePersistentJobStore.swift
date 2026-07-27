@@ -27,7 +27,7 @@ struct DatabasePersistentJobStore: Sendable {
         storageLimits: DatabasePersistentJobStorageLimits
     ) async throws {
         try storageLimits.validate(wireLimits: wireLimits)
-        let root = try await container.engine.createOrOpenDirectory(
+        let root = try await container.engine.resolveOrCreateNamespace(
             path: ["database-framework", "persistent-jobs"]
         )
         self.container = container
@@ -94,15 +94,15 @@ struct DatabasePersistentJobStore: Sendable {
         let stateBytes = try encodeState(state)
 
         try transaction.setValue(
-            Bytes(retaining: specificationBytes),
+            specificationBytes,
             for: specificationKey(jobID)
         )
         try transaction.setValue(
-            Bytes(retaining: planBytes),
+            planBytes,
             for: planKey(jobID)
         )
         try transaction.setValue(
-            Bytes(retaining: stateBytes),
+            stateBytes,
             for: stateKey(jobID)
         )
         try writeDueEntry(for: state, transaction: transaction)
@@ -154,9 +154,9 @@ struct DatabasePersistentJobStore: Sendable {
             throw DatabaseJobRuntimeError.corruptedState
         }
 
-        let specificationBytes = ByteString(retaining: specificationStorage)
-        let planBytes = ByteString(retaining: planStorage)
-        let stateBytes = ByteString(retaining: stateStorage)
+        let specificationBytes = specificationStorage
+        let planBytes = planStorage
+        let stateBytes = stateStorage
         let specification = try decodeSpecification(specificationBytes)
         let plan = try decodePlan(planBytes)
         let state = try decodeState(stateBytes)
@@ -208,7 +208,7 @@ struct DatabasePersistentJobStore: Sendable {
         ) else {
             throw DatabaseJobRuntimeError.corruptedState
         }
-        let state = try decodeState(ByteString(retaining: value))
+        let state = try decodeState(value)
         guard state.jobID == jobID,
               state.specificationDigest == specificationDigest else {
             throw DatabaseJobRuntimeError.corruptedState
@@ -237,7 +237,7 @@ struct DatabasePersistentJobStore: Sendable {
         }
         try writeDueEntry(for: state, transaction: transaction)
         try transaction.setValue(
-            Bytes(retaining: stateBytes),
+            stateBytes,
             for: stateKey(state.jobID)
         )
     }
@@ -290,7 +290,7 @@ struct DatabasePersistentJobStore: Sendable {
                 )
             )
             try transaction.setValue(
-                Bytes(retaining: chunk),
+                chunk,
                 for: resultChunkKey(
                     snapshot.specification.jobID,
                     index: exactIndex
@@ -320,7 +320,7 @@ struct DatabasePersistentJobStore: Sendable {
             )
         }
         try transaction.setValue(
-            Bytes(retaining: manifestBytes),
+            manifestBytes,
             for: resultManifestKey(snapshot.specification.jobID)
         )
         return responseDigest
@@ -344,7 +344,7 @@ struct DatabasePersistentJobStore: Sendable {
             do {
                 manifest = try ServerPayloadDecoder.decode(
                     DatabasePersistentJobResultManifest.self,
-                    from: ByteString(retaining: value),
+                    from: value,
                     limits: wireLimits
                 )
                 try manifest.validate()
@@ -385,7 +385,7 @@ struct DatabasePersistentJobStore: Sendable {
                     index: index
                 )
             }
-            let chunk = ByteString(retaining: value)
+            let chunk = value
             let expectedCount = Self.expectedChunkCount(
                 manifest: manifest,
                 index: index
@@ -611,38 +611,38 @@ struct DatabasePersistentJobStore: Sendable {
             limits: wireLimits
         )
         try transaction.setValue(
-            Bytes(retaining: value),
+            value,
             for: dueKey(scheduledAt, jobID: state.jobID)
         )
     }
 
-    private func specificationKey(_ jobID: DatabaseTypes.UUID) -> Bytes {
+    private func specificationKey(_ jobID: DatabaseTypes.UUID) -> ByteString {
         specifications.pack(Tuple(jobID))
     }
 
-    private func planKey(_ jobID: DatabaseTypes.UUID) -> Bytes {
+    private func planKey(_ jobID: DatabaseTypes.UUID) -> ByteString {
         plans.pack(Tuple(jobID))
     }
 
-    private func stateKey(_ jobID: DatabaseTypes.UUID) -> Bytes {
+    private func stateKey(_ jobID: DatabaseTypes.UUID) -> ByteString {
         states.pack(Tuple(jobID))
     }
 
-    private func resultManifestKey(_ jobID: DatabaseTypes.UUID) -> Bytes {
+    private func resultManifestKey(_ jobID: DatabaseTypes.UUID) -> ByteString {
         resultManifests.pack(Tuple(jobID))
     }
 
     private func resultChunkKey(
         _ jobID: DatabaseTypes.UUID,
         index: UInt32
-    ) -> Bytes {
+    ) -> ByteString {
         resultChunks.pack(Tuple(jobID, Int64(index)))
     }
 
     private func dueKey(
         _ timestamp: Timestamp,
         jobID: DatabaseTypes.UUID
-    ) -> Bytes {
+    ) -> ByteString {
         due.pack(
             Tuple(
                 timestamp.secondsSinceUnixEpoch,
@@ -653,8 +653,8 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     private func scheduledEntry(
-        from key: Bytes,
-        value: Bytes
+        from key: ByteString,
+        value: ByteString
     ) throws -> (
         timestamp: Timestamp,
         dueEntry: DatabasePersistentJobDueEntry
@@ -685,7 +685,7 @@ struct DatabasePersistentJobStore: Sendable {
             )
             let dueEntry = try ServerPayloadDecoder.decode(
                 DatabasePersistentJobDueEntry.self,
-                from: ByteString(retaining: value),
+                from: value,
                 limits: wireLimits
             )
             guard offset == encoded.count,

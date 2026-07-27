@@ -9,7 +9,9 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseTypes
+import DatabaseTypesFoundation
 import StorageKit
+import StorageKitFoundation
 
 // MARK: - TupleDecoder
 
@@ -380,7 +382,7 @@ public struct TupleDecoder: Sendable {
     public static func decodeData(
         _ element: any TupleElement
     ) throws -> FoundationEssentials.Data {
-        if let value = element as? Bytes {
+        if let value = element as? ByteString {
             // Data is the requested Foundation ownership boundary; materializing
             // independent storage prevents a borrowed tuple slice from escaping.
             return FoundationEssentials.Data(value)
@@ -391,7 +393,7 @@ public struct TupleDecoder: Sendable {
     public static func decodeData(
         _ element: any TupleElement
     ) throws -> Foundation.Data {
-        if let value = element as? Bytes {
+        if let value = element as? ByteString {
             return Foundation.Data(value)
         }
         throw TupleDecodingError.typeMismatch(
@@ -406,11 +408,11 @@ public struct TupleDecoder: Sendable {
     /// - Parameter element: TupleElement to decode
     /// - Returns: Owned byte value
     /// - Throws: TupleDecodingError on type mismatch
-    public static func decodeBytes(_ element: any TupleElement) throws -> Bytes {
-        if let value = element as? Bytes {
+    public static func decodeBytes(_ element: any TupleElement) throws -> ByteString {
+        if let value = element as? ByteString {
             return value
         }
-        throw TupleDecodingError.typeMismatch(expected: "Bytes", actual: String(describing: type(of: element)))
+        throw TupleDecodingError.typeMismatch(expected: "ByteString", actual: String(describing: type(of: element)))
     }
 
     // MARK: - UUID Decoding
@@ -425,6 +427,9 @@ public struct TupleDecoder: Sendable {
         _ element: any TupleElement
     ) throws -> FoundationEssentials.UUID {
         if let v = element as? FoundationEssentials.UUID { return v }
+        if let v = element as? DatabaseTypes.UUID {
+            return FoundationEssentials.UUID(v)
+        }
         throw TupleDecodingError.typeMismatch(expected: "UUID", actual: String(describing: type(of: element)))
     }
 #else
@@ -432,6 +437,9 @@ public struct TupleDecoder: Sendable {
         _ element: any TupleElement
     ) throws -> Foundation.UUID {
         if let v = element as? Foundation.UUID { return v }
+        if let v = element as? DatabaseTypes.UUID {
+            return Foundation.UUID(v)
+        }
         throw TupleDecodingError.typeMismatch(
             expected: "UUID",
             actual: String(describing: type(of: element))
@@ -451,6 +459,9 @@ public struct TupleDecoder: Sendable {
         _ element: any TupleElement
     ) throws -> FoundationEssentials.Date {
         if let v = element as? FoundationEssentials.Date { return v }
+        if let v = element as? Double {
+            return FoundationEssentials.Date(timeIntervalSince1970: v)
+        }
         throw TupleDecodingError.typeMismatch(expected: "Date", actual: String(describing: type(of: element)))
     }
 #else
@@ -458,6 +469,9 @@ public struct TupleDecoder: Sendable {
         _ element: any TupleElement
     ) throws -> Foundation.Date {
         if let v = element as? Foundation.Date { return v }
+        if let v = element as? Double {
+            return Foundation.Date(timeIntervalSince1970: v)
+        }
         throw TupleDecodingError.typeMismatch(
             expected: "Date",
             actual: String(describing: type(of: element))
@@ -507,7 +521,7 @@ public struct TupleDecoder: Sendable {
 #if canImport(FoundationEssentials)
         case is FoundationEssentials.Data.Type:
             return try decodeData(element) as! T
-        case is Bytes.Type:
+        case is ByteString.Type:
             return try decodeBytes(element) as! T
         case is FoundationEssentials.UUID.Type:
             return try decodeUUID(element) as! T
@@ -516,7 +530,7 @@ public struct TupleDecoder: Sendable {
 #else
         case is Foundation.Data.Type:
             return try decodeData(element) as! T
-        case is Bytes.Type:
+        case is ByteString.Type:
             return try decodeBytes(element) as! T
         case is Foundation.UUID.Type:
             return try decodeUUID(element) as! T

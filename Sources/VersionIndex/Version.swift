@@ -1,3 +1,4 @@
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -17,12 +18,12 @@ import StorageKit
 ///
 /// Versions are comparable and provide total ordering for optimistic concurrency control.
 public struct Version: Sendable, Comparable, Hashable, CustomStringConvertible {
-    public let bytes: Bytes  // Must be exactly 10 bytes
+    public let bytes: ByteString  // Must be exactly 10 bytes
 
     // MARK: - Initialization
 
     /// Create a Version from versionstamp bytes
-    public init(bytes: Bytes) {
+    public init(bytes: ByteString) {
         precondition(bytes.count == 10, "Version must be 10 bytes (80-bit versionstamp)")
         self.bytes = bytes
     }
@@ -30,7 +31,14 @@ public struct Version: Sendable, Comparable, Hashable, CustomStringConvertible {
     /// Create incomplete versionstamp placeholder (0xFF bytes)
     /// Used when setting keys/values that will be filled by FDB at commit time
     public static func incomplete() -> Version {
-        return Version(bytes: Bytes(repeating: 0xFF, count: 10))
+        Version(
+            bytes: ByteString.copying(count: 10) { destination in
+                destination.initializeMemory(
+                    as: UInt8.self,
+                    repeating: 0xFF
+                )
+            }
+        )
     }
 
     // MARK: - Comparable

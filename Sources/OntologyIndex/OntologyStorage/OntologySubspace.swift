@@ -5,6 +5,7 @@
 //
 // Reference: W3C OWL 2 Profiles https://www.w3.org/TR/owl2-profiles/
 
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -202,67 +203,67 @@ public struct OntologySubspace: Sendable {
     // MARK: - Key Builders
 
     /// Build key for class definition
-    public func classKey(_ ontologyIRI: String, classIRI: String) -> Bytes {
+    public func classKey(_ ontologyIRI: String, classIRI: String) -> ByteString {
         classes(ontologyIRI).pack(Tuple(classIRI))
     }
 
     /// Build key for property definition
-    public func propertyKey(_ ontologyIRI: String, propertyIRI: String) -> Bytes {
+    public func propertyKey(_ ontologyIRI: String, propertyIRI: String) -> ByteString {
         properties(ontologyIRI).pack(Tuple(propertyIRI))
     }
 
     /// Build key for axiom
-    public func axiomKey(_ ontologyIRI: String, axiomID: String) -> Bytes {
+    public func axiomKey(_ ontologyIRI: String, axiomID: String) -> ByteString {
         axioms(ontologyIRI).pack(Tuple(axiomID))
     }
 
     /// Build key for class hierarchy entry (superclass lookup)
-    public func classSuperOfKey(_ ontologyIRI: String, subClass: String, superClass: String) -> Bytes {
+    public func classSuperOfKey(_ ontologyIRI: String, subClass: String, superClass: String) -> ByteString {
         classSuperOf(ontologyIRI).pack(Tuple(subClass, superClass))
     }
 
     /// Build key for class hierarchy entry (subclass lookup)
-    public func classSubOfKey(_ ontologyIRI: String, superClass: String, subClass: String) -> Bytes {
+    public func classSubOfKey(_ ontologyIRI: String, superClass: String, subClass: String) -> ByteString {
         classSubOf(ontologyIRI).pack(Tuple(superClass, subClass))
     }
 
     /// Build key for property hierarchy entry (superproperty lookup)
-    public func propertySuperOfKey(_ ontologyIRI: String, subProp: String, superProp: String) -> Bytes {
+    public func propertySuperOfKey(_ ontologyIRI: String, subProp: String, superProp: String) -> ByteString {
         propertySuperOf(ontologyIRI).pack(Tuple(subProp, superProp))
     }
 
     /// Build key for property hierarchy entry (subproperty lookup)
-    public func propertySubOfKey(_ ontologyIRI: String, superProp: String, subProp: String) -> Bytes {
+    public func propertySubOfKey(_ ontologyIRI: String, superProp: String, subProp: String) -> ByteString {
         propertySubOf(ontologyIRI).pack(Tuple(superProp, subProp))
     }
 
     /// Build key for inverse property mapping
-    public func inverseKey(_ ontologyIRI: String, property: String) -> Bytes {
+    public func inverseKey(_ ontologyIRI: String, property: String) -> ByteString {
         inverse(ontologyIRI).pack(Tuple(property))
     }
 
     /// Build key for transitive property marker
-    public func transitiveKey(_ ontologyIRI: String, property: String) -> Bytes {
+    public func transitiveKey(_ ontologyIRI: String, property: String) -> ByteString {
         transitive(ontologyIRI).pack(Tuple(property))
     }
 
     /// Build key for property chain
-    public func chainKey(_ ontologyIRI: String, targetProperty: String, chainID: Int) -> Bytes {
+    public func chainKey(_ ontologyIRI: String, targetProperty: String, chainID: Int) -> ByteString {
         chains(ontologyIRI).pack(Tuple(targetProperty, chainID))
     }
 
     /// Build key for Union-Find parent pointer
-    public func sameAsParentKey(_ ontologyIRI: String, individual: String) -> Bytes {
+    public func sameAsParentKey(_ ontologyIRI: String, individual: String) -> ByteString {
         sameAsParent(ontologyIRI).pack(Tuple(individual))
     }
 
     /// Build key for Union-Find rank
-    public func sameAsRankKey(_ ontologyIRI: String, individual: String) -> Bytes {
+    public func sameAsRankKey(_ ontologyIRI: String, individual: String) -> ByteString {
         sameAsRank(ontologyIRI).pack(Tuple(individual))
     }
 
     /// Build key for Union-Find member entry
-    public func sameAsMemberKey(_ ontologyIRI: String, representative: String, member: String) -> Bytes {
+    public func sameAsMemberKey(_ ontologyIRI: String, representative: String, member: String) -> ByteString {
         sameAsMembers(ontologyIRI).pack(Tuple(representative, member))
     }
 }
