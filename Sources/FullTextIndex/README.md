@@ -294,8 +294,8 @@ struct Document {
 | Fuzzy matching | ✅ Complete | Levenshtein distance |
 | Sparse index (nil) | ✅ Complete | nil values not indexed |
 | Multi-field index | ✅ Complete | Combined text fields |
-| Faceted search | ❌ Not implemented | Term aggregation |
-| Autocomplete | ⚠️ Partial | Via n-gram |
+| Faceted search | ✅ Complete | Typed facet fields and canonical result metadata |
+| Autocomplete | ✅ Complete | Dedicated prefix index, suggestions, and popular terms |
 
 ## Performance Characteristics
 

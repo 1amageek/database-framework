@@ -269,10 +269,10 @@ struct Event {
 | Morton 3D encoding | ✅ Complete | Up to 21-bit per axis |
 | Radius search | ✅ Complete | Via covering cells |
 | Bounding box search | ✅ Complete | Via covering cells |
-| Distance calculation | ⚠️ Post-filter | Haversine not built-in |
+| Distance calculation | ✅ Complete | Haversine distance for geographic points |
 | Sparse index (nil) | ✅ Complete | nil coordinates not indexed |
-| K-nearest neighbors | ❌ Not implemented | Requires distance sorting |
-| Polygon queries | ❌ Not implemented | Complex region support |
+| K-nearest neighbors | ✅ Complete | Bounded nearest-neighbor search with distance ordering |
+| Polygon queries | ✅ Complete | Simple, convex, and winding-number evaluation |
 
 ## Performance Characteristics
 

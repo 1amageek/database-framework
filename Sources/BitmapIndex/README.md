@@ -351,9 +351,8 @@ struct Article {
 | Sparse index (nil values) | ✅ Complete | Nil values excluded |
 | Query Builder API | ✅ Complete | equals, in, limit |
 | Fusion integration | ✅ Complete | Filter query |
-| XOR operation | ❌ Not implemented | Symmetric difference |
-| Negation (NOT) | ⚠️ Partial | Via ANDNOT with universe |
-| Parallel bitmap operations | ❌ Not implemented | Single-threaded |
+| XOR operation | ✅ Complete | Symmetric difference |
+| Set complement | ✅ Complete | ANDNOT against an explicit universe |
 
 ## Performance Characteristics
 

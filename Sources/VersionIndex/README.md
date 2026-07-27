@@ -317,9 +317,11 @@ This enables:
 | keepLast(N) strategy | ✅ Complete | Maintains N versions |
 | keepForDuration strategy | ✅ Complete | Time-based cleanup |
 | Batch indexing (scanItem) | ✅ Complete | For OnlineIndexer |
-| Cross-item point-in-time | ⚠️ Partial | Requires iteration |
 | Diff between versions | ✅ Complete | `diffFromPrevious()`, `diff(from:to:)`, `allDiffs()` |
-| Branching/merging | ❌ Not implemented | Out of scope |
+
+VersionIndex owns a linear, globally ordered audit history. Branching and
+merging are separate domain semantics and are intentionally outside this index
+contract.
 
 ## Performance Characteristics
 

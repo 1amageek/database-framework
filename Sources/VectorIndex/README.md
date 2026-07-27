@@ -254,9 +254,9 @@ against the model metadata.
 | HNSW post-filtering | ✅ Complete | Expanded candidate search followed by predicate evaluation |
 | Sparse index (nil) | ✅ Complete | nil vectors not indexed |
 | Polymorphic vector search | ✅ Complete | KeyPath public API, shared logical index |
-| IVF (inverted file) | ❌ Not implemented | Cluster-based ANN |
-| Quantization (PQ) | ❌ Not implemented | Memory compression |
-| Batch query | ⚠️ Partial | Multiple queries in one call |
+| IVF (inverted file) | ✅ Complete | Trained cluster-based ANN |
+| Product quantization | ✅ Complete | Compressed codes with metric-correct lookup tables |
+| Typed PQ validation | ✅ Complete | Invalid layouts and codes are explicit failures |
 
 ## Performance Characteristics
 

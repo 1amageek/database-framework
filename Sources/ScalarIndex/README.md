@@ -191,9 +191,9 @@ struct Customer {
 | Prefix queries | ✅ Complete | Leftmost prefix |
 | Sparse index (nil) | ✅ Complete | nil values not indexed |
 | Array field index | ✅ Complete | One entry per element |
-| Covering index | ❌ Not implemented | Store extra fields in value |
-| Unique constraint | ⚠️ Partial | Via FDB conflict detection |
-| Index-only scan | ❌ Not implemented | Avoid primary lookup |
+| Covering payload maintenance | ✅ Complete | Stored fields are encoded in index values |
+| Unique constraint | ✅ Complete | Enforced for mutations and online index builds |
+| Index-only projection | Not in the read contract | Current reads validate entities through primary storage |
 
 ## Performance Characteristics
 
@@ -233,7 +233,9 @@ Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=ma
 | **Latency (p99)** | 3.72ms | 3.79ms | Low variance |
 | **Throughput** | 293 ops/s | 288 ops/s | 300 record scan |
 
-**Note**: Covering-index read elimination is not implemented yet. The two columns represent repeated runs of the current fetch path, so use this section as a baseline for future optimization work.
+**Note**: The current read contract validates projected entities through primary
+storage even when covering payloads are maintained. The two columns represent
+repeated runs of that contract; they do not claim index-only read elimination.
 
 **Expected Improvements with a true Covering Index**:
 - 50-80% latency reduction (eliminates primary key lookup)
