@@ -12,6 +12,22 @@ private struct TupleKeyExpressionEntity {
     var title: String
 }
 
+@Polymorphable(identifier: "TupleKeyExpressionPolymorphicEntity")
+@PolymorphicDirectory("tuple_key_expression_polymorphic_entities")
+private protocol TupleKeyExpressionPolymorphicEntity:
+    Polymorphable<TupleKeyExpressionPolymorphicEntityPolymorphicGroup>
+{
+    var id: String { get }
+}
+
+@Persistable
+private struct TupleKeyExpressionPolymorphicDocument:
+    TupleKeyExpressionPolymorphicEntity
+{
+    var id: String
+    var title: String
+}
+
 @Suite("TupleKeyExpression Tests")
 struct TupleKeyExpressionTests {
     @Test("TupleKeyExpression preserves a pre-resolved identifier")
@@ -31,10 +47,47 @@ struct TupleKeyExpressionTests {
     func rejectsNonCanonicalResolvedIdentifier() {
         let entity = TupleKeyExpressionEntity(id: "entity-1", title: "Doc")
 
-        #expect(throws: PersistableIdentifierKeyError.self) {
+        #expect(throws: PolymorphicIdentifierKeyError.self) {
             _ = try DataAccess.extractId(
                 from: entity,
                 using: TupleKeyExpression(value: Tuple("entity-1", "extra"))
+            )
+        }
+    }
+
+    @Test("TupleKeyExpression preserves a canonical polymorphic identifier")
+    func preservesResolvedPolymorphicIdentifier() throws {
+        let entity = TupleKeyExpressionPolymorphicDocument(
+            id: "entity-1",
+            title: "Doc"
+        )
+        let identifier = try entity.persistableIdentifierTuple()
+        let polymorphicIdentifier = try PolymorphicIdentifierKey.tuple(
+            for: TupleKeyExpressionPolymorphicDocument.self,
+            identifier: identifier
+        )
+
+        let extracted = try DataAccess.extractId(
+            from: entity,
+            using: TupleKeyExpression(value: polymorphicIdentifier)
+        )
+
+        #expect(extracted.pack() == polymorphicIdentifier.pack())
+    }
+
+    @Test("TupleKeyExpression rejects a mismatched polymorphic type code")
+    func rejectsMismatchedPolymorphicTypeCode() throws {
+        let entity = TupleKeyExpressionPolymorphicDocument(
+            id: "entity-1",
+            title: "Doc"
+        )
+        let identifier = try entity.persistableIdentifierTuple()
+        let invalidIdentifier = Tuple(Int64.min).appending(identifier)
+
+        #expect(throws: PolymorphicIdentifierKeyError.self) {
+            _ = try DataAccess.extractId(
+                from: entity,
+                using: TupleKeyExpression(value: invalidIdentifier)
             )
         }
     }

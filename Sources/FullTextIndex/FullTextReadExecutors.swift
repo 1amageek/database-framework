@@ -446,7 +446,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         for entity in entities {
             let identifier = try entity.item.persistableIdentifierTuple()
             let key = stableKey(
-                Tuple(entity.typeCode).appending(identifier)
+                try PolymorphicIdentifierKey.tuple(
+                    for: type(of: entity.item),
+                    identifier: identifier
+                )
             )
             entityByID[key] = entity
         }

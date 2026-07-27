@@ -121,10 +121,17 @@ public struct DataAccess: Sendable {
         using idExpression: KeyExpression
     ) throws -> Tuple {
         if let resolved = idExpression as? TupleKeyExpression {
-            _ = try PersistableIdentifierKeyCodec.value(
-                from: resolved.value,
-                expectedType: Item.persistableIdentifierType
-            )
+            if resolved.value.count == 1 {
+                _ = try PersistableIdentifierKeyCodec.value(
+                    from: resolved.value,
+                    expectedType: Item.persistableIdentifierType
+                )
+            } else {
+                try PolymorphicIdentifierKey.validate(
+                    resolved.value,
+                    for: Item.self
+                )
+            }
             return resolved.value
         }
 

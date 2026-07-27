@@ -29,10 +29,8 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
             polymorphicType: polymorphicType,
             transaction: transaction
         )
-        let compositeID = makeCompositeIdentifier(
-            typeCode: polymorphicType.typeCode(
-                for: modelType.persistableType
-            ),
+        let compositeID = try PolymorphicIdentifierKey.tuple(
+            for: modelType,
             identifier: write.identifier
         )
         let key = projection.items.pack(compositeID)
@@ -93,10 +91,8 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
             polymorphicType: polymorphicType,
             transaction: transaction
         )
-        let compositeID = makeCompositeIdentifier(
-            typeCode: polymorphicType.typeCode(
-                for: modelType.persistableType
-            ),
+        let compositeID = try PolymorphicIdentifierKey.tuple(
+            for: modelType,
             identifier: try model.persistableIdentifierTuple()
         )
         let key = projection.items.pack(compositeID)
@@ -171,20 +167,6 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
                 configurations: configurations
             )
         )
-    }
-
-    private func makeCompositeIdentifier(
-        typeCode: Int64,
-        identifier: Tuple
-    ) -> Tuple {
-        var elements: [any TupleElement] = [typeCode]
-        elements.reserveCapacity(identifier.count + 1)
-        for index in 0..<identifier.count {
-            if let element = identifier[index] {
-                elements.append(element)
-            }
-        }
-        return Tuple(elements)
     }
 
     private struct Projection: Sendable {

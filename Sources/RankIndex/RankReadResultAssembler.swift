@@ -1,6 +1,5 @@
 import DatabaseKit
 import DatabaseEngine
-import DatabaseKit
 import StorageKit
 
 enum RankReadResultAssembler {
@@ -46,6 +45,9 @@ enum RankReadResultAssembler {
 
     private static func entityKey(for entity: PolymorphicEntity) throws -> Bytes {
         let identifier = try entity.item.persistableIdentifierTuple()
-        return Tuple(entity.typeCode).appending(identifier).pack()
+        return try PolymorphicIdentifierKey.tuple(
+            for: type(of: entity.item),
+            identifier: identifier
+        ).pack()
     }
 }

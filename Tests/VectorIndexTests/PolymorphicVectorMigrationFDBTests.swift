@@ -301,7 +301,12 @@ struct PolymorphicVectorMigrationFDBTests {
                 for: FDBPolymorphicVectorSchemaV2.self,
                 migrationPlan: FDBPolymorphicVectorAddMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try Self.vectorRuntimeConfiguration(),
+                runtimeConfiguration: try Self.vectorRuntimeConfiguration(
+                    persistableTypes: [
+                        FDBPolymorphicVectorPersonV2.self,
+                        FDBPolymorphicVectorOrganizationV2.self,
+                    ]
+                ),
                 security: .disabled
             )
             try await migratedContainer.migrateIfNeeded()
@@ -370,7 +375,12 @@ struct PolymorphicVectorMigrationFDBTests {
                 for: FDBPolymorphicVectorSchemaV3.self,
                 migrationPlan: FDBPolymorphicVectorRebuildMigrationPlan.self,
                 configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try Self.vectorRuntimeConfiguration(),
+                runtimeConfiguration: try Self.vectorRuntimeConfiguration(
+                    persistableTypes: [
+                        FDBPolymorphicVectorPersonV3.self,
+                        FDBPolymorphicVectorOrganizationV3.self,
+                    ]
+                ),
                 security: .disabled
             )
             try await migratedContainer.migrateIfNeeded()
@@ -402,13 +412,16 @@ struct PolymorphicVectorMigrationFDBTests {
         }
     }
 
-    private static func vectorRuntimeConfiguration() throws -> DatabaseRuntimeConfiguration {
+    private static func vectorRuntimeConfiguration(
+        persistableTypes: [any Persistable.Type]
+    ) throws -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
             indexMaintainerProviders: [
                 VectorIndexMaintainerProvider()
             ],
             indexReadExecutors: [VectorReadExecutors.indexExecutor],
-            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor]
+            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor],
+            persistableTypes: persistableTypes
         )
     }
 
