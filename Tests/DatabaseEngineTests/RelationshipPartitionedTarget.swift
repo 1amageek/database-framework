@@ -1,7 +1,7 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 
 @Persistable
@@ -9,7 +9,7 @@ struct RelationshipPartitionedTarget {
     #Directory<RelationshipPartitionedTarget>(
         "test",
         "relationship_v1",
-        Field<RelationshipPartitionedTarget>(\.tenantID),
+        \RelationshipPartitionedTarget.tenantID,
         "partitioned_targets",
         layer: .partition
     )

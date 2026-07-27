@@ -2,90 +2,62 @@
 import Testing
 import Foundation
 import Database
+import DatabaseKitFoundation
+import DatabaseTypes
 import StorageKit
 import TestHeartbeat
 import DatabaseRuntime
 
-protocol SQLitePolymorphicVectorEntityV1: Polymorphable {
+@Polymorphable(identifier: "Entity")
+@PolymorphicDirectory("sqlite_polymorphic_vector_migration", "entities")
+protocol SQLitePolymorphicVectorEntityV1:
+    Polymorphable<SQLitePolymorphicVectorEntityV1PolymorphicGroup>
+{
     var id: String { get }
     var label: String { get }
     var entityType: String { get }
-    var embedding: [Float] { get }
+    var embedding: Vector { get }
 }
 
-protocol SQLitePolymorphicVectorEntityV2: Polymorphable {
+@Polymorphable(identifier: "Entity")
+@PolymorphicDirectory("sqlite_polymorphic_vector_migration", "entities")
+@PolymorphicIndex(
+    .vector(dimensions: 3, metric: .cosine),
+    embedding: "embedding",
+    name: "Entity_vector_embedding"
+)
+protocol SQLitePolymorphicVectorEntityV2:
+    Polymorphable<SQLitePolymorphicVectorEntityV2PolymorphicGroup>
+{
     var id: String { get }
     var label: String { get }
     var entityType: String { get }
-    var embedding: [Float] { get }
+    var embedding: Vector { get }
 }
 
-protocol SQLitePolymorphicVectorEntityV3: Polymorphable {
+@Polymorphable(identifier: "Entity")
+@PolymorphicDirectory("sqlite_polymorphic_vector_migration", "entities")
+@PolymorphicIndex(
+    .vector(dimensions: 3, metric: .cosine),
+    embedding: "embedding",
+    name: "Entity_vector_embedding"
+)
+protocol SQLitePolymorphicVectorEntityV3:
+    Polymorphable<SQLitePolymorphicVectorEntityV3PolymorphicGroup>
+{
     var id: String { get }
     var label: String { get }
     var entityType: String { get }
-    var embedding: [Float] { get }
-}
-
-extension SQLitePolymorphicVectorEntityV1 {
-    public static var polymorphableType: String { "Entity" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("sqlite_polymorphic_vector_migration"), .staticPath("entities")]
-    }
-}
-
-extension SQLitePolymorphicVectorEntityV2 {
-    public static var polymorphableType: String { "Entity" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("sqlite_polymorphic_vector_migration"), .staticPath("entities")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "Entity_vector_embedding",
-                keyPaths: [\Self.embedding],
-                kind: VectorIndexKind<Self>(
-                    embedding: \Self.embedding,
-                    dimensions: 3,
-                    metric: .cosine
-                )
-            )
-        ]
-    }
-}
-
-extension SQLitePolymorphicVectorEntityV3 {
-    public static var polymorphableType: String { "Entity" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("sqlite_polymorphic_vector_migration"), .staticPath("entities")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "Entity_vector_embedding",
-                keyPaths: [\Self.embedding],
-                kind: VectorIndexKind<Self>(
-                    embedding: \Self.embedding,
-                    dimensions: 3,
-                    metric: .cosine
-                )
-            )
-        ]
-    }
+    var embedding: Vector { get }
 }
 
 @Persistable(type: "SQLitePolymorphicVectorPerson")
 struct SQLitePolymorphicVectorPersonV1: SQLitePolymorphicVectorEntityV1 {
     #Directory<SQLitePolymorphicVectorPersonV1>("sqlite_polymorphic_vector_migration", "persons")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -94,9 +66,9 @@ struct SQLitePolymorphicVectorPersonV1: SQLitePolymorphicVectorEntityV1 {
 struct SQLitePolymorphicVectorPersonV2: SQLitePolymorphicVectorEntityV2 {
     #Directory<SQLitePolymorphicVectorPersonV2>("sqlite_polymorphic_vector_migration", "persons")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -105,9 +77,9 @@ struct SQLitePolymorphicVectorPersonV2: SQLitePolymorphicVectorEntityV2 {
 struct SQLitePolymorphicVectorPersonV3: SQLitePolymorphicVectorEntityV3 {
     #Directory<SQLitePolymorphicVectorPersonV3>("sqlite_polymorphic_vector_migration", "persons")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -116,10 +88,10 @@ struct SQLitePolymorphicVectorPersonV3: SQLitePolymorphicVectorEntityV3 {
 struct SQLitePolymorphicVectorOrganizationV1: SQLitePolymorphicVectorEntityV1 {
     #Directory<SQLitePolymorphicVectorOrganizationV1>("sqlite_polymorphic_vector_migration", "organizations")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
     var domain: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -128,10 +100,10 @@ struct SQLitePolymorphicVectorOrganizationV1: SQLitePolymorphicVectorEntityV1 {
 struct SQLitePolymorphicVectorOrganizationV2: SQLitePolymorphicVectorEntityV2 {
     #Directory<SQLitePolymorphicVectorOrganizationV2>("sqlite_polymorphic_vector_migration", "organizations")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
     var domain: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -140,10 +112,10 @@ struct SQLitePolymorphicVectorOrganizationV2: SQLitePolymorphicVectorEntityV2 {
 struct SQLitePolymorphicVectorOrganizationV3: SQLitePolymorphicVectorEntityV3 {
     #Directory<SQLitePolymorphicVectorOrganizationV3>("sqlite_polymorphic_vector_migration", "organizations")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
     var domain: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -180,26 +152,38 @@ extension SQLitePolymorphicVectorOrganizationV3 {
 
 enum SQLitePolymorphicVectorSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [
-        SQLitePolymorphicVectorPersonV1.self,
-        SQLitePolymorphicVectorOrganizationV1.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try SQLitePolymorphicVectorPersonV1.schemaEntity,
+                try SQLitePolymorphicVectorOrganizationV1.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum SQLitePolymorphicVectorSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [
-        SQLitePolymorphicVectorPersonV2.self,
-        SQLitePolymorphicVectorOrganizationV2.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try SQLitePolymorphicVectorPersonV2.schemaEntity,
+                try SQLitePolymorphicVectorOrganizationV2.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum SQLitePolymorphicVectorSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [
-        SQLitePolymorphicVectorPersonV3.self,
-        SQLitePolymorphicVectorOrganizationV3.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try SQLitePolymorphicVectorPersonV3.schemaEntity,
+                try SQLitePolymorphicVectorOrganizationV3.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum SQLitePolymorphicVectorAddMigrationPlan: SchemaMigrationPlan {
@@ -242,7 +226,7 @@ enum SQLitePolymorphicVectorRebuildMigrationPlan: SchemaMigrationPlan {
 struct PolymorphicVectorMigrationSQLiteTests {
     @Test("SQLite polymorphic entity vector descriptors decode canonically for each member")
     func sqlitePolymorphicEntityVectorDescriptorsStayConcretePerMemberType() throws {
-        let schema = SQLitePolymorphicVectorSchemaV2.makeSchema()
+        let schema = try SQLitePolymorphicVectorSchemaV2.makeSchema()
         let personDescriptor = try #require(
             schema.polymorphicIndexDescriptors(
                 identifier: SQLitePolymorphicVectorPersonV2.polymorphableType,
@@ -256,16 +240,14 @@ struct PolymorphicVectorMigrationSQLiteTests {
             ).first { $0.name == "Entity_vector_embedding" }
         )
 
-        let personKind = try VectorIndexKind<SQLitePolymorphicVectorPersonV2>(
-            canonical: personDescriptor.kind
+        let personDefinition = try IndexDefinition(metadata: personDescriptor.kind)
+        let organizationDefinition = try IndexDefinition(
+            metadata: organizationDescriptor.kind
         )
-        let organizationKind = try VectorIndexKind<SQLitePolymorphicVectorOrganizationV2>(
-            canonical: organizationDescriptor.kind
-        )
-        #expect(personKind.fieldNames == ["embedding"])
-        #expect(organizationKind.fieldNames == ["embedding"])
-        #expect(personKind.dimensions == 3)
-        #expect(organizationKind.dimensions == 3)
+        #expect(personDescriptor.fieldNames == ["embedding"])
+        #expect(organizationDescriptor.fieldNames == ["embedding"])
+        #expect(personDefinition == .vector(dimensions: 3, metric: .cosine))
+        #expect(organizationDefinition == .vector(dimensions: 3, metric: .cosine))
     }
 
     @Test("SQLite migration backfills polymorphic entity vector index")
@@ -279,14 +261,17 @@ struct PolymorphicVectorMigrationSQLiteTests {
         )
         let initialContext = initialContainer.newContext()
 
-        var anchor = SQLitePolymorphicVectorPersonV1(name: "Alice", embedding: [1, 0, 0])
+        var anchor = SQLitePolymorphicVectorPersonV1(
+            name: "Alice",
+            embedding: try Vector(float32: [1, 0, 0])
+        )
         anchor.id = "sqlite-memory-vector-person-anchor"
         try initialContext.insert(anchor)
 
         for offset in 0..<105 {
             var person = SQLitePolymorphicVectorPersonV1(
                 name: "Other \(offset)",
-                embedding: [0, 1, 0]
+                embedding: try Vector(float32: [0, 1, 0])
             )
             person.id = "sqlite-memory-vector-person-\(offset)"
             try initialContext.insert(person)
@@ -295,7 +280,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         var organization = SQLitePolymorphicVectorOrganizationV1(
             name: "Creww",
             domain: "creww.example",
-            embedding: [0.95, 0.05, 0]
+            embedding: try Vector(float32: [0.95, 0.05, 0])
         )
         organization.id = "sqlite-memory-vector-organization"
         try initialContext.insert(organization)
@@ -307,7 +292,12 @@ struct PolymorphicVectorMigrationSQLiteTests {
             for: SQLitePolymorphicVectorSchemaV2.self,
             migrationPlan: SQLitePolymorphicVectorAddMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try Self.vectorRuntimeConfiguration(),
+            runtimeConfiguration: try Self.vectorRuntimeConfiguration(
+                persistableTypes: [
+                    SQLitePolymorphicVectorPersonV2.self,
+                    SQLitePolymorphicVectorOrganizationV2.self,
+                ]
+            ),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
@@ -316,7 +306,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
         let page = try await migratedContainer.newContext()
             .findPolymorphic(SQLitePolymorphicVectorPersonV2.self)
-            .vector(\.embedding, dimensions: 3)
+            .vector(SQLitePolymorphicVectorPersonV2.fields.embedding, dimensions: 3)
             .query([1, 0, 0], k: 2)
             .metric(.cosine)
             .executePage()
@@ -326,7 +316,10 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
         let organizationStartedPage = try await migratedContainer.newContext()
             .findPolymorphic(SQLitePolymorphicVectorOrganizationV2.self)
-            .vector(\.embedding, dimensions: 3)
+            .vector(
+                SQLitePolymorphicVectorOrganizationV2.fields.embedding,
+                dimensions: 3
+            )
             .query([1, 0, 0], k: 2)
             .metric(.cosine)
             .executePage()
@@ -346,12 +339,15 @@ struct PolymorphicVectorMigrationSQLiteTests {
         )
         let context = initialContainer.newContext()
 
-        var person = SQLitePolymorphicVectorPersonV2(name: "Alice", embedding: [1, 0, 0])
+        var person = SQLitePolymorphicVectorPersonV2(
+            name: "Alice",
+            embedding: try Vector(float32: [1, 0, 0])
+        )
         person.id = "sqlite-memory-vector-rebuild-person"
         var organization = SQLitePolymorphicVectorOrganizationV2(
             name: "Creww",
             domain: "creww.example",
-            embedding: [0.95, 0.05, 0]
+            embedding: try Vector(float32: [0.95, 0.05, 0])
         )
         organization.id = "sqlite-memory-vector-rebuild-organization"
 
@@ -366,14 +362,19 @@ struct PolymorphicVectorMigrationSQLiteTests {
             for: SQLitePolymorphicVectorSchemaV3.self,
             migrationPlan: SQLitePolymorphicVectorRebuildMigrationPlan.self,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try Self.vectorRuntimeConfiguration(),
+            runtimeConfiguration: try Self.vectorRuntimeConfiguration(
+                persistableTypes: [
+                    SQLitePolymorphicVectorPersonV3.self,
+                    SQLitePolymorphicVectorOrganizationV3.self,
+                ]
+            ),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
 
         let page = try await migratedContainer.newContext()
             .findPolymorphic(SQLitePolymorphicVectorPersonV3.self)
-            .vector(\.embedding, dimensions: 3)
+            .vector(SQLitePolymorphicVectorPersonV3.fields.embedding, dimensions: 3)
             .query([1, 0, 0], k: 2)
             .metric(.cosine)
             .executePage()
@@ -383,7 +384,10 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
         let organizationStartedPage = try await migratedContainer.newContext()
             .findPolymorphic(SQLitePolymorphicVectorOrganizationV3.self)
-            .vector(\.embedding, dimensions: 3)
+            .vector(
+                SQLitePolymorphicVectorOrganizationV3.fields.embedding,
+                dimensions: 3
+            )
             .query([1, 0, 0], k: 2)
             .metric(.cosine)
             .executePage()
@@ -394,13 +398,16 @@ struct PolymorphicVectorMigrationSQLiteTests {
         #expect(try await Self.entityVectorIndexState(container: migratedContainer) == .readable)
     }
 
-    private static func vectorRuntimeConfiguration() throws -> DatabaseRuntimeConfiguration {
+    private static func vectorRuntimeConfiguration(
+        persistableTypes: [any Persistable.Type]
+    ) throws -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
             indexMaintainerProviders: [
                 VectorIndexMaintainerProvider()
             ],
             indexReadExecutors: [VectorReadExecutors.indexExecutor],
-            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor]
+            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor],
+            persistableTypes: persistableTypes
         )
     }
 

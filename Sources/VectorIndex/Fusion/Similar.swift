@@ -2,13 +2,12 @@
 // VectorIndex - Vector similarity search query for Fusion
 //
 // This file is part of VectorIndex module, not DatabaseEngine.
-// DatabaseEngine does not know about VectorIndexKind.
+// DatabaseEngine does not own vector index execution.
 
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
-import Vector
 
 /// Vector similarity search query for Fusion
 ///
@@ -18,7 +17,7 @@ import Vector
 /// **Usage**:
 /// ```swift
 /// let results = try await context.fuse(Product.self) {
-///     Similar(\.embedding, dimensions: 384)
+///     Similar(Product.fields.embedding, dimensions: 384)
 ///         .nearest(to: queryVector, k: 100)
 ///         .metric(.cosine)
 /// }
@@ -28,6 +27,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     public typealias Item = T
 
     private let queryContext: IndexQueryContext
+    private let fieldIdentity: FieldIdentity
     private let fieldName: String
     private let dimensions: Int
     private var queryVector: [Float]?
@@ -41,20 +41,22 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// Uses FusionContext.current for context (automatically set by `context.fuse { }`).
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the [Float] field
+    ///   - field: Compiled vector field metadata
     ///   - dimensions: Number of dimensions in the vectors
     ///
     /// **Usage**:
     /// ```swift
     /// context.fuse(Product.self) {
-    ///     Similar(\.embedding, dimensions: 384).nearest(to: vector, k: 100)
+    ///     Similar(Product.fields.embedding, dimensions: 384)
+    ///         .nearest(to: vector, k: 100)
     /// }
     /// ```
-    public init(_ keyPath: KeyPath<T, [Float]>, dimensions: Int) {
+    public init(_ field: Field<T, Vector>, dimensions: Int) {
         guard let context = FusionContext.current else {
             fatalError("Similar must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.fieldIdentity = field.identity
+        self.fieldName = field.name
         self.dimensions = dimensions
         self.queryContext = context
     }
@@ -62,13 +64,14 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// Create a Similar query for an optional vector field
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the optional [Float] field
+    ///   - field: Compiled optional vector field metadata
     ///   - dimensions: Number of dimensions in the vectors
-    public init(_ keyPath: KeyPath<T, [Float]?>, dimensions: Int) {
+    public init(_ field: Field<T, Vector?>, dimensions: Int) {
         guard let context = FusionContext.current else {
             fatalError("Similar must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.fieldIdentity = field.identity
+        self.fieldName = field.name
         self.dimensions = dimensions
         self.queryContext = context
     }
@@ -76,11 +79,16 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// Create a Similar query with explicit context
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the [Float] field
+    ///   - field: Compiled vector field metadata
     ///   - dimensions: Number of dimensions in the vectors
     ///   - context: IndexQueryContext for database access
-    public init(_ keyPath: KeyPath<T, [Float]>, dimensions: Int, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
+    public init(
+        _ field: Field<T, Vector>,
+        dimensions: Int,
+        context: IndexQueryContext
+    ) {
+        self.fieldIdentity = field.identity
+        self.fieldName = field.name
         self.dimensions = dimensions
         self.queryContext = context
     }
@@ -88,23 +96,16 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// Create a Similar query for an optional vector field with explicit context
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the optional [Float] field
+    ///   - field: Compiled optional vector field metadata
     ///   - dimensions: Number of dimensions in the vectors
     ///   - context: IndexQueryContext for database access
-    public init(_ keyPath: KeyPath<T, [Float]?>, dimensions: Int, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
-        self.dimensions = dimensions
-        self.queryContext = context
-    }
-
-    /// Create a Similar query with a field name string and explicit context
-    ///
-    /// - Parameters:
-    ///   - fieldName: The field name to search
-    ///   - dimensions: Number of dimensions in the vectors
-    ///   - context: IndexQueryContext for database access
-    public init(fieldName: String, dimensions: Int, context: IndexQueryContext) {
-        self.fieldName = fieldName
+    public init(
+        _ field: Field<T, Vector?>,
+        dimensions: Int,
+        context: IndexQueryContext
+    ) {
+        self.fieldIdentity = field.identity
+        self.fieldName = field.name
         self.dimensions = dimensions
         self.queryContext = context
     }
@@ -141,10 +142,11 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// This approach:
     /// 1. Filters by kindIdentifier ("vector") for efficiency
     /// 2. Matches by fieldName within the kind
-    private func findIndexDescriptor() -> IndexDescriptor? {
-        T.indexDescriptors.first { descriptor in
+    private func findIndexDescriptor() throws -> IndexDescriptor? {
+        try T.indexDescriptors.first { descriptor in
             // 1. Filter by kindIdentifier
-            guard descriptor.kindIdentifier == VectorIndexKind<T>.identifier else {
+            guard descriptor.kindIdentifier
+                    == VectorIndexSpecification.identifier else {
                 return false
             }
             // 2. Match by fieldName
@@ -158,7 +160,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         guard let vector = queryVector else { return [] }
 
         // Find index descriptor
-        guard let descriptor = findIndexDescriptor() else {
+        guard let descriptor = try findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
                 type: T.persistableType,
                 field: fieldName,
@@ -405,8 +407,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         var results: [(item: T, distance: Double)] = []
 
         for item in items {
-            // Get vector from the field
-            guard let vector = item[dynamicMember: fieldName] as? [Float] else {
+            guard let vector = try float32Vector(from: item) else {
                 continue
             }
 
@@ -425,6 +426,33 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         }
 
         return results
+    }
+
+    private func float32Vector(from item: borrowing T) throws -> [Float]? {
+        guard let value = try PersistableFieldEncoder.value(
+            for: fieldIdentity,
+            in: item
+        ) else {
+            throw FusionQueryError.invalidConfiguration(
+                "Persisted vector field '\(fieldName)' was not emitted"
+            )
+        }
+        if case .null = value {
+            return nil
+        }
+        guard case .vector(let vector) = value,
+              vector.elementType == .float32,
+              let elements = vector.withFloat32Elements({ source in
+                  // Distance algorithms currently require owned mutable-index
+                  // access. This is the single materialization boundary from
+                  // the retained primitive vector into that execution API.
+                  Array(source)
+              }) else {
+            throw FusionQueryError.invalidConfiguration(
+                "Persisted field '\(fieldName)' is not a Float32 vector"
+            )
+        }
+        return elements
     }
 
     /// Compute distance between two vectors

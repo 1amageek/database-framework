@@ -1,6 +1,5 @@
 // Opaque continuation for typed database scans.
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
 import StorageKit
 
 /// Opaque, bounded cursor for continuing a scan in the same entity partition.
@@ -8,17 +7,20 @@ public struct DatabaseScanContinuation: Sendable, Hashable {
     private static let magic: UInt32 = 0x4452_4331
     private static let version: UInt8 = 1
 
-    public let encodedBytes: DatabaseBytes
+    public let encodedBytes: ByteString
 
     package let entity: String
     package let partitionPath: [String]
     package let storageKey: Bytes
 
     public init(
-        encodedBytes: DatabaseBytes,
-        limits: DatabaseWireLimits = .default
+        encodedBytes: ByteString,
+        limits: StorageFrameLimits = .default
     ) throws {
-        var reader = DatabaseWireReader(encodedBytes, limits: limits)
+        var reader = try StorageFrameDecoder(
+            encodedBytes,
+            limits: limits
+        )
         guard try reader.readUInt32() == Self.magic else {
             throw DatabaseScanContinuationError.invalidMagic
         }
@@ -45,19 +47,23 @@ public struct DatabaseScanContinuation: Sendable, Hashable {
         entity: String,
         partitionPath: [String],
         storageKey: Bytes,
-        limits: DatabaseWireLimits = .default
+        limits: StorageFrameLimits = .default
     ) throws {
-        let encodedBytes = try DatabaseWireWriter.encodeThrowing(limits: limits) {
-            writer in
-            writer.writeUInt32(Self.magic)
-            writer.writeUInt8(Self.version)
-            try writer.writeString(entity)
-            try writer.writeCount(partitionPath.count)
-            for component in partitionPath {
-                try writer.writeString(component)
+        let encodedBytes = try StorageFrameEncoder.encode(
+            limits: limits
+        ) {
+            (writer: inout StorageFrameEncoder) throws(
+                StorageFrameError
+            ) in
+                writer.writeUInt32(Self.magic)
+                writer.writeUInt8(Self.version)
+                try writer.writeString(entity)
+                try writer.writeCount(partitionPath.count)
+                for component in partitionPath {
+                    try writer.writeString(component)
+                }
+                try writer.writeBytes(ByteString(retaining: storageKey))
             }
-            try writer.writeBytes(DatabaseBytes(retaining: storageKey))
-        }
 
         self.encodedBytes = encodedBytes
         self.entity = entity

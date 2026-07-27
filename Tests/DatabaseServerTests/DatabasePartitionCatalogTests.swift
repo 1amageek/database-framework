@@ -1,7 +1,7 @@
-import Core
+import DatabaseKit
 @testable import DatabaseEngine
 import DatabaseRuntime
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 import Testing
 
@@ -13,7 +13,7 @@ struct DatabasePartitionCatalogTests {
         let firstContainer = try await makeContainer(engine: engine)
 
         var firstPath = DirectoryPath<CatalogPartitionedEntity>()
-        firstPath.set(\.tenantID, to: "tenant-a")
+        firstPath.set(CatalogPartitionedEntity.fields.tenantID, to: "tenant-a")
         _ = try await firstContainer.resolveDirectory(
             for: CatalogPartitionedEntity.self,
             path: firstPath
@@ -24,7 +24,7 @@ struct DatabasePartitionCatalogTests {
         )
 
         var secondPath = DirectoryPath<CatalogPartitionedEntity>()
-        secondPath.set(\.tenantID, to: "tenant-b")
+        secondPath.set(CatalogPartitionedEntity.fields.tenantID, to: "tenant-b")
         _ = try await firstContainer.resolveDirectory(
             for: CatalogPartitionedEntity.self,
             path: secondPath
@@ -48,13 +48,13 @@ struct DatabasePartitionCatalogTests {
 
         let values = Set(
             (firstPage.entries + secondPage.entries).compactMap {
-                $0.partitions.first?.value
+                $0.partitions["tenantID"]
             }
         )
         #expect(values == [.string("tenant-a"), .string("tenant-b")])
     }
 
-    @Test("Partition path components preserve DatabaseValue types")
+    @Test("Partition path components preserve FieldValue types")
     func preservesPartitionTypes() throws {
         let stringComponent = try CanonicalDirectoryPartitionCodec.encode(
             .string("1")
@@ -85,7 +85,7 @@ struct DatabasePartitionCatalogTests {
         let container = try await makeContainer(engine: InMemoryEngine())
         for tenant in ["tenant-a", "tenant-b"] {
             var path = DirectoryPath<CatalogPartitionedEntity>()
-            path.set(\.tenantID, to: tenant)
+            path.set(CatalogPartitionedEntity.fields.tenantID, to: tenant)
             _ = try await container.resolveDirectory(
                 for: CatalogPartitionedEntity.self,
                 path: path

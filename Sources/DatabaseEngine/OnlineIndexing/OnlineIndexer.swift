@@ -1,5 +1,5 @@
 import StorageKit
-import Core
+import DatabaseKit
 import Metrics
 
 /// Online index builder for batch index construction
@@ -18,7 +18,7 @@ import Metrics
 /// **Usage Example**:
 /// ```swift
 /// // Create indexer
-/// let indexer = OnlineIndexer(
+/// let indexer = try OnlineIndexer(
 ///     container: container,
 ///     storeSubspace: storeSubspace,
 ///     itemType: "User",
@@ -47,7 +47,7 @@ import Metrics
 public final class OnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Properties
 
-    /// FDB Container for transaction execution
+    /// Database container for transaction execution
     let container: DBContainer
 
     /// Store root subspace (parent of R/I/B/M)
@@ -121,7 +121,20 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         indexLifecycleStore: IndexLifecycleStore,
         batchSize: Int = 100,
         throttleDelayMs: Int = 0
-    ) {
+    ) throws(OnlineIndexBuildError) {
+        guard batchSize > 0 else {
+            throw .invalidBatchSize(batchSize)
+        }
+        guard throttleDelayMs >= 0 else {
+            throw .invalidThrottleDelayMilliseconds(throttleDelayMs)
+        }
+        if index.isUnique, indexMaintainer.customBuildStrategy != nil {
+            throw .unsupportedUniqueCustomBuildStrategy(indexName: index.name)
+        }
+        if index.isUnique,
+           !(indexMaintainer is any IndexUniquenessMaintainer<Item>) {
+            throw .unsupportedUniquenessConstraint(indexName: index.name)
+        }
         self.container = container
         self.storeSubspace = storeSubspace
         self.itemSubspace = storeSubspace.subspace(SubspaceKey.items)
@@ -197,7 +210,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// - Custom build: Resumability depends on strategy implementation
     ///
     /// - Parameter clearFirst: If true, clears existing index data before building
-    /// - Throws: `OnlineIndexerError.uniquenessViolationsDetected` if unique index has violations
+    /// - Throws: `OnlineIndexBuildError.uniquenessViolationsDetected` if unique index has violations
     /// - Throws: Error if build fails
     public func buildIndex(clearFirst: Bool = false) async throws {
         // Clear existing data if requested
@@ -229,7 +242,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
             if hasViolations {
                 let summary = try await violationTracker.violationSummary(indexName: index.name)
-                throw OnlineIndexerError.uniquenessViolationsDetected(
+                throw OnlineIndexBuildError.uniquenessViolationsDetected(
                     indexName: index.name,
                     violationCount: summary.violationCount,
                     totalConflictingEntities: summary.totalConflictingEntities
@@ -318,8 +331,11 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
                     // Call IndexMaintainer once per batch. Maintainers that do
                     // not override scanItems preserve scanItem behavior.
-                    try await self.indexMaintainer.scanItems(
+                    try await OnlineIndexBatchWriter.write(
                         batchEntries,
+                        index: self.index,
+                        maintainer: self.indexMaintainer,
+                        violationTracker: self.violationTracker,
                         transaction: transaction
                     )
 
@@ -436,19 +452,20 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
     /// Build index in parallel using range split points
     ///
-    /// This method divides the item range into chunks using FDB's `getRangeSplitPoints`
+    /// This method divides the item range into chunks using the storage engine's
+    /// range split points
     /// and processes them in parallel with controlled concurrency. This can provide
     /// 10-100x speedup for large datasets.
     ///
     /// **Process**:
-    /// 1. Get range split points from FDB (divides data by estimated size)
+    /// 1. Get storage range split points (divides data by estimated size)
     /// 2. Load any existing progress (for resumability)
     /// 3. Create task group with maxConcurrency workers
     /// 4. Each worker processes assigned chunks, updating progress atomically
     /// 5. On completion, clear progress data and transition to readable
     ///
     /// **Resumability**:
-    /// - Progress is stored per-chunk in FDB under `[indexSubspace]/_build/[indexName]/`
+    /// - Progress is stored per-chunk under `[indexSubspace]/_build/[indexName]/`
     /// - On restart, completed chunks are skipped
     /// - In-progress chunks resume from the last processed key
     /// - Progress data is cleared on successful completion
@@ -463,6 +480,13 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         maxConcurrency: Int = 4,
         chunkSizeBytes: Int = 10_000_000
     ) async throws {
+        guard maxConcurrency > 0 else {
+            throw OnlineIndexBuildError.invalidMaximumConcurrency(maxConcurrency)
+        }
+        guard chunkSizeBytes > 0 else {
+            throw OnlineIndexBuildError.invalidChunkSizeBytes(chunkSizeBytes)
+        }
+
         // Initialize progress tracker
         let progress = ParallelBuildProgress(
             indexSubspace: indexSubspace,
@@ -501,7 +525,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
                 if hasViolations {
                     let summary = try await violationTracker.violationSummary(indexName: index.name)
-                    throw OnlineIndexerError.uniquenessViolationsDetected(
+                    throw OnlineIndexBuildError.uniquenessViolationsDetected(
                         indexName: index.name,
                         violationCount: summary.violationCount,
                         totalConflictingEntities: summary.totalConflictingEntities
@@ -553,7 +577,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
                 if hasViolations {
                     let summary = try await violationTracker.violationSummary(indexName: index.name)
-                    throw OnlineIndexerError.uniquenessViolationsDetected(
+                    throw OnlineIndexBuildError.uniquenessViolationsDetected(
                         indexName: index.name,
                         violationCount: summary.violationCount,
                         totalConflictingEntities: summary.totalConflictingEntities
@@ -612,7 +636,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
             if hasViolations {
                 let summary = try await violationTracker.violationSummary(indexName: index.name)
-                throw OnlineIndexerError.uniquenessViolationsDetected(
+                throw OnlineIndexBuildError.uniquenessViolationsDetected(
                     indexName: index.name,
                     violationCount: summary.violationCount,
                     totalConflictingEntities: summary.totalConflictingEntities
@@ -687,8 +711,11 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
                 // Call IndexMaintainer once per batch. Maintainers that do
                 // not override scanItems preserve scanItem behavior.
-                try await self.indexMaintainer.scanItems(
+                try await OnlineIndexBatchWriter.write(
                     batchEntries,
+                    index: self.index,
+                    maintainer: self.indexMaintainer,
+                    violationTracker: self.violationTracker,
                     transaction: transaction
                 )
 
@@ -732,90 +759,6 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         return itemsProcessed
     }
 
-    /// Process a single chunk of items
-    ///
-    /// - Parameters:
-    ///   - chunkIndex: Index of this chunk (for logging)
-    ///   - begin: Begin key of chunk
-    ///   - end: End key of chunk
-    ///   - itemTypeSubspace: Subspace for item type
-    /// - Returns: Number of items processed
-    private func processChunk(
-        chunkIndex: Int,
-        begin: Bytes,
-        end: Bytes,
-        itemTypeSubspace: Subspace
-    ) async throws -> Int {
-        var itemsProcessed = 0
-        var lastKey: Bytes? = nil
-
-        // Process in batches within this chunk
-        while true {
-            let currentLastKey = lastKey
-
-            let (batchCount, newLastKey): (Int, Bytes?) = try await container.engine.withTransaction(configuration: .batch) { transaction in
-                var count = 0
-                var processedKey: Bytes? = nil
-
-                let rangeBegin = currentLastKey.map { $0 + [0x00] } ?? begin
-
-                // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
-                let storage = self.container.itemStorageFactory.make(
-                    transaction: transaction,
-                    blobsSubspace: self.blobsSubspace
-                )
-
-                let scanSequence = storage.scan(
-                    begin: rangeBegin,
-                    end: end,
-                    snapshot: false,
-                    limit: self.batchSize
-                )
-
-                var batchEntries: [(item: Item, id: Tuple)] = []
-                batchEntries.reserveCapacity(self.batchSize)
-
-                for try await (key, data) in scanSequence {
-                    // Deserialize item from decompressed data
-                    let item: Item = try DataAccess.deserialize(data)
-
-                    // Extract id
-                    let id = try itemTypeSubspace.unpack(key)
-
-                    batchEntries.append((item: item, id: id))
-
-                    processedKey = key
-                    count += 1
-                }
-
-                // Call IndexMaintainer once per batch. Maintainers that do
-                // not override scanItems preserve scanItem behavior.
-                try await self.indexMaintainer.scanItems(
-                    batchEntries,
-                    transaction: transaction
-                )
-
-                return (count, processedKey)
-            }
-
-            itemsProcessed += batchCount
-            lastKey = newLastKey
-
-            // If we processed fewer than batchSize, we've reached the end of this chunk
-            if batchCount < batchSize || newLastKey == nil {
-                break
-            }
-
-            // Throttle if configured
-            if throttleDelayMs > 0 {
-                try await container.engine.monotonicClock.sleep(
-                    for: .milliseconds(Int64(throttleDelayMs))
-                )
-            }
-        }
-
-        return itemsProcessed
-    }
 }
 
 // MARK: - CustomStringConvertible
@@ -830,7 +773,7 @@ extension OnlineIndexer: CustomStringConvertible {
 
 /// Progress tracker for parallel index builds
 ///
-/// Stores per-chunk progress in FDB to enable resumability after failures.
+/// Stores per-chunk progress in the database to enable resumability after failures.
 /// Each chunk tracks its status (not_started, in_progress, complete) and
 /// the last processed key for in-progress chunks.
 ///
@@ -862,7 +805,7 @@ internal final class ParallelBuildProgress: Sendable {
     /// Subspace for progress data
     private let progressSubspace: Subspace
 
-    /// FDB Container for transaction execution
+    /// Database container for transaction execution
     let container: DBContainer
 
     /// Initialize progress tracker
@@ -896,7 +839,7 @@ internal final class ParallelBuildProgress: Sendable {
             for (key, value) in sequence {
                 let chunkIndex = try self.extractChunkIndex(from: key)
                 guard chunkIndex >= 0, chunkIndex < chunkCount else {
-                    throw OnlineIndexerError.corruptedProgress
+                    throw OnlineIndexBuildError.corruptedProgress
                 }
                 let chunkProgress = try self.decodeProgress(from: value)
                 progress[chunkIndex] = chunkProgress
@@ -961,7 +904,7 @@ internal final class ParallelBuildProgress: Sendable {
         guard tuple.count == 1,
               let index = try tuple.element(at: 0) as? Int64,
               let converted = Int(exactly: index) else {
-            throw OnlineIndexerError.corruptedProgress
+            throw OnlineIndexBuildError.corruptedProgress
         }
         return converted
     }
@@ -980,58 +923,17 @@ internal final class ParallelBuildProgress: Sendable {
               let statusRaw = elements[0] as? Int64,
               let statusValue = Int(exactly: statusRaw),
               let status = ChunkStatus(rawValue: statusValue) else {
-            throw OnlineIndexerError.corruptedProgress
+            throw OnlineIndexBuildError.corruptedProgress
         }
         let lastKey: Bytes?
         if elements.count == 2 {
             guard let bytes = elements[1] as? Bytes else {
-                throw OnlineIndexerError.corruptedProgress
+                throw OnlineIndexBuildError.corruptedProgress
             }
             lastKey = bytes
         } else {
             lastKey = nil
         }
         return ChunkProgress(status: status, lastProcessedKey: lastKey)
-    }
-}
-
-// MARK: - OnlineIndexerError
-
-/// Errors that can occur during online index building
-public enum OnlineIndexerError: Error, CustomStringConvertible {
-    /// Uniqueness violations were detected during index build
-    ///
-    /// The index was built but cannot be made readable because
-    /// duplicate values exist. Review violations using
-    /// `context.scanUniquenessViolations(for:indexName:)`.
-    ///
-    /// **Recovery**:
-    /// 1. Scan violations to identify duplicates
-    /// 2. Resolve duplicates (delete or update entities)
-    /// 3. Re-run the index build
-    ///
-    /// - Parameters:
-    ///   - indexName: Name of the affected index
-    ///   - violationCount: Number of distinct duplicate values
-    ///   - totalConflictingEntities: Total entities with duplicates
-    case uniquenessViolationsDetected(
-        indexName: String,
-        violationCount: Int,
-        totalConflictingEntities: Int
-    )
-    case corruptedProgress
-
-    public var description: String {
-        switch self {
-        case .uniquenessViolationsDetected(let indexName, let violationCount, let totalEntities):
-            return """
-            Unique index '\(indexName)' has violations: \
-            \(violationCount) duplicate value(s) affecting \(totalEntities) entity(s). \
-            Index remains in write-only state. \
-            Use scanUniquenessViolations() to review and resolve duplicates.
-            """
-        case .corruptedProgress:
-            return "Online index progress is corrupted"
-        }
     }
 }

@@ -1,5 +1,6 @@
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
+import DatabaseEngine
 import Synchronization
 
 /// Request-scoped canonical RDF identity interning.
@@ -13,15 +14,15 @@ package final class GraphIdentityPool: Sendable {
     }
 
     private let identities = Mutex(
-        [DatabaseRDFTermEncodingFingerprint: [Entry]]()
+        [RDFTermStorageFingerprint: [Entry]]()
     )
 
     func internRDF(
-        _ encoded: DatabaseBytes,
+        _ encoded: ByteString,
         role: GraphRDFComponentRole
     ) throws -> GraphIdentity {
         do {
-            return try DatabaseRDFTermCodec.withValidatedBytes(
+            return try RDFTermStorageFormat.withValidatedBytes(
                 encoded,
                 role: role.databaseRole
             ) { buffer, validation in
@@ -74,7 +75,7 @@ enum GraphRDFComponentRole: Sendable {
     case object
     case graph
 
-    var databaseRole: DatabaseRDFTermRole {
+    var databaseRole: RDFTermRole {
         switch self {
         case .subject: .subject
         case .predicate: .predicate

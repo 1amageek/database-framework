@@ -1,936 +1,324 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-// ValueAccessLayerTests.swift
-// Tests for the 3-layer value access architecture:
-// Layer 1: FieldComparison.evaluate(on:) / SortDescriptor.orderedComparison
-// Layer 2: FieldReader
-// Layer 3: DataAccess (tested elsewhere)
-
+import Foundation
 import Testing
 import TestHeartbeat
-import Foundation
-import DatabaseEngine
-import DatabaseValue
-@testable import Core
+import DatabaseTypes
+@testable import DatabaseKit
+@testable import DatabaseEngine
 
-/// Disambiguate from Foundation.Predicate
-private typealias Predicate = DatabaseEngine.Predicate
+private typealias QueryPredicate = DatabaseEngine.Predicate
 
-// MARK: - Test Models
+@Persistable
+private struct ValueAccessEntity {
+    var id: String = UUID().uuidString
+    var name: String = ""
+    var age: Int64 = 0
+    var score: Double = 0
+    var isActive: Bool = true
+    var tag: String? = nil
+    var embedding: [Float] = []
+}
 
-/// Model with various field types for value access testing
-struct ValueAccessEntity: Persistable {
-    typealias ID = String
+@Suite("Generated persisted field access", .heartbeat)
+struct PersistedFieldAccessTests {
+    @Test("Generated field identities select exact canonical values")
+    func generatedFieldsSelectValues() throws {
+        let entity = ValueAccessEntity(
+            name: "Alice",
+            age: 30,
+            score: 95.5,
+            isActive: false,
+            tag: "vip",
+            embedding: [1, 0.5, 0]
+        )
 
-    var id: String
-    var name: String
-    var age: Int
-    var score: Double
-    var isActive: Bool
-    var tag: String?
-
-    init(
-        id: String = UUID().uuidString,
-        name: String = "",
-        age: Int = 0,
-        score: Double = 0.0,
-        isActive: Bool = true,
-        tag: String? = nil
-    ) {
-        self.id = id
-        self.name = name
-        self.age = age
-        self.score = score
-        self.isActive = isActive
-        self.tag = tag
+        #expect(
+            try entity.persistedFieldValue(
+                for: ValueAccessEntity.fields.name.identity
+            ) == .string("Alice")
+        )
+        #expect(
+            try entity.persistedFieldValue(
+                for: ValueAccessEntity.fields.age.identity
+            ) == .int64(30)
+        )
+        #expect(
+            try entity.persistedFieldValue(
+                for: ValueAccessEntity.fields.score.identity
+            ) == .float64(95.5)
+        )
+        #expect(
+            try entity.persistedFieldValue(
+                for: ValueAccessEntity.fields.isActive.identity
+            ) == .bool(false)
+        )
+        #expect(
+            try entity.persistedFieldValue(
+                for: ValueAccessEntity.fields.tag.identity
+            ) == .string("vip")
+        )
+        #expect(
+            try entity.persistedFieldValue(
+                for: ValueAccessEntity.fields.embedding.identity
+            ) == .array([.float32(1), .float32(0.5), .float32(0)])
+        )
     }
 
-    static var persistableType: String { "ValueAccessEntity" }
-    static var allFields: [String] { ["id", "name", "age", "score", "isActive", "tag"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
+    @Test("Optional nil is represented explicitly as null")
+    func nilOptionalIsNull() throws {
+        let entity = ValueAccessEntity(tag: nil)
 
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "age": return age
-        case "score": return score
-        case "isActive": return isActive
-        case "tag": return tag
-        default: return nil
-        }
+        #expect(
+            try entity.persistedFieldValue(
+                for: ValueAccessEntity.fields.tag.identity
+            ) == .null
+        )
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<ValueAccessEntity, Value>) -> String {
-        switch keyPath {
-        case \ValueAccessEntity.id: return "id"
-        case \ValueAccessEntity.name: return "name"
-        case \ValueAccessEntity.age: return "age"
-        case \ValueAccessEntity.score: return "score"
-        case \ValueAccessEntity.isActive: return "isActive"
-        case \ValueAccessEntity.tag: return "tag"
-        default: return "\(keyPath)"
-        }
+    @Test("Unknown field identity is not treated as a value")
+    func unknownFieldReturnsNil() throws {
+        let entity = ValueAccessEntity()
+        let unknown = FieldIdentity(name: "missing", number: 999)
+
+        #expect(try entity.persistedFieldValue(for: unknown) == nil)
     }
 
-    static func fieldName(for keyPath: PartialKeyPath<ValueAccessEntity>) -> String {
-        switch keyPath {
-        case \ValueAccessEntity.id: return "id"
-        case \ValueAccessEntity.name: return "name"
-        case \ValueAccessEntity.age: return "age"
-        case \ValueAccessEntity.score: return "score"
-        case \ValueAccessEntity.isActive: return "isActive"
-        case \ValueAccessEntity.tag: return "tag"
-        default: return "\(keyPath)"
-        }
-    }
+    @Test("Query rows round-trip canonical vector storage")
+    func queryRowRoundTripsVector() throws {
+        let entity = ValueAccessEntity(
+            id: "vector-1",
+            embedding: [1, 0.5, 0]
+        )
 
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<ValueAccessEntity> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
+        let row = try QueryRowCodec.encodeAny(entity)
+        let decoded = try QueryRowCodec.decode(
+            row,
+            as: ValueAccessEntity.self
+        )
+
+        #expect(
+            row.fields["embedding"]
+                == .array([.float32(1), .float32(0.5), .float32(0)])
+        )
+        #expect(decoded.id == entity.id)
+        #expect(decoded.embedding == entity.embedding)
     }
 }
 
-/// Model with nested struct for dot-notation testing
-struct VALNestedItem: Persistable {
-    typealias ID = String
+@Suite("Compiled field predicate evaluation", .heartbeat)
+struct CompiledFieldPredicateTests {
+    private let alice = ValueAccessEntity(
+        name: "Alice",
+        age: 30,
+        score: 95.5,
+        isActive: true,
+        tag: "vip"
+    )
+    private let bob = ValueAccessEntity(
+        name: "Bob",
+        age: 25,
+        score: 80,
+        isActive: false,
+        tag: nil
+    )
 
-    struct Address: Sendable, Codable {
-        var city: String
-        var zip: String
-    }
+    @Test("Typed equality and ordering predicates use generated fields")
+    func typedEqualityAndOrdering() throws {
+        let equal: QueryPredicate<ValueAccessEntity> =
+            ValueAccessEntity.fields.age == 30
+        let lessThan: QueryPredicate<ValueAccessEntity> =
+            ValueAccessEntity.fields.age < 28
+        let greaterThan: QueryPredicate<ValueAccessEntity> =
+            ValueAccessEntity.fields.score > 90
 
-    var id: String
-    var address: Address
-
-    init(id: String = UUID().uuidString, address: Address = Address(city: "", zip: "")) {
-        self.id = id
-        self.address = address
-    }
-
-    static var persistableType: String { "VALNestedItem" }
-    static var allFields: [String] { ["id", "address"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "address": return address
-        default: return nil
+        guard case .comparison(let equalComparison) = equal,
+              case .comparison(let lessThanComparison) = lessThan,
+              case .comparison(let greaterThanComparison) = greaterThan
+        else {
+            Issue.record("Expected compiled field comparisons")
+            return
         }
+
+        #expect(try equalComparison.evaluate(on: alice))
+        #expect(try !equalComparison.evaluate(on: bob))
+        #expect(try !lessThanComparison.evaluate(on: alice))
+        #expect(try lessThanComparison.evaluate(on: bob))
+        #expect(try greaterThanComparison.evaluate(on: alice))
+        #expect(try !greaterThanComparison.evaluate(on: bob))
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<VALNestedItem, Value>) -> String {
-        switch keyPath {
-        case \VALNestedItem.id: return "id"
-        case \VALNestedItem.address: return "address"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<VALNestedItem>) -> String {
-        switch keyPath {
-        case \VALNestedItem.id: return "id"
-        case \VALNestedItem.address: return "address"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<VALNestedItem> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
-}
-
-/// Model with an array field for QueryRow encoding/decoding tests.
-struct VALVectorItem: Persistable {
-    typealias ID = String
-
-    var id: String
-    var embedding: [Float]
-
-    init(
-        id: String = UUID().uuidString,
-        embedding: [Float] = []
-    ) {
-        self.id = id
-        self.embedding = embedding
-    }
-
-    static var persistableType: String { "VALVectorItem" }
-    static var allFields: [String] { ["id", "embedding"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "embedding": return embedding
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<VALVectorItem, Value>) -> String {
-        switch keyPath {
-        case \VALVectorItem.id: return "id"
-        case \VALVectorItem.embedding: return "embedding"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<VALVectorItem>) -> String {
-        switch keyPath {
-        case \VALVectorItem.id: return "id"
-        case \VALVectorItem.embedding: return "embedding"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<VALVectorItem> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
-}
-
-// MARK: - FieldReader Tests
-
-@Suite("FieldReader Tests", .heartbeat)
-struct FieldReaderTests {
-
-    // MARK: - read(from:keyPath:fieldName:) — PartialKeyPath path
-
-    @Test("Read field via PartialKeyPath returns correct value")
-    func readViaPartialKeyPath() {
-        let item = ValueAccessEntity(name: "Alice", age: 30, score: 95.5)
-        let kp: AnyKeyPath = \ValueAccessEntity.name
-
-        let result = FieldReader.read(from: item, keyPath: kp, fieldName: "name")
-        #expect(result as? String == "Alice")
-    }
-
-    @Test("Read Int field via PartialKeyPath")
-    func readIntViaPartialKeyPath() {
-        let item = ValueAccessEntity(name: "Bob", age: 25)
-        let result = FieldReader.read(from: item, keyPath: \ValueAccessEntity.age as AnyKeyPath, fieldName: "age")
-        #expect(result as? Int == 25)
-    }
-
-    @Test("Read Double field via PartialKeyPath")
-    func readDoubleViaPartialKeyPath() {
-        let item = ValueAccessEntity(score: 88.5)
-        let result = FieldReader.read(from: item, keyPath: \ValueAccessEntity.score as AnyKeyPath, fieldName: "score")
-        #expect(result as? Double == 88.5)
-    }
-
-    @Test("Read Bool field via PartialKeyPath")
-    func readBoolViaPartialKeyPath() {
-        let item = ValueAccessEntity(isActive: false)
-        let result = FieldReader.read(from: item, keyPath: \ValueAccessEntity.isActive as AnyKeyPath, fieldName: "isActive")
-        #expect(result as? Bool == false)
-    }
-
-    // MARK: - read(from:fieldName:) — dynamicMember path
-
-    @Test("Read field by name returns correct value")
-    func readByFieldName() {
-        let item = ValueAccessEntity(name: "Charlie", age: 40)
-
-        #expect(FieldReader.read(from: item, fieldName: "name") as? String == "Charlie")
-        #expect(FieldReader.read(from: item, fieldName: "age") as? Int == 40)
-    }
-
-    @Test("Read unknown field returns nil")
-    func readUnknownField() {
-        let item = ValueAccessEntity(name: "Alice")
-        let result = FieldReader.read(from: item, fieldName: "nonExistent")
-        #expect(result == nil)
-    }
-
-    @Test("Read optional field with value returns the value")
-    func readOptionalFieldWithValue() {
-        let item = ValueAccessEntity(tag: "vip")
-        let result = FieldReader.read(from: item, fieldName: "tag")
-        #expect(result as? String == "vip")
-    }
-
-    @Test("Read optional field without value returns nil")
-    func readOptionalFieldNil() {
-        let item = ValueAccessEntity(tag: nil)
-        let result = FieldReader.read(from: item, fieldName: "tag")
-        #expect(result == nil)
-    }
-
-    // MARK: - Nested field access via dot notation
-
-    @Test("Read nested field via dot notation")
-    func readNestedField() {
-        let item = VALNestedItem(address: .init(city: "Tokyo", zip: "100-0001"))
-        let result = FieldReader.read(from: item, fieldName: "address.city")
-        #expect(result as? String == "Tokyo")
-    }
-
-    @Test("Read nested field second level")
-    func readNestedFieldZip() {
-        let item = VALNestedItem(address: .init(city: "Osaka", zip: "530-0001"))
-        let result = FieldReader.read(from: item, fieldName: "address.zip")
-        #expect(result as? String == "530-0001")
-    }
-
-    @Test("Read nested field with invalid path returns nil")
-    func readNestedFieldInvalid() {
-        let item = VALNestedItem(address: .init(city: "Tokyo", zip: "100-0001"))
-        let result = FieldReader.read(from: item, fieldName: "address.country")
-        #expect(result == nil)
-    }
-
-    // MARK: - readFieldValue
-
-    @Test("readFieldValue converts string to FieldValue")
-    func readFieldValueString() {
-        let item = ValueAccessEntity(name: "Alice")
-        let fv = FieldReader.readFieldValue(from: item, fieldName: "name")
-        #expect(fv == .string("Alice"))
-    }
-
-    @Test("readFieldValue converts int to FieldValue")
-    func readFieldValueInt() {
-        let item = ValueAccessEntity(age: 30)
-        let fv = FieldReader.readFieldValue(from: item, fieldName: "age")
-        #expect(fv == .int64(30))
-    }
-
-    @Test("readFieldValue returns .null for unknown field")
-    func readFieldValueUnknown() {
-        let item = ValueAccessEntity()
-        let fv = FieldReader.readFieldValue(from: item, fieldName: "nonExistent")
-        #expect(fv == .null)
-    }
-
-    @Test("readFieldValue returns .null for nil optional")
-    func readFieldValueNilOptional() {
-        let item = ValueAccessEntity(tag: nil)
-        let fv = FieldReader.readFieldValue(from: item, fieldName: "tag")
-        #expect(fv == .null)
-    }
-
-    @Test("readFieldValue converts FieldValueConvertible arrays")
-    func readFieldValueArray() {
-        let item = VALVectorItem(embedding: [1.0, 0.5, 0.0])
-        let fv = FieldReader.readFieldValue(from: item, fieldName: "embedding")
-
-        #expect(fv == .array([.double(1.0), .double(0.5), .double(0.0)]))
-    }
-
-    @Test("QueryRowCodec round-trips array fields")
-    func queryRowCodecRoundTripsArrayFields() throws {
-        let item = VALVectorItem(id: "vector-1", embedding: [1.0, 0.5, 0.0])
-
-        let row = try QueryRowCodec.encodeAny(item)
-        let decoded = try QueryRowCodec.decode(row, as: VALVectorItem.self)
-
-        #expect(row.fields["embedding"] == .array([.double(1.0), .double(0.5), .double(0.0)]))
-        #expect(decoded.id == item.id)
-        #expect(decoded.embedding == item.embedding)
-    }
-}
-
-// MARK: - FieldComparison.evaluate Tests
-
-@Suite("FieldComparison.evaluate Tests", .heartbeat)
-struct FieldComparisonEvaluateTests {
-
-    let alice = ValueAccessEntity(name: "Alice", age: 30, score: 95.5, isActive: true, tag: "vip")
-    let bob = ValueAccessEntity(name: "Bob", age: 25, score: 80.0, isActive: false, tag: nil)
-
-    // MARK: - Fast path (operator-constructed with closure)
-
-    @Test("Fast path: == evaluates correctly")
-    func fastPathEqual() {
-        let predicate: Predicate<ValueAccessEntity> = \ValueAccessEntity.age == 30
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == true)
-            #expect(cmp.evaluate(on: bob) == false)
-        } else {
-            Issue.record("Expected comparison predicate")
-        }
-    }
-
-    @Test("Fast path: != evaluates correctly")
-    func fastPathNotEqual() {
-        let predicate: Predicate<ValueAccessEntity> = \ValueAccessEntity.name != "Alice"
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == false)
-            #expect(cmp.evaluate(on: bob) == true)
-        } else {
-            Issue.record("Expected comparison predicate")
-        }
-    }
-
-    @Test("Fast path: < evaluates correctly")
-    func fastPathLessThan() {
-        let predicate: Predicate<ValueAccessEntity> = \ValueAccessEntity.age < 28
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == false)
-            #expect(cmp.evaluate(on: bob) == true)
-        } else {
-            Issue.record("Expected comparison predicate")
-        }
-    }
-
-    @Test("Fast path: <= evaluates correctly")
-    func fastPathLessThanOrEqual() {
-        let predicate: Predicate<ValueAccessEntity> = \ValueAccessEntity.age <= 25
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == false)
-            #expect(cmp.evaluate(on: bob) == true)
-        } else {
-            Issue.record("Expected comparison predicate")
-        }
-    }
-
-    @Test("Fast path: > evaluates correctly")
-    func fastPathGreaterThan() {
-        let predicate: Predicate<ValueAccessEntity> = \ValueAccessEntity.score > 90.0
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == true)
-            #expect(cmp.evaluate(on: bob) == false)
-        } else {
-            Issue.record("Expected comparison predicate")
-        }
-    }
-
-    @Test("Fast path: >= evaluates correctly")
-    func fastPathGreaterThanOrEqual() {
-        let predicate: Predicate<ValueAccessEntity> = \ValueAccessEntity.score >= 80.0
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == true)
-            #expect(cmp.evaluate(on: bob) == true)
-        } else {
-            Issue.record("Expected comparison predicate")
-        }
-    }
-
-    @Test("Fast path: String.contains evaluates correctly")
-    func fastPathStringContains() {
-        let predicate = Predicate<ValueAccessEntity>.contains(
+    @Test("String predicates preserve typed field identity")
+    func stringPredicates() throws {
+        let contains = QueryPredicate<ValueAccessEntity>.contains(
             "lic",
-            in: \.name
+            in: ValueAccessEntity.fields.name
         )
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == true)
-            #expect(cmp.evaluate(on: bob) == false)
-        } else {
-            Issue.record("Expected comparison predicate")
-        }
-    }
-
-    @Test("Fast path: String.hasPrefix evaluates correctly")
-    func fastPathStringHasPrefix() {
-        let predicate = Predicate<ValueAccessEntity>.hasPrefix(
+        let prefix = QueryPredicate<ValueAccessEntity>.hasPrefix(
             "Bo",
-            in: \.name
+            in: ValueAccessEntity.fields.name
         )
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == false)
-            #expect(cmp.evaluate(on: bob) == true)
-        } else {
-            Issue.record("Expected comparison predicate")
-        }
-    }
-
-    @Test("Fast path: String.hasSuffix evaluates correctly")
-    func fastPathStringHasSuffix() {
-        let predicate = Predicate<ValueAccessEntity>.hasSuffix(
+        let suffix = QueryPredicate<ValueAccessEntity>.hasSuffix(
             "ce",
-            in: \.name
+            in: ValueAccessEntity.fields.name
         )
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == true)
-            #expect(cmp.evaluate(on: bob) == false)
-        } else {
-            Issue.record("Expected comparison predicate")
+
+        guard case .comparison(let containsComparison) = contains,
+              case .comparison(let prefixComparison) = prefix,
+              case .comparison(let suffixComparison) = suffix
+        else {
+            Issue.record("Expected compiled string comparisons")
+            return
         }
+
+        #expect(try containsComparison.evaluate(on: alice))
+        #expect(try !containsComparison.evaluate(on: bob))
+        #expect(try !prefixComparison.evaluate(on: alice))
+        #expect(try prefixComparison.evaluate(on: bob))
+        #expect(try suffixComparison.evaluate(on: alice))
     }
 
-    @Test("Fast path: IN evaluates correctly")
-    func fastPathIn() {
-        let predicate = Predicate<ValueAccessEntity>.matchesAny(
+    @Test("Collection and optional predicates use canonical values")
+    func collectionAndOptionalPredicates() throws {
+        let matches = QueryPredicate<ValueAccessEntity>.matchesAny(
             of: [25, 35, 45],
-            at: \.age
+            at: ValueAccessEntity.fields.age
         )
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == false)
-            #expect(cmp.evaluate(on: bob) == true)
-        } else {
-            Issue.record("Expected comparison predicate")
+        let isNil: QueryPredicate<ValueAccessEntity> =
+            ValueAccessEntity.fields.tag == Optional<String>.self
+        let isNotNil: QueryPredicate<ValueAccessEntity> =
+            ValueAccessEntity.fields.tag != Optional<String>.self
+
+        guard case .comparison(let matchesComparison) = matches,
+              case .comparison(let nilComparison) = isNil,
+              case .comparison(let nonNilComparison) = isNotNil
+        else {
+            Issue.record("Expected compiled collection and nil comparisons")
+            return
         }
+
+        #expect(try !matchesComparison.evaluate(on: alice))
+        #expect(try matchesComparison.evaluate(on: bob))
+        #expect(try !nilComparison.evaluate(on: alice))
+        #expect(try nilComparison.evaluate(on: bob))
+        #expect(try nonNilComparison.evaluate(on: alice))
+        #expect(try !nonNilComparison.evaluate(on: bob))
     }
 
-    @Test("Fast path: isNil evaluates correctly")
-    func fastPathIsNil() {
-        let predicate: Predicate<ValueAccessEntity> = \ValueAccessEntity.tag == Optional<String>.self
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == false, "alice has tag='vip', should not be nil")
-            #expect(cmp.evaluate(on: bob) == true, "bob has tag=nil, should be nil")
-        } else {
-            Issue.record("Expected comparison predicate")
-        }
-    }
-
-    @Test("Fast path: isNotNil evaluates correctly")
-    func fastPathIsNotNil() {
-        let predicate: Predicate<ValueAccessEntity> = \ValueAccessEntity.tag != Optional<String>.self
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: alice) == true)
-            #expect(cmp.evaluate(on: bob) == false)
-        } else {
-            Issue.record("Expected comparison predicate")
-        }
-    }
-
-    // MARK: - Canonical field-name fallback path
-
-    @Test("Fallback path: == via FieldReader")
-    func fallbackEqual() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "age",
+    @Test("Missing generated field identity throws")
+    func missingFieldThrows() {
+        let missing = Field<ValueAccessEntity, Int64>(
+            identity: FieldIdentity(name: "missing", number: 999),
+            type: .int64
+        )
+        let comparison = FieldComparison(
+            field: missing,
             op: .equal,
-            value: .int64(30)
+            value: Int64(1)
         )
-        #expect(cmp.evaluate(on: alice) == true)
-        #expect(cmp.evaluate(on: bob) == false)
-    }
 
-    @Test("Fallback path: != via FieldReader")
-    func fallbackNotEqual() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "name",
-            op: .notEqual,
-            value: .string("Alice")
-        )
-        #expect(cmp.evaluate(on: alice) == false)
-        #expect(cmp.evaluate(on: bob) == true)
-    }
-
-    @Test("Fallback path: < via FieldReader")
-    func fallbackLessThan() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "age",
-            op: .lessThan,
-            value: .int64(28)
-        )
-        #expect(cmp.evaluate(on: alice) == false)
-        #expect(cmp.evaluate(on: bob) == true)
-    }
-
-    @Test("Fallback path: <= via FieldReader")
-    func fallbackLessThanOrEqual() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "age",
-            op: .lessThanOrEqual,
-            value: .int64(25)
-        )
-        #expect(cmp.evaluate(on: alice) == false)
-        #expect(cmp.evaluate(on: bob) == true)
-    }
-
-    @Test("Fallback path: > via FieldReader")
-    func fallbackGreaterThan() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "score",
-            op: .greaterThan,
-            value: .double(90.0)
-        )
-        #expect(cmp.evaluate(on: alice) == true)
-        #expect(cmp.evaluate(on: bob) == false)
-    }
-
-    @Test("Fallback path: >= via FieldReader")
-    func fallbackGreaterThanOrEqual() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "score",
-            op: .greaterThanOrEqual,
-            value: .double(80.0)
-        )
-        #expect(cmp.evaluate(on: alice) == true)
-        #expect(cmp.evaluate(on: bob) == true)
-    }
-
-    @Test("Fallback path: contains via FieldReader")
-    func fallbackContains() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "name",
-            op: .contains,
-            value: .string("lic")
-        )
-        #expect(cmp.evaluate(on: alice) == true)
-        #expect(cmp.evaluate(on: bob) == false)
-    }
-
-    @Test("Fallback path: hasPrefix via FieldReader")
-    func fallbackHasPrefix() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "name",
-            op: .hasPrefix,
-            value: .string("Bo")
-        )
-        #expect(cmp.evaluate(on: alice) == false)
-        #expect(cmp.evaluate(on: bob) == true)
-    }
-
-    @Test("Fallback path: hasSuffix via FieldReader")
-    func fallbackHasSuffix() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "name",
-            op: .hasSuffix,
-            value: .string("ce")
-        )
-        #expect(cmp.evaluate(on: alice) == true)
-        #expect(cmp.evaluate(on: bob) == false)
-    }
-
-    @Test("Fallback path: IN via FieldReader")
-    func fallbackIn() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "age",
-            op: .in,
-            value: .array([.int64(25), .int64(35)])
-        )
-        #expect(cmp.evaluate(on: alice) == false)
-        #expect(cmp.evaluate(on: bob) == true)
-    }
-
-    @Test("Fallback path: isNil via FieldReader with nil optional")
-    func fallbackIsNilTrue() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "tag",
-            op: .isNil,
-            value: .null
-        )
-        #expect(cmp.evaluate(on: bob) == true, "bob.tag is nil → isNil should be true")
-    }
-
-    @Test("Fallback path: isNil via FieldReader with non-nil optional")
-    func fallbackIsNilFalse() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "tag",
-            op: .isNil,
-            value: .null
-        )
-        #expect(cmp.evaluate(on: alice) == false, "alice.tag is 'vip' → isNil should be false")
-    }
-
-    @Test("Fallback path: isNotNil via FieldReader")
-    func fallbackIsNotNil() {
-        let cmp = FieldComparison<ValueAccessEntity>(
-            fieldName: "tag",
-            op: .isNotNil,
-            value: .null
-        )
-        #expect(cmp.evaluate(on: alice) == true)
-        #expect(cmp.evaluate(on: bob) == false)
-    }
-
-    @Test("Fallback path: null field returns false for non-nil operators")
-    func fallbackNullFieldReturnsFalse() {
-        // bob.tag is nil; comparisons other than isNil/isNotNil should return false
-        let ops: [ComparisonOperator] = [.equal, .notEqual, .lessThan, .greaterThan, .contains]
-        for op in ops {
-            let cmp = FieldComparison<ValueAccessEntity>(
-                fieldName: "tag",
-                op: op,
-                value: .string("anything")
+        do {
+            _ = try comparison.evaluate(on: alice)
+            Issue.record("Expected missing-field failure")
+        } catch let error {
+            #expect(
+                error == .missingField(
+                    entity: ValueAccessEntity.persistableType,
+                    field: missing.identity
+                )
             )
-            #expect(cmp.evaluate(on: bob) == false, "null field with op=\(op) should return false")
-        }
-    }
-
-    // MARK: - Fast path vs Fallback consistency
-
-    @Test("Fast path and fallback produce identical results for all comparison operators")
-    func fastPathFallbackConsistency() {
-        let item = ValueAccessEntity(name: "Test", age: 30, score: 75.0)
-
-        // == 30
-        let fastEq: Predicate<ValueAccessEntity> = \ValueAccessEntity.age == 30
-        let fallbackEq = FieldComparison<ValueAccessEntity>(
-            fieldName: "age", op: .equal, value: .int64(30)
-        )
-        if case .comparison(let fast) = fastEq {
-            #expect(fast.evaluate(on: item) == fallbackEq.evaluate(on: item), "== consistency")
-        }
-
-        // < 28
-        let fastLt: Predicate<ValueAccessEntity> = \ValueAccessEntity.age < 28
-        let fallbackLt = FieldComparison<ValueAccessEntity>(
-            fieldName: "age", op: .lessThan, value: .int64(28)
-        )
-        if case .comparison(let fast) = fastLt {
-            #expect(fast.evaluate(on: item) == fallbackLt.evaluate(on: item), "< consistency")
-        }
-
-        // > 28
-        let fastGt: Predicate<ValueAccessEntity> = \ValueAccessEntity.age > 28
-        let fallbackGt = FieldComparison<ValueAccessEntity>(
-            fieldName: "age", op: .greaterThan, value: .int64(28)
-        )
-        if case .comparison(let fast) = fastGt {
-            #expect(fast.evaluate(on: item) == fallbackGt.evaluate(on: item), "> consistency")
-        }
-
-        // contains
-        let fastC = Predicate<ValueAccessEntity>.contains(
-            "es",
-            in: \.name
-        )
-        let fallbackC = FieldComparison<ValueAccessEntity>(
-            fieldName: "name", op: .contains, value: .string("es")
-        )
-        if case .comparison(let fast) = fastC {
-            #expect(fast.evaluate(on: item) == fallbackC.evaluate(on: item), "contains consistency")
         }
     }
 }
 
-// MARK: - SortDescriptor.orderedComparison Tests
+@Suite("Compiled field ordering", .heartbeat)
+struct CompiledFieldOrderingTests {
+    private let alice = ValueAccessEntity(
+        name: "Alice",
+        age: 30,
+        score: 95.5
+    )
+    private let bob = ValueAccessEntity(
+        name: "Bob",
+        age: 25,
+        score: 80
+    )
+    private let charlie = ValueAccessEntity(
+        name: "Charlie",
+        age: 30,
+        score: 95.5
+    )
 
-@Suite("SortDescriptor.orderedComparison Tests", .heartbeat)
-struct SortDescriptorOrderedComparisonTests {
+    @Test("Ascending and descending directions invert comparison")
+    func directionsInvertComparison() throws {
+        let ascending = SortDescriptor(
+            field: ValueAccessEntity.fields.age,
+            order: .ascending
+        )
+        let descending = SortDescriptor(
+            field: ValueAccessEntity.fields.age,
+            order: .descending
+        )
 
-    let alice = ValueAccessEntity(name: "Alice", age: 30, score: 95.5)
-    let bob = ValueAccessEntity(name: "Bob", age: 25, score: 80.0)
-    let charlie = ValueAccessEntity(name: "Charlie", age: 30, score: 95.5)
-
-    // MARK: - Ascending order
-
-    @Test("Ascending: lhs < rhs returns .orderedAscending")
-    func ascendingLessThan() {
-        let sd = SortDescriptor<ValueAccessEntity>(keyPath: \ValueAccessEntity.age, order: .ascending)
-        #expect(sd.orderedComparison(bob, alice) == .orderedAscending)
+        #expect(
+            try ascending.orderedComparison(bob, alice) == .lessThan
+        )
+        #expect(
+            try ascending.orderedComparison(alice, bob) == .greaterThan
+        )
+        #expect(
+            try descending.orderedComparison(bob, alice) == .greaterThan
+        )
+        #expect(
+            try descending.orderedComparison(alice, bob) == .lessThan
+        )
     }
 
-    @Test("Ascending: lhs > rhs returns .orderedDescending")
-    func ascendingGreaterThan() {
-        let sd = SortDescriptor<ValueAccessEntity>(keyPath: \ValueAccessEntity.age, order: .ascending)
-        #expect(sd.orderedComparison(alice, bob) == .orderedDescending)
+    @Test("Equal values remain equal")
+    func equalValuesRemainEqual() throws {
+        let age = SortDescriptor(
+            field: ValueAccessEntity.fields.age,
+            order: .ascending
+        )
+        let score = SortDescriptor(
+            field: ValueAccessEntity.fields.score,
+            order: .descending
+        )
+
+        #expect(try age.orderedComparison(alice, charlie) == .equal)
+        #expect(try score.orderedComparison(alice, charlie) == .equal)
     }
 
-    @Test("Ascending: lhs == rhs returns .orderedSame")
-    func ascendingEqual() {
-        let sd = SortDescriptor<ValueAccessEntity>(keyPath: \ValueAccessEntity.age, order: .ascending)
-        #expect(sd.orderedComparison(alice, charlie) == .orderedSame)
-    }
-
-    // MARK: - Descending order (flipped)
-
-    @Test("Descending: lhs < rhs returns .orderedDescending (flipped)")
-    func descendingLessThan() {
-        let sd = SortDescriptor<ValueAccessEntity>(keyPath: \ValueAccessEntity.age, order: .descending)
-        #expect(sd.orderedComparison(bob, alice) == .orderedDescending)
-    }
-
-    @Test("Descending: lhs > rhs returns .orderedAscending (flipped)")
-    func descendingGreaterThan() {
-        let sd = SortDescriptor<ValueAccessEntity>(keyPath: \ValueAccessEntity.age, order: .descending)
-        #expect(sd.orderedComparison(alice, bob) == .orderedAscending)
-    }
-
-    @Test("Descending: lhs == rhs returns .orderedSame")
-    func descendingEqual() {
-        let sd = SortDescriptor<ValueAccessEntity>(keyPath: \ValueAccessEntity.age, order: .descending)
-        #expect(sd.orderedComparison(alice, charlie) == .orderedSame)
-    }
-
-    // MARK: - String sorting
-
-    @Test("String sort ascending: alphabetical order")
-    func stringSortAscending() {
-        let sd = SortDescriptor<ValueAccessEntity>(keyPath: \ValueAccessEntity.name, order: .ascending)
-        #expect(sd.orderedComparison(alice, bob) == .orderedAscending)
-        #expect(sd.orderedComparison(bob, alice) == .orderedDescending)
-        #expect(sd.orderedComparison(alice, alice) == .orderedSame)
-    }
-
-    // MARK: - Double sorting
-
-    @Test("Double sort ascending")
-    func doubleSortAscending() {
-        let sd = SortDescriptor<ValueAccessEntity>(keyPath: \ValueAccessEntity.score, order: .ascending)
-        #expect(sd.orderedComparison(bob, alice) == .orderedAscending) // 80 < 95.5
-        #expect(sd.orderedComparison(alice, bob) == .orderedDescending)
-    }
-
-    // MARK: - Multi-descriptor sort
-
-    @Test("Multi-descriptor sort: primary then secondary")
-    func multiDescriptorSort() {
-        let items = [
-            ValueAccessEntity(name: "Charlie", age: 30, score: 70.0),
-            ValueAccessEntity(name: "Alice", age: 25, score: 90.0),
-            ValueAccessEntity(name: "Bob", age: 30, score: 85.0),
-            ValueAccessEntity(name: "Diana", age: 25, score: 60.0),
-        ]
-
+    @Test("Multiple descriptors provide deterministic lexicographic order")
+    func multipleDescriptorsOrderDeterministically() throws {
         let descriptors = [
-            SortDescriptor<ValueAccessEntity>(keyPath: \ValueAccessEntity.age, order: .ascending),
-            SortDescriptor<ValueAccessEntity>(keyPath: \ValueAccessEntity.name, order: .ascending),
+            SortDescriptor(
+                field: ValueAccessEntity.fields.age,
+                order: .ascending
+            ),
+            SortDescriptor(
+                field: ValueAccessEntity.fields.name,
+                order: .ascending
+            ),
         ]
-
-        let sorted = items.sorted { lhs, rhs in
+        let values = try [alice, bob, charlie].sorted { lhs, rhs in
             for descriptor in descriptors {
-                let result = descriptor.orderedComparison(lhs, rhs)
-                if result != .orderedSame {
-                    return result == .orderedAscending
+                let comparison = try descriptor.orderedComparison(
+                    lhs,
+                    rhs
+                )
+                if comparison == .lessThan {
+                    return true
+                }
+                if comparison == .greaterThan {
+                    return false
                 }
             }
             return false
         }
 
-        // age=25: Alice, Diana; age=30: Bob, Charlie
-        #expect(sorted.map(\.name) == ["Alice", "Diana", "Bob", "Charlie"])
-    }
-}
-
-// MARK: - SortDescriptor Fallback Path Tests (compareViaFieldReader)
-
-@Suite("SortDescriptor Fallback Path Tests", .heartbeat)
-struct SortDescriptorFallbackTests {
-
-    /// Test null handling through FieldReader directly,
-    /// which is what compareViaFieldReader delegates to.
-    @Test("FieldReader: nil optional returns null FieldValue")
-    func fieldReaderNilOptional() {
-        let noTag = ValueAccessEntity(name: "A", tag: nil)
-        let withTag = ValueAccessEntity(name: "B", tag: "vip")
-
-        let nullFV = FieldReader.readFieldValue(from: noTag, fieldName: "tag")
-        let nonNullFV = FieldReader.readFieldValue(from: withTag, fieldName: "tag")
-
-        #expect(nullFV == .null)
-        #expect(nonNullFV == .string("vip"))
-    }
-
-    @Test("FieldValue comparison: null vs non-null ordering")
-    func fieldValueNullOrdering() {
-        // null < non-null in ascending (null-first semantics)
-        let nullFV = FieldValue.null
-        let valueFV = FieldValue.string("vip")
-
-        // .null is less than .string in FieldValue's natural ordering
-        #expect(nullFV < valueFV)
-    }
-
-    @Test("FieldReader consistency: PartialKeyPath and fieldName return same values")
-    func fieldReaderConsistency() {
-        let item = ValueAccessEntity(name: "Alice", age: 30, score: 95.5, tag: "vip")
-
-        // Via keyPath
-        let viaKP = FieldReader.read(from: item, keyPath: \ValueAccessEntity.age as AnyKeyPath, fieldName: "age")
-        // Via fieldName only
-        let viaName = FieldReader.read(from: item, fieldName: "age")
-
-        #expect(viaKP as? Int == 30)
-        #expect(viaName as? Int == 30)
-    }
-}
-
-// MARK: - Optional String Predicate Factory Tests
-
-@Suite("Optional String Predicate Tests", .heartbeat)
-struct OptionalStringPredicateTests {
-
-    let withTag = ValueAccessEntity(name: "Alice", tag: "premium_user")
-    let noTag = ValueAccessEntity(name: "Bob", tag: nil)
-
-    @Test("Optional String contains: non-nil matches")
-    func optionalContainsNonNil() {
-        let predicate = Predicate<ValueAccessEntity>.contains(
-            "premium",
-            in: \.tag
-        )
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: withTag) == true)
-        } else {
-            Issue.record("Expected comparison")
-        }
-    }
-
-    @Test("Optional String contains: nil returns false")
-    func optionalContainsNil() {
-        let predicate = Predicate<ValueAccessEntity>.contains(
-            "premium",
-            in: \.tag
-        )
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: noTag) == false)
-        } else {
-            Issue.record("Expected comparison")
-        }
-    }
-
-    @Test("Optional String hasPrefix: non-nil matches")
-    func optionalHasPrefixNonNil() {
-        let predicate = Predicate<ValueAccessEntity>.hasPrefix(
-            "prem",
-            in: \.tag
-        )
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: withTag) == true)
-        } else {
-            Issue.record("Expected comparison")
-        }
-    }
-
-    @Test("Optional String hasPrefix: nil returns false")
-    func optionalHasPrefixNil() {
-        let predicate = Predicate<ValueAccessEntity>.hasPrefix(
-            "prem",
-            in: \.tag
-        )
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: noTag) == false)
-        } else {
-            Issue.record("Expected comparison")
-        }
-    }
-
-    @Test("Optional String hasSuffix: non-nil matches")
-    func optionalHasSuffixNonNil() {
-        let predicate = Predicate<ValueAccessEntity>.hasSuffix(
-            "user",
-            in: \.tag
-        )
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: withTag) == true)
-        } else {
-            Issue.record("Expected comparison")
-        }
-    }
-
-    @Test("Optional String hasSuffix: nil returns false")
-    func optionalHasSuffixNil() {
-        let predicate = Predicate<ValueAccessEntity>.hasSuffix(
-            "user",
-            in: \.tag
-        )
-        if case .comparison(let cmp) = predicate {
-            #expect(cmp.evaluate(on: noTag) == false)
-        } else {
-            Issue.record("Expected comparison")
-        }
+        #expect(values.map { $0.name } == ["Bob", "Alice", "Charlie"])
     }
 }
 #endif
-
 #endif

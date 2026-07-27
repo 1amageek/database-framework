@@ -6,9 +6,10 @@
 import Testing
 import TestHeartbeat
 import Foundation
-import DatabaseValue
+import DatabaseTypes
 @testable import DatabaseEngine
-import Core
+import DatabaseKit
+import DatabaseKitFoundation
 import StorageKit
 
 @Suite("TypeConversion Tests", .heartbeat)
@@ -116,8 +117,8 @@ struct TypeConversionTests {
     func testToFieldValueIntegers() throws {
         #expect(try TypeConversion.toFieldValue(42 as Int) == .int64(42))
         #expect(try TypeConversion.toFieldValue(42 as Int64) == .int64(42))
-        #expect(try TypeConversion.toFieldValue(42 as Int32) == .int64(42))
-        #expect(try TypeConversion.toFieldValue(42 as UInt32) == .uint64(42))
+        #expect(try TypeConversion.toFieldValue(42 as Int32) == .int32(42))
+        #expect(try TypeConversion.toFieldValue(42 as UInt32) == .uint32(42))
         #expect(
             try TypeConversion.toFieldValue(UInt64.max)
                 == .uint64(UInt64.max)
@@ -127,13 +128,12 @@ struct TypeConversionTests {
     @Test("toFieldValue converts floating-point to double")
     func testToFieldValueFloatingPoint() throws {
         #expect(
-            try TypeConversion.toFieldValue(3.14 as Double) == .double(3.14)
+            try TypeConversion.toFieldValue(3.14 as Double)
+                == .float64(3.14)
         )
-        // Float loses precision, so just check it's a double
-        if case .double = try TypeConversion.toFieldValue(3.14 as Float) {
-            // OK
+        if case .float32 = try TypeConversion.toFieldValue(3.14 as Float) {
         } else {
-            Issue.record("Expected .double for Float")
+            Issue.record("Expected .float32 for Float")
         }
     }
 
@@ -144,19 +144,26 @@ struct TypeConversionTests {
         )
     }
 
-    @Test("toFieldValue handles UUID as string")
+    @Test("toFieldValue preserves UUID identity")
     func testToFieldValueUUID() throws {
         let uuid = UUID()
         #expect(
             try TypeConversion.toFieldValue(uuid)
-                == .string(uuid.uuidString.lowercased())
+                == .uuid(DatabaseTypes.UUID(uuid))
         )
     }
 
-    @Test("toFieldValue handles Date as double")
+    @Test("toFieldValue preserves Date as a timestamp")
     func testToFieldValueDate() throws {
         let date = Date(timeIntervalSince1970: 1000.0)
-        #expect(try TypeConversion.toFieldValue(date) == .double(1000.0))
+        guard case .timestamp(let timestamp) =
+            try TypeConversion.toFieldValue(date)
+        else {
+            Issue.record("Expected .timestamp for Date")
+            return
+        }
+        #expect(timestamp.secondsSinceUnixEpoch == 1_000)
+        #expect(timestamp.nanoseconds == 0)
     }
 
     @Test("toFieldValue handles Data")
@@ -164,7 +171,7 @@ struct TypeConversionTests {
         let data = Data([1, 2, 3])
         #expect(
             try TypeConversion.toFieldValue(data)
-                == .data(DatabaseBytes(retaining: data))
+                == .bytes(ByteString(retaining: data))
         )
     }
 

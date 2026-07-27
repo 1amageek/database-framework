@@ -1,8 +1,7 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
+import DatabaseKit
 import DatabaseWire
-import Graph
-import QueryIR
 import StorageKit
 import TestHeartbeat
 import Testing
@@ -204,8 +203,8 @@ struct PropertyGraphDefinitionCatalogTests {
         let engine = InMemoryEngine()
         let catalog = CanonicalPropertyGraphDefinitionCatalog()
         let graphName = "calendar"
-        let codec = makeCodec()
-        let key = try codec.key(for: graphName)
+        let storage = makeStorage()
+        let key = try storage.key(for: graphName)
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setValue([255], for: key)
@@ -214,7 +213,7 @@ struct PropertyGraphDefinitionCatalogTests {
         await #expect(
             throws: PropertyGraphDefinitionCatalogError.invalidStoredDefinition(
                 graphName: graphName,
-                violation: .decodingFailed(.invalidValueTag(255))
+                violation: .decodingFailed(.truncated)
             )
         ) {
             _ = try await read(
@@ -257,20 +256,21 @@ struct PropertyGraphDefinitionCatalogTests {
         let engine = InMemoryEngine()
         let graphName = "calendar"
         let definition = makeDefinition(named: graphName)
-        let encoded = try QueryIRWireCodec.encode(.createGraph(definition))
+        let encoded = try PropertyGraphDefinitionStorageFormat.encode(
+            definition
+        )
         let maximumFrameBytes = encoded.count - 1
-        let limits = try DatabaseWireLimits(
+        let limits = try StorageFrameLimits(
             maximumFrameBytes: maximumFrameBytes,
             maximumStringBytes: 1_024,
             maximumByteStringBytes: 1_024,
             maximumCollectionCount: 1_024,
-            maximumNestingDepth: 64,
-            maximumObjectCount: 10_000
+            maximumNestingDepth: 64
         )
         let catalog = CanonicalPropertyGraphDefinitionCatalog(
-            definitionLimits: limits
+            storageLimits: limits
         )
-        let key = try makeCodec().key(for: graphName)
+        let key = try makeStorage().key(for: graphName)
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setValue(Bytes(retaining: encoded), for: key)
@@ -397,19 +397,21 @@ struct PropertyGraphDefinitionCatalogTests {
         named graphName: String,
         using engine: InMemoryEngine
     ) async throws {
-        let encoded = try QueryIRWireCodec.encode(.createGraph(definition))
-        let key = try makeCodec().key(for: graphName)
+        let encoded = try PropertyGraphDefinitionStorageFormat.encode(
+            definition
+        )
+        let key = try makeStorage().key(for: graphName)
         try await engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setValue(Bytes(retaining: encoded), for: key)
         }
     }
 
-    private func makeCodec() -> PropertyGraphDefinitionCatalogCodec {
-        PropertyGraphDefinitionCatalogCodec(
+    private func makeStorage() -> PropertyGraphDefinitionCatalogStorage {
+        PropertyGraphDefinitionCatalogStorage(
             subspace: CanonicalPropertyGraphDefinitionCatalog
                 .defaultRootSubspace
                 .subspace(Int64(1)),
-            definitionLimits: .default
+            limits: .default
         )
     }
 
@@ -471,7 +473,7 @@ struct PropertyGraphDefinitionCatalogTests {
 
     private func makeMeter() -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000

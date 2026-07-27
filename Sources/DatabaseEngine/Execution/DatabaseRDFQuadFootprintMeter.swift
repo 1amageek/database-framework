@@ -1,5 +1,5 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+import DatabaseKit
 
 /// Iteratively measures retained RDF graph payload before allocation.
 final class DatabaseRDFQuadFootprintMeter {
@@ -14,7 +14,7 @@ final class DatabaseRDFQuadFootprintMeter {
     private let workMeter: DatabaseWorkMeter
     private let stage: DatabaseWorkStage
     private var scratchReservation: DatabaseIntermediateReservation?
-    private var worklist: [DatabaseRDFTerm]
+    private var worklist: [RDFTerm]
     private var accountedCapacity: Int
 
     private init(
@@ -44,23 +44,25 @@ final class DatabaseRDFQuadFootprintMeter {
     }
 
     func footprint(
-        of quad: borrowing DatabaseRDFQuad
+        of quad: borrowing RDFQuad
     ) throws -> DatabaseIntermediateFootprint {
         precondition(worklist.isEmpty)
         defer { worklist.removeAll(keepingCapacity: true) }
         try append(quad.object)
-        try append(quad.predicate)
-        try append(quad.subject)
+        try append(quad.predicate.term)
+        try append(quad.subject.term)
         if let graph = quad.graph {
-            try append(graph)
+            try append(graph.term)
         }
 
         var bytes = Self.quadPayloadByteCount
         while let term = worklist.popLast() {
             bytes = try checkedAdd(bytes, Self.termNodeByteCount)
             switch term {
-            case .iri(let value), .blankNode(let value):
-                bytes = try addString(value, to: bytes)
+            case .iri(let value):
+                bytes = try addString(value.rawValue, to: bytes)
+            case .blankNode(let value):
+                bytes = try addString(value.rawValue, to: bytes)
             case .literal(let literal):
                 bytes = try checkedAdd(
                     bytes,
@@ -76,8 +78,8 @@ final class DatabaseRDFQuadFootprintMeter {
                 }
             case .tripleTerm(let subject, let predicate, let object):
                 try append(object)
-                try append(predicate)
-                try append(subject)
+                try append(predicate.term)
+                try append(subject.term)
             }
         }
         return DatabaseIntermediateFootprint(rows: 1, bytes: bytes)
@@ -94,7 +96,7 @@ final class DatabaseRDFQuadFootprintMeter {
         shutdown()
     }
 
-    private func append(_ term: DatabaseRDFTerm) throws {
+    private func append(_ term: RDFTerm) throws {
         if worklist.count == accountedCapacity {
             let requiredCapacity: Int
             if accountedCapacity == 0 {

@@ -275,7 +275,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
             entityName: entity.name,
             indexName: graphIndex.name,
             indexSubspace: indexSubspace,
-            metadata: dataset.metadata
+            metadata: dataset.metadata,
+            storedFieldNames: graphIndex.storedFieldNames
         )
 
         // 5. Extract single-variable values
@@ -388,13 +389,15 @@ internal struct SPARQLFunctionRewriter: Sendable {
         entityName: String,
         indexName: String,
         indexSubspace: Subspace,
-        metadata: RDFDatasetIndexMetadata
+        metadata: RDFDatasetIndexMetadata,
+        storedFieldNames: [String]
     ) async throws -> SPARQLResult {
         let source = RDFDatasetSource(
             entityName: entityName,
             indexName: indexName,
             indexSubspace: indexSubspace,
-            coverage: try metadata.graphScope.sourceCoverage
+            coverage: try metadata.graphScope.sourceCoverage,
+            storedFieldNames: storedFieldNames
         )
         // Execute using database transaction (shares snapshot with parent SQL transaction)
         return try await context.container.engine.withTransaction(configuration: .default) { transaction in

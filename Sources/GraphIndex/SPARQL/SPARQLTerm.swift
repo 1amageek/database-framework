@@ -8,8 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import Graph
+import DatabaseTypes
+import DatabaseKit
 
 /// Represents a term in a SPARQL-like triple pattern
 ///
@@ -77,16 +77,25 @@ public enum ExecutionTerm: Sendable, Hashable {
                   let objectValue = o.literalValue,
                   case .rdfTerm(let subject) = subjectValue,
                   case .rdfTerm(let predicate) = predicateValue,
-                  case .rdfTerm(let object) = objectValue,
-                  subject.isRDFSubject,
-                  predicate.isRDFPredicate,
-                  object.isRDFObject else {
+                  case .rdfTerm(let object) = objectValue else {
+                return nil
+            }
+            let validatedSubject: RDFSubject
+            switch subject {
+            case .iri(let iri):
+                validatedSubject = .iri(iri)
+            case .blankNode(let identifier):
+                validatedSubject = .blankNode(identifier)
+            case .literal, .tripleTerm:
+                return nil
+            }
+            guard case .iri(let predicateIRI) = predicate else {
                 return nil
             }
             return .rdfTerm(
                 .tripleTerm(
-                    subject: subject,
-                    predicate: predicate,
+                    subject: validatedSubject,
+                    predicate: RDFPredicateIRI(predicateIRI),
                     object: object
                 )
             )
@@ -182,7 +191,7 @@ extension ExecutionTerm: CustomStringConvertible {
             case .string(let s): return "\"\(s)\""
             case .int64(let i): return String(i)
             case .uint64(let i): return String(i)
-            case .double(let d): return String(d)
+            case .float64(let value): return String(value)
             case .bool(let b): return String(b)
             default: return "\"\(v)\""
             }
@@ -224,7 +233,7 @@ extension ExecutionTerm {
 
     /// Create a literal value term (double)
     public static func literal(_ value: Double) -> ExecutionTerm {
-        .value(.double(value))
+        .value(.float64(value))
     }
 
     /// Create a literal value term (bool)

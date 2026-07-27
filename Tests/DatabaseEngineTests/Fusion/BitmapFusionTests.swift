@@ -7,90 +7,41 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import BitmapIndex
 
 // MARK: - Test Model
 
-/// User model with bitmap-indexed status and role fields
-struct BitmapFusionUser: Persistable {
-    typealias ID = String
+/// User model with bitmap-indexed status and role fields.
+@Persistable
+struct BitmapFusionUser {
+    #Index(
+        .bitmap,
+        field: \BitmapFusionUser.status,
+        name: "BitmapTestUser_bitmap_status"
+    )
+    #Index(
+        .bitmap,
+        field: \BitmapFusionUser.role,
+        name: "BitmapTestUser_bitmap_role"
+    )
 
-    var id: String
+    var id: String = UUID().uuidString
     var name: String
-    var status: String  // "active", "inactive", "pending"
-    var role: String    // "admin", "user", "guest"
-
-    init(id: String = UUID().uuidString, name: String, status: String, role: String) {
-        self.id = id
-        self.name = name
-        self.status = status
-        self.role = role
-    }
-
-    static var persistableType: String { "BitmapFusionUser" }
-    static var allFields: [String] { ["id", "name", "status", "role"] }
-
-    static var indexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "BitmapTestUser_bitmap_status",
-                keyPaths: [\BitmapFusionUser.status],
-                kind: BitmapIndexKind<BitmapFusionUser>(field: \.status)
-            ),
-            IndexDescriptor(
-                name: "BitmapTestUser_bitmap_role",
-                keyPaths: [\BitmapFusionUser.role],
-                kind: BitmapIndexKind<BitmapFusionUser>(field: \.role)
-            )
-        ]
-    }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "status": return status
-        case "role": return role
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BitmapFusionUser, Value>) -> String {
-        switch keyPath {
-        case \BitmapFusionUser.id: return "id"
-        case \BitmapFusionUser.name: return "name"
-        case \BitmapFusionUser.status: return "status"
-        case \BitmapFusionUser.role: return "role"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BitmapFusionUser>) -> String {
-        switch keyPath {
-        case \BitmapFusionUser.id: return "id"
-        case \BitmapFusionUser.name: return "name"
-        case \BitmapFusionUser.status: return "status"
-        case \BitmapFusionUser.role: return "role"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BitmapFusionUser> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    /// Membership status.
+    var status: String
+    /// Authorization role.
+    var role: String
 }
 
 // MARK: - Test Context
+
+private enum BitmapFusionContextError: Error {
+    case missingBitmapIndex
+}
 
 private struct BitmapFusionContext {
     let database: any StorageEngine
@@ -108,10 +59,14 @@ private struct BitmapFusionContext {
         self.itemsSubspace = subspace.subspace("R")
         self.blobsSubspace = subspace.subspace("B")
 
-        let kind = BitmapIndexKind<BitmapFusionUser>(field: \.status)
+        guard let descriptor = try BitmapFusionUser.indexDescriptors.first(
+            where: { $0.name == indexName }
+        ) else {
+            throw BitmapFusionContextError.missingBitmapIndex
+        }
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: descriptor.kind,
             rootExpression: FieldKeyExpression(fieldName: "status"),
             subspaceKey: indexName,
             itemTypes: Set(["BitmapFusionUser"])
@@ -135,11 +90,11 @@ private struct BitmapFusionContext {
         try await database.withTransaction { transaction in
             // Serialize user to items subspace
             let itemKey = itemsSubspace.pack(Tuple(user.id))
-            let encoder = JSONEncoder()
-            let data = try encoder.encode(["id": user.id, "name": user.name, "status": user.status, "role": user.role])
-
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
-            try await storage.write(Bytes(data), for: itemKey)
+            try await storage.write(
+                try PersistableStorageCodec.encode(user),
+                for: itemKey
+            )
 
             // Update index
             try await maintainer.updateIndex(
@@ -156,14 +111,14 @@ private struct BitmapFusionContext {
 @Suite("Bitmap Fusion - Unit Tests", .heartbeat)
 struct BitmapFusionUnitTests {
 
-    @Test("BitmapIndexKind identifier is 'bitmap'")
-    func testBitmapIndexKindIdentifier() {
-        #expect(BitmapIndexKind<BitmapFusionUser>.identifier == "bitmap")
+    @Test("Bitmap definition identifier is 'bitmap'")
+    func testBitmapDefinitionIdentifier() {
+        #expect(IndexDefinition.bitmap.identifier == "bitmap")
     }
 
     @Test("Index descriptor configuration")
-    func testIndexDescriptorConfiguration() {
-        let descriptors = BitmapFusionUser.indexDescriptors
+    func testIndexDescriptorConfiguration() throws {
+        let descriptors = try BitmapFusionUser.indexDescriptors
         #expect(descriptors.count == 2)
 
         let statusIndex = descriptors.first { $0.name.contains("status") }
@@ -226,29 +181,42 @@ struct BitmapFusionUnitTests {
 @Suite("Bitmap Fusion - Initialization", .heartbeat)
 struct BitmapFusionInitializationTests {
 
-    @Test("fieldName extraction from KeyPath")
+    @Test("Generated fields preserve schema identities")
     func testFieldNameExtraction() {
-        let fieldName = BitmapFusionUser.fieldName(for: \BitmapFusionUser.status)
-        #expect(fieldName == "status")
-
-        let roleFieldName = BitmapFusionUser.fieldName(for: \BitmapFusionUser.role)
-        #expect(roleFieldName == "role")
+        #expect(BitmapFusionUser.fields.status.identity.name == "status")
+        #expect(BitmapFusionUser.fields.role.identity.name == "role")
     }
 
-    @Test("dynamicMember subscript access")
-    func testDynamicMemberAccess() {
+    @Test("Generated field access returns canonical values")
+    func testDynamicMemberAccess() throws {
         let user = BitmapFusionUser(name: "Alice", status: "active", role: "admin")
 
-        #expect(user[dynamicMember: "status"] as? String == "active")
-        #expect(user[dynamicMember: "role"] as? String == "admin")
-        #expect(user[dynamicMember: "name"] as? String == "Alice")
-        #expect(user[dynamicMember: "unknown"] == nil)
+        #expect(
+            try user.persistedFieldValue(
+                for: BitmapFusionUser.fields.status.identity
+            ) == .string("active")
+        )
+        #expect(
+            try user.persistedFieldValue(
+                for: BitmapFusionUser.fields.role.identity
+            ) == .string("admin")
+        )
+        #expect(
+            try user.persistedFieldValue(
+                for: BitmapFusionUser.fields.name.identity
+            ) == .string("Alice")
+        )
+        #expect(
+            try user.persistedFieldValue(
+                for: FieldIdentity(name: "unknown", number: 1_000)
+            ) == nil
+        )
     }
 }
 
 // MARK: - Integration Tests
 
-@Suite("Bitmap Fusion - Integration Tests", .serialized, .heartbeat)
+@Suite("Bitmap Fusion - Integration Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct BitmapFusionIntegrationTests {
 
     private func uniqueID(_ prefix: String) -> String {

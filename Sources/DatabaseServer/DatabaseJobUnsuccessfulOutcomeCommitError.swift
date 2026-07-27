@@ -1,15 +1,15 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseJobUnsuccessfulOutcomeCommitError:
     Error,
     CustomStringConvertible {
-    public let jobID: DatabaseUUID
+    public let jobID: DatabaseTypes.UUID
     public let outcome: DatabaseJobUnsuccessfulOutcome
     public let underlyingError: any Error
 
     public init(
-        jobID: DatabaseUUID,
+        jobID: DatabaseTypes.UUID,
         outcome: DatabaseJobUnsuccessfulOutcome,
         underlyingError: any Error
     ) {

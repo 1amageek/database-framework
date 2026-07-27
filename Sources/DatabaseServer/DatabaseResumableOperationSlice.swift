@@ -1,7 +1,7 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseResumableOperationSlice<State, Result>: Sendable
-where State: DatabaseWireValue, Result: DatabaseWireValue {
+where State: PersistentJobPayload, Result: Sendable {
     public enum Outcome: Sendable {
         case incomplete(State)
         case complete(Result)

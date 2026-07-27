@@ -1,7 +1,7 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import QueryAST
-import QueryIR
+import DatabaseKit
 
 /// Performs the non-replaceable admission path for statement execution.
 struct DatabaseStatementAdmission: Sendable {
@@ -9,7 +9,7 @@ struct DatabaseStatementAdmission: Sendable {
 
     func admit(
         _ input: QueryExecuteOperation.Input,
-        parameters: [DatabaseObjectField]
+        parameters: [QueryParameter]
     ) throws -> ValidatedDatabaseStatement {
         let parsed = try statement(from: input)
         let binder = try QueryParameterBinder(

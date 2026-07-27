@@ -17,7 +17,7 @@ import FDBStorage
 import Synchronization
 import TestSupport
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 
 // MARK: - Thread-safe Test Helpers
 
@@ -117,7 +117,7 @@ final class ConcurrentExecutionTracker: Sendable {
 
 // MARK: - PostCommit Tests
 
-@Suite("PostCommit Tests", .serialized, .heartbeat)
+@Suite("PostCommit Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct PostCommitTests {
 
     // MARK: - PostCommitRegistry Basic Tests
@@ -325,7 +325,7 @@ struct PostCommitTests {
 
 // MARK: - TransactionListener Tests
 
-@Suite("TransactionListener Tests", .serialized, .heartbeat)
+@Suite("TransactionListener Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct TransactionListenerTests {
 
     // MARK: - TransactionListenerRegistry Basic Tests
@@ -648,7 +648,7 @@ struct TransactionListenerTests {
 
 // MARK: - TransactionConfiguration Tests
 
-@Suite("TransactionConfiguration Extended Tests", .serialized, .heartbeat)
+@Suite("TransactionConfiguration Extended Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct TransactionConfigurationExtendedTests {
 
     // MARK: - Tracing Tests

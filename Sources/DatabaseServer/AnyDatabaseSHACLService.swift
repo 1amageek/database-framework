@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 /// Type-erased SHACL service for runtime composition.
 public final class AnyDatabaseSHACLService: DatabaseSHACLService, Sendable {

@@ -11,9 +11,9 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Core
+import DatabaseKit
 import DatabaseEngine
-import Graph
+import DatabaseKit
 import Synchronization
 
 /// Configuration for SCC algorithm

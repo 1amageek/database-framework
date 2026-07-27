@@ -1,5 +1,6 @@
-import DatabaseValue
-import Graph
+import DatabaseEngine
+import DatabaseTypes
+import DatabaseKit
 
 public enum RDFQuadIndexPhysicalCodecError: Error, Sendable, Equatable {
     case invalidComponentCount(expected: ClosedRange<Int>, actual: Int)
@@ -11,11 +12,12 @@ public enum RDFQuadIndexPhysicalCodecError: Error, Sendable, Equatable {
     case invalidTupleEncoding(position: Int)
     case unexpectedTrailingTupleData(offset: Int)
     case invalidEncoding(
-        DatabaseRDFTermRole,
-        DatabaseRDFTermCodecError
+        RDFTermRole,
+        RDFTermStorageError
     )
     case invalidComponent(
         RDFDatasetIndexComponent,
-        DatabaseRDFTermCodecError
+        RDFTermStorageError
     )
+    case invalidQuad(RDFDatasetValidationError)
 }

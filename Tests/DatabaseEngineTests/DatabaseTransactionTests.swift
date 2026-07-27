@@ -8,7 +8,7 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
-@testable import Core
+@testable import DatabaseKit
 
 /// Tests for DatabaseTransaction and the new transaction API
 ///
@@ -18,7 +18,7 @@ import DatabaseRuntime
 /// - DatabaseContext.withTransaction API
 /// - Snapshot vs transactional read semantics
 /// - Index updates within transactions
-@Suite("DatabaseTransaction Tests", .serialized, .heartbeat)
+@Suite("DatabaseTransaction Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct DatabaseTransactionTests {
 
     // MARK: - Helper Types
@@ -27,16 +27,16 @@ struct DatabaseTransactionTests {
     @Persistable
     struct TransactionUser {
         #Directory<TransactionUser>("database_transaction_test_users")
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var name: String
-        var balance: Int
+        var balance: Int64
     }
 
     /// Test model for products
     @Persistable
     struct TransactionProduct {
         #Directory<TransactionProduct>("database_transaction_test_products")
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var name: String
         var price: Double
     }
@@ -359,7 +359,7 @@ struct DatabaseTransactionTests {
         }
 
         // Transaction returns a value
-        let balance: Int = try await context.withTransaction { tx in
+        let balance: Int64 = try await context.withTransaction { tx in
             let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
             return fetched?.balance ?? 0
         }
@@ -375,17 +375,29 @@ struct DatabaseTransactionTests {
         // Backoff includes jitter (0-50%), so we test bounds
 
         // Attempt 0: 300ms base
-        let delay0 = TransactionRunner.calculateBackoff(attempt: 0, maxDelayMs: 10000)
+        let delay0 = TransactionRunner.calculateBackoff(
+            attempt: 0,
+            initialDelayMs: 300,
+            maxDelayMs: 10_000
+        )
         #expect(delay0 >= 300)
         #expect(delay0 <= 450)  // 300 + up to 50% jitter
 
         // Attempt 1: 600ms base
-        let delay1 = TransactionRunner.calculateBackoff(attempt: 1, maxDelayMs: 10000)
+        let delay1 = TransactionRunner.calculateBackoff(
+            attempt: 1,
+            initialDelayMs: 300,
+            maxDelayMs: 10_000
+        )
         #expect(delay1 >= 600)
         #expect(delay1 <= 900)  // 600 + up to 50% jitter
 
         // Attempt 2: 1200ms base (but we test with high maxDelay)
-        let delay2 = TransactionRunner.calculateBackoff(attempt: 2, maxDelayMs: 10000)
+        let delay2 = TransactionRunner.calculateBackoff(
+            attempt: 2,
+            initialDelayMs: 300,
+            maxDelayMs: 10_000
+        )
         #expect(delay2 >= 1200)
         #expect(delay2 <= 1800)  // 1200 + up to 50% jitter
     }

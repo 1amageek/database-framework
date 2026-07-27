@@ -9,7 +9,7 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 
-@Suite("Transaction Advanced Tests", .serialized, .heartbeat)
+@Suite("Transaction Advanced Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct TransactionAdvancedTests {
 
     // MARK: - Edge Cases

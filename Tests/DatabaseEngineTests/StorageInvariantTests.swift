@@ -4,12 +4,13 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
+import ScalarIndex
 
-@Suite("Storage Invariant Tests", .tags(.requiresFDB), .serialized, .heartbeat)
+@Suite("Storage Invariant Tests", .tags(.requiresFDB), .foundationDBScenario, .serialized, .heartbeat)
 struct StorageInvariantTests {
 
     private func openDB() async throws -> any StorageEngine {
@@ -49,18 +50,28 @@ struct StorageInvariantTests {
             #expect(try await tracker.hasViolations(indexName: indexName) == true)
 
             // Build an OnlineIndexer with clearFirst=true. For unique indexes, it must clear violations.
+            let descriptor = try IndexDescriptor(
+                name: indexName,
+                definition: .scalar,
+                fields: [Player.fields.id.ascending],
+                commonOptions: .init(unique: true)
+            )
             let index = Index(
                 name: indexName,
-                kind: ScalarIndexKind<Player>(fields: [\Player.id]),
+                kind: descriptor.kind,
                 rootExpression: FieldKeyExpression(fieldName: "id"),
                 isUnique: true
             )
 
-            let maintainer = CountingIndexMaintainer<Player>(indexSubspace: indexSubspace, indexName: index.name)
+            let maintainer = ScalarIndexMaintainer<Player>(
+                index: index,
+                subspace: indexSubspace.subspace(index.subspaceKey),
+                idExpression: FieldKeyExpression(fieldName: "id")
+            )
             let lifecycleStore = IndexLifecycleStore(container: container, subspace: indexSubspace.subspace("_meta"))
             try await lifecycleStore.enable(index.name)
 
-            let indexer = OnlineIndexer(
+            let indexer = try OnlineIndexer(
                 container: container,
                 storeSubspace: storeSubspace,
                 itemType: Player.persistableType,

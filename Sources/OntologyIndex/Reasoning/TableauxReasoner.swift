@@ -20,7 +20,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Graph
+import DatabaseKit
 
 // MARK: - TableauxReasoner
 

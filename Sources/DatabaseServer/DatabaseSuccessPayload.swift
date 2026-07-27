@@ -1,19 +1,16 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseSuccessPayload: Sendable, Hashable {
     public let operation: DatabaseOperationIdentifier
-    public let bytes: DatabaseBytes
+    public let bytes: ByteString
 
     init(
         operation: DatabaseOperationIdentifier,
-        bytes: DatabaseBytes,
+        bytes: ByteString,
         limits: DatabaseWireLimits
     ) throws(DatabaseWireError) {
-        try DatabaseEnvelopeCodec.validateSuccessResponsePayloadByteCount(
-            bytes.count,
-            limits: limits
-        )
+        try DatabaseWireEncoder(limits: limits).validateSuccessPayload(bytes)
         self.operation = operation
         self.bytes = bytes
     }

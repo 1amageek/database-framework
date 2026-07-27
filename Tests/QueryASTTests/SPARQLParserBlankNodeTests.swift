@@ -9,7 +9,7 @@ import Foundation
 
 // MARK: - Helper
 
-private func parseQuery(_ sparql: String) throws -> QueryIR.SelectQuery {
+private func parseQuery(_ sparql: String) throws -> SelectQuery {
     let parser = SPARQLParser()
     return try parser.parseSelect(sparql)
 }

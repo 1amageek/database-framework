@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public enum DatabaseEndpointError: Error, Sendable, CustomStringConvertible {
     case invalidRequestFrame(DatabaseWireError)

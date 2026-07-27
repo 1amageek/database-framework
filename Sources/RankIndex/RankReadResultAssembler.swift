@@ -1,6 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 enum RankReadResultAssembler {

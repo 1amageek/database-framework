@@ -1,12 +1,12 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 /// A type-erased, immutable statement preparation reusable across transaction retries.
 public final class PreparedDatabaseStatementMutation: Sendable {
     private let executeMutation: @Sendable (
         [MutationExecuteOperation.Precondition],
-        [DatabaseObjectField],
+        FieldObject,
         DatabaseOperationContext,
         DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result
@@ -32,7 +32,7 @@ public final class PreparedDatabaseStatementMutation: Sendable {
 
     public func execute(
         preconditions: [MutationExecuteOperation.Precondition],
-        graphPartitions: [DatabaseObjectField],
+        graphPartitions: FieldObject,
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result {

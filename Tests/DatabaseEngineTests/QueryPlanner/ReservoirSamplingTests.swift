@@ -6,8 +6,9 @@
 import Testing
 import TestHeartbeat
 import Foundation
+import DatabaseTypes
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 
 @Suite("Reservoir Sampling Tests", .heartbeat)
 struct ReservoirSamplingTests {

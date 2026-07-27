@@ -1,5 +1,5 @@
 import DatabaseEngine
-import Graph
+import DatabaseKit
 import StorageKit
 
 /// Authoritative mutable RDF dataset. Implementations own graph-store state;

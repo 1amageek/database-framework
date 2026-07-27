@@ -1,7 +1,7 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public protocol DatabaseJobService: Sendable {
-    var jobOperations: [DatabaseJobOperationIdentifier] { get }
+    var jobOperations: [JobOperationIdentifier] { get }
 
     func start(
         _ request: JobStartOperation.Request,

@@ -1,5 +1,5 @@
 #if FOUNDATION_DB
-import QueryIR
+import DatabaseKit
 import TestHeartbeat
 import Testing
 @testable import QueryAST

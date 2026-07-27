@@ -5,7 +5,7 @@
 // Used for bidirectional relationships where each index helps build the other.
 
 import StorageKit
-import Core
+import DatabaseKit
 import Metrics
 import Synchronization
 
@@ -26,10 +26,9 @@ import Synchronization
 ///
 /// **Usage Example**:
 /// ```swift
-/// let indexer = MutualOnlineIndexer<Follow>(
+/// let indexer = try MutualOnlineIndexer<Follow>(
 ///     container: container,
-///     itemSubspace: itemSubspace,
-///     indexSubspace: indexSubspace,
+///     storeSubspace: storeSubspace,
 ///     itemType: "Follow",
 ///     forwardIndex: followingIndex,
 ///     reverseIndex: followersIndex,
@@ -73,6 +72,9 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     /// Index state manager
     private let lifecycleStore: IndexLifecycleStore
 
+    /// Shared uniqueness violation persistence for both targets.
+    private let violationTracker: UniquenessViolationTracker
+
     // Configuration
     private let batchSize: Int
     private let throttleDelayMs: Int
@@ -95,9 +97,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     ///
     /// - Parameters:
     ///   - container: FDB Container instance
-    ///   - itemSubspace: Subspace where items are stored
-    ///   - indexSubspace: Subspace where index data is stored
-    ///   - blobsSubspace: Subspace where blob chunks are stored
+    ///   - storeSubspace: Root subspace containing items, indexes, blobs, and metadata
     ///   - itemType: Type name of items to index
     ///   - forwardIndex: Forward direction index
     ///   - reverseIndex: Reverse direction index
@@ -108,9 +108,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     ///   - throttleDelayMs: Delay between batches in ms (default: 0)
     public init(
         container: DBContainer,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         itemType: String,
         forwardIndex: Index,
         reverseIndex: Index,
@@ -119,25 +117,52 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         lifecycleStore: IndexLifecycleStore,
         batchSize: Int = 100,
         throttleDelayMs: Int = 0
-    ) {
+    ) throws(OnlineIndexBuildError) {
+        guard batchSize > 0 else {
+            throw .invalidBatchSize(batchSize)
+        }
+        guard throttleDelayMs >= 0 else {
+            throw .invalidThrottleDelayMilliseconds(throttleDelayMs)
+        }
+        guard forwardIndex.name != reverseIndex.name else {
+            throw .duplicateTargetIndexName(forwardIndex.name)
+        }
+        if forwardMaintainer.customBuildStrategy != nil {
+            throw .unsupportedCustomBuildStrategy(indexName: forwardIndex.name)
+        }
+        if reverseMaintainer.customBuildStrategy != nil {
+            throw .unsupportedCustomBuildStrategy(indexName: reverseIndex.name)
+        }
+        if forwardIndex.isUnique,
+           !(forwardMaintainer is any IndexUniquenessMaintainer<Item>) {
+            throw .unsupportedUniquenessConstraint(indexName: forwardIndex.name)
+        }
+        if reverseIndex.isUnique,
+           !(reverseMaintainer is any IndexUniquenessMaintainer<Item>) {
+            throw .unsupportedUniquenessConstraint(indexName: reverseIndex.name)
+        }
         self.container = container
-        self.itemSubspace = itemSubspace
-        self.indexSubspace = indexSubspace
-        self.blobsSubspace = blobsSubspace
+        self.itemSubspace = storeSubspace.subspace(SubspaceKey.items)
+        self.indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
+        self.blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
         self.itemType = itemType
         self.forwardIndex = forwardIndex
         self.reverseIndex = reverseIndex
         self.forwardMaintainer = forwardMaintainer
         self.reverseMaintainer = reverseMaintainer
         self.lifecycleStore = lifecycleStore
+        self.violationTracker = UniquenessViolationTracker(
+            container: container,
+            metadataSubspace: storeSubspace.subspace(SubspaceKey.metadata)
+        )
         self.batchSize = batchSize
         self.throttleDelayMs = throttleDelayMs
 
         // Create progress keys
-        self.forwardProgressKey = indexSubspace
+        self.forwardProgressKey = self.indexSubspace
             .subspace("_progress_mutual")
             .pack(Tuple(forwardIndex.name))
-        self.reverseProgressKey = indexSubspace
+        self.reverseProgressKey = self.indexSubspace
             .subspace("_progress_mutual")
             .pack(Tuple(reverseIndex.name))
 
@@ -193,10 +218,22 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         if clearFirst {
             try await clearIndexData(for: forwardIndex)
             try await clearIndexData(for: reverseIndex)
+            if forwardIndex.isUnique {
+                try await violationTracker.clearAllViolations(
+                    indexName: forwardIndex.name
+                )
+            }
+            if reverseIndex.isUnique {
+                try await violationTracker.clearAllViolations(
+                    indexName: reverseIndex.name
+                )
+            }
         }
 
         // Build both indexes with single scan
         try await buildIndexesInBatches()
+
+        try await requireNoUniquenessViolations()
 
         // Verify consistency if requested
         if verifyConsistency {
@@ -285,12 +322,18 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                     }
 
                     // Build both directions through the batch hook.
-                    try await self.forwardMaintainer.scanItems(
+                    try await OnlineIndexBatchWriter.write(
                         batchEntries,
+                        index: self.forwardIndex,
+                        maintainer: self.forwardMaintainer,
+                        violationTracker: self.violationTracker,
                         transaction: transaction
                     )
-                    try await self.reverseMaintainer.scanItems(
+                    try await OnlineIndexBatchWriter.write(
                         batchEntries,
+                        index: self.reverseIndex,
+                        maintainer: self.reverseMaintainer,
+                        violationTracker: self.violationTracker,
                         transaction: transaction
                     )
 
@@ -437,6 +480,21 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
             try transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }
     }
+
+    private func requireNoUniquenessViolations() async throws {
+        for index in [forwardIndex, reverseIndex] where index.isUnique {
+            let summary = try await violationTracker.violationSummary(
+                indexName: index.name
+            )
+            guard !summary.hasViolations else {
+                throw OnlineIndexBuildError.uniquenessViolationsDetected(
+                    indexName: index.name,
+                    violationCount: summary.violationCount,
+                    totalConflictingEntities: summary.totalConflictingEntities
+                )
+            }
+        }
+    }
 }
 
 // MARK: - Mutual Index Configuration
@@ -497,8 +555,10 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         container: DBContainer,
         indexSubspace: Subspace,
         config: MutualIndexConfiguration
-    ) {
-        precondition(config.isSymmetric, "SymmetricIndexBuilder requires symmetric configuration")
+    ) throws(OnlineIndexBuildError) {
+        guard config.isSymmetric else {
+            throw .requiresSymmetricConfiguration
+        }
         self.container = container
         self.indexSubspace = indexSubspace
         self.config = config

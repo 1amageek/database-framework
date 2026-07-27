@@ -4,7 +4,7 @@ import Foundation
 import StorageKit
 import PostgreSQLStorage
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 @testable import ScalarIndex
 import TestSupport
 import TestHeartbeat
@@ -40,6 +40,7 @@ private func pgVersionLabel(_ version: Schema.Version?) -> String {
 struct PGStageBoundaryUserV1 {
     #Directory<PGStageBoundaryUserV1>("test", "pg-migration", "stage-boundary")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -48,34 +49,52 @@ struct PGStageBoundaryUserV1 {
 struct PGStageBoundaryUserV2 {
     #Directory<PGStageBoundaryUserV2>("test", "pg-migration", "stage-boundary")
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 @Persistable(type: "PGStageBoundaryUser")
 struct PGStageBoundaryUserV3 {
     #Directory<PGStageBoundaryUserV3>("test", "pg-migration", "stage-boundary")
-    #Index(ScalarIndexKind<PGStageBoundaryUserV3>(fields: [\.fullName]), name: "PGStageBoundaryUser_fullName")
+    #Index(
+        .scalar,
+        fields: [\PGStageBoundaryUserV3.fullName],
+        name: "PGStageBoundaryUser_fullName"
+    )
 
+    var id: String = ""
     var fullName: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 enum PGStageBoundarySchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [PGStageBoundaryUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGStageBoundaryUserV1.schemaEntity]
+        }
+    }
 }
 
 enum PGStageBoundarySchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [PGStageBoundaryUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGStageBoundaryUserV2.schemaEntity]
+        }
+    }
 }
 
 enum PGStageBoundarySchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [PGStageBoundaryUserV3.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGStageBoundaryUserV3.schemaEntity]
+        }
+    }
 }
 
 enum PGStageBoundaryMigrationPlan: SchemaMigrationPlan {
@@ -130,6 +149,7 @@ enum PGStageBoundaryMigrationPlan: SchemaMigrationPlan {
 struct PGStageFailureUserV1 {
     #Directory<PGStageFailureUserV1>("test", "pg-migration", "stage-failure")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -138,33 +158,47 @@ struct PGStageFailureUserV1 {
 struct PGStageFailureUserV2 {
     #Directory<PGStageFailureUserV2>("test", "pg-migration", "stage-failure")
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 @Persistable(type: "PGStageFailureUser")
 struct PGStageFailureUserV3 {
     #Directory<PGStageFailureUserV3>("test", "pg-migration", "stage-failure")
 
+    var id: String = ""
     var fullName: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 enum PGStageFailureSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [PGStageFailureUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGStageFailureUserV1.schemaEntity]
+        }
+    }
 }
 
 enum PGStageFailureSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [PGStageFailureUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGStageFailureUserV2.schemaEntity]
+        }
+    }
 }
 
 enum PGStageFailureSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [PGStageFailureUserV3.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGStageFailureUserV3.schemaEntity]
+        }
+    }
 }
 
 enum PGStageFailureMigrationPlan: SchemaMigrationPlan {

@@ -1,16 +1,16 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 
 /// Deduplicates DESCRIBE resources while retaining their stable first order.
 struct SPARQLDescribeResourceCollector: ~Copyable {
     private let seen: SPARQLRetainedFieldValueSet
-    private var storage: DatabaseRetainedArrayBuilder<DatabaseRDFTerm>
+    private var storage: DatabaseRetainedArrayBuilder<RDFTerm>
     private let footprintMeter: SPARQLRDFOutputFootprintMeter
 
     private init(
         seen: SPARQLRetainedFieldValueSet,
-        storage: consuming DatabaseRetainedArrayBuilder<DatabaseRDFTerm>,
+        storage: consuming DatabaseRetainedArrayBuilder<RDFTerm>,
         footprintMeter: SPARQLRDFOutputFootprintMeter
     ) {
         self.seen = seen
@@ -47,7 +47,7 @@ struct SPARQLDescribeResourceCollector: ~Copyable {
     }
 
     mutating func insert(
-        _ term: borrowing DatabaseRDFTerm,
+        _ term: borrowing RDFTerm,
         workMeter: DatabaseWorkMeter
     ) throws {
         try workMeter.consume(at: .deduplication)
@@ -60,7 +60,7 @@ struct SPARQLDescribeResourceCollector: ~Copyable {
         storage.append(copy term, using: consume admission)
     }
 
-    consuming func finish() -> DatabaseRetainedBuffer<DatabaseRDFTerm> {
+    consuming func finish() -> DatabaseRetainedBuffer<RDFTerm> {
         footprintMeter.shutdown()
         return storage.finish()
     }

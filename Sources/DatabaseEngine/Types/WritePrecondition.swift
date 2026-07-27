@@ -3,9 +3,9 @@
 //
 // Precondition evaluated at save() time. Violations raise
 // DatabaseContextError.preconditionFailed instead of silently falling back
-// (per CLAUDE.md "silent fallback 禁止").
+// Silent fallback is forbidden by the database execution contract.
 
-import DatabaseValue
+import DatabaseTypes
 
 /// Precondition that a write operation asserts about the stored row at commit time.
 ///
@@ -31,10 +31,10 @@ public enum WritePrecondition: Sendable, Equatable {
     case exists
 
     /// The stored row's version token must equal the given bytes.
-    case matchesStored(version: DatabaseBytes)
+    case matchesStored(version: ByteString)
 
     /// Either the key is absent, or its version token matches the given bytes.
-    case matchesStoredOrAbsent(version: DatabaseBytes)
+    case matchesStoredOrAbsent(version: ByteString)
 
     /// Whether evaluating this precondition requires reading the row from
     /// storage first. `.none` skips the read entirely.

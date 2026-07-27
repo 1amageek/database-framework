@@ -2,36 +2,46 @@
 import Foundation
 import Testing
 import Database
+import DatabaseRuntime
 import TestHeartbeat
 
 @Persistable
 private struct DeepE2EIndexedTicket {
     #Directory<DeepE2EIndexedTicket>("database-framework-deep-e2e", "indexed-tickets")
     #Index(
-        ScalarIndexKind<DeepE2EIndexedTicket>(fields: [\.status]),
+        .scalar,
+        fields: [\DeepE2EIndexedTicket.status],
         name: "deep_e2e_ticket_status"
     )
     #Index(
-        ScalarIndexKind<DeepE2EIndexedTicket>(fields: [\.tenantID, \.status]),
+        .scalar,
+        fields: [
+            \DeepE2EIndexedTicket.tenantID,
+            \DeepE2EIndexedTicket.status,
+        ],
         name: "deep_e2e_ticket_tenant_status"
     )
     #Index(
-        FullTextIndexKind<DeepE2EIndexedTicket>(fields: [\.description], tokenizer: .simple),
+        .fullText(tokenizer: .simple),
+        fields: [\DeepE2EIndexedTicket.description],
         name: "deep_e2e_ticket_description"
     )
     #Index(
-        CountIndexKind<DeepE2EIndexedTicket>(groupBy: [\.tenantID]),
+        .count,
+        groupBy: [\DeepE2EIndexedTicket.tenantID],
         name: "deep_e2e_ticket_count_by_tenant"
     )
     #Index(
-        SumIndexKind<DeepE2EIndexedTicket, Int64>(groupBy: [\.tenantID], value: \.amountCents),
+        .sum,
+        groupBy: [\DeepE2EIndexedTicket.tenantID],
+        value: \DeepE2EIndexedTicket.amountCents,
         name: "deep_e2e_ticket_sum_by_tenant"
     )
 
     var id: String = UUID().uuidString
     var tenantID: String = ""
     var status: String = ""
-    var priority: Int = 0
+    var priority: Int64 = 0
     var amountCents: Int64 = 0
     var description: String = ""
     var payload: String = ""
@@ -53,19 +63,20 @@ private struct DeepE2ERelationshipOrder {
     var total: Double = 0
 
     @Relationship(deleteRule: .nullify)
-    var customer: DatabaseReference<DeepE2ECustomer>? = nil
+    var customer: PersistableReference<DeepE2ECustomer>? = nil
 }
 
 @Persistable
 private struct DeepE2ESecureTenantDocument: SecurityPolicy {
     #Directory<DeepE2ESecureTenantDocument>(
         "database-framework-deep-e2e",
-        Field<DeepE2ESecureTenantDocument>(\.tenantID),
+        \DeepE2ESecureTenantDocument.tenantID,
         "secure-tenant-documents",
         layer: .partition
     )
     #Index(
-        ScalarIndexKind<DeepE2ESecureTenantDocument>(fields: [\.title]),
+        .scalar,
+        fields: [\DeepE2ESecureTenantDocument.title],
         name: "deep_e2e_secure_document_title"
     )
 
@@ -75,46 +86,41 @@ private struct DeepE2ESecureTenantDocument: SecurityPolicy {
     var title: String = ""
     var body: String = ""
 
-    static func allowGet(
-        resource: DeepE2ESecureTenantDocument,
-        auth: (any AuthContext)?
+    static func permitsRead(
+        of resource: borrowing DeepE2ESecureTenantDocument,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        resource.ownerID == auth?.userID
+        resource.ownerID == context.principal?.identifier
     }
 
-    static func allowList(
-        query: SecurityQuery<DeepE2ESecureTenantDocument>,
-        auth: (any AuthContext)?
+    static func permitsQuery(
+        _ query: borrowing SecurityQuery,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        auth != nil
+        context.isAuthenticated
     }
 
-    static func allowCreate(
-        newResource: DeepE2ESecureTenantDocument,
-        auth: (any AuthContext)?
+    static func permitsCreate(
+        _ newResource: borrowing DeepE2ESecureTenantDocument,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        auth != nil
+        context.isAuthenticated
     }
 
-    static func allowUpdate(
-        resource: DeepE2ESecureTenantDocument,
-        newResource: DeepE2ESecureTenantDocument,
-        auth: (any AuthContext)?
+    static func permitsUpdate(
+        from resource: borrowing DeepE2ESecureTenantDocument,
+        to newResource: borrowing DeepE2ESecureTenantDocument,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        resource.ownerID == auth?.userID
+        resource.ownerID == context.principal?.identifier
     }
 
-    static func allowDelete(
-        resource: DeepE2ESecureTenantDocument,
-        auth: (any AuthContext)?
+    static func permitsDelete(
+        _ resource: borrowing DeepE2ESecureTenantDocument,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        resource.ownerID == auth?.userID
+        resource.ownerID == context.principal?.identifier
     }
-}
-
-private struct DeepE2EAuth: AuthContext {
-    let userID: String
-    var roles: Set<String> = []
 }
 
 private enum DeepE2EError: Error {
@@ -123,6 +129,8 @@ private enum DeepE2EError: Error {
 
 private func deepE2ETemporarySQLiteContainer(
     for schema: Schema,
+    persistableTypes: [any Persistable.Type],
+    authorizationPolicies: [AuthorizationPolicyHandler] = [],
     security: SecurityConfiguration = .disabled
 ) async throws -> (DBContainer, URL) {
     let directory = FileManager.default.temporaryDirectory
@@ -132,6 +140,10 @@ private func deepE2ETemporarySQLiteContainer(
     let container = try await DBContainer.sqlite(
         for: schema,
         path: databasePath,
+        runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+            persistableTypes: persistableTypes,
+            authorizationPolicies: authorizationPolicies
+        ),
         security: security
     )
     return (container, directory)
@@ -149,7 +161,7 @@ private func deepE2ETicket(
     id: String,
     tenantID: String,
     status: String,
-    priority: Int,
+    priority: Int64,
     amountCents: Int64,
     description: String,
     payload: String = ""
@@ -169,11 +181,11 @@ private func deepE2ETicket(
 private func deepE2EAggregates(
     in context: DatabaseContext,
     tenantID: String
-) async throws -> (count: Int64, sum: Double) {
+) async throws -> (count: Int64, sum: Int64) {
     let results = try await context.aggregate(DeepE2EIndexedTicket.self)
-        .groupBy(\.tenantID)
+        .groupBy(DeepE2EIndexedTicket.fields.tenantID)
         .count(as: "ticketCount")
-        .sum(\.amountCents, as: "amountSum")
+        .sum(DeepE2EIndexedTicket.fields.amountCents, as: "amountSum")
         .execute()
 
     guard let result = results.first(where: { aggregate in
@@ -186,14 +198,18 @@ private func deepE2EAggregates(
     }
 
     let count: Int64
-    if let fieldValue = result.aggregates["ticketCount"], case .int64(let value) = fieldValue {
+    if let storedValue = result.aggregates["ticketCount"],
+       let fieldValue = storedValue,
+       case .int64(let value) = fieldValue {
         count = value
     } else {
         count = 0
     }
 
-    let sum: Double
-    if let fieldValue = result.aggregates["amountSum"], case .double(let value) = fieldValue {
+    let sum: Int64
+    if let storedValue = result.aggregates["amountSum"],
+       let fieldValue = storedValue,
+       case .int64(let value) = fieldValue {
         sum = value
     } else {
         sum = 0
@@ -206,8 +222,11 @@ private func deepE2EAggregates(
 struct DatabaseFrameworkDeepE2ETests {
     @Test("SQLite maintains scalar full-text and aggregation indexes through update delete and rollback")
     func sqliteMaintainsMultipleIndexesThroughUpdateDeleteAndRollback() async throws {
-        let schema = Schema([DeepE2EIndexedTicket.self], version: .init(1, 0, 0))
-        let (container, directory) = try await deepE2ETemporarySQLiteContainer(for: schema)
+        let schema = try Schema(entities: [try DeepE2EIndexedTicket.schemaEntity], version: .init(1, 0, 0))
+        let (container, directory) = try await deepE2ETemporarySQLiteContainer(
+            for: schema,
+            persistableTypes: [DeepE2EIndexedTicket.self]
+        )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
 
         let context = container.newContext()
@@ -232,17 +251,17 @@ struct DatabaseFrameworkDeepE2ETests {
         try await context.save()
 
         let initialOpen = try await context.fetch(DeepE2EIndexedTicket.self)
-            .where(\.status == "open")
-            .orderBy(\.priority)
+            .where(DeepE2EIndexedTicket.fields.status == "open")
+            .orderBy(DeepE2EIndexedTicket.fields.priority)
             .execute()
         let initialSearch = try await context.search(DeepE2EIndexedTicket.self)
-            .fullText(\.description)
+            .fullText(DeepE2EIndexedTicket.fields.description)
             .terms(["searchable"])
             .execute()
         let initialAggregates = try await deepE2EAggregates(in: context, tenantID: "tenant-a")
 
-        #expect(initialOpen.map(\.id) == ["deep-ticket-1", "deep-ticket-2"])
-        #expect(initialSearch.map(\.id) == ["deep-ticket-1"])
+        #expect(initialOpen.map { $0.id } == ["deep-ticket-1", "deep-ticket-2"])
+        #expect(initialSearch.map { $0.id } == ["deep-ticket-1"])
         #expect(initialAggregates.count == 2)
         #expect(initialAggregates.sum == 300)
 
@@ -254,26 +273,26 @@ struct DatabaseFrameworkDeepE2ETests {
         try await context.save()
 
         let openAfterReplace = try await context.fetch(DeepE2EIndexedTicket.self)
-            .where(\.status == "open")
-            .orderBy(\.priority)
+            .where(DeepE2EIndexedTicket.fields.status == "open")
+            .orderBy(DeepE2EIndexedTicket.fields.priority)
             .execute()
         let closedAfterReplace = try await context.fetch(DeepE2EIndexedTicket.self)
-            .where(\.status == "closed")
+            .where(DeepE2EIndexedTicket.fields.status == "closed")
             .execute()
         let oldTokenAfterReplace = try await context.search(DeepE2EIndexedTicket.self)
-            .fullText(\.description)
+            .fullText(DeepE2EIndexedTicket.fields.description)
             .terms(["searchable"])
             .execute()
         let newTokenAfterReplace = try await context.search(DeepE2EIndexedTicket.self)
-            .fullText(\.description)
+            .fullText(DeepE2EIndexedTicket.fields.description)
             .terms(["archived"])
             .execute()
         let aggregatesAfterReplace = try await deepE2EAggregates(in: context, tenantID: "tenant-a")
 
-        #expect(openAfterReplace.map(\.id) == ["deep-ticket-2"])
-        #expect(closedAfterReplace.map(\.id) == ["deep-ticket-1"])
+        #expect(openAfterReplace.map { $0.id } == ["deep-ticket-2"])
+        #expect(closedAfterReplace.map { $0.id } == ["deep-ticket-1"])
         #expect(oldTokenAfterReplace.isEmpty)
-        #expect(newTokenAfterReplace.map(\.id) == ["deep-ticket-1"])
+        #expect(newTokenAfterReplace.map { $0.id } == ["deep-ticket-1"])
         #expect(aggregatesAfterReplace.count == 2)
         #expect(aggregatesAfterReplace.sum == 350)
 
@@ -295,7 +314,7 @@ struct DatabaseFrameworkDeepE2ETests {
         }
 
         let rollbackTokenHits = try await context.search(DeepE2EIndexedTicket.self)
-            .fullText(\.description)
+            .fullText(DeepE2EIndexedTicket.fields.description)
             .terms(["rollback"])
             .execute()
         let aggregatesAfterRollback = try await deepE2EAggregates(in: context, tenantID: "tenant-a")
@@ -307,10 +326,10 @@ struct DatabaseFrameworkDeepE2ETests {
         try await context.save()
 
         let closedAfterDelete = try await context.fetch(DeepE2EIndexedTicket.self)
-            .where(\.status == "closed")
+            .where(DeepE2EIndexedTicket.fields.status == "closed")
             .execute()
         let archivedAfterDelete = try await context.search(DeepE2EIndexedTicket.self)
-            .fullText(\.description)
+            .fullText(DeepE2EIndexedTicket.fields.description)
             .terms(["archived"])
             .execute()
         let aggregatesAfterDelete = try await deepE2EAggregates(in: context, tenantID: "tenant-a")
@@ -323,12 +342,15 @@ struct DatabaseFrameworkDeepE2ETests {
 
     @Test("SQLite cursor pages remain consistent when later rows change between pages")
     func sqliteCursorPagesRemainConsistentWhenLaterRowsChangeBetweenPages() async throws {
-        let schema = Schema([DeepE2EIndexedTicket.self], version: .init(1, 0, 0))
-        let (container, directory) = try await deepE2ETemporarySQLiteContainer(for: schema)
+        let schema = try Schema(entities: [try DeepE2EIndexedTicket.schemaEntity], version: .init(1, 0, 0))
+        let (container, directory) = try await deepE2ETemporarySQLiteContainer(
+            for: schema,
+            persistableTypes: [DeepE2EIndexedTicket.self]
+        )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
 
         let context = container.newContext()
-        for priority in 1...6 {
+        for priority in Int64(1)...6 {
             try context.insert(
                 deepE2ETicket(
                     id: "cursor-ticket-\(priority)",
@@ -343,13 +365,13 @@ struct DatabaseFrameworkDeepE2ETests {
         try await context.save()
 
         let cursor = try context.cursor(DeepE2EIndexedTicket.self)
-            .orderBy(\.priority)
+            .orderBy(DeepE2EIndexedTicket.fields.priority)
             .limit(5)
             .batchSize(2)
             .build()
 
         let firstPage = try await cursor.next()
-        #expect(firstPage.items.map(\.id) == ["cursor-ticket-1", "cursor-ticket-2"])
+        #expect(firstPage.items.map { $0.id } == ["cursor-ticket-1", "cursor-ticket-2"])
         #expect(firstPage.hasMore)
 
         var futureRow = deepE2ETicket(
@@ -378,19 +400,28 @@ struct DatabaseFrameworkDeepE2ETests {
         let secondPage = try await cursor.next()
         let thirdPage = try await cursor.next()
 
-        #expect(secondPage.items.map(\.id) == ["cursor-ticket-3", "cursor-ticket-4"])
+        #expect(secondPage.items.map { $0.id } == ["cursor-ticket-3", "cursor-ticket-4"])
         #expect(secondPage.hasMore)
-        #expect(thirdPage.items.map(\.id) == ["cursor-ticket-5"])
+        #expect(thirdPage.items.map { $0.id } == ["cursor-ticket-5"])
         #expect(!thirdPage.hasMore)
     }
 
     @Test("SQLite relationship updates maintain canonical references and nullify on delete")
     func sqliteRelationshipUpdatesMaintainCanonicalReferences() async throws {
-        let schema = Schema(
-            [DeepE2ECustomer.self, DeepE2ERelationshipOrder.self],
+        let schema = try Schema(
+            entities: [
+                try DeepE2ECustomer.schemaEntity,
+                try DeepE2ERelationshipOrder.schemaEntity,
+            ],
             version: .init(1, 0, 0)
         )
-        let (container, directory) = try await deepE2ETemporarySQLiteContainer(for: schema)
+        let (container, directory) = try await deepE2ETemporarySQLiteContainer(
+            for: schema,
+            persistableTypes: [
+                DeepE2ECustomer.self,
+                DeepE2ERelationshipOrder.self,
+            ]
+        )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
 
         var alice = DeepE2ECustomer(name: "Alice")
@@ -408,7 +439,7 @@ struct DatabaseFrameworkDeepE2ETests {
         try context.insert(order)
         try await context.save()
 
-        let initialRelated = try await context.related(order, \.customer)
+        let initialRelated = try await context.related(order, DeepE2ERelationshipOrder.fields.customer)
         #expect(initialRelated?.id == alice.id)
 
         var movedOrder = order
@@ -420,19 +451,19 @@ struct DatabaseFrameworkDeepE2ETests {
         let oldCustomerOrders = try await inverse.referencedBy(
             try context.reference(to: alice),
             from: DeepE2ERelationshipOrder.self,
-            via: \.customer,
+            via: DeepE2ERelationshipOrder.fields.customer,
             limit: 10
         )
         let newCustomerOrders = try await inverse.referencedBy(
             try context.reference(to: bob),
             from: DeepE2ERelationshipOrder.self,
-            via: \.customer,
+            via: DeepE2ERelationshipOrder.fields.customer,
             limit: 10
         )
-        let movedRelated = try await context.related(movedOrder, \.customer)
+        let movedRelated = try await context.related(movedOrder, DeepE2ERelationshipOrder.fields.customer)
 
         #expect(oldCustomerOrders.entities.isEmpty)
-        #expect(newCustomerOrders.entities.map(\.id) == [order.id])
+        #expect(newCustomerOrders.entities.map { $0.id } == [order.id])
         #expect(movedRelated?.id == bob.id)
 
         try context.delete(bob)
@@ -457,9 +488,13 @@ struct DatabaseFrameworkDeepE2ETests {
 
     @Test("SQLite secure dynamic directory enforces stored-owner security during tenant moves")
     func sqliteSecureDynamicDirectoryEnforcesStoredOwnerSecurityDuringTenantMoves() async throws {
-        let schema = Schema([DeepE2ESecureTenantDocument.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DeepE2ESecureTenantDocument.schemaEntity], version: .init(1, 0, 0))
         let (container, directory) = try await deepE2ETemporarySQLiteContainer(
             for: schema,
+            persistableTypes: [DeepE2ESecureTenantDocument.self],
+            authorizationPolicies: [
+                AuthorizationPolicyHandler(DeepE2ESecureTenantDocument.self)
+            ],
             security: .enabled()
         )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
@@ -471,7 +506,7 @@ struct DatabaseFrameworkDeepE2ETests {
         original.title = "Original"
         original.body = "body"
 
-        try await AuthContextKey.$current.withValue(DeepE2EAuth(userID: "alice")) {
+        try await RequestAuthorization.$context.withValue(.authenticated(Principal(identifier: "alice"))) {
             let createContext = container.newContext()
             try createContext.insert(original)
             try await createContext.save()
@@ -481,7 +516,7 @@ struct DatabaseFrameworkDeepE2ETests {
         moved.tenantID = "tenant-secure-b"
         moved.ownerID = "bob"
         moved.title = "Moved"
-        try await AuthContextKey.$current.withValue(DeepE2EAuth(userID: "alice")) {
+        try await RequestAuthorization.$context.withValue(.authenticated(Principal(identifier: "alice"))) {
             let updateContext = container.newContext()
             try updateContext.delete(original, precondition: .exists)
             try updateContext.insert(moved, precondition: .notExists)
@@ -489,7 +524,7 @@ struct DatabaseFrameworkDeepE2ETests {
         }
 
         do {
-            try await AuthContextKey.$current.withValue(DeepE2EAuth(userID: "alice")) {
+            try await RequestAuthorization.$context.withValue(.authenticated(Principal(identifier: "alice"))) {
                 var denied = moved
                 denied.title = "Denied"
                 let deniedContext = container.newContext()
@@ -503,7 +538,7 @@ struct DatabaseFrameworkDeepE2ETests {
         }
 
         do {
-            try await AuthContextKey.$current.withValue(DeepE2EAuth(userID: "alice")) {
+            try await RequestAuthorization.$context.withValue(.authenticated(Principal(identifier: "alice"))) {
                 let deniedContext = container.newContext()
                 try deniedContext.delete(moved)
                 try await deniedContext.save()
@@ -518,29 +553,32 @@ struct DatabaseFrameworkDeepE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: directory.appendingPathComponent("database.sqlite").path,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DeepE2ESecureTenantDocument.self]
+            ),
             security: .disabled
         )
         let oldPartition = try await verificationContainer.newContext()
             .fetch(DeepE2ESecureTenantDocument.self)
-            .partition(\.tenantID, equals: "tenant-secure-a")
+            .partition(DeepE2ESecureTenantDocument.fields.tenantID, equals: "tenant-secure-a")
             .execute()
         let newPartition = try await verificationContainer.newContext()
             .fetch(DeepE2ESecureTenantDocument.self)
-            .partition(\.tenantID, equals: "tenant-secure-b")
-            .where(\.title == "Moved")
+            .partition(DeepE2ESecureTenantDocument.fields.tenantID, equals: "tenant-secure-b")
+            .where(DeepE2ESecureTenantDocument.fields.title == "Moved")
             .execute()
         let deniedTitle = try await verificationContainer.newContext()
             .fetch(DeepE2ESecureTenantDocument.self)
-            .partition(\.tenantID, equals: "tenant-secure-b")
-            .where(\.title == "Denied")
+            .partition(DeepE2ESecureTenantDocument.fields.tenantID, equals: "tenant-secure-b")
+            .where(DeepE2ESecureTenantDocument.fields.title == "Denied")
             .execute()
 
         #expect(oldPartition.isEmpty)
-        #expect(newPartition.map(\.id) == [original.id])
+        #expect(newPartition.map { $0.id } == [original.id])
         #expect(newPartition.first?.ownerID == "bob")
         #expect(deniedTitle.isEmpty)
 
-        try await AuthContextKey.$current.withValue(DeepE2EAuth(userID: "bob")) {
+        try await RequestAuthorization.$context.withValue(.authenticated(Principal(identifier: "bob"))) {
             let deleteContext = container.newContext()
             try deleteContext.delete(moved)
             try await deleteContext.save()
@@ -548,16 +586,19 @@ struct DatabaseFrameworkDeepE2ETests {
 
         let afterBobDelete = try await verificationContainer.newContext()
             .fetch(DeepE2ESecureTenantDocument.self)
-            .partition(\.tenantID, equals: "tenant-secure-b")
-            .where(\.title == "Moved")
+            .partition(DeepE2ESecureTenantDocument.fields.tenantID, equals: "tenant-secure-b")
+            .where(DeepE2ESecureTenantDocument.fields.title == "Moved")
             .execute()
         #expect(afterBobDelete.isEmpty)
     }
 
     @Test("SQLite public write APIs produce equivalent persisted rows and index cleanup")
     func sqlitePublicWriteAPIsProduceEquivalentPersistedRowsAndIndexCleanup() async throws {
-        let schema = Schema([DeepE2EIndexedTicket.self], version: .init(1, 0, 0))
-        let (container, directory) = try await deepE2ETemporarySQLiteContainer(for: schema)
+        let schema = try Schema(entities: [try DeepE2EIndexedTicket.schemaEntity], version: .init(1, 0, 0))
+        let (container, directory) = try await deepE2ETemporarySQLiteContainer(
+            for: schema,
+            persistableTypes: [DeepE2EIndexedTicket.self]
+        )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
 
         let contextInsert = container.newContext()
@@ -588,7 +629,7 @@ struct DatabaseFrameworkDeepE2ETests {
         }
 
         let contextCreate = container.newContext()
-        contextCreate.insert(
+        try contextCreate.insert(
             deepE2ETicket(
                 id: "api-ticket-create",
                 tenantID: "tenant-api",
@@ -602,15 +643,15 @@ struct DatabaseFrameworkDeepE2ETests {
 
         let openBeforeDelete = try await container.newContext()
             .fetch(DeepE2EIndexedTicket.self)
-            .where(\.status == "open")
-            .orderBy(\.priority)
+            .where(DeepE2EIndexedTicket.fields.status == "open")
+            .orderBy(DeepE2EIndexedTicket.fields.priority)
             .execute()
         let aggregatesBeforeDelete = try await deepE2EAggregates(
             in: container.newContext(),
             tenantID: "tenant-api"
         )
 
-        #expect(openBeforeDelete.map(\.id) == [
+        #expect(openBeforeDelete.map { $0.id } == [
             "api-ticket-insert",
             "api-ticket-transaction",
             "api-ticket-create",
@@ -628,12 +669,12 @@ struct DatabaseFrameworkDeepE2ETests {
         }
 
         let deleteByID = container.newContext()
-        try await deleteByID.delete(DeepE2EIndexedTicket.self, where: \.id == openBeforeDelete[2].id)
+        try await deleteByID.delete(DeepE2EIndexedTicket.self, where: DeepE2EIndexedTicket.fields.id == openBeforeDelete[2].id)
         try await deleteByID.save()
 
         let openAfterDelete = try await container.newContext()
             .fetch(DeepE2EIndexedTicket.self)
-            .where(\.status == "open")
+            .where(DeepE2EIndexedTicket.fields.status == "open")
             .execute()
         let aggregatesAfterDelete = try await deepE2EAggregates(
             in: container.newContext(),
@@ -647,8 +688,11 @@ struct DatabaseFrameworkDeepE2ETests {
 
     @Test("SQLite complex query applies indexed predicates residual filters sorting and limits")
     func sqliteComplexQueryAppliesIndexedPredicatesResidualFiltersSortingAndLimits() async throws {
-        let schema = Schema([DeepE2EIndexedTicket.self], version: .init(1, 0, 0))
-        let (container, directory) = try await deepE2ETemporarySQLiteContainer(for: schema)
+        let schema = try Schema(entities: [try DeepE2EIndexedTicket.schemaEntity], version: .init(1, 0, 0))
+        let (container, directory) = try await deepE2ETemporarySQLiteContainer(
+            for: schema,
+            persistableTypes: [DeepE2EIndexedTicket.self]
+        )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
 
         let context = container.newContext()
@@ -665,12 +709,12 @@ struct DatabaseFrameworkDeepE2ETests {
         try await context.save()
 
         let results = try await context.fetch(DeepE2EIndexedTicket.self)
-            .where(\.tenantID == "tenant-query")
-            .where(\.status == "open")
-            .orderBy(\.priority, .descending)
+            .where(DeepE2EIndexedTicket.fields.tenantID == "tenant-query")
+            .where(DeepE2EIndexedTicket.fields.status == "open")
+            .orderBy(DeepE2EIndexedTicket.fields.priority, .descending)
             .execute()
 
-        #expect(results.map(\.id) == ["query-3", "query-2", "query-1"])
+        #expect(results.map { $0.id } == ["query-3", "query-2", "query-1"])
         #expect(results.allSatisfy { $0.status == "open" && $0.tenantID == "tenant-query" })
 
         var updated = tickets[1]
@@ -680,12 +724,12 @@ struct DatabaseFrameworkDeepE2ETests {
         try await context.save()
 
         let afterUpdate = try await context.fetch(DeepE2EIndexedTicket.self)
-            .where(\.tenantID == "tenant-query")
-            .where(\.status == "open")
-            .orderBy(\.priority, .descending)
+            .where(DeepE2EIndexedTicket.fields.tenantID == "tenant-query")
+            .where(DeepE2EIndexedTicket.fields.status == "open")
+            .orderBy(DeepE2EIndexedTicket.fields.priority, .descending)
             .execute()
 
-        #expect(afterUpdate.map(\.id) == ["query-3", "query-1"])
+        #expect(afterUpdate.map { $0.id } == ["query-3", "query-1"])
     }
 }
 #endif

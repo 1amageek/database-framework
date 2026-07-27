@@ -3,11 +3,11 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 extension SPARQLQueryExecutor {

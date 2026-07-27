@@ -1,11 +1,11 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
-struct DatabaseIndexRebuildContinuation: DatabaseWireValue {
+struct DatabaseIndexRebuildContinuation: ServerPayloadValue {
     private static let version: UInt8 = 1
 
-    let generation: DatabaseUUID
-    let requestFingerprint: DatabaseBytes
+    let generation: DatabaseTypes.UUID
+    let requestFingerprint: ByteString
 
     func encode(
         into writer: inout DatabaseWireWriter
@@ -22,13 +22,13 @@ struct DatabaseIndexRebuildContinuation: DatabaseWireValue {
         guard version == Self.version else {
             throw DatabaseWireError.invalidValueTag(version)
         }
-        self.generation = try DatabaseUUID(from: &reader)
+        self.generation = try DatabaseTypes.UUID(from: &reader)
         self.requestFingerprint = try reader.readBytes()
     }
 
     init(
-        generation: DatabaseUUID,
-        requestFingerprint: DatabaseBytes
+        generation: DatabaseTypes.UUID,
+        requestFingerprint: ByteString
     ) {
         self.generation = generation
         self.requestFingerprint = requestFingerprint

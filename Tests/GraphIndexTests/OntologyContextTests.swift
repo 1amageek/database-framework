@@ -4,7 +4,7 @@
 
 import Testing
 import TestHeartbeat
-import Graph
+import DatabaseKit
 @testable import GraphIndex
 
 @Suite("OntologyContext", .heartbeat)

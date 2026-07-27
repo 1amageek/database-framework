@@ -1,19 +1,19 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
-struct DatabasePersistentJobSpecification: DatabaseWireValue, Sendable, Hashable {
+struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashable {
     private static let formatVersion: UInt8 = 1
 
-    let jobID: DatabaseUUID
-    let operation: DatabaseJobOperationIdentifier
-    let requestDigest: DatabaseBytes
+    let jobID: DatabaseTypes.UUID
+    let operation: JobOperationIdentifier
+    let requestDigest: ByteString
     let requestID: UInt64
     let traceID: String?
     let maximumSliceWorkUnits: UInt64
     let sliceTimeoutMilliseconds: UInt32
     let retryPolicy: JobStartOperation.RetryPolicy
-    let planDigest: DatabaseBytes
-    let createdAt: DatabaseTimestamp
+    let planDigest: ByteString
+    let createdAt: Timestamp
 
     func validate() throws {
         guard requestDigest.count == DatabaseRequestDigest.byteCount,
@@ -38,7 +38,9 @@ struct DatabasePersistentJobSpecification: DatabaseWireValue, Sendable, Hashable
         try writer.writeOptionalString(traceID)
         writer.writeUInt64(maximumSliceWorkUnits)
         writer.writeUInt32(sliceTimeoutMilliseconds)
-        try retryPolicy.encode(into: &writer)
+        writer.writeUInt32(retryPolicy.maximumAttempts)
+        writer.writeUInt32(retryPolicy.initialBackoffMilliseconds)
+        writer.writeUInt32(retryPolicy.maximumBackoffMilliseconds)
         try writer.writeBytes(planDigest)
         try createdAt.encode(into: &writer)
     }
@@ -51,30 +53,34 @@ struct DatabasePersistentJobSpecification: DatabaseWireValue, Sendable, Hashable
             throw .unsupportedProtocolVersionValue(UInt16(version))
         }
         self.init(
-            jobID: try DatabaseUUID(from: &reader),
-            operation: try DatabaseJobOperationIdentifier(from: &reader),
+            jobID: try DatabaseTypes.UUID(from: &reader),
+            operation: try JobOperationIdentifier(from: &reader),
             requestDigest: try reader.readBytes(),
             requestID: try reader.readUInt64(),
             traceID: try reader.readOptionalString(),
             maximumSliceWorkUnits: try reader.readUInt64(),
             sliceTimeoutMilliseconds: try reader.readUInt32(),
-            retryPolicy: try JobStartOperation.RetryPolicy(from: &reader),
+            retryPolicy: JobStartOperation.RetryPolicy(
+                maximumAttempts: try reader.readUInt32(),
+                initialBackoffMilliseconds: try reader.readUInt32(),
+                maximumBackoffMilliseconds: try reader.readUInt32()
+            ),
             planDigest: try reader.readBytes(),
-            createdAt: try DatabaseTimestamp(from: &reader)
+            createdAt: try Timestamp(from: &reader)
         )
     }
 
     init(
-        jobID: DatabaseUUID,
-        operation: DatabaseJobOperationIdentifier,
-        requestDigest: DatabaseBytes,
+        jobID: DatabaseTypes.UUID,
+        operation: JobOperationIdentifier,
+        requestDigest: ByteString,
         requestID: UInt64,
         traceID: String?,
         maximumSliceWorkUnits: UInt64,
         sliceTimeoutMilliseconds: UInt32,
         retryPolicy: JobStartOperation.RetryPolicy,
-        planDigest: DatabaseBytes,
-        createdAt: DatabaseTimestamp
+        planDigest: ByteString,
+        createdAt: Timestamp
     ) {
         self.jobID = jobID
         self.operation = operation

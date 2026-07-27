@@ -1,89 +1,67 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-// CircularReferenceTests.swift
-// Test if @Reference macro allows circular type references
-
 import Testing
 import TestHeartbeat
-import Foundation
-import Core
-import DatabaseValue
-
-// MARK: - Test 1: Basic circular reference with @Reference macro
-
-/// Test struct A referencing B
-struct CircularReferenceNodeA {
-    var id: String = "A001"
-
-    @Reference(CircularReferenceNodeB.self)
-    var bId: String?
-}
-
-/// Test struct B referencing A
-struct CircularReferenceNodeB {
-    var id: String = "B001"
-
-    @Reference(CircularReferenceNodeA.self)
-    var aId: String?
-}
-
-// MARK: - Test 2: With @Persistable
+import DatabaseKit
+import DatabaseTypes
 
 @Persistable
 struct RefCustomer {
+    var id: String = ""
     var name: String
 
-    // Reference to RefOrder - does this cause circular dependency?
-    @Reference(RefOrder.self)
-    var orderIDs: [String] = []
+    @Relationship(deleteRule: .nullify)
+    var orders: [PersistableReference<RefOrder>] = []
 }
 
 @Persistable
 struct RefOrder {
+    var id: String = ""
     var total: Double
 
-    // Reference back to RefCustomer
-    @Reference(RefCustomer.self)
-    var customerID: String? = nil
+    @Relationship(deleteRule: .nullify)
+    var customer: PersistableReference<RefCustomer>? = nil
 }
-
-// MARK: - Tests
 
 @Suite("Circular Reference Tests", .heartbeat)
 struct CircularReferenceTests {
-
-    @Test("Basic structs can reference each other via @Reference")
-    func testBasicCircularReference() {
-        var a = CircularReferenceNodeA()
-        a.bId = "B001"
-
-        var b = CircularReferenceNodeB()
-        b.aId = "A001"
-
-        #expect(a.bId == "B001")
-        #expect(b.aId == "A001")
-    }
-
-    @Test("@Persistable structs can reference each other via @Reference")
-    func testPersistableCircularReference() {
+    @Test("Persistable references preserve circular entity identities")
+    func persistableCircularReferences() throws {
         var customer = RefCustomer(name: "Alice")
-        customer.orderIDs = ["O001", "O002"]
-
+        customer.id = "C001"
         var order = RefOrder(total: 99.99)
-        order.customerID = customer.id
+        order.id = "O001"
 
-        #expect(customer.orderIDs.count == 2)
-        #expect(order.customerID == customer.id)
+        let orderReference = try PersistableReference<RefOrder>(
+            identity: EntityReference(
+                entity: RefOrder.persistableType,
+                id: .string(order.id)
+            )
+        )
+        let customerReference = try PersistableReference<RefCustomer>(
+            identity: EntityReference(
+                entity: RefCustomer.persistableType,
+                id: .string(customer.id)
+            )
+        )
+        customer.orders = [orderReference]
+        order.customer = customerReference
+
+        #expect(customer.orders.first?.identity.id == .string(order.id))
+        #expect(order.customer?.identity.id == .string(customer.id))
     }
 
-    @Test("Types are accessible in static context")
-    func testStaticTypeAccess() {
-        // Can we access the referenced type at runtime?
-        let customerType = RefCustomer.self
-        let orderType = RefOrder.self
+    @Test("Circular relationship metadata names both entity targets")
+    func circularRelationshipMetadata() throws {
+        let customerRelationship = try #require(
+            RefCustomer.relationshipDescriptors.first
+        )
+        let orderRelationship = try #require(
+            RefOrder.relationshipDescriptors.first
+        )
 
-        #expect(String(describing: customerType) == "RefCustomer")
-        #expect(String(describing: orderType) == "RefOrder")
+        #expect(customerRelationship.relatedTypeName == RefOrder.persistableType)
+        #expect(orderRelationship.relatedTypeName == RefCustomer.persistableType)
     }
 }
 #endif

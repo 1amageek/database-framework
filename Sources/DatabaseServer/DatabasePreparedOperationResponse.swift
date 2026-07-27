@@ -1,7 +1,7 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabasePreparedOperationResponse<
-    Operation: DatabaseOperation
+    Operation: ServerOperationDeclaration
 >: Sendable {
     public let response: Operation.Response
     let operationResult: DatabaseOperationResult
@@ -18,8 +18,8 @@ public struct DatabasePreparedOperationResponse<
         Self(
             response: response,
             operationResult: DatabaseOperationResult(
-                operation: Operation.identifier,
-                encoder: DatabaseOperationResponseEncoder(response)
+                Operation.self,
+                response: response
             )
         )
     }

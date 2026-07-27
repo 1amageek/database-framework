@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 /// Persistent authoritative RDF graph store backed by six canonical quad
@@ -61,9 +61,9 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     }
 
     public func scan(
-        subject: DatabaseRDFTerm?,
-        predicate: DatabaseRDFTerm?,
-        object: DatabaseRDFTerm?,
+        subject: RDFTerm?,
+        predicate: RDFTerm?,
+        object: RDFTerm?,
         graphScope: RDFGraphScanScope,
         limit: Int?,
         readMode: RDFDatasetReadMode,
@@ -174,8 +174,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
         ) != nil
 
         var catalogKeyToInsert: Bytes?
-        if let graphTerm = quad.graph {
-            let graph = try RDFGraphName(graphTerm)
+        if let graph = quad.graph {
             catalogKeyToInsert = try await missingCatalogKeyAfterIntegrityCheck(
                 for: graph,
                 transaction: transaction,
@@ -226,8 +225,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             snapshot: false
         ) != nil
 
-        if let graphTerm = quad.graph {
-            let graph = try RDFGraphName(graphTerm)
+        if let graph = quad.graph {
             let missingCatalogKey = try await missingCatalogKeyAfterIntegrityCheck(
                 for: graph,
                 transaction: transaction,
@@ -306,7 +304,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
         try workMeter.consume(at: .validation)
         do {
             try quad.validate()
-        } catch let error as RDFDatasetValidationError {
+        } catch let error {
             throw RDFGraphStoreError.invalidQuad(error)
         }
         do {
@@ -482,7 +480,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             let plan: RDFQuadIndexWritePlan
             do {
                 plan = try RDFQuadIndexWritePlan(encodedQuad: encoded)
-            } catch let error as DatabaseRDFTermCodecError {
+            } catch let error as RDFTermStorageError {
                 throw RDFGraphStoreError.invalidTermEncoding(error)
             }
             try validateKeySizes(plan)

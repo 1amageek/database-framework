@@ -11,7 +11,7 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 
-@Suite("ItemStorage Tests", .serialized, .heartbeat)
+@Suite("ItemStorage Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct ItemStorageTests {
 
     // MARK: - Setup

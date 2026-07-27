@@ -194,7 +194,7 @@ do {
 
 #### Execution Flow
 
-1. **SQL Parsing**: Parse SQL string to `QueryIR.SelectQuery`
+1. **SQL Parsing**: Parse SQL string to `SelectQuery`
 2. **SPARQL Detection**: Traverse expression tree to find `SPARQL()` function calls
 3. **SPARQL Execution**: Execute SPARQL subqueries within parent transaction
    - Resolve type name to schema entity

@@ -7,8 +7,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -16,69 +16,18 @@ import DatabaseRuntime
 // MARK: - Test Model with Index
 
 /// Test model with a scalar index for state behavior testing
-struct IndexedUser: Persistable {
-    typealias ID = String
+@Persistable
+struct IndexedUser {
+    #Index(
+        .scalar,
+        fields: [\IndexedUser.email],
+        unique: true,
+        name: "IndexedUser_email"
+    )
 
-    var id: String
+    var id: String = UUID().uuidString
     var email: String
     var name: String
-
-    init(id: String = UUID().uuidString, email: String, name: String) {
-        self.id = id
-        self.email = email
-        self.name = name
-    }
-
-    static var persistableType: String { "IndexedUser" }
-    static var allFields: [String] { ["id", "email", "name"] }
-
-    static var descriptors: [any Descriptor] {
-        [
-            IndexDescriptor(
-                name: "IndexedUser_email",
-                keyPaths: [\IndexedUser.email],
-                kind: ScalarIndexKind<IndexedUser>(fields: [\.email]),
-                commonOptions: CommonIndexOptions(unique: true)
-            )
-        ]
-    }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "email": return email
-        case "name": return name
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<IndexedUser, Value>) -> String {
-        switch keyPath {
-        case \IndexedUser.id: return "id"
-        case \IndexedUser.email: return "email"
-        case \IndexedUser.name: return "name"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<IndexedUser>) -> String {
-        switch keyPath {
-        case \IndexedUser.id: return "id"
-        case \IndexedUser.email: return "email"
-        case \IndexedUser.name: return "name"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<IndexedUser> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Test Helper
@@ -88,23 +37,27 @@ private struct IndexStateContext {
     let database: any StorageEngine
     let subspace: Subspace
     let container: DBContainer
+    let dataStore: DatabaseDataStore
 
     init() async throws {
-        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let testId = UUID().uuidString.prefix(8)
-        self.subspace = Subspace(prefix: Tuple("test", "indexstate", String(testId)).pack())
+        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        // Create a minimal container with IndexedUser schema
         let schema = try Schema(
             entities: [try IndexedUser.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        self.container = try await DBContainer.open(
+        let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [IndexedUser.self]),
             security: .disabled
-            )
+        )
+        let dataStore = try await container.store(for: IndexedUser.self)
+
+        self.database = database
+        self.subspace = dataStore.subspace
+        self.container = container
+        self.dataStore = dataStore
     }
 
     /// Clean up test data
@@ -131,7 +84,7 @@ private struct IndexStateContext {
 
 // MARK: - Integration Tests
 
-@Suite("Index State Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("Index State Behavior Tests", .tags(.fdb), .foundationDBScenario, .serialized, .heartbeat)
 struct IndexStateBehaviorTests {
 
     // MARK: - Disabled Index Tests
@@ -144,15 +97,13 @@ struct IndexStateBehaviorTests {
             let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
-            // Ensure index is disabled (default state)
+            try await ctx.dataStore.indexLifecycleStore.disable(indexName)
             let initialState = try await indexLifecycleStore.state(of: indexName)
             #expect(initialState == .disabled)
 
-            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
-
             // Insert user
             let user = IndexedUser(email: "alice@example.com", name: "Alice")
-            try await dataStore.save([user])
+            try await ctx.dataStore.save([user])
 
             // Verify index entry was NOT created (because index is disabled)
             let indexEntryCount = try await ctx.countIndexEntries(indexName: indexName)
@@ -171,22 +122,20 @@ struct IndexStateBehaviorTests {
             let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
-            // Ensure index is disabled
+            try await ctx.dataStore.indexLifecycleStore.disable(indexName)
             let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .disabled)
-
-            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert two users with same email - should NOT throw because index is disabled
             let user1 = IndexedUser(id: "user1", email: "duplicate@example.com", name: "User 1")
             let user2 = IndexedUser(id: "user2", email: "duplicate@example.com", name: "User 2")
 
-            try await dataStore.save([user1])
-            try await dataStore.save([user2])  // Should succeed because unique constraint is not enforced
+            try await ctx.dataStore.save([user1])
+            try await ctx.dataStore.save([user2])
 
             // Verify both users exist
-            let fetchedUser1 = try await dataStore.fetch(IndexedUser.self, id: "user1")
-            let fetchedUser2 = try await dataStore.fetch(IndexedUser.self, id: "user2")
+            let fetchedUser1 = try await ctx.dataStore.fetch(IndexedUser.self, id: "user1")
+            let fetchedUser2 = try await ctx.dataStore.fetch(IndexedUser.self, id: "user2")
 
             #expect(fetchedUser1 != nil)
             #expect(fetchedUser2 != nil)
@@ -206,16 +155,14 @@ struct IndexStateBehaviorTests {
             let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
-            // Enable index (disabled -> writeOnly)
+            try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
             let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .writeOnly)
 
-            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
-
             // Insert user
             let user = IndexedUser(email: "bob@example.com", name: "Bob")
-            try await dataStore.save([user])
+            try await ctx.dataStore.save([user])
 
             // Verify index entry WAS created
             let indexEntryCount = try await ctx.countIndexEntries(indexName: indexName)
@@ -234,19 +181,17 @@ struct IndexStateBehaviorTests {
             let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
-            // Enable index (puts it in writeOnly state)
+            try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
-
-            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert first user
             let user1 = IndexedUser(id: "user1", email: "unique@example.com", name: "User 1")
-            try await dataStore.save([user1])
+            try await ctx.dataStore.save([user1])
 
             // Insert second user with same email
             // In writeOnly mode, this should NOT throw but track the violation
             let user2 = IndexedUser(id: "user2", email: "unique@example.com", name: "User 2")
-            try await dataStore.save([user2])
+            try await ctx.dataStore.save([user2])
 
             // Both users should be saved (writeOnly mode tracks violations, doesn't throw)
             // This is the intended behavior for online indexing where we need to
@@ -265,21 +210,19 @@ struct IndexStateBehaviorTests {
             let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
-            // Enable and make readable
+            try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
             try await indexLifecycleStore.makeReadable(indexName)
 
-            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
-
             // Insert first user
             let user1 = IndexedUser(id: "user1", email: "unique@example.com", name: "User 1")
-            try await dataStore.save([user1])
+            try await ctx.dataStore.save([user1])
 
             // Insert second user with same email - should throw in readable mode
             let user2 = IndexedUser(id: "user2", email: "unique@example.com", name: "User 2")
 
             await #expect(throws: UniquenessViolationError.self) {
-                try await dataStore.save([user2])
+                try await ctx.dataStore.save([user2])
             }
 
             // Cleanup
@@ -297,17 +240,15 @@ struct IndexStateBehaviorTests {
             let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
-            // Enable and make readable (disabled -> writeOnly -> readable)
+            try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
             try await indexLifecycleStore.makeReadable(indexName)
             let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .readable)
 
-            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
-
             // Insert user
             let user = IndexedUser(email: "charlie@example.com", name: "Charlie")
-            try await dataStore.save([user])
+            try await ctx.dataStore.save([user])
 
             // Verify index entry WAS created
             let indexEntryCount = try await ctx.countIndexEntries(indexName: indexName)
@@ -325,12 +266,10 @@ struct IndexStateBehaviorTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
 
-            // Create DatabaseDataStore first, then use its internal indexLifecycleStore
-            // This ensures cache consistency between state changes and delete operations
-            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
+            let dataStore = ctx.dataStore
             let indexName = "IndexedUser_email"
 
-            // Start with readable index (using dataStore's indexLifecycleStore)
+            try await dataStore.indexLifecycleStore.disable(indexName)
             try await dataStore.indexLifecycleStore.enable(indexName)
             try await dataStore.indexLifecycleStore.makeReadable(indexName)
 
@@ -367,7 +306,7 @@ struct IndexStateBehaviorTests {
             let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "test_index"
 
-            // Initial state is disabled
+            try await indexLifecycleStore.disable(indexName)
             let state1 = try await indexLifecycleStore.state(of: indexName)
             #expect(state1 == .disabled)
 
@@ -399,7 +338,7 @@ struct IndexStateBehaviorTests {
             let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "test_invalid"
 
-            // Cannot enable from writeOnly
+            try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
             await #expect(throws: IndexStateError.self) {
                 try await indexLifecycleStore.enable(indexName)
@@ -426,11 +365,9 @@ struct IndexStateBehaviorTests {
             let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
-            // Ensure index is disabled
+            try await indexLifecycleStore.disable(indexName)
             let state = try await indexLifecycleStore.state(of: indexName)
             #expect(state == .disabled)
-
-            let dataStore = DatabaseDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Batch insert via executeBatch
             let users = [
@@ -438,14 +375,14 @@ struct IndexStateBehaviorTests {
                 IndexedUser(id: "batch2", email: "batch2@example.com", name: "Batch 2"),
                 IndexedUser(id: "batch3", email: "batch3@example.com", name: "Batch 3")
             ]
-            try await dataStore.executeBatch(inserts: users, deletes: [])
+            try await ctx.dataStore.executeBatch(inserts: users, deletes: [])
 
             // Verify no index entries created
             let indexEntryCount = try await ctx.countIndexEntries(indexName: indexName)
             #expect(indexEntryCount == 0, "Disabled index should have no entries after batch insert")
 
             // Verify entities exist
-            let allUsers = try await dataStore.fetchAll(IndexedUser.self)
+            let allUsers = try await ctx.dataStore.fetchAll(IndexedUser.self)
             #expect(allUsers.count == 3)
 
             // Cleanup

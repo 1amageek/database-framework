@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -20,13 +20,6 @@ struct SubjectScore {
     var subject: String
     var studentName: String
     var score: Int64
-
-    init(id: String = UUID().uuidString, subject: String, studentName: String, score: Int64) {
-        self.id = id
-        self.subject = subject
-        self.studentName = studentName
-        self.score = score
-    }
 }
 
 // MARK: - Maximum Index Context
@@ -46,7 +39,14 @@ private struct MaximumIndexContext {
         // Expression: subject + score (grouping + max value)
         let index = Index(
             name: indexName,
-            kind: MaxIndexKind<SubjectScore, Int64>(groupBy: [\.subject], value: \.score),
+            kind: numericAggregationIndexMetadata(
+                .maximum,
+                groupingFields: [
+                    FieldIdentity(name: "subject", number: 2)
+                ],
+                valueField: FieldIdentity(name: "score", number: 4),
+                valueType: .int64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
                 FieldKeyExpression(fieldName: "score")
@@ -287,7 +287,7 @@ struct MaxIndexBehaviorTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await MaximumIndexContext()
 
-        await #expect(throws: IndexError.self) {
+        await #expect(throws: AggregationIndexError.self) {
             _ = try await ctx.getMax(for: "NonExistent")
         }
 

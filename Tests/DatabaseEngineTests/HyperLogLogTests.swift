@@ -1,7 +1,5 @@
 import DatabaseTypes
 import Testing
-import Foundation
-import DatabaseValue
 @testable import DatabaseEngine
 
 @Suite("HyperLogLog Tests")
@@ -176,10 +174,10 @@ struct HyperLogLogTests {
         #expect(try hll.cardinality() == 0)
     }
 
-    // MARK: - Codable
+    // MARK: - Register State
 
-    @Test("Encode and decode preserves state")
-    func testCodable() throws {
+    @Test("Restoring borrowed register state preserves the estimator")
+    func restoringRegisterStatePreservesEstimator() throws {
         var original = HyperLogLog()
 
         for i in 0..<500 {
@@ -187,17 +185,17 @@ struct HyperLogLogTests {
         }
 
         let originalCardinality = try original.cardinality()
-
-        // Encode
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(original)
-
-        // Decode
-        let decoder = JSONDecoder()
-        let restored = try decoder.decode(HyperLogLog.self, from: data)
+        let registers = original.withUnsafeRegisters { buffer in
+            Array(buffer)
+        }
+        let restored = try HyperLogLog(
+            precision: original.precision,
+            registers: registers
+        )
 
         let restoredCardinality = try restored.cardinality()
 
+        #expect(restored == original)
         #expect(originalCardinality == restoredCardinality)
     }
 
@@ -261,8 +259,8 @@ struct HyperLogLogTests {
         let value1 = FieldValue.string("test")
         let value2 = FieldValue.string("test")
 
-        let hash1 = try value1.stableHash()
-        let hash2 = try value2.stableHash()
+        let hash1 = value1.stableHash()
+        let hash2 = value2.stableHash()
 
         #expect(hash1 == hash2)
     }
@@ -272,8 +270,8 @@ struct HyperLogLogTests {
         let value1 = FieldValue.string("test1")
         let value2 = FieldValue.string("test2")
 
-        let hash1 = try value1.stableHash()
-        let hash2 = try value2.stableHash()
+        let hash1 = value1.stableHash()
+        let hash2 = value2.stableHash()
 
         #expect(hash1 != hash2)
     }

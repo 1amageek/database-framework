@@ -9,11 +9,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseMath
 import DatabaseEngine
 import StorageKit
-import FullText
 
 /// FullText search query for Fusion
 ///
@@ -33,7 +32,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     public typealias Item = T
 
     private let queryContext: IndexQueryContext
-    private let fieldName: String
+    private let field: FieldIdentity
     private var searchTerms: [String] = []
     private var matchMode: TextMatchMode = .all
     private var k1: Float = 1.2
@@ -53,11 +52,11 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     ///     Search(\.content).terms(["swift", "concurrency"])
     /// }
     /// ```
-    public init(_ keyPath: KeyPath<T, String>) {
+    public init(_ field: Field<T, String>) {
         guard let context = FusionContext.current else {
             fatalError("Search must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -66,11 +65,11 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     /// Uses FusionContext.current for context (automatically set by `context.fuse { }`).
     ///
     /// - Parameter keyPath: KeyPath to the optional String field to search
-    public init(_ keyPath: KeyPath<T, String?>) {
+    public init(_ field: Field<T, String?>) {
         guard let context = FusionContext.current else {
             fatalError("Search must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -81,8 +80,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     /// - Parameters:
     ///   - keyPath: KeyPath to the String field to search
     ///   - context: IndexQueryContext for database access
-    public init(_ keyPath: KeyPath<T, String>, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
+    public init(_ field: Field<T, String>, context: IndexQueryContext) {
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -91,18 +90,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     /// - Parameters:
     ///   - keyPath: KeyPath to the optional String field to search
     ///   - context: IndexQueryContext for database access
-    public init(_ keyPath: KeyPath<T, String?>, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Search query with a field name string
-    ///
-    /// - Parameters:
-    ///   - fieldName: The field name to search
-    ///   - context: IndexQueryContext for database access
-    public init(fieldName: String, context: IndexQueryContext) {
-        self.fieldName = fieldName
+    public init(_ field: Field<T, String?>, context: IndexQueryContext) {
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -157,15 +146,27 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     // MARK: - Index Discovery
 
     /// Find the index descriptor using kindIdentifier and fieldName
-    private func findIndexDescriptor() -> IndexDescriptor? {
-        T.indexDescriptors.first { descriptor in
-            // 1. Filter by kindIdentifier
-            guard descriptor.kindIdentifier == FullTextIndexKind<T>.identifier else {
-                return false
-            }
-            // 2. Match by fieldName
-            return descriptor.fieldNames.contains(fieldName)
+    private func resolveIndexDescriptor() throws -> IndexDescriptor {
+        let matches = try T.indexDescriptors.filter { descriptor in
+            descriptor.kindIdentifier == "fulltext"
+                && descriptor.kind.fields.contains(where: {
+                    $0.identity == field
+                })
         }
+        guard let descriptor = matches.first else {
+            throw FusionQueryError.indexNotFound(
+                type: T.persistableType,
+                field: field.name,
+                kind: "fulltext"
+            )
+        }
+        guard matches.count == 1 else {
+            throw FullTextQueryError.ambiguousIndex(
+                entity: T.persistableType,
+                field: field.name
+            )
+        }
+        return descriptor
     }
 
     // MARK: - FusionQuery
@@ -174,14 +175,10 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         guard !searchTerms.isEmpty else { return [] }
 
         // Find index descriptor
-        guard let descriptor = findIndexDescriptor() else {
-            throw FusionQueryError.indexNotFound(
-                type: T.persistableType,
-                field: fieldName,
-                kind: "fulltext"
-            )
-        }
-        let kind = try FullTextIndexKind<T>(canonical: descriptor.kind)
+        let descriptor = try resolveIndexDescriptor()
+        let configuration = try FullTextIndexConfiguration(
+            metadata: descriptor.kind
+        )
 
         let indexName = descriptor.name
 
@@ -194,7 +191,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
             try await self.searchFullText(
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
-                kind: kind,
+                configuration: configuration,
                 indexSubspace: indexSubspace,
                 transaction: transaction
             )
@@ -209,17 +206,19 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         }
 
         // Match items with scores
+        var scoresByIdentifier: [Bytes: Double] = [:]
+        scoresByIdentifier.reserveCapacity(scoredIds.count)
+        for result in scoredIds {
+            scoresByIdentifier[
+                FullTextDocumentLookupKey.key(for: result.id)
+            ] = result.score
+        }
         var results: [ScoredResult<T>] = []
+        results.reserveCapacity(items.count)
         for item in items {
-            // Find matching score
-            for result in scoredIds {
-                if let pkId = result.id[0] as? String, "\(item.id)" == pkId {
-                    results.append(ScoredResult(item: item, score: result.score))
-                    break
-                } else if let pkId = result.id[0] as? Int64, "\(item.id)" == "\(pkId)" {
-                    results.append(ScoredResult(item: item, score: result.score))
-                    break
-                }
+            let key = try FullTextDocumentLookupKey.key(for: item)
+            if let score = scoresByIdentifier[key] {
+                results.append(ScoredResult(item: item, score: score))
             }
         }
 
@@ -240,7 +239,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     private func searchFullText(
         terms: [String],
         matchMode: TextMatchMode,
-        kind: FullTextIndexKind<T>,
+        configuration: FullTextIndexConfiguration,
         indexSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> [(id: Tuple, score: Double)] {
@@ -249,7 +248,10 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         let statsSubspace = indexSubspace.subspace("stats")
         let dfSubspace = indexSubspace.subspace("df")
 
-        let termGroups = normalizeQueryTermGroups(terms, kind: kind)
+        let termGroups = normalizeQueryTermGroups(
+            terms,
+            configuration: configuration
+        )
         let normalizedTerms = uniqueTerms(termGroups.flatMap { $0 })
 
         // Get matching document IDs based on match mode
@@ -326,7 +328,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 if let value = try await transaction.getValue(for: termKey, snapshot: true) {
                     let posting = try FullTextStorageDecoder.posting(
                         from: value,
-                        positionsStored: kind.storePositions,
+                        positionsStored: configuration.storePositions,
                         term: term
                     )
                     termFrequencies[term] = posting.termFrequency
@@ -458,14 +460,10 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         indexSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
-        guard let descriptor = findIndexDescriptor() else {
-            throw FusionQueryError.indexNotFound(
-                type: T.persistableType,
-                field: fieldName,
-                kind: "fulltext"
-            )
-        }
-        let kind = try FullTextIndexKind<T>(canonical: descriptor.kind)
+        let descriptor = try resolveIndexDescriptor()
+        let configuration = try FullTextIndexConfiguration(
+            metadata: descriptor.kind
+        )
 
         let index = Index(
             name: descriptor.name,
@@ -477,10 +475,10 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
 
         let maintainer = FullTextIndexMaintainer<T>(
             index: index,
-            tokenizer: kind.tokenizer,
-            storePositions: kind.storePositions,
-            ngramSize: kind.ngramSize,
-            minTermLength: kind.minTermLength,
+            tokenizer: configuration.tokenizer,
+            storePositions: configuration.storePositions,
+            ngramSize: configuration.ngramSize,
+            minTermLength: configuration.minTermLength,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
@@ -595,12 +593,12 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
 
     private func normalizeQueryTermGroups(
         _ terms: [String],
-        kind: FullTextIndexKind<T>
+        configuration: FullTextIndexConfiguration
     ) -> [[String]] {
         let normalizer = FullTextTermNormalizer(
-            tokenizer: kind.tokenizer,
-            ngramSize: kind.ngramSize,
-            minTermLength: kind.minTermLength
+            tokenizer: configuration.tokenizer,
+            ngramSize: configuration.ngramSize,
+            minTermLength: configuration.minTermLength
         )
         return terms.map { term in
             uniqueTerms(normalizer.normalizedTerms(from: term))

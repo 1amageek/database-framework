@@ -1,9 +1,9 @@
-import Core
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
+import DatabaseKit
 import StorageKit
 import Testing
 @testable import DatabaseServer
@@ -31,7 +31,7 @@ struct CanonicalStatementMutationExecutorTests {
                 parameters: []
             )
             Issue.record("Expected the collection limit to reject the mutation")
-        } catch let error as QueryStructuralValidationError {
+        } catch QueryParameterBindingError.invalidStructure(let error) {
             #expect(
                 error == .resourceLimitExceeded(
                     resource: .collectionElements,
@@ -46,7 +46,7 @@ struct CanonicalStatementMutationExecutorTests {
 
     @Test("Mutation parameters are rejected before recursive binding")
     func mutationParametersAreValidatedBeforeBinding() throws {
-        var value = DatabaseValue.object([])
+        var value = FieldValue.object(FieldObject())
         for _ in 0..<7 {
             value = .array([value])
         }
@@ -67,11 +67,15 @@ struct CanonicalStatementMutationExecutorTests {
             _ = try admission.admit(
                 .ir(statement),
                 parameters: [
-                    DatabaseObjectField(number: 1, name: "value", value: value),
+                    QueryParameter(
+                        position: 1,
+                        name: "value",
+                        value: value
+                    ),
                 ]
             )
             Issue.record("Expected parameter preflight to reject recursive binding")
-        } catch let error as QueryStructuralValidationError {
+        } catch QueryParameterBindingError.invalidStructure(let error) {
             #expect(
                 error == .resourceLimitExceeded(
                     resource: .nestingDepth,
@@ -90,7 +94,7 @@ struct CanonicalStatementMutationExecutorTests {
         let context = DatabaseOperationContext(
             container: container,
             requestID: 1,
-            metadata: DatabaseRequestMetadata(),
+            metadata: OperationRequestMetadata(),
             requestPayload: []
         )
         let executor = CanonicalDatabaseStatementMutationExecutor()
@@ -108,8 +112,16 @@ struct CanonicalStatementMutationExecutorTests {
         let insertEffects = try await execute(
             .insert(insert),
             parameters: [
-                DatabaseObjectField(number: 1, name: "id", value: .string("event-1")),
-                DatabaseObjectField(number: 2, name: "title", value: .string("Runtime")),
+                QueryParameter(
+                    position: 1,
+                    name: "id",
+                    value: .string("event-1")
+                ),
+                QueryParameter(
+                    position: 2,
+                    name: "title",
+                    value: .string("Runtime")
+                ),
             ],
             executor: executor,
             context: context
@@ -134,14 +146,22 @@ struct CanonicalStatementMutationExecutorTests {
         let updateEffects = try await execute(
             .update(update),
             parameters: [
-                DatabaseObjectField(number: 1, name: "id", value: .string("event-1")),
-                DatabaseObjectField(number: 2, name: "increment", value: .int64(3)),
+                QueryParameter(
+                    position: 1,
+                    name: "id",
+                    value: .string("event-1")
+                ),
+                QueryParameter(
+                    position: 2,
+                    name: "increment",
+                    value: .int64(3)
+                ),
             ],
             executor: executor,
             context: context
         )
         #expect(updateEffects.count == 1)
-        #expect(updateEffects[0].kind == .update)
+        #expect(updateEffects[0].kind == MutationExecuteOperation.Kind.update)
         #expect(try await load("event-1", container: container)?.priority == 7)
 
         let delete = DeleteQuery(
@@ -151,13 +171,17 @@ struct CanonicalStatementMutationExecutorTests {
         let deleteEffects = try await execute(
             .delete(delete),
             parameters: [
-                DatabaseObjectField(number: 1, name: "id", value: .string("event-1")),
+                QueryParameter(
+                    position: 1,
+                    name: "id",
+                    value: .string("event-1")
+                ),
             ],
             executor: executor,
             context: context
         )
         #expect(deleteEffects.count == 1)
-        #expect(deleteEffects[0].kind == .delete)
+        #expect(deleteEffects[0].kind == MutationExecuteOperation.Kind.delete)
         #expect(try await load("event-1", container: container) == nil)
     }
 
@@ -167,12 +191,12 @@ struct CanonicalStatementMutationExecutorTests {
         let context = DatabaseOperationContext(
             container: container,
             requestID: 2,
-            metadata: DatabaseRequestMetadata(),
+            metadata: OperationRequestMetadata(),
             requestPayload: []
         )
         let executor = CanonicalDatabaseStatementMutationExecutor()
         let entity = DatabaseEndpointEntity.persistableType
-        let identity = PersistableIdentity(entity: entity, id: .string("event-2"))
+        let identity = try EntityReference(entity: entity, id: .string("event-2"))
 
         _ = try await execute(
             .insert(InsertQuery(
@@ -208,7 +232,7 @@ struct CanonicalStatementMutationExecutorTests {
 
         #expect(try await load("event-2", container: container)?.title == "Original")
 
-        let missingIdentity = PersistableIdentity(entity: entity, id: .string("missing"))
+        let missingIdentity = try EntityReference(entity: entity, id: .string("missing"))
         do {
             _ = try await execute(
                 .update(UpdateQuery(
@@ -263,7 +287,7 @@ struct CanonicalStatementMutationExecutorTests {
             try await executor.execute(
                 prepared,
                 preconditions: preconditions,
-                graphPartitions: [],
+                graphPartitions: FieldObject(),
                 context: context,
                 transaction: transaction
             )

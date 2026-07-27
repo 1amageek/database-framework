@@ -8,9 +8,9 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
-import Permuted
+import DatabaseKit
 import StorageKit
 
 /// Maintainer for PERMUTED indexes
@@ -131,51 +131,10 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
         prefixValues: [any TupleElement],
         transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
-        let prefixSubspace: Subspace
-        if prefixValues.isEmpty {
-            prefixSubspace = subspace
-        } else {
-            // Manually construct prefix to avoid double-wrapping
-            // (subspace.subspace(Tuple) would wrap the Tuple as a single element)
-            let prefixKey = subspace.prefix + Tuple(prefixValues).pack()
-            prefixSubspace = Subspace(prefix: prefixKey)
-        }
-
-        let (begin, end) = prefixSubspace.range()
-
-        var results: [[any TupleElement]] = []
-
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            snapshot: true
-        )
-
-        for (key, _) in sequence {
-            guard prefixSubspace.contains(key) else { break }
-
-            // Extract primary key from the key
-            // Key structure: [prefix][remaining_fields...][primaryKey]
-            let keyTuple = try prefixSubspace.unpack(key)
-            let elements = try keyTuple.elements()
-
-            // The last element(s) are the primary key
-            // We need to know how many fields are in the permutation to extract primary key
-            let fieldCount = permutation.size
-            let prefixFieldCount = prefixValues.count
-            let remainingFieldCount = fieldCount - prefixFieldCount
-
-            guard elements.count > remainingFieldCount else {
-                throw PermutedIndexError.corruptedEntry(
-                    expectedMinimumElementCount: remainingFieldCount + 1,
-                    actual: elements.count
-                )
-            }
-            let primaryKeyElements = Array(elements.suffix(from: remainingFieldCount))
-            results.append(primaryKeyElements)
-        }
-
-        return results
+        try await PermutedIndexReader(
+            permutation: permutation,
+            subspace: subspace
+        ).primaryKeys(prefixedBy: prefixValues, transaction: transaction)
     }
 
     /// Scan entries matching exact values in permuted order
@@ -188,42 +147,10 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
         values: [any TupleElement],
         transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
-        guard values.count == permutation.size else {
-            throw PermutedIndexError.fieldCountMismatch(
-                expected: permutation.size,
-                got: values.count
-            )
-        }
-
-        // Manually construct prefix to avoid double-wrapping
-        let valueKey = subspace.prefix + Tuple(values).pack()
-        let valueSubspace = Subspace(prefix: valueKey)
-        let (begin, end) = valueSubspace.range()
-
-        var results: [[any TupleElement]] = []
-
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            snapshot: true
-        )
-
-        for (key, _) in sequence {
-            guard valueSubspace.contains(key) else { break }
-
-            // The entire remaining key is the primary key
-            let keyTuple = try valueSubspace.unpack(key)
-            let elements = try keyTuple.elements()
-            guard !elements.isEmpty else {
-                throw PermutedIndexError.corruptedEntry(
-                    expectedMinimumElementCount: 1,
-                    actual: 0
-                )
-            }
-            results.append(elements)
-        }
-
-        return results
+        try await PermutedIndexReader(
+            permutation: permutation,
+            subspace: subspace
+        ).primaryKeys(matching: values, transaction: transaction)
     }
 
     /// Get all entries in the permuted index
@@ -233,36 +160,10 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public func scanAll(
         transaction: any TransactionAccess
     ) async throws -> [(permutedFields: [any TupleElement], primaryKey: [any TupleElement])] {
-        let (begin, end) = subspace.range()
-
-        var results: [(permutedFields: [any TupleElement], primaryKey: [any TupleElement])] = []
-
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            snapshot: true
-        )
-
-        for (key, _) in sequence {
-            guard subspace.contains(key) else { break }
-
-            let keyTuple = try subspace.unpack(key)
-            let elements = try keyTuple.elements()
-
-            // Split into permuted fields and primary key
-            let fieldCount = permutation.size
-            guard elements.count > fieldCount else {
-                throw PermutedIndexError.corruptedEntry(
-                    expectedMinimumElementCount: fieldCount + 1,
-                    actual: elements.count
-                )
-            }
-            let permutedFields = Array(elements.prefix(fieldCount))
-            let primaryKey = Array(elements.suffix(from: fieldCount))
-            results.append((permutedFields, primaryKey))
-        }
-
-        return results
+        try await PermutedIndexReader(
+            permutation: permutation,
+            subspace: subspace
+        ).entries(transaction: transaction)
     }
 
     /// Convert permuted field values back to original order
@@ -271,7 +172,10 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// - Returns: Values in original field order
     /// - Throws: PermutedIndexError if value count doesn't match
     public func toOriginalOrder(_ permutedValues: [any TupleElement]) throws -> [any TupleElement] {
-        return try permutation.inverse.apply(permutedValues)
+        try PermutedIndexReader(
+            permutation: permutation,
+            subspace: subspace
+        ).originalOrder(for: permutedValues)
     }
 
     // MARK: - Private Methods

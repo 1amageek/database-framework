@@ -1,11 +1,11 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import GraphIndex
-import QueryIR
+import DatabaseKit
 import StorageKit
 import Synchronization
 import Testing
@@ -64,14 +64,14 @@ struct SPARQLStatementMutationExecutorTests {
         let container = try await makeContainer()
         let executor = CanonicalDatabaseStatementMutationExecutor()
         let graphIRI = "https://example.test/graphs/events"
-        let defaultQuad = QueryIR.Quad(
+        let defaultQuad = Quad(
             triple: TriplePattern(
                 subject: .iri("https://example.test/events/1"),
                 predicate: .iri("https://example.test/title"),
                 object: .literal(.string("Runtime"))
             )
         )
-        let namedQuad = QueryIR.Quad(
+        let namedQuad = Quad(
             graph: .iri(graphIRI),
             triple: TriplePattern(
                 subject: .iri("https://example.test/events/2"),
@@ -121,7 +121,7 @@ struct SPARQLStatementMutationExecutorTests {
         let executor = CanonicalDatabaseStatementMutationExecutor()
         let subject = "https://example.test/events/replace"
         let predicate = "https://example.test/status"
-        let original = QueryIR.Quad(
+        let original = Quad(
             triple: TriplePattern(
                 subject: .iri(subject),
                 predicate: .iri(predicate),
@@ -143,9 +143,9 @@ struct SPARQLStatementMutationExecutorTests {
             .modify(
                 SPARQLModifyOperation(
                     action: .deleteAndInsert(
-                        delete: [QueryIR.Quad(triple: match)],
+                        delete: [Quad(triple: match)],
                         insert: [
-                        QueryIR.Quad(
+                        Quad(
                             triple: TriplePattern(
                                 subject: .variable("subject"),
                                 predicate: .iri(predicate),
@@ -168,7 +168,7 @@ struct SPARQLStatementMutationExecutorTests {
             container: container
         )
         #expect(rows.count == 1)
-        #expect(rows[0].subject == .iri(subject))
+        #expect(rows[0].subject == .iri(try RDFIRI(subject)))
         guard case .literal(let literal) = rows[0].object else {
             Issue.record("Expected the replacement RDF literal")
             return
@@ -206,11 +206,14 @@ struct SPARQLStatementMutationExecutorTests {
                 )
             ),
             options: ReadExecutionContext(),
-            partitions: []
+            partitions: FieldObject()
         )
         #expect(response.continuation == nil)
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["graph"] == .rdfTerm(.iri(graphIRI)))
+        #expect(
+            response.rows[0].fields["graph"]
+                == .rdfTerm(try RDFTerm.iri(validating: graphIRI))
+        )
     }
 
     @Test("A mutation limit failure rolls back earlier RDF writes")
@@ -225,7 +228,7 @@ struct SPARQLStatementMutationExecutorTests {
             )
         )
         let quads = ["1", "2"].map { suffix in
-            QueryIR.Quad(
+            Quad(
                 triple: TriplePattern(
                     subject: .iri("https://example.test/events/\(suffix)"),
                     predicate: .iri("https://example.test/value"),
@@ -260,8 +263,8 @@ struct SPARQLStatementMutationExecutorTests {
         let container = try await makeContainer()
         let executor = CanonicalDatabaseStatementMutationExecutor()
         let predicate = "https://example.test/value"
-        func quad(_ value: String) -> QueryIR.Quad {
-            QueryIR.Quad(
+        func quad(_ value: String) -> Quad {
+            Quad(
                 triple: TriplePattern(
                     subject: .blankNode("event"),
                     predicate: .iri(predicate),
@@ -296,14 +299,14 @@ struct SPARQLStatementMutationExecutorTests {
         let container = try await makeContainer()
         let executor = CanonicalDatabaseStatementMutationExecutor()
         let predicate = "https://example.test/status"
-        let oldQuad = QueryIR.Quad(
+        let oldQuad = Quad(
             triple: TriplePattern(
                 subject: .iri("https://example.test/events/old"),
                 predicate: .iri(predicate),
                 object: .literal(.string("old"))
             )
         )
-        let currentQuad = QueryIR.Quad(
+        let currentQuad = Quad(
             triple: TriplePattern(
                 subject: .iri("https://example.test/events/current"),
                 predicate: .iri(predicate),
@@ -320,7 +323,7 @@ struct SPARQLStatementMutationExecutorTests {
             .deleteWhere(
                 DeleteWhereQuery(
                     pattern: [
-                        QueryIR.Quad(
+                        Quad(
                             triple: TriplePattern(
                                 subject: .variable("subject"),
                                 predicate: .iri(predicate),
@@ -341,7 +344,10 @@ struct SPARQLStatementMutationExecutorTests {
             container: container
         )
         #expect(rows.count == 1)
-        #expect(rows[0].subject == .iri("https://example.test/events/current"))
+        #expect(
+            rows[0].subject
+                == .iri(try RDFIRI("https://example.test/events/current"))
+        )
     }
 
     @Test("WITH controls templates while USING controls the WHERE dataset")
@@ -352,7 +358,7 @@ struct SPARQLStatementMutationExecutorTests {
         let source = "https://example.test/graphs/source"
         let subject = "https://example.test/events/with-using"
         let predicate = "https://example.test/status"
-        let targetQuad = QueryIR.Quad(
+        let targetQuad = Quad(
             graph: .iri(target),
             triple: TriplePattern(
                 subject: .iri(subject),
@@ -360,7 +366,7 @@ struct SPARQLStatementMutationExecutorTests {
                 object: .literal(.string("old"))
             )
         )
-        let sourceQuad = QueryIR.Quad(
+        let sourceQuad = Quad(
             graph: .iri(source),
             triple: TriplePattern(
                 subject: .iri(subject),
@@ -380,7 +386,7 @@ struct SPARQLStatementMutationExecutorTests {
                     withGraph: target,
                     action: .deleteAndInsert(
                         delete: [
-                            QueryIR.Quad(
+                            Quad(
                                 triple: TriplePattern(
                                     subject: .iri(subject),
                                     predicate: .iri(predicate),
@@ -389,7 +395,7 @@ struct SPARQLStatementMutationExecutorTests {
                             ),
                         ],
                         insert: [
-                            QueryIR.Quad(
+                            Quad(
                                 triple: TriplePattern(
                                     subject: .iri(subject),
                                     predicate: .iri(predicate),
@@ -446,7 +452,7 @@ struct SPARQLStatementMutationExecutorTests {
             .insertData(
                 InsertDataQuery(
                     quads: [
-                        QueryIR.Quad(
+                        Quad(
                             graph: .iri(populatedGraph),
                             triple: TriplePattern(
                                 subject: .iri("https://example.test/events/drop"),
@@ -506,7 +512,7 @@ struct SPARQLStatementMutationExecutorTests {
             .insertData(
                 InsertDataQuery(
                     quads: [
-                        QueryIR.Quad(
+                        Quad(
                             graph: .iri(source),
                             triple: TriplePattern(
                                 subject: .iri("https://example.test/events/source"),
@@ -514,7 +520,7 @@ struct SPARQLStatementMutationExecutorTests {
                                 object: .literal(.string("source"))
                             )
                         ),
-                        QueryIR.Quad(
+                        Quad(
                             graph: .iri(destination),
                             triple: TriplePattern(
                                 subject: .iri("https://example.test/events/old"),
@@ -614,7 +620,7 @@ struct SPARQLStatementMutationExecutorTests {
             .insertData(
                 InsertDataQuery(
                     quads: [
-                        QueryIR.Quad(
+                        Quad(
                             graph: .iri(source),
                             triple: TriplePattern(
                                 subject: .iri(
@@ -673,14 +679,14 @@ struct SPARQLStatementMutationExecutorTests {
         let container = try await makeContainer()
         let executor = CanonicalDatabaseStatementMutationExecutor()
         let predicate = "https://example.test/value"
-        let first = QueryIR.Quad(
+        let first = Quad(
             triple: TriplePattern(
                 subject: .iri("https://example.test/events/first"),
                 predicate: .iri(predicate),
                 object: .literal(.string("first"))
             )
         )
-        let second = QueryIR.Quad(
+        let second = Quad(
             triple: TriplePattern(
                 subject: .iri("https://example.test/events/second"),
                 predicate: .iri(predicate),
@@ -710,7 +716,7 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(rows.count == 1)
         #expect(
             rows[0].subject ==
-                .iri("https://example.test/events/second")
+                .iri(try RDFIRI("https://example.test/events/second"))
         )
     }
 
@@ -725,8 +731,8 @@ struct SPARQLStatementMutationExecutorTests {
                 maximumMutations: 1
             )
         )
-        func quad(_ suffix: String) -> QueryIR.Quad {
-            QueryIR.Quad(
+        func quad(_ suffix: String) -> Quad {
+            Quad(
                 triple: TriplePattern(
                     subject: .iri("https://example.test/events/\(suffix)"),
                     predicate: .iri("https://example.test/value"),
@@ -769,7 +775,7 @@ struct SPARQLStatementMutationExecutorTests {
     @Test("Direct QueryIR rejects a blank node label reused by INSERT DATA operations")
     func updateSequenceRejectsBlankNodeLabelReuse() async throws {
         let container = try await makeContainer()
-        let quad = QueryIR.Quad(
+        let quad = Quad(
             triple: TriplePattern(
                 subject: .blankNode("event"),
                 predicate: .iri("https://example.test/value"),
@@ -812,7 +818,7 @@ struct SPARQLStatementMutationExecutorTests {
         let executor = CanonicalDatabaseStatementMutationExecutor(
             loadSource: AnySPARQLLoadSource(source)
         )
-        let invalidDelete = QueryIR.Quad(
+        let invalidDelete = Quad(
             triple: TriplePattern(
                 subject: .blankNode("deleted"),
                 predicate: .iri("https://example.test/value"),
@@ -861,9 +867,13 @@ struct SPARQLStatementMutationExecutorTests {
             SPARQLLoadDocument(
                 byteCount: 128,
                 triples: [
-                    Graph.RDFTriple(
-                        subject: .iri("https://example.test/events/load"),
-                        predicate: .iri("https://example.test/value"),
+                    RDFTriple(
+                        subject: .iri(
+                            try RDFIRI("https://example.test/events/load")
+                        ),
+                        predicate: try RDFPredicateIRI(
+                            "https://example.test/value"
+                        ),
                         object: .literal(.string("loaded"))
                     ),
                 ]
@@ -984,9 +994,13 @@ struct SPARQLStatementMutationExecutorTests {
         }
 
         let tooManyTriples = RecordingSPARQLLoadSource { _ in
-            let triple = Graph.RDFTriple(
-                subject: .iri("https://example.test/events/limit"),
-                predicate: .iri("https://example.test/value"),
+            let triple = try RDFTriple(
+                subject: .iri(
+                    RDFIRI("https://example.test/events/limit")
+                ),
+                predicate: RDFPredicateIRI(
+                    "https://example.test/value"
+                ),
                 object: .literal(.string("value"))
             )
             return SPARQLLoadDocument(
@@ -1026,9 +1040,13 @@ struct SPARQLStatementMutationExecutorTests {
             SPARQLLoadDocument(
                 byteCount: 32,
                 triples: [
-                    Graph.RDFTriple(
-                        subject: .iri("https://example.test/events/replay"),
-                        predicate: .iri("https://example.test/value"),
+                    RDFTriple(
+                        subject: .iri(
+                            try RDFIRI("https://example.test/events/replay")
+                        ),
+                        predicate: try RDFPredicateIRI(
+                            "https://example.test/value"
+                        ),
                         object: .literal(.string("value"))
                     ),
                 ]
@@ -1103,7 +1121,7 @@ struct SPARQLStatementMutationExecutorTests {
             .insertData(
                 InsertDataQuery(
                     quads: [
-                        QueryIR.Quad(
+                        Quad(
                             triple: TriplePattern(
                                 subject: .iri(subject),
                                 predicate: .iri(predicate),
@@ -1121,7 +1139,7 @@ struct SPARQLStatementMutationExecutorTests {
             .modify(
                 SPARQLModifyOperation(
                     action: .insert([
-                        QueryIR.Quad(
+                        Quad(
                             triple: TriplePattern(
                                 subject: .variable("subject"),
                                 predicate: .iri(predicate),
@@ -1166,7 +1184,7 @@ struct SPARQLStatementMutationExecutorTests {
             .insertData(
                 InsertDataQuery(
                     quads: [
-                        QueryIR.Quad(
+                        Quad(
                             graph: .iri(graphIRI),
                             triple: TriplePattern(
                                 subject: .iri("https://example.test/events/silent"),
@@ -1206,7 +1224,7 @@ struct SPARQLStatementMutationExecutorTests {
         let executor = CanonicalDatabaseStatementMutationExecutor(
             graphStore: store
         )
-        let quad = QueryIR.Quad(
+        let quad = Quad(
             triple: TriplePattern(
                 subject: .iri("https://example.test/events/retry"),
                 predicate: .iri("https://example.test/value"),
@@ -1219,7 +1237,7 @@ struct SPARQLStatementMutationExecutorTests {
                 .insertData(InsertDataQuery(quads: [quad])),
                 executor: executor,
                 context: context(container, idempotencyKey: "meter-retry"),
-                budget: DatabaseExecutionBudget(
+                budget: ExecutionBudget(
                     maximumRows: 1,
                     maximumWorkUnits: 2,
                     timeoutMilliseconds: 30_000
@@ -1264,7 +1282,7 @@ struct SPARQLStatementMutationExecutorTests {
         DatabaseOperationContext(
             container: container,
             requestID: 1,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 idempotencyKey: idempotencyKey
             ),
             requestPayload: []
@@ -1275,7 +1293,7 @@ struct SPARQLStatementMutationExecutorTests {
         _ operation: SPARQLUpdateOperation,
         executor: CanonicalDatabaseStatementMutationExecutor,
         context: DatabaseOperationContext,
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget(),
+        budget: ExecutionBudget = ExecutionBudget(),
         structuralLimits: QueryStructuralLimits = .default
     ) async throws -> MutationExecuteOperation.RDFEffect {
         try await executeRDF(
@@ -1291,7 +1309,7 @@ struct SPARQLStatementMutationExecutorTests {
         _ request: SPARQLUpdateRequest,
         executor: CanonicalDatabaseStatementMutationExecutor,
         context: DatabaseOperationContext,
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget(),
+        budget: ExecutionBudget = ExecutionBudget(),
         structuralLimits: QueryStructuralLimits = .default
     ) async throws -> MutationExecuteOperation.RDFEffect {
         let statement = try DatabaseStatementAdmission(
@@ -1312,7 +1330,7 @@ struct SPARQLStatementMutationExecutorTests {
             try await executor.execute(
                 prepared,
                 preconditions: [],
-                graphPartitions: [],
+                graphPartitions: FieldObject(),
                 context: context,
                 transaction: transaction
             )
@@ -1331,24 +1349,23 @@ struct SPARQLStatementMutationExecutorTests {
         idempotencyKey: String,
         endpoint: DatabaseEndpoint
     ) async throws -> MutationExecuteOperation.Response {
-        let request = try DatabaseEnvelopeCodec.encodeRequest(
-            MutationExecuteOperation.self,
+        let request = try DatabaseWireEncoder().encodeRequest(
+            DatabaseOperations.mutationExecute,
             requestID: requestID,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 idempotencyKey: idempotencyKey
             ),
             request: payload
         )
-        let response = try DatabaseEnvelopeCodec.decodeResponse(
-            try await endpoint.execute(request)
+        let response = try DatabaseWireDecoder().decodeResponse(
+            DatabaseOperations.mutationExecute,
+            from: try await endpoint.execute(request),
+            matching: requestID
         )
-        guard case .success(let successPayload) = response.payload else {
+        guard case .success(let value) = response else {
             throw EndpointInvocationFailure.remoteFailure
         }
-        return try DatabaseEnvelopeCodec.decode(
-            MutationExecuteOperation.Response.self,
-            from: successPayload
-        )
+        return value
     }
 
     private func scan(
@@ -1366,7 +1383,7 @@ struct SPARQLStatementMutationExecutorTests {
                 readMode: .snapshot,
                 transaction: transaction,
                 workMeter: DatabaseWorkMeter(
-                    budget: DatabaseExecutionBudget()
+                    budget: ExecutionBudget()
                 )
             )
         }
@@ -1382,7 +1399,7 @@ struct SPARQLStatementMutationExecutorTests {
                 readMode: .snapshot,
                 transaction: transaction,
                 workMeter: DatabaseWorkMeter(
-                    budget: DatabaseExecutionBudget()
+                    budget: ExecutionBudget()
                 )
             )
         }

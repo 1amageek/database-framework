@@ -9,9 +9,9 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseEngine
-import Core
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
-import Geospatial
 
 // MARK: - Spatial Query Result
 
@@ -171,7 +171,7 @@ public struct PolygonQueryOptions: Sendable {
 /// ```
 public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
-    private let fieldName: String
+    private let field: FieldIdentity
     private var spatialConstraint: SpatialConstraint?
     private var fetchLimit: Int?
     private var shouldOrderByDistance: Bool = false
@@ -187,9 +187,12 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     private var knnMaxKeysPerIteration: Int = 10000
     private var knnMaxTotalKeys: Int = 50000
 
-    internal init(queryContext: IndexQueryContext, fieldName: String) {
+    internal init(
+        queryContext: IndexQueryContext,
+        field: FieldIdentity
+    ) {
         self.queryContext = queryContext
-        self.fieldName = fieldName
+        self.field = field
     }
 
     /// Search within a bounding box
@@ -308,9 +311,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             throw SpatialQueryError.indexNotFound(requestedIndexIdentity)
         }
 
-        let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)
-        let level = kind.level
-        let encoding = kind.encoding
+        let (encoding, level) = try spatialConfiguration(
+            descriptor.kind
+        )
 
         let indexName = descriptor.name
 
@@ -334,7 +337,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         var items = try await queryContext.fetchItems(ids: scanResult.keys, type: T.self)
         var limitReason = scanResult.limitReason
 
-        items = filterItems(items, matching: constraint)
+        items = try filterItems(items, matching: constraint)
 
         if let fetchLimit, items.count > fetchLimit {
             items = Array(items.prefix(fetchLimit))
@@ -346,11 +349,13 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         // orderByDistance() only controls whether results are sorted by distance
         let resultsWithDistance: [(item: T, distance: Double?)]
         if let ref = referencePoint {
-            let itemsWithDistances = items.map { item -> (item: T, distance: Double?) in
-                guard let location = extractGeoPoint(from: item) else {
-                    return (item: item, distance: nil)
+            var itemsWithDistances: [(item: T, distance: Double?)] = []
+            itemsWithDistances.reserveCapacity(items.count)
+            for item in items {
+                let distance = try extractGeoPoint(from: item).map {
+                    distanceInMeters(from: ref, to: $0)
                 }
-                return (item: item, distance: distanceInMeters(from: ref, to: location))
+                itemsWithDistances.append((item: item, distance: distance))
             }
 
             if shouldOrderByDistance {
@@ -412,46 +417,88 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
     /// Find the index descriptor using kindIdentifier and fieldName
     private func findIndexDescriptor() -> IndexDescriptor? {
-        T.indexDescriptors.first { descriptor in
-            guard descriptor.kindIdentifier == SpatialIndexKind<T>.identifier else {
-                return false
-            }
-            return descriptor.fieldNames.contains(fieldName)
+        queryContext.schema.indexDescriptors(for: T.persistableType).first {
+            $0.kind.identifier == "spatial"
+                && $0.fieldNames == [field.name]
         }
     }
 
     /// Identity used to diagnose a missing index declaration.
     private var requestedIndexIdentity: String {
-        "\(T.persistableType).\(fieldName)"
+        "\(T.persistableType).\(field.name)"
     }
 
-    /// Extract GeoPoint from item using Persistable dynamicMember subscript
-    private func extractGeoPoint(from item: T) -> GeoPoint? {
-        guard let value = item[dynamicMember: fieldName] else { return nil }
-        return value as? GeoPoint
+    private func spatialConfiguration(
+        _ metadata: IndexKindMetadata
+    ) throws -> (encoding: SpatialEncoding, level: Int) {
+        let definition = try IndexDefinition(metadata: metadata)
+        guard case .spatial(let encoding, let level) = definition else {
+            throw SpatialQueryError.indexNotFound(
+                requestedIndexIdentity
+            )
+        }
+        return (encoding, level)
     }
 
-    private func filterItems(_ items: [T], matching constraint: SpatialConstraint) -> [T] {
-        items.filter { item in
-            guard let location = extractGeoPoint(from: item) else {
-                return false
+    private func extractGeoPoint(from item: T) throws -> GeoPoint? {
+        guard let value = try item.persistedFieldValue(for: field) else {
+            throw SpatialIndexMaintenanceError.missingCoordinate(
+                fieldName: field.name
+            )
+        }
+        switch value {
+        case .null:
+            return nil
+        case .geographicPoint(let point):
+            return GeoPoint(point.latitude, point.longitude)
+        case .geographicPosition(let position):
+            return GeoPoint(
+                position.point.latitude,
+                position.point.longitude
+            )
+        default:
+            throw SpatialIndexMaintenanceError.unsupportedCoordinateValue(
+                fieldName: field.name
+            )
+        }
+    }
+
+    private func filterItems(
+        _ items: [T],
+        matching constraint: SpatialConstraint
+    ) throws -> [T] {
+        var matches: [T] = []
+        matches.reserveCapacity(items.count)
+        for item in items {
+            guard let location = try extractGeoPoint(from: item) else {
+                continue
             }
-
+            let isMatch: Bool
             switch constraint.type {
             case .withinDistance(let center, let radiusMeters):
                 let centerPoint = GeoPoint(center.latitude, center.longitude)
-                return distanceInMeters(from: centerPoint, to: location) <= radiusMeters
+                isMatch = distanceInMeters(
+                    from: centerPoint,
+                    to: location
+                ) <= radiusMeters
 
             case .withinBounds(let minLat, let minLon, let maxLat, let maxLon):
-                return location.latitude >= minLat &&
+                isMatch = location.latitude >= minLat &&
                     location.latitude <= maxLat &&
                     location.longitude >= minLon &&
                     location.longitude <= maxLon
 
             case .withinPolygon(let points):
-                return isPointInPolygon(point: location, polygon: points)
+                isMatch = isPointInPolygon(
+                    point: location,
+                    polygon: points
+                )
+            }
+            if isMatch {
+                matches.append(item)
             }
         }
+        return matches
     }
 
     // MARK: - Distance Calculation
@@ -704,9 +751,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             throw SpatialQueryError.indexNotFound(requestedIndexIdentity)
         }
 
-        let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)
-        let level = kind.level
-        let encoding = kind.encoding
+        let (encoding, level) = try spatialConfiguration(
+            descriptor.kind
+        )
 
         let indexName = descriptor.name
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
@@ -773,7 +820,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
                 guard !seenIds.contains(itemId) else { continue }
                 seenIds.insert(itemId)
 
-                guard let location = extractGeoPoint(from: item) else { continue }
+                guard let location = try extractGeoPoint(from: item) else {
+                    continue
+                }
 
                 let distanceMeters = distanceInMeters(from: center, to: location)
 
@@ -889,9 +938,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             throw SpatialQueryError.indexNotFound(requestedIndexIdentity)
         }
 
-        let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)
-        let level = kind.level
-        let encoding = kind.encoding
+        let (encoding, level) = try spatialConfiguration(
+            descriptor.kind
+        )
 
         let indexName = descriptor.name
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
@@ -903,7 +952,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             indexSubspace: indexSubspace,
             encoding: encoding,
             level: level,
-            fieldName: fieldName,
+            fieldName: field.name,
             maxCellsToScan: knnMaxKeysPerIteration,
             maxPointsToScan: knnMaxTotalKeys
         )
@@ -951,10 +1000,12 @@ public struct SpatialEntryPoint<T: Persistable>: Sendable {
     ///
     /// - Parameter keyPath: KeyPath to the GeoPoint field
     /// - Returns: Spatial query builder
-    public func location(_ keyPath: KeyPath<T, GeoPoint>) -> SpatialQueryBuilder<T> {
+    public func location(
+        _ field: Field<T, GeographicPoint>
+    ) -> SpatialQueryBuilder<T> {
         SpatialQueryBuilder(
             queryContext: queryContext,
-            fieldName: T.fieldName(for: keyPath)
+            field: field.identity
         )
     }
 
@@ -962,10 +1013,12 @@ public struct SpatialEntryPoint<T: Persistable>: Sendable {
     ///
     /// - Parameter keyPath: KeyPath to the optional GeoPoint field
     /// - Returns: Spatial query builder
-    public func location(_ keyPath: KeyPath<T, GeoPoint?>) -> SpatialQueryBuilder<T> {
+    public func location(
+        _ field: Field<T, GeographicPoint?>
+    ) -> SpatialQueryBuilder<T> {
         SpatialQueryBuilder(
             queryContext: queryContext,
-            fieldName: T.fieldName(for: keyPath)
+            field: field.identity
         )
     }
 }

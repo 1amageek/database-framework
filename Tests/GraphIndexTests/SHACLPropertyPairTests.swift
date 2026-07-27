@@ -1,7 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import Foundation
 import StorageKit
 import Testing
 @testable import DatabaseEngine
@@ -13,16 +13,17 @@ struct SHACLPropertyPairTests {
     struct Statement {
         #Directory<Statement>("shacl_property_pair_tests", "statements")
 
-        var id: String = ULID().ulidString
-        var subject: DatabaseRDFTerm = .iri("urn:subject")
-        var predicate: DatabaseRDFTerm = .iri("urn:predicate")
-        var object: DatabaseRDFTerm = .iri("urn:object")
+        var id: String = Foundation.UUID().uuidString
+        var subject: RDFTerm = .iri(.xsdString)
+        var predicate: RDFTerm = .iri(.xsdString)
+        var object: RDFTerm = .iri(.xsdString)
 
-        #Index(RDFQuadIndexKind<Statement>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object
-        ))
+        #Index(
+            .rdfDataset,
+            from: \Statement.subject,
+            edge: \Statement.predicate,
+            to: \Statement.object
+        )
     }
 
     private static let rdfType =
@@ -31,8 +32,8 @@ struct SHACLPropertyPairTests {
         "http://www.w3.org/2001/XMLSchema#decimal"
 
     private func setupContainer() async throws -> DBContainer {
-        let schema = Schema(
-            [Statement.self],
+        let schema = try Schema(
+            entities: [try Statement.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
         return try await DBContainer.open(
@@ -46,11 +47,11 @@ struct SHACLPropertyPairTests {
     private func makeStatement(
         subject: String,
         predicate: String,
-        object: DatabaseRDFTerm
-    ) -> Statement {
+        object: RDFTerm
+    ) throws -> Statement {
         var statement = Statement()
-        statement.subject = .iri(subject)
-        statement.predicate = .iri(predicate)
+        statement.subject = try .iri(validating: subject)
+        statement.predicate = try .iri(validating: predicate)
         statement.object = object
         return statement
     }
@@ -61,56 +62,56 @@ struct SHACLPropertyPairTests {
 
         let context = container.newContext()
         for statement in [
-            makeStatement(
+            try makeStatement(
                 subject: "ex:Alice",
                 predicate: Self.rdfType,
-                object: .iri("ex:Person")
+                object: .iri(validating: "ex:Person")
             ),
-            makeStatement(
+            try makeStatement(
                 subject: "ex:Alice",
                 predicate: "ex:start",
                 object: RDFTerm.integer(2)
             ),
-            makeStatement(
+            try makeStatement(
                 subject: "ex:Alice",
                 predicate: "ex:end",
                 object: RDFTerm.integer(10)
             ),
-            makeStatement(
+            try makeStatement(
                 subject: "ex:Bob",
                 predicate: Self.rdfType,
-                object: .iri("ex:Person")
+                object: .iri(validating: "ex:Person")
             ),
-            makeStatement(
+            try makeStatement(
                 subject: "ex:Bob",
                 predicate: "ex:start",
                 object: RDFTerm.integer(10)
             ),
-            makeStatement(
+            try makeStatement(
                 subject: "ex:Bob",
                 predicate: "ex:end",
                 object: RDFTerm.integer(2)
             ),
-            makeStatement(
+            try makeStatement(
                 subject: "ex:Eve",
                 predicate: Self.rdfType,
-                object: .iri("ex:Person")
+                object: .iri(validating: "ex:Person")
             ),
-            makeStatement(
+            try makeStatement(
                 subject: "ex:Eve",
                 predicate: "ex:start",
                 object: .literal(
-                    try DatabaseRDFLiteral(
+                    try RDFLiteral(
                         lexicalForm: "9007199254740992.1",
                         datatype: Self.xsdDecimal
                     )
                 )
             ),
-            makeStatement(
+            try makeStatement(
                 subject: "ex:Eve",
                 predicate: "ex:end",
                 object: .literal(
-                    try DatabaseRDFLiteral(
+                    try RDFLiteral(
                         lexicalForm: "9007199254740992.2",
                         datatype: Self.xsdDecimal
                     )
@@ -125,13 +126,21 @@ struct SHACLPropertyPairTests {
             iri: "ex:PropertyPairShapes",
             shapes: [
                 .node(NodeShape(
-                    identifier: .iri("ex:PropertyPairShape"),
+                    identifier: try .iri(
+                        validating: "ex:PropertyPairShape"
+                    ),
                     targets: [.class_("ex:Person")],
                     propertyShapes: [
                         PropertyShape(
-                            path: .predicate("ex:start"),
+                            path: .predicate(
+                                try RDFPredicateIRI("ex:start")
+                            ),
                             constraints: [
-                                .lessThan(.predicate("ex:end")),
+                                .lessThan(
+                                    .predicate(
+                                        try RDFPredicateIRI("ex:end")
+                                    )
+                                ),
                             ]
                         ),
                     ]
@@ -150,7 +159,10 @@ struct SHACLPropertyPairTests {
 
         #expect(report.conforms == false)
         #expect(violations.count == 1)
-        #expect(violations.first?.focusNode == .iri("ex:Bob"))
+        #expect(
+            violations.first?.focusNode
+                == (try .iri(validating: "ex:Bob"))
+        )
         #expect(violations.first?.value == RDFTerm.integer(10))
     }
 }

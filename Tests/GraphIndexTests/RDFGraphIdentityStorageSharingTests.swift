@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 import Synchronization
 import Testing
@@ -10,11 +10,11 @@ import Testing
 struct RDFGraphIdentityStorageSharingTests {
     @Test("tuple decoding retains the packed key allocation as a byte view")
     func tupleDecodeRetainsPackedKeyAllocation() throws {
-        let term = DatabaseRDFTerm.literal(DatabaseRDFLiteral(
+        let term = RDFTerm.literal(RDFLiteral(
             lexicalForm: "before\0after",
-            datatype: DatabaseXSDDatatype.string.typedLiteralDatatype
+            datatype: XSDDatatype.string.typedLiteralDatatype
         ))
-        let encoded = try DatabaseRDFTermCodec.encode(term)
+        let encoded = try RDFTermStorageFormat.encode(term)
         #expect(encoded.allSatisfy { $0 != 0 })
 
         let packed = Tuple(Bytes(retaining: encoded)).pack()
@@ -34,20 +34,22 @@ struct RDFGraphIdentityStorageSharingTests {
             }
         }
         #expect(
-            try DatabaseRDFTermCodec.decode(
-                DatabaseBytes(retaining: decoded)
+            try RDFTermStorageFormat.decode(
+                ByteString(retaining: decoded)
             ) == term
         )
     }
 
     @Test("a decoded tuple view retains its owner after the packed value leaves scope")
     func tupleViewRetainsOwner() throws {
-        let term = DatabaseRDFTerm.iri("urn:calendar:event")
+        let term = try RDFTerm.iri(
+            validating: "urn:calendar:event"
+        )
         let decoded = try retainedTupleElement(for: term)
 
         #expect(
-            try DatabaseRDFTermCodec.decode(
-                DatabaseBytes(retaining: decoded)
+            try RDFTermStorageFormat.decode(
+                ByteString(retaining: decoded)
             ) == term
         )
     }
@@ -55,10 +57,10 @@ struct RDFGraphIdentityStorageSharingTests {
     @Test("cached literal identity cannot be reused as an RDF subject")
     func cachedLiteralStillValidatesSubjectRole() throws {
         let pool = GraphIdentityPool()
-        let encoded = try DatabaseRDFTermCodec.encode(
-            .literal(DatabaseRDFLiteral(
+        let encoded = try RDFTermStorageFormat.encode(
+            .literal(RDFLiteral(
                 lexicalForm: "event",
-                datatype: DatabaseXSDDatatype.string.typedLiteralDatatype
+                datatype: XSDDatatype.string.typedLiteralDatatype
             ))
         )
 
@@ -71,7 +73,9 @@ struct RDFGraphIdentityStorageSharingTests {
     @Test("cached blank-node identity cannot be reused as an RDF predicate")
     func cachedBlankNodeStillValidatesPredicateRole() throws {
         let pool = GraphIdentityPool()
-        let encoded = try DatabaseRDFTermCodec.encode(.blankNode("event"))
+        let encoded = try RDFTermStorageFormat.encode(
+            .blankNode(identifier: "event")
+        )
 
         _ = try pool.internRDF(encoded, role: .subject)
         #expect(throws: GraphIndexError.self) {
@@ -82,10 +86,10 @@ struct RDFGraphIdentityStorageSharingTests {
     @Test("cached literal identity cannot be reused as an RDF graph name")
     func cachedLiteralStillValidatesGraphRole() throws {
         let pool = GraphIdentityPool()
-        let encoded = try DatabaseRDFTermCodec.encode(
-            .literal(DatabaseRDFLiteral(
+        let encoded = try RDFTermStorageFormat.encode(
+            .literal(RDFLiteral(
                 lexicalForm: "calendar",
-                datatype: DatabaseXSDDatatype.string.typedLiteralDatatype
+                datatype: XSDDatatype.string.typedLiteralDatatype
             ))
         )
 
@@ -97,8 +101,8 @@ struct RDFGraphIdentityStorageSharingTests {
 
     @Test("identity interning validates a cache miss in one owner borrow")
     func identityInterningUsesOneInputBorrow() throws {
-        let canonical = try DatabaseRDFTermCodec.encode(
-            .iri("urn:calendar:event")
+        let canonical = try RDFTermStorageFormat.encode(
+            .iri(validating: "urn:calendar:event")
         )
         let owner = GraphIdentityBorrowCountingOwner(
             bytes: canonical.copyBytes()
@@ -106,26 +110,29 @@ struct RDFGraphIdentityStorageSharingTests {
         let pool = GraphIdentityPool()
 
         let identity = try pool.internRDF(
-            DatabaseBytes(retaining: owner),
+            ByteString(retaining: owner),
             role: .subject
         )
 
         #expect(owner.borrowCount == 1)
         #expect(identity.canonicalRDFBytes?.count == canonical.count)
-        guard case .owner(let retainedOwner, _)? = identity
-            .canonicalRDFBytes?.sharedStorage else {
-            Issue.record("Expected the interned identity to retain the input owner")
+        guard let retainedBytes = identity.canonicalRDFBytes else {
+            Issue.record("Expected canonical RDF bytes")
             return
         }
-        #expect(
-            ObjectIdentifier(retainedOwner as AnyObject)
-                == ObjectIdentifier(owner)
-        )
+        retainedBytes.withUnsafeBytes { retainedBuffer in
+            owner.bytes.withUnsafeBytes { sourceBuffer in
+                #expect(
+                    retainedBuffer.baseAddress
+                        == sourceBuffer.baseAddress
+                )
+            }
+        }
     }
 
     @Test("nested triple validation errors are not rewritten as outer role errors")
     func nestedTripleErrorRemainsExact() {
-        let invalidSubject = DatabaseBytes([
+        let invalidSubject = ByteString([
             4,
             3, 2, 0x78, 1, 4, 0x75, 0x3A, 0x74,
             2, 4, 0x75, 0x3A, 0x70,
@@ -152,13 +159,19 @@ struct RDFGraphIdentityStorageSharingTests {
         let base = Subspace(prefix: Tuple("rdf-clear-borrow").pack())
         let codec = RDFQuadIndexPhysicalCodec(baseSubspace: base)
         let quad = RDFQuad(
-            subject: .blankNode("subject"),
-            predicate: .iri("https://example.com/predicate"),
-            object: .literal(DatabaseRDFLiteral(
+            subject: .blankNode(
+                try RDFBlankNodeIdentifier("subject")
+            ),
+            predicate: try RDFPredicateIRI(
+                "https://example.com/predicate"
+            ),
+            object: .literal(RDFLiteral(
                 lexicalForm: "payload",
                 datatype: .xsdString
             )),
-            graph: .iri("https://example.com/graph")
+            graph: try RDFGraphName(
+                iri: "https://example.com/graph"
+            )
         )
         var gspoKey: Bytes?
         try RDFQuadIndexWritePlan(quad: quad).forEachEntry { entry in
@@ -215,10 +228,10 @@ struct RDFGraphIdentityStorageSharingTests {
     }
 
     private func retainedTupleElement(
-        for term: DatabaseRDFTerm
+        for term: RDFTerm
     ) throws -> Bytes {
         let packed = Tuple(
-            Bytes(retaining: try DatabaseRDFTermCodec.encode(term))
+            Bytes(retaining: try RDFTermStorageFormat.encode(term))
         ).pack()
         let tuple = try Tuple.unpack(from: packed)
         let element = try tupleElement(tuple, at: 0)
@@ -239,7 +252,7 @@ struct RDFGraphIdentityStorageSharingTests {
     }
 }
 
-private final class GraphIdentityBorrowCountingOwner: DatabaseByteOwner {
+private final class GraphIdentityBorrowCountingOwner: ByteStringOwner {
     let bytes: [UInt8]
     private let state = Mutex(0)
 

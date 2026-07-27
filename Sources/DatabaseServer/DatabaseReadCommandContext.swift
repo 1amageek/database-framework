@@ -1,15 +1,15 @@
 import DatabaseEngine
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseReadCommandContext: Sendable {
     public let request: DatabaseCommandRequestContext
     public let transaction: any DatabaseTransactionReading
-    public let budget: DatabaseExecutionBudget
+    public let budget: ExecutionBudget
 
     init(
         operation: DatabaseOperationContext,
         transaction: DatabaseTransaction,
-        budget: DatabaseExecutionBudget
+        budget: ExecutionBudget
     ) {
         self.request = DatabaseCommandRequestContext(
             requestID: operation.requestID,

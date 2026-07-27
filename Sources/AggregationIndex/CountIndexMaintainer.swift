@@ -8,7 +8,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -124,7 +124,7 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
     ) throws -> [any TupleElement] {
         guard index.kind.fieldNames.count
                 == index.rootExpression.columnCount else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Count index '\(index.name)' has inconsistent field metadata"
             )
         }

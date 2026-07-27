@@ -24,7 +24,7 @@
 import Foundation
 import StorageKit
 import DatabaseEngine
-import Core
+import DatabaseKit
 
 public final class DatabaseREPL: Sendable {
 

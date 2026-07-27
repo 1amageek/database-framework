@@ -1,7 +1,6 @@
 #if FOUNDATION_DB
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
 import Testing
 @testable import GraphIndex
 
@@ -44,7 +43,10 @@ struct RDFDatasetIndexMetadataTests {
 
     @Test("OWL metadata preserves a fixed named graph")
     func owlFixedNamedGraph() throws {
-        let graph = DatabaseRDFTerm.iri("https://example.invalid/graph/calendar")
+        let graph = try RDFTerm.iri(
+            validating:
+                "https://example.invalid/graph/calendar"
+        )
         let descriptor = makeDescriptor(
             identifier: "owl_class_rdf",
             fieldNames: [],
@@ -98,17 +100,24 @@ struct RDFDatasetIndexMetadataTests {
     private func makeDescriptor(
         identifier: String,
         fieldNames: [String],
-        metadata: [String: IndexMetadataValue]
+        metadata: [String: FieldValue]
     ) -> IndexDescriptorMetadata {
         IndexDescriptorMetadata(
+            entityName: "CalendarEntry",
             name: "Calendar_\(identifier)",
             kind: IndexKindMetadata(
                 identifier: identifier,
                 subspaceStructure: .hierarchical,
-                fieldNames: fieldNames,
+                fields: fieldNames.enumerated().map { offset, name in
+                    IndexFieldMetadata(
+                        identity: FieldIdentity(
+                            name: name,
+                            number: offset
+                        )
+                    )
+                },
                 metadata: metadata
-            ),
-            commonMetadata: [:]
+            )
         )
     }
 }

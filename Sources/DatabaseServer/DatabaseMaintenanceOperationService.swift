@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 
 public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
@@ -43,7 +43,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
             if let continuation = request.continuation {
                 let decoded: DatabaseMigrationContinuation
                 do {
-                    decoded = try DatabaseEnvelopeCodec.decode(
+                    decoded = try ServerPayloadDecoder.decode(
                         DatabaseMigrationContinuation.self,
                         from: continuation,
                         limits: context.wireLimits
@@ -73,7 +73,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
             }
             let continuation = result.isComplete
                 ? nil
-                : try DatabaseEnvelopeCodec.encode(
+                : try ServerPayloadEncoder.encode(
                     DatabaseMigrationContinuation(
                         targetVersion: targetVersion,
                         requestFingerprint: requestFingerprint,
@@ -103,8 +103,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                 budget: request.budget
             )
             let runtime = DatabaseIndexMaintenanceRuntime(
-                container: context.container,
-                wireLimits: context.wireLimits
+                container: context.container
             )
             let statuses = try await context.container.newContext().withTransaction {
                 transaction in
@@ -140,11 +139,11 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                 throw DatabaseMaintenanceRuntimeError.invalidBatchSize(batchSize)
             }
             let requestFingerprint = try maintenanceRequestFingerprint(request)
-            let generation: DatabaseUUID
+            let generation: DatabaseTypes.UUID
             let mode: DatabaseIndexRebuildSliceMode
             if let continuation = request.continuation {
                 do {
-                    let decoded = try DatabaseEnvelopeCodec.decode(
+                    let decoded = try ServerPayloadDecoder.decode(
                         DatabaseIndexRebuildContinuation.self,
                         from: continuation,
                         limits: context.wireLimits
@@ -164,8 +163,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                 mode = .start
             }
             let runtime = DatabaseIndexMaintenanceRuntime(
-                container: context.container,
-                wireLimits: context.wireLimits
+                container: context.container
             )
             return try await context.coordinator.execute(
                 MaintenanceExecuteOperation.self,
@@ -194,10 +192,14 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                     ),
                     transaction: transactionContext.storageAccess
                 )
-            } makeResponse: { slice, _ in
+            } makeResponse: {
+                (
+                    slice: DatabaseIndexRebuildSlice,
+                    _: UInt64
+                ) in
                 let continuation = slice.isComplete
                     ? nil
-                    : try DatabaseEnvelopeCodec.encode(
+                    : try ServerPayloadEncoder.encode(
                         DatabaseIndexRebuildContinuation(
                             generation: generation,
                             requestFingerprint: requestFingerprint
@@ -220,7 +222,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
 
     private func maintenanceRequestFingerprint(
         _ request: MaintenanceExecuteOperation.Request
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         let canonical = MaintenanceExecuteOperation.Request(
             invocation: request.invocation,
             continuation: nil,
@@ -228,9 +230,11 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
         )
         return DatabaseRequestDigest.compute(
             operation: .maintenanceExecute,
-            payload: try DatabaseEnvelopeCodec.encode(
-                canonical,
+            payload: try DatabaseWireEncoder(
                 limits: context.wireLimits
+            ).encodeRequestPayload(
+                DatabaseOperations.maintenanceExecute,
+                request: canonical
             )
         )
     }

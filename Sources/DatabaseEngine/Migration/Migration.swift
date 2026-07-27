@@ -23,11 +23,10 @@ import DatabaseKit
 ///     toVersion: Schema.Version(2, 0, 0),
 ///     description: "Add email index"
 /// ) { context in
-///     // Add new index using KeyPath
-///     let emailIndex = IndexDescriptor(
+///     let emailIndex = try IndexDescriptor(
 ///         name: "email_index",
-///         keyPaths: [\User.email],
-///         kind: ScalarIndexKind(),
+///         definition: .scalar,
+///         fields: [User.fields.email.ascending],
 ///         commonOptions: .init()
 ///     )
 ///     try await context.addIndex(emailIndex)
@@ -638,9 +637,19 @@ public struct MigrationContext: Sendable {
                         limit: batchSize
                     )
 
-                    var itemsInBatch = 0
-                    var lastProcessedKey: Bytes?
-                    for try await (key, data) in scanSequence {
+                    // SQLite cannot mutate a transaction while its range cursor
+                    // is open. The batch is bounded by `batchSize`; `Bytes`
+                    // retains the backend-owned storage without materializing
+                    // `[UInt8]` or `Data`. Reading the complete bounded page
+                    // first also preserves the transaction's range conflict
+                    // before index writes begin.
+                    var batch: [(key: Bytes, data: Bytes)] = []
+                    batch.reserveCapacity(batchSize)
+                    for try await element in scanSequence {
+                        batch.append(element)
+                    }
+
+                    for (key, data) in batch {
                         let item = try DataAccess.deserializeAny(data, as: persistableType)
                         let compositeID = try itemSubspace.unpack(key)
                         try await maintenanceService.updateIndexesUntyped(
@@ -651,11 +660,9 @@ public struct MigrationContext: Sendable {
                             logicalTypeName: group.identifier,
                             transaction: transaction
                         )
-                        lastProcessedKey = key
-                        itemsInBatch += 1
                     }
 
-                    return (itemsInBatch, lastProcessedKey)
+                    return (batch.count, batch.last?.key)
                 }
 
                 guard itemsInBatch == batchSize, let lastProcessedKey else {

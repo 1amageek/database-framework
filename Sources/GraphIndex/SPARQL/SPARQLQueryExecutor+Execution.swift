@@ -3,11 +3,11 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 extension SPARQLQueryExecutor {
@@ -30,7 +30,7 @@ extension SPARQLQueryExecutor {
             offset: offset,
             limit: limit
         )
-        let executor = requestScoped(by: workMeter)
+        let executor = try requestScoped(by: workMeter)
         return try await database.withTransaction(configuration: .default) { transaction in
             let attemptExecutor = try executor.transactionAttemptScoped()
             let evaluated = try await attemptExecutor.evaluate(
@@ -134,7 +134,7 @@ extension SPARQLQueryExecutor {
         selectPlan: SPARQLSelectExecutionPlan,
         workMeter: DatabaseWorkMeter
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
-        let executor = scoped(to: selectPlan.ordered.datasetScope)
+        let executor = try scoped(to: selectPlan.ordered.datasetScope)
             .requestScoped(by: workMeter)
         return try await database.withTransaction(
             configuration: .default

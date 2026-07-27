@@ -9,10 +9,9 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
-import Vector
 
 /// Maintainer for IVF (Inverted File Index) vector indexes
 ///

@@ -1,4 +1,4 @@
-import Graph
+import DatabaseKit
 import StorageKit
 
 /// One physical RDF quad index participating in a logical RDF dataset.
@@ -7,18 +7,21 @@ public struct RDFDatasetSource: Sendable {
     public let indexName: String
     public let indexSubspace: Subspace
     public let coverage: RDFDatasetSourceCoverage
+    package let storedFieldNames: [String]
     package let physicalCodec: RDFQuadIndexPhysicalCodec
 
     public init(
         entityName: String,
         indexName: String,
         indexSubspace: Subspace,
-        coverage: RDFDatasetSourceCoverage
+        coverage: RDFDatasetSourceCoverage,
+        storedFieldNames: [String] = []
     ) {
         self.entityName = entityName
         self.indexName = indexName
         self.indexSubspace = indexSubspace
         self.coverage = coverage
+        self.storedFieldNames = storedFieldNames
         self.physicalCodec = RDFQuadIndexPhysicalCodec(
             baseSubspace: indexSubspace
         )
@@ -33,7 +36,8 @@ public struct RDFDatasetSource: Sendable {
             entityName: entityName,
             indexName: selection.indexName,
             indexSubspace: indexSubspace,
-            coverage: try selection.metadata.graphScope.sourceCoverage
+            coverage: try selection.metadata.graphScope.sourceCoverage,
+            storedFieldNames: selection.storedFieldNames
         )
     }
 }

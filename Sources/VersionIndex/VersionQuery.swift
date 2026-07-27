@@ -8,9 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
-import QueryIR
 import StorageKit
 
 // MARK: - Version Entry Point
@@ -139,7 +138,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
     internal func executeDirect(
         configuration: TransactionConfiguration = .default
     ) async throws -> [(version: Version, item: T)] {
-        let indexName = self.indexName ?? resolveIndexName()
+        let indexName = try self.indexName ?? resolveIndexName()
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
@@ -192,13 +191,23 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal func toSelectQuery() throws -> SelectQuery {
-        var parameters: [String: QueryParameterValue] = [
+        let queryLimit: UInt64?
+        if let limitCount {
+            guard let converted = UInt64(exactly: limitCount) else {
+                throw VersionQueryError.invalidLimit(limitCount)
+            }
+            queryLimit = converted
+        } else {
+            queryLimit = nil
+        }
+
+        var parameters: [String: FieldValue] = [
             VersionReadParameter.primaryKey: .array(
                 try primaryKey.map { try DatabaseEngine.CanonicalTupleElementCodec.encode($0) }
             )
         ]
-        if let limitCount {
-            parameters[VersionReadParameter.limit] = .int64(Int64(limitCount))
+        if let queryLimit {
+            parameters[VersionReadParameter.limit] = .uint64(queryLimit)
         }
         if let indexName {
             parameters[VersionReadParameter.indexName] = .string(indexName)
@@ -209,32 +218,33 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
             source: .table(TableRef(table: T.persistableType)),
             accessPath: .index(
                 IndexScanSource(
-                    indexName: self.indexName ?? resolveIndexName(),
-                    kindIdentifier: VersionIndexKind<T>.identifier,
+                    indexName: try self.indexName ?? resolveIndexName(),
+                    kindIdentifier: "version",
                     parameters: parameters
                 )
             ),
-            limit: limitCount
+            limit: queryLimit
         )
     }
 
     // MARK: - Private Methods
 
-    private func resolveIndexName() -> String {
-        // Find the first VersionIndexKind for this type
-        for descriptor in T.indexDescriptors {
-            if descriptor.kindIdentifier == VersionIndexKind<T>.identifier {
-                return descriptor.name
-            }
+    private func resolveIndexName() throws -> String {
+        guard let descriptor = try T.indexDescriptors.first(where: {
+            $0.kindIdentifier == "version"
+        }) else {
+            throw VersionQueryError.indexNotFound(
+                "No version index is declared for \(T.persistableType)"
+            )
         }
-        return "\(T.persistableType)_version_id"
+        return descriptor.name
     }
 
     private func createMaintainer(
         indexSubspace: Subspace,
         indexName: String
     ) throws -> VersionIndexMaintainer<T> {
-        guard let descriptor = T.indexDescriptors.first(where: {
+        guard let descriptor = try T.indexDescriptors.first(where: {
             $0.name == indexName && $0.kindIdentifier == "version"
         }) else {
             throw VersionQueryError.indexNotFound(indexName)
@@ -249,18 +259,12 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         case "keepAll":
             strategy = .keepAll
         case "keepLast":
-            guard let count = descriptor.kind.metadata["strategyCount"]?.intValue else {
-                throw VersionQueryError.invalidResponse(
-                    "Version index '\(indexName)' is missing strategyCount metadata"
-                )
-            }
+            let count = try descriptor.kind.requireInt("strategyCount")
             strategy = .keepLast(count)
         case "keepForDuration":
-            guard let duration = descriptor.kind.metadata["strategyDurationSeconds"]?.doubleValue else {
-                throw VersionQueryError.invalidResponse(
-                    "Version index '\(indexName)' is missing strategyDurationSeconds metadata"
-                )
-            }
+            let duration = try descriptor.kind.requireDouble(
+                "strategyDurationSeconds"
+            )
             strategy = .keepForDuration(duration)
         default:
             throw VersionQueryError.invalidResponse(
@@ -274,7 +278,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         return VersionIndexMaintainer<T>(
             index: Index(
                 name: indexName,
-                kind: VersionIndexKind<T>(fieldNames: fieldNames, strategy: strategy),
+                kind: descriptor.kind,
                 rootExpression: FieldKeyExpression(fieldName: rootFieldName)
             ),
             strategy: strategy,
@@ -329,6 +333,7 @@ public enum VersionQueryError: Error, CustomStringConvertible {
 
     /// Canonical query response is missing required metadata
     case invalidResponse(String)
+    case invalidLimit(Int)
 
     public var description: String {
         switch self {
@@ -340,6 +345,8 @@ public enum VersionQueryError: Error, CustomStringConvertible {
             return "Failed to deserialize version data"
         case .invalidResponse(let reason):
             return "Invalid version query response: \(reason)"
+        case .invalidLimit(let limit):
+            return "Version query limit must be a nonnegative Int64 value: \(limit)"
         }
     }
 }

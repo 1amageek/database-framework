@@ -1,26 +1,29 @@
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
 @testable import RelationshipIndex
 import Testing
 
 @Persistable
 private struct SnapshotTarget {
+    var id: String = ""
     var name: String
 }
 
 @Persistable
 private struct OtherSnapshotTarget {
+    var id: String = ""
     var name: String
 }
 
 @Persistable
 private struct SnapshotOwner {
-    @Relationship
-    var optionalTarget: DatabaseReference<SnapshotTarget>?
+    var id: String = ""
 
     @Relationship
-    var targets: [DatabaseReference<SnapshotTarget>]
+    var optionalTarget: PersistableReference<SnapshotTarget>?
+
+    @Relationship
+    var targets: [PersistableReference<SnapshotTarget>]
 }
 
 @Suite("Relationship snapshot")
@@ -37,7 +40,7 @@ struct RelationshipSnapshotTests {
                 field: "optionalTarget"
             )
         ) {
-            try snapshot.ref(\.optionalTarget)
+            try snapshot.ref(SnapshotOwner.fields.optionalTarget)
         }
     }
 
@@ -45,9 +48,11 @@ struct RelationshipSnapshotTests {
     func loadedAbsentToOneReturnsNil() throws {
         let snapshot = RelationshipSnapshot(
             item: SnapshotOwner(optionalTarget: nil, targets: [])
-        ).with(\.optionalTarget, loadedAs: nil)
+        ).with(SnapshotOwner.fields.optionalTarget, loadedAs: nil)
 
-        #expect(try snapshot.ref(\.optionalTarget) == nil)
+        #expect(
+            try snapshot.ref(SnapshotOwner.fields.optionalTarget) == nil
+        )
     }
 
     @Test("A loaded to-many relationship preserves its array storage")
@@ -58,9 +63,9 @@ struct RelationshipSnapshotTests {
         ]
         let snapshot = RelationshipSnapshot(
             item: SnapshotOwner(optionalTarget: nil, targets: [])
-        ).with(\.targets, loadedAs: related)
+        ).with(SnapshotOwner.fields.targets, loadedAs: related)
 
-        let loaded = try snapshot.refs(\.targets)
+        let loaded = try snapshot.refs(SnapshotOwner.fields.targets)
         #expect(loaded.map(\.name) == ["first", "second"])
 
         let sharesStorage = related.withUnsafeBufferPointer { originalBuffer in
@@ -88,7 +93,7 @@ struct RelationshipSnapshotTests {
                 actual: OtherSnapshotTarget.persistableType
             )
         ) {
-            try snapshot.ref(\.optionalTarget)
+            try snapshot.ref(SnapshotOwner.fields.optionalTarget)
         }
     }
 }

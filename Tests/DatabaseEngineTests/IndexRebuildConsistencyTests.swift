@@ -13,10 +13,8 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import FullText
-import Graph
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -25,67 +23,72 @@ import DatabaseRuntime
 @testable import ScalarIndex
 @testable import AggregationIndex
 
+private enum IndexRebuildConsistencyError: Error {
+    case missingIndex(entity: String)
+}
+
 // MARK: - Test Models
 
 @Persistable
 struct RebuildScalarUser {
     #Directory<RebuildScalarUser>("test", "rebuild", "scalar")
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var email: String = ""
     var city: String = ""
-    #Index(ScalarIndexKind<RebuildScalarUser>(fields: [\.email]))
+    #Index(.scalar, fields: [\RebuildScalarUser.email])
 }
 
 @Persistable
 struct RebuildTripleStatement {
     #Directory<RebuildTripleStatement>("test", "rebuild", "triple")
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var subject: String = ""
     var predicate: String = ""
     var object: String = ""
-    #Index(GraphIndexKind<RebuildTripleStatement>(
-        from: \.subject, edge: \.predicate, to: \.object,
-        strategy: .tripleStore
-    ))
+    #Index(
+        .propertyGraph(strategy: .tripleStore),
+        from: \RebuildTripleStatement.subject,
+        edge: \RebuildTripleStatement.predicate,
+        to: \RebuildTripleStatement.object
+    )
 }
 
 @Persistable
 struct RebuildEdge {
     #Directory<RebuildEdge>("test", "rebuild", "edge")
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var source: String = ""
     var relation: String = ""
     var target: String = ""
-    #Index(GraphIndexKind<RebuildEdge>(
-        from: \.source, edge: \.relation, to: \.target,
-        strategy: .adjacency
-    ))
+    #Index(
+        .propertyGraph(strategy: .adjacency),
+        from: \RebuildEdge.source,
+        edge: \RebuildEdge.relation,
+        to: \RebuildEdge.target
+    )
 }
 
 @Persistable
 struct RebuildArticle {
     #Directory<RebuildArticle>("test", "rebuild", "fulltext")
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String = ""
     var content: String = ""
-    #Index(FullTextIndexKind<RebuildArticle>(
-        fields: [\.content],
-        tokenizer: .simple
-    ))
+    #Index(.fullText(tokenizer: .simple), fields: [\RebuildArticle.content])
 }
 
 @Persistable
 struct RebuildCountItem {
     #Directory<RebuildCountItem>("test", "rebuild", "count")
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var category: String = ""
-    var value: Int = 0
-    #Index(CountIndexKind<RebuildCountItem>(groupBy: [\.category]))
+    var value: Int64 = 0
+    #Index(.count, groupBy: [\RebuildCountItem.category])
 }
 
 // MARK: - Test Suite
 
-@Suite("Index Rebuild Consistency Tests", .serialized, .heartbeat)
+@Suite("Index Rebuild Consistency Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct IndexRebuildConsistencyTests {
 
     // MARK: - Setup
@@ -137,8 +140,15 @@ struct IndexRebuildConsistencyTests {
         }
     }
 
-    private func getIndexName<T: Persistable>(for type: T.Type) -> String? {
-        type.indexDescriptors.first?.name
+    private func getIndexName<T: Persistable>(
+        for type: T.Type
+    ) throws -> String {
+        guard let name = try type.indexDescriptors.first?.name else {
+            throw IndexRebuildConsistencyError.missingIndex(
+                entity: type.persistableType
+            )
+        }
+        return name
     }
 
     // MARK: - A. Subspace Layout Tests
@@ -161,7 +171,10 @@ struct IndexRebuildConsistencyTests {
             #expect(saveKeys.count == 3, "ScalarIndex: 3 users → 3 keys, got \(saveKeys.count)")
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildScalarUser.self)!, progress: nil)
+            try await admin.rebuildIndex(
+                try getIndexName(for: RebuildScalarUser.self),
+                progress: nil
+            )
 
             let rebuildKeys = try await getIndexKeys(for: RebuildScalarUser.self, container: container)
             #expect(saveKeys.count == rebuildKeys.count,
@@ -189,7 +202,10 @@ struct IndexRebuildConsistencyTests {
             #expect(saveKeys.count == 6, "tripleStore: 2 entities × 3 = 6 keys, got \(saveKeys.count)")
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildTripleStatement.self)!, progress: nil)
+            try await admin.rebuildIndex(
+                try getIndexName(for: RebuildTripleStatement.self),
+                progress: nil
+            )
 
             let rebuildKeys = try await getIndexKeys(for: RebuildTripleStatement.self, container: container)
             #expect(saveKeys.count == rebuildKeys.count,
@@ -217,7 +233,10 @@ struct IndexRebuildConsistencyTests {
             #expect(saveKeys.count == 4, "adjacency: 2 entities × 2 = 4 keys, got \(saveKeys.count)")
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildEdge.self)!, progress: nil)
+            try await admin.rebuildIndex(
+                try getIndexName(for: RebuildEdge.self),
+                progress: nil
+            )
 
             let rebuildKeys = try await getIndexKeys(for: RebuildEdge.self, container: container)
             #expect(saveKeys.count == rebuildKeys.count,
@@ -245,7 +264,10 @@ struct IndexRebuildConsistencyTests {
             #expect(saveKeys.count > 0, "FullText: should have index entries, got \(saveKeys.count)")
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildArticle.self)!, progress: nil)
+            try await admin.rebuildIndex(
+                try getIndexName(for: RebuildArticle.self),
+                progress: nil
+            )
 
             let rebuildKeys = try await getIndexKeys(for: RebuildArticle.self, container: container)
             #expect(saveKeys.count == rebuildKeys.count,
@@ -274,7 +296,10 @@ struct IndexRebuildConsistencyTests {
             #expect(saveKeys.count == 2, "Count: 2 groups → 2 keys, got \(saveKeys.count)")
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildCountItem.self)!, progress: nil)
+            try await admin.rebuildIndex(
+                try getIndexName(for: RebuildCountItem.self),
+                progress: nil
+            )
 
             let rebuildKeys = try await getIndexKeys(for: RebuildCountItem.self, container: container)
             #expect(saveKeys.count == rebuildKeys.count,
@@ -300,7 +325,10 @@ struct IndexRebuildConsistencyTests {
             try await context.save()
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildScalarUser.self)!, progress: nil)
+            try await admin.rebuildIndex(
+                try getIndexName(for: RebuildScalarUser.self),
+                progress: nil
+            )
 
             let all = try await context.fetch(RebuildScalarUser.self).execute()
             #expect(all.count == 1, "ScalarIndex round-trip: expected 1 user, got \(all.count)")
@@ -310,7 +338,7 @@ struct IndexRebuildConsistencyTests {
         }
     }
 
-    @Test("GraphIndex tripleStore: rebuild entries are queryable via SPARQL")
+    @Test("GraphIndex tripleStore: rebuild entries are queryable")
     func graphTripleStoreRoundTrip() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildTripleStatement.self])
@@ -328,29 +356,32 @@ struct IndexRebuildConsistencyTests {
             try await context.save()
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildTripleStatement.self)!, progress: nil)
+            try await admin.rebuildIndex(
+                try getIndexName(for: RebuildTripleStatement.self),
+                progress: nil
+            )
 
-            let results = try await context.sparql(RebuildTripleStatement.self)
+            let results = try await context.graph(RebuildTripleStatement.self)
                 .defaultIndex()
-                .where("Alice", "knows", "?friend")
-                .select("?friend")
+                .from("Alice")
+                .edge("knows")
                 .execute()
 
             #expect(results.count == 2,
                 "After rebuild: Alice should know 2 people, got \(results.count)")
-            let friends = results.nonNilValues(for: "?friend")
-            #expect(friends.contains(.string("Bob")))
-            #expect(friends.contains(.string("Carol")))
+            let friends = Set(results.map(\.to))
+            #expect(friends.contains("Bob"))
+            #expect(friends.contains("Carol"))
 
-            let reverseResults = try await context.sparql(RebuildTripleStatement.self)
+            let reverseResults = try await context.graph(RebuildTripleStatement.self)
                 .defaultIndex()
-                .where("?person", "knows", "Bob")
-                .select("?person")
+                .edge("knows")
+                .to("Bob")
                 .execute()
 
             #expect(reverseResults.count == 1,
                 "After rebuild: 1 person should know Bob, got \(reverseResults.count)")
-            #expect(reverseResults.first?.string("?person") == "Alice")
+            #expect(reverseResults.first?.from == "Alice")
 
             try await cleanup(container: container, path: ["test", "rebuild", "triple"])
         }
@@ -370,7 +401,10 @@ struct IndexRebuildConsistencyTests {
             try await context.save()
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildEdge.self)!, progress: nil)
+            try await admin.rebuildIndex(
+                try getIndexName(for: RebuildEdge.self),
+                progress: nil
+            )
 
             let outgoing = try await context.graph(RebuildEdge.self)
                 .defaultIndex()
@@ -401,10 +435,13 @@ struct IndexRebuildConsistencyTests {
             try await context.save()
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildArticle.self)!, progress: nil)
+            try await admin.rebuildIndex(
+                try getIndexName(for: RebuildArticle.self),
+                progress: nil
+            )
 
             let swiftResults = try await context.search(RebuildArticle.self)
-                .fullText(\.content)
+                .fullText(RebuildArticle.fields.content)
                 .terms(["swift"])
                 .execute()
 
@@ -412,7 +449,7 @@ struct IndexRebuildConsistencyTests {
                 "After rebuild: 'swift' should match 1 article, got \(swiftResults.count)")
 
             let commonResults = try await context.search(RebuildArticle.self)
-                .fullText(\.content)
+                .fullText(RebuildArticle.fields.content)
                 .terms(["programming"])
                 .execute()
 
@@ -438,9 +475,10 @@ struct IndexRebuildConsistencyTests {
             try await context.save()
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildCountItem.self)!, progress: nil)
+            let indexName = try getIndexName(for: RebuildCountItem.self)
+            try await admin.rebuildIndex(indexName, progress: nil)
 
-            let stats = try await admin.indexStatistics(getIndexName(for: RebuildCountItem.self)!)
+            let stats = try await admin.indexStatistics(indexName)
             #expect(stats.entryCount == 2,
                 "After rebuild: 2 groups should yield 2 entries, got \(stats.entryCount)")
 
@@ -463,12 +501,13 @@ struct IndexRebuildConsistencyTests {
             try await context.save()
 
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildScalarUser.self)!, progress: nil)
+            let indexName = try getIndexName(for: RebuildScalarUser.self)
+            try await admin.rebuildIndex(indexName, progress: nil)
 
             // Read state via IndexLifecycleStore (entity root subspace)
             let entitySubspace = try await container.resolveDirectory(for: RebuildScalarUser.self)
             let lifecycleStore = IndexLifecycleStore(container: container, subspace: entitySubspace)
-            let state = try await lifecycleStore.state(of: getIndexName(for: RebuildScalarUser.self)!)
+            let state = try await lifecycleStore.state(of: indexName)
 
             #expect(state == .readable,
                 "IndexLifecycleStore should see index as readable after rebuild, got \(state)")
@@ -494,7 +533,10 @@ struct IndexRebuildConsistencyTests {
 
             // Rebuild
             let admin = container.newAdminContext()
-            try await admin.rebuildIndex(getIndexName(for: RebuildTripleStatement.self)!, progress: nil)
+            try await admin.rebuildIndex(
+                try getIndexName(for: RebuildTripleStatement.self),
+                progress: nil
+            )
 
             // Insert AFTER rebuild
             var s2 = RebuildTripleStatement()
@@ -503,17 +545,17 @@ struct IndexRebuildConsistencyTests {
             try await context.save()
 
             // Query should find BOTH pre- and post-rebuild data
-            let results = try await context.sparql(RebuildTripleStatement.self)
+            let results = try await context.graph(RebuildTripleStatement.self)
                 .defaultIndex()
-                .where("Alice", "knows", "?friend")
-                .select("?friend")
+                .from("Alice")
+                .edge("knows")
                 .execute()
 
             #expect(results.count == 2,
                 "After rebuild + insert: expected 2 friends, got \(results.count)")
-            let friends = results.nonNilValues(for: "?friend")
-            #expect(friends.contains(.string("Bob")), "Pre-rebuild data must survive")
-            #expect(friends.contains(.string("Carol")), "Post-rebuild data must be indexed")
+            let friends = Set(results.map(\.to))
+            #expect(friends.contains("Bob"), "Pre-rebuild data must survive")
+            #expect(friends.contains("Carol"), "Post-rebuild data must be indexed")
 
             try await cleanup(container: container, path: ["test", "rebuild", "triple"])
         }

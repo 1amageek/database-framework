@@ -13,7 +13,8 @@
 import Testing
 import TestHeartbeat
 @testable import GraphIndex
-import Core
+import DatabaseKit
+import DatabaseTypes
 
 @Suite("SPARQL NULL Semantics", .heartbeat)
 struct NullSemanticsTests {

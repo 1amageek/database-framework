@@ -13,8 +13,9 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Graph
+import DatabaseKit
 import DatabaseEngine
+import DatabaseTypes
 
 /// Resolves SHACL targets to focus nodes using SPARQL queries
 ///
@@ -100,7 +101,7 @@ public struct SHACLTargetResolver: Sendable {
             }
             return try await querySubjects(
                 predicate: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
-                object: iri
+                object: iri.rawValue
             )
         }
     }
@@ -113,8 +114,12 @@ public struct SHACLTargetResolver: Sendable {
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?node"),
-                predicate: .value(.rdfTerm(.iri(predicate))),
-                object: object.map { .value(.rdfTerm(.iri($0))) } ?? .wildcard
+                predicate: .value(
+                    .rdfTerm(.iri(try RDFIRI(predicate)))
+                ),
+                object: try object.map {
+                    .value(.rdfTerm(.iri(try RDFIRI($0))))
+                } ?? .wildcard
             )
         ])
 
@@ -143,7 +148,9 @@ public struct SHACLTargetResolver: Sendable {
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .wildcard,
-                predicate: .value(.rdfTerm(.iri(predicate))),
+                predicate: .value(
+                    .rdfTerm(.iri(try RDFIRI(predicate)))
+                ),
                 object: .variable("?node")
             )
         ])

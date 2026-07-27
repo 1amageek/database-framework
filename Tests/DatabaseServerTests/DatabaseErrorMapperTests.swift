@@ -1,12 +1,12 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import GraphIndex
 import OntologyIndex
-import QueryIR
+import DatabaseKit
 import RelationshipIndex
 import StorageKit
 import Testing
@@ -256,7 +256,7 @@ struct DatabaseErrorMapperTests {
     @Test("Mutation errors distinguish input, conflict, and schema failures")
     func mutationFailures() async throws {
         let context = try await makeContext()
-        let identity = PersistableIdentity(
+        let identity = try EntityReference(
             entity: "Event",
             id: .string("event-1")
         )
@@ -293,7 +293,7 @@ struct DatabaseErrorMapperTests {
     @Test("Database transaction errors preserve their lifecycle contract")
     func databaseTransactionFailures() async throws {
         let context = try await makeContext()
-        let identity = PersistableIdentity(
+        let identity = try EntityReference(
             entity: "Event",
             id: .string("event-1")
         )
@@ -421,7 +421,7 @@ struct DatabaseErrorMapperTests {
         expectMappings(
             [
                 (
-                    PersistableIdentityEncodingError.invalidCompiledSchema(
+                    EntityReferenceEncodingError.invalidCompiledSchema(
                         entity: "Event",
                         reason: "missing partition field"
                     ),
@@ -429,7 +429,7 @@ struct DatabaseErrorMapperTests {
                     "PERSISTABLE_SCHEMA_INVALID"
                 ),
                 (
-                    PersistableIdentityEncodingError.identifierNotRepresentable(
+                    EntityReferenceEncodingError.identifierNotRepresentable(
                         entity: "Event"
                     ),
                     .invalidRequest,
@@ -459,7 +459,7 @@ struct DatabaseErrorMapperTests {
     @Test("Relationship errors distinguish constraints, limits, and corruption")
     func relationshipFailures() async throws {
         let context = try await makeContext()
-        let identity = PersistableIdentity(
+        let identity = try EntityReference(
             entity: "Event",
             id: .string("event-1")
         )
@@ -501,7 +501,7 @@ struct DatabaseErrorMapperTests {
     @Test("Relationship reference errors preserve each boundary failure")
     func relationshipReferenceFailures() async throws {
         let context = try await makeContext()
-        let identity = PersistableIdentity(
+        let identity = try EntityReference(
             entity: "Event",
             id: .string("event-1")
         )
@@ -552,7 +552,9 @@ struct DatabaseErrorMapperTests {
                 (
                     RelationshipReferenceError.invalidTargetIdentifier(
                         entity: "Calendar",
-                        reason: .typeMismatch(expected: .string)
+                        reason: .invalidIdentifier(
+                            .typeMismatch(expected: .string, actual: .int64)
+                        )
                     ),
                     .invalidRequest,
                     "INVALID_RELATIONSHIP_TARGET_IDENTIFIER"
@@ -664,7 +666,14 @@ struct DatabaseErrorMapperTests {
         let context = try await makeContext()
 
         let remote = CanonicalDatabaseErrorMapper().remoteError(
-            for: RDFDatasetValidationError.invalidIRI("relative"),
+            for: RDFDatasetValidationError.invalidSubject(
+                .literal(
+                    RDFLiteral(
+                        lexicalForm: "relative",
+                        datatype: .xsdString
+                    )
+                )
+            ),
             context: context
         )
 
@@ -716,15 +725,13 @@ struct DatabaseErrorMapperTests {
             #expect(remote.category == .resourceLimit)
             #expect(remote.code == code.rawValue.uppercased())
             #expect(remote.retryability == .never)
-            #expect(
-                remote.details == [
-                    DatabaseObjectField(
-                        number: 1,
-                        name: "backendCode",
-                        value: .int64(Int64(backendCode))
-                    ),
-                ]
-            )
+            let expectedDetails = try FieldObject([
+                (
+                    key: "backendCode",
+                    value: .int64(Int64(backendCode))
+                ),
+            ])
+            #expect(remote.details == expectedDetails)
         }
     }
 
@@ -750,28 +757,25 @@ struct DatabaseErrorMapperTests {
         #expect(remote.category == .resourceLimit)
         #expect(remote.code == "TRANSACTION_TOO_LARGE")
         #expect(remote.retryability == .never)
-        #expect(remote.details == [
-            DatabaseObjectField(
-                number: 2,
-                name: "observedByteCount",
+        let expectedDetails = try FieldObject([
+            (
+                key: "observedByteCount",
                 value: .uint64(10_000_001)
             ),
-            DatabaseObjectField(
-                number: 3,
-                name: "maximumByteCount",
+            (
+                key: "maximumByteCount",
                 value: .uint64(10_000_000)
             ),
-            DatabaseObjectField(
-                number: 4,
-                name: "resource",
+            (
+                key: "resource",
                 value: .string("commit_request")
             ),
-            DatabaseObjectField(
-                number: 5,
-                name: "measurement",
+            (
+                key: "measurement",
                 value: .string("estimated")
             ),
         ])
+        #expect(remote.details == expectedDetails)
     }
 
     @Test("Portable physical storage limits expose exact byte details")
@@ -786,20 +790,11 @@ struct DatabaseErrorMapperTests {
         )
 
         expect(remote, category: .resourceLimit, code: "KEY_TOO_LARGE")
-        #expect(
-            remote.details == [
-                DatabaseObjectField(
-                    number: 1,
-                    name: "actualBytes",
-                    value: .uint64(10_001)
-                ),
-                DatabaseObjectField(
-                    number: 2,
-                    name: "maximumBytes",
-                    value: .uint64(10_000)
-                ),
-            ]
-        )
+        let expectedDetails = try FieldObject([
+            (key: "actualBytes", value: .uint64(10_001)),
+            (key: "maximumBytes", value: .uint64(10_000)),
+        ])
+        #expect(remote.details == expectedDetails)
     }
 
     @Test("Mutation aggregate overflow is a non-retryable resource limit")
@@ -818,20 +813,11 @@ struct DatabaseErrorMapperTests {
             category: .resourceLimit,
             code: "MUTATION_AGGREGATE_TOO_LARGE"
         )
-        #expect(
-            remote.details == [
-                DatabaseObjectField(
-                    number: 1,
-                    name: "actualBytes",
-                    value: .uint64(101)
-                ),
-                DatabaseObjectField(
-                    number: 2,
-                    name: "maximumBytes",
-                    value: .uint64(100)
-                ),
-            ]
-        )
+        let expectedDetails = try FieldObject([
+            (key: "actualBytes", value: .uint64(101)),
+            (key: "maximumBytes", value: .uint64(100)),
+        ])
+        #expect(remote.details == expectedDetails)
     }
 
     @Test("Portable transaction deadlines are distinct from backend timeouts")
@@ -851,15 +837,13 @@ struct DatabaseErrorMapperTests {
             code: "EXECUTION_TIMED_OUT"
         )
         #expect(remote.retryability == .never)
-        #expect(
-            remote.details == [
-                DatabaseObjectField(
-                    number: 1,
-                    name: "timeoutMilliseconds",
-                    value: .uint64(500)
-                ),
-            ]
-        )
+        let expectedDetails = try FieldObject([
+            (
+                key: "timeoutMilliseconds",
+                value: .uint64(500)
+            ),
+        ])
+        #expect(remote.details == expectedDetails)
 
         let backendTimeout = CanonicalDatabaseErrorMapper().remoteError(
             for: StorageError.transactionTimedOut,
@@ -949,22 +933,19 @@ struct DatabaseErrorMapperTests {
             category: .internalFailure,
             code: "TRANSACTION_CLEANUP_FAILURE"
         )
-        #expect(
-            remote.details == [
-                DatabaseObjectField(
-                    number: 1,
-                    name: "operationError",
-                    value: .object(remoteFields(mappedOperation))
-                ),
-                DatabaseObjectField(
-                    number: 2,
-                    name: "cancellationErrors",
-                    value: .array([
-                        .object(remoteFields(mappedCancellation)),
-                    ])
-                ),
-            ]
-        )
+        let expectedDetails = try FieldObject([
+            (
+                key: "operationError",
+                value: .object(try remoteFields(mappedOperation))
+            ),
+            (
+                key: "cancellationErrors",
+                value: .array([
+                    .object(try remoteFields(mappedCancellation)),
+                ])
+            ),
+        ])
+        #expect(remote.details == expectedDetails)
     }
 
     @Test("Transaction cleanup mapping obeys collection and object limits")
@@ -998,7 +979,8 @@ struct DatabaseErrorMapperTests {
         )
 
         guard remote.details.count == 2,
-              case .array(let cancellations) = remote.details[1].value else {
+              case .array(let cancellations) =
+                remote.details["cancellationErrors"] else {
             Issue.record("Expected bounded cancellation details")
             return
         }
@@ -1025,12 +1007,13 @@ struct DatabaseErrorMapperTests {
         let remote = mapper.remoteError(for: cleanup, context: context)
         let mappedDeadline = mapper.remoteError(for: deadline, context: context)
 
-        guard let operationDetail = remote.details.first,
-              case .object(let operationFields) = operationDetail.value else {
+        guard case .object(let operationFields) =
+            remote.details["operationError"] else {
             Issue.record("Expected nested operation error details")
             return
         }
-        #expect(operationFields == remoteFields(mappedDeadline))
+        let expectedOperationFields = try remoteFields(mappedDeadline)
+        #expect(operationFields == expectedOperationFields)
         #expect(mappedDeadline.code == "EXECUTION_TIMED_OUT")
         #expect(mappedDeadline.retryability == .never)
     }
@@ -1154,8 +1137,8 @@ struct DatabaseErrorMapperTests {
     }
 
     private func expect(
-        _ remote: DatabaseRemoteError,
-        category: DatabaseErrorCategory,
+        _ remote: RemoteOperationError,
+        category: OperationErrorCategory,
         code: String
     ) {
         #expect(remote.category == category)

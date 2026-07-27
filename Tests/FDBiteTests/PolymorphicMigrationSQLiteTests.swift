@@ -6,93 +6,67 @@ import StorageKit
 import TestHeartbeat
 import DatabaseRuntime
 
-protocol SQLitePolymorphicMigrationDocumentV1: Polymorphable {
+@Polymorphable(identifier: "SQLitePolymorphicMigrationDocument")
+@PolymorphicDirectory("sqlite_polymorphic_migration_shared")
+protocol SQLitePolymorphicMigrationDocumentV1:
+    Polymorphable<SQLitePolymorphicMigrationDocumentV1PolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
 }
 
-extension SQLitePolymorphicMigrationDocumentV1 {
-    public static var polymorphableType: String { "SQLitePolymorphicMigrationDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("sqlite_polymorphic_migration_shared")]
-    }
-}
-
-protocol SQLitePolymorphicMigrationDocumentV2: Polymorphable {
+@Polymorphable(identifier: "SQLitePolymorphicMigrationDocument")
+@PolymorphicDirectory("sqlite_polymorphic_migration_shared")
+@PolymorphicIndex(
+    .scalar,
+    fields: ["title"],
+    name: "SQLitePolymorphicMigrationDocument_title"
+)
+@PolymorphicIndex(
+    .fullText(tokenizer: .simple),
+    fields: ["title"],
+    name: "SQLitePolymorphicMigrationDocument_title_fulltext"
+)
+protocol SQLitePolymorphicMigrationDocumentV2:
+    Polymorphable<SQLitePolymorphicMigrationDocumentV2PolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
 }
 
-protocol SQLitePolymorphicMigrationDocumentV3: Polymorphable {
+@Polymorphable(identifier: "SQLitePolymorphicMigrationDocument")
+@PolymorphicDirectory("sqlite_polymorphic_migration_shared")
+protocol SQLitePolymorphicMigrationDocumentV3:
+    Polymorphable<SQLitePolymorphicMigrationDocumentV3PolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
 }
 
-protocol SQLitePolymorphicMigrationDocumentV4: Polymorphable {
+@Polymorphable(identifier: "SQLitePolymorphicMigrationDocument")
+@PolymorphicDirectory("sqlite_polymorphic_migration_shared")
+@PolymorphicIndex(
+    .scalar,
+    fields: ["title"],
+    name: "SQLitePolymorphicMigrationDocument_title"
+)
+@PolymorphicIndex(
+    .fullText(tokenizer: .simple),
+    fields: ["title"],
+    name: "SQLitePolymorphicMigrationDocument_title_fulltext"
+)
+protocol SQLitePolymorphicMigrationDocumentV4:
+    Polymorphable<SQLitePolymorphicMigrationDocumentV4PolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
-}
-
-extension SQLitePolymorphicMigrationDocumentV2 {
-    public static var polymorphableType: String { "SQLitePolymorphicMigrationDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("sqlite_polymorphic_migration_shared")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "SQLitePolymorphicMigrationDocument_title",
-                keyPaths: [\Self.title],
-                kind: ScalarIndexKind<Self>(fields: [\Self.title])
-            ),
-            IndexDescriptor(
-                name: "SQLitePolymorphicMigrationDocument_title_fulltext",
-                keyPaths: [\Self.title],
-                kind: FullTextIndexKind<Self>(fields: [\Self.title], tokenizer: .simple)
-            ),
-        ]
-    }
-}
-
-extension SQLitePolymorphicMigrationDocumentV3 {
-    public static var polymorphableType: String { "SQLitePolymorphicMigrationDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("sqlite_polymorphic_migration_shared")]
-    }
-}
-
-extension SQLitePolymorphicMigrationDocumentV4 {
-    public static var polymorphableType: String { "SQLitePolymorphicMigrationDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("sqlite_polymorphic_migration_shared")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "SQLitePolymorphicMigrationDocument_title",
-                keyPaths: [\Self.title],
-                kind: ScalarIndexKind<Self>(fields: [\Self.title])
-            ),
-            IndexDescriptor(
-                name: "SQLitePolymorphicMigrationDocument_title_fulltext",
-                keyPaths: [\Self.title],
-                kind: FullTextIndexKind<Self>(fields: [\Self.title], tokenizer: .simple)
-            ),
-        ]
-    }
 }
 
 @Persistable(type: "SQLitePolymorphicMigrationArticle")
 struct SQLitePolymorphicMigrationArticleV1: SQLitePolymorphicMigrationDocumentV1 {
     #Directory<SQLitePolymorphicMigrationArticleV1>("sqlite_polymorphic_migration_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
     var body: String
 }
@@ -101,7 +75,7 @@ struct SQLitePolymorphicMigrationArticleV1: SQLitePolymorphicMigrationDocumentV1
 struct SQLitePolymorphicMigrationArticleV2: SQLitePolymorphicMigrationDocumentV2 {
     #Directory<SQLitePolymorphicMigrationArticleV2>("sqlite_polymorphic_migration_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
     var body: String
 }
@@ -110,7 +84,7 @@ struct SQLitePolymorphicMigrationArticleV2: SQLitePolymorphicMigrationDocumentV2
 struct SQLitePolymorphicMigrationArticleV3: SQLitePolymorphicMigrationDocumentV3 {
     #Directory<SQLitePolymorphicMigrationArticleV3>("sqlite_polymorphic_migration_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
     var body: String
 }
@@ -119,7 +93,7 @@ struct SQLitePolymorphicMigrationArticleV3: SQLitePolymorphicMigrationDocumentV3
 struct SQLitePolymorphicMigrationArticleV4: SQLitePolymorphicMigrationDocumentV4 {
     #Directory<SQLitePolymorphicMigrationArticleV4>("sqlite_polymorphic_migration_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
     var body: String
 }
@@ -128,72 +102,88 @@ struct SQLitePolymorphicMigrationArticleV4: SQLitePolymorphicMigrationDocumentV4
 struct SQLitePolymorphicMigrationReportV1: SQLitePolymorphicMigrationDocumentV1 {
     #Directory<SQLitePolymorphicMigrationReportV1>("sqlite_polymorphic_migration_reports")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var pageCount: Int
+    var pageCount: Int64
 }
 
 @Persistable(type: "SQLitePolymorphicMigrationReport")
 struct SQLitePolymorphicMigrationReportV2: SQLitePolymorphicMigrationDocumentV2 {
     #Directory<SQLitePolymorphicMigrationReportV2>("sqlite_polymorphic_migration_reports")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var pageCount: Int
+    var pageCount: Int64
 }
 
 @Persistable(type: "SQLitePolymorphicMigrationReport")
 struct SQLitePolymorphicMigrationReportV3: SQLitePolymorphicMigrationDocumentV3 {
     #Directory<SQLitePolymorphicMigrationReportV3>("sqlite_polymorphic_migration_reports")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var pageCount: Int
+    var pageCount: Int64
 }
 
 @Persistable(type: "SQLitePolymorphicMigrationReport")
 struct SQLitePolymorphicMigrationReportV4: SQLitePolymorphicMigrationDocumentV4 {
     #Directory<SQLitePolymorphicMigrationReportV4>("sqlite_polymorphic_migration_reports")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var pageCount: Int
+    var pageCount: Int64
 }
 
 enum SQLitePolymorphicMigrationSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
 
-    static let models: [any Persistable.Type] = [
-        SQLitePolymorphicMigrationArticleV1.self,
-        SQLitePolymorphicMigrationReportV1.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try SQLitePolymorphicMigrationArticleV1.schemaEntity,
+                try SQLitePolymorphicMigrationReportV1.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum SQLitePolymorphicMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
 
-    static let models: [any Persistable.Type] = [
-        SQLitePolymorphicMigrationArticleV2.self,
-        SQLitePolymorphicMigrationReportV2.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try SQLitePolymorphicMigrationArticleV2.schemaEntity,
+                try SQLitePolymorphicMigrationReportV2.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum SQLitePolymorphicMigrationSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
 
-    static let models: [any Persistable.Type] = [
-        SQLitePolymorphicMigrationArticleV3.self,
-        SQLitePolymorphicMigrationReportV3.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try SQLitePolymorphicMigrationArticleV3.schemaEntity,
+                try SQLitePolymorphicMigrationReportV3.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum SQLitePolymorphicMigrationSchemaV4: VersionedSchema {
     static let versionIdentifier = Schema.Version(4, 0, 0)
 
-    static let models: [any Persistable.Type] = [
-        SQLitePolymorphicMigrationArticleV4.self,
-        SQLitePolymorphicMigrationReportV4.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try SQLitePolymorphicMigrationArticleV4.schemaEntity,
+                try SQLitePolymorphicMigrationReportV4.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum SQLitePolymorphicMigrationPlan: SchemaMigrationPlan {
@@ -267,7 +257,7 @@ enum SQLitePolymorphicRebuildMigrationPlan: SchemaMigrationPlan {
 struct PolymorphicMigrationSQLiteTests {
     @Test("VersionedSchema exposes polymorphic logical indexes for migration diffing")
     func versionedSchemaExposesPolymorphicLogicalIndexesForMigrationDiffing() throws {
-        let changes = SQLitePolymorphicMigrationSchemaV2.indexChanges(
+        let changes = try SQLitePolymorphicMigrationSchemaV2.indexChanges(
             from: SQLitePolymorphicMigrationSchemaV1.self
         )
         let expectedAdded = Set([
@@ -278,7 +268,9 @@ struct PolymorphicMigrationSQLiteTests {
             fromVersion: SQLitePolymorphicMigrationSchemaV1.self,
             toVersion: SQLitePolymorphicMigrationSchemaV2.self
         )
-        let schema = SQLitePolymorphicMigrationSchemaV2.makeSchema()
+        let schema = try SQLitePolymorphicMigrationSchemaV2.makeSchema()
+        let stageIndexChanges = try stage.indexChanges
+        let addedIndexDescriptors = try stage.addedIndexDescriptors
         let logicalDescriptors = schema.polymorphicIndexCatalog(
             identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
         )
@@ -292,8 +284,8 @@ struct PolymorphicMigrationSQLiteTests {
         )
 
         #expect(changes.added == expectedAdded)
-        #expect(stage.indexChanges.added == expectedAdded)
-        #expect(stage.addedIndexDescriptors.isEmpty)
+        #expect(stageIndexChanges.added == expectedAdded)
+        #expect(addedIndexDescriptors.isEmpty)
         #expect(Set(logicalDescriptors.map(\.name)) == expectedAdded)
         #expect(schema.indexDescriptor(named: "SQLitePolymorphicMigrationDocument_title") == nil)
         #expect(schema.polymorphicGroup(containingIndexNamed: "SQLitePolymorphicMigrationDocument_title") != nil)
@@ -304,8 +296,8 @@ struct PolymorphicMigrationSQLiteTests {
     }
 
     @Test("VersionedSchema detects removed polymorphic descriptors")
-    func versionedSchemaDetectsRemovedPolymorphicDescriptors() {
-        let changes = SQLitePolymorphicMigrationSchemaV3.indexChanges(
+    func versionedSchemaDetectsRemovedPolymorphicDescriptors() throws {
+        let changes = try SQLitePolymorphicMigrationSchemaV3.indexChanges(
             from: SQLitePolymorphicMigrationSchemaV2.self
         )
         let expectedRemoved = Set([
@@ -316,10 +308,11 @@ struct PolymorphicMigrationSQLiteTests {
             fromVersion: SQLitePolymorphicMigrationSchemaV2.self,
             toVersion: SQLitePolymorphicMigrationSchemaV3.self
         )
+        let removedIndexNames = try stage.removedIndexNames
 
         #expect(changes.added.isEmpty)
         #expect(changes.removed == expectedRemoved)
-        #expect(stage.removedIndexNames == expectedRemoved)
+        #expect(removedIndexNames == expectedRemoved)
     }
 
     @Test("SQLite migration backfills added polymorphic indexes and keeps them maintained")
@@ -361,7 +354,7 @@ struct PolymorphicMigrationSQLiteTests {
         let verificationContext = verificationContainer.newContext()
         let migratedResults = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV2.self)
-            .fullText(\.title)
+            .fullText(SQLitePolymorphicMigrationArticleV2.fields.title)
             .term("needle")
             .execute()
         let migratedIDs = Set(migratedResults.compactMap(Self.resultID))
@@ -382,12 +375,12 @@ struct PolymorphicMigrationSQLiteTests {
 
         let afterUpdateNeedle = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV2.self)
-            .fullText(\.title)
+            .fullText(SQLitePolymorphicMigrationArticleV2.fields.title)
             .term("needle")
             .execute()
         let afterUpdateBeacon = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV2.self)
-            .fullText(\.title)
+            .fullText(SQLitePolymorphicMigrationArticleV2.fields.title)
             .term("beacon")
             .execute()
 
@@ -446,7 +439,7 @@ struct PolymorphicMigrationSQLiteTests {
         let verificationContext = verificationContainer.newContext()
         let results = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV2.self)
-            .fullText(\.title)
+            .fullText(SQLitePolymorphicMigrationArticleV2.fields.title)
             .term("needle")
             .execute()
 
@@ -566,7 +559,7 @@ struct PolymorphicMigrationSQLiteTests {
         let verificationContext = migratedContainer.newContext()
         let rebuiltResults = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV4.self)
-            .fullText(\.title)
+            .fullText(SQLitePolymorphicMigrationArticleV4.fields.title)
             .term("needle")
             .execute()
         let rebuiltIDs = Set(rebuiltResults.compactMap(Self.resultIDV4))

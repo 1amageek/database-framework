@@ -8,7 +8,8 @@
 
 import Testing
 import TestHeartbeat
-import Graph
+import DatabaseKit
+import DatabaseTypes
 @testable import GraphIndex
 @testable import OntologyIndex
 
@@ -68,11 +69,11 @@ struct TransitiveClosureCorrectnessTests {
     @Test("NaN comparison is unordered")
     func nanComparison() throws {
         let validator = OWLDatatypeValidator()
-        let nan = OWLLiteral(
+        let nan = RDFLiteral(
             lexicalForm: "NaN",
             datatype: XSDDatatype.double.typedLiteralDatatype
         )
-        let five = OWLLiteral(
+        let five = RDFLiteral(
             lexicalForm: "5.0",
             datatype: XSDDatatype.double.typedLiteralDatatype
         )
@@ -86,11 +87,11 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Normal numeric comparison still works")
     func normalNumericComparison() throws {
         let validator = OWLDatatypeValidator()
-        let three = OWLLiteral(
+        let three = RDFLiteral(
             lexicalForm: "3.0",
             datatype: XSDDatatype.double.typedLiteralDatatype
         )
-        let five = OWLLiteral(
+        let five = RDFLiteral(
             lexicalForm: "5.0",
             datatype: XSDDatatype.double.typedLiteralDatatype
         )
@@ -105,7 +106,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Facet-aware witness for datatypeRestriction with minInclusive")
     func facetAwareWitnessMinInclusive() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri,
+            datatype: XSDDatatype.integer.iri.rawValue,
             facets: [.minInclusive(10)]
         )
 
@@ -120,7 +121,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Facet-aware witness for range [5, 15]")
     func facetAwareWitnessRange() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri,
+            datatype: XSDDatatype.integer.iri.rawValue,
             facets: [.minInclusive(5), .maxInclusive(15)]
         )
 
@@ -133,7 +134,7 @@ struct TransitiveClosureCorrectnessTests {
     }
 
     /// Helper to access witness generation via ExpansionRules
-    private func testGenerateWitness(for dataRange: OWLDataRange) -> OWLLiteral? {
+    private func testGenerateWitness(for dataRange: OWLDataRange) -> RDFLiteral? {
         let rh = RoleHierarchy()
         let ch = ClassHierarchy()
         let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
@@ -186,7 +187,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Contradictory facets: minInclusive=10, maxExclusive=5 returns nil")
     func contradictoryFacetsReturnNil() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri,
+            datatype: XSDDatatype.integer.iri.rawValue,
             facets: [.minInclusive(10), .maxExclusive(5)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -196,7 +197,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Contradictory facets: minInclusive=5, maxExclusive=5 returns nil (half-open empty)")
     func halfOpenEmptyReturnsNil() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri,
+            datatype: XSDDatatype.integer.iri.rawValue,
             facets: [.minInclusive(5), .maxExclusive(5)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -208,7 +209,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Integer range: minExclusive=2, maxExclusive=3 returns nil (no integer in (2,3))")
     func noIntegerInOpenRange() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri,
+            datatype: XSDDatatype.integer.iri.rawValue,
             facets: [.minExclusive(2), .maxExclusive(3)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -218,7 +219,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Integer range: minInclusive=2, maxInclusive=5 returns valid witness")
     func integerWitnessInClosedRange() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri,
+            datatype: XSDDatatype.integer.iri.rawValue,
             facets: [.minInclusive(2), .maxInclusive(5)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -234,7 +235,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Integer range: minExclusive=2, maxInclusive=3 returns 3")
     func integerWitnessExclusiveInclusive() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri,
+            datatype: XSDDatatype.integer.iri.rawValue,
             facets: [.minExclusive(2), .maxInclusive(3)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -250,7 +251,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("String maxLength=2 returns witness of length <= 2")
     func stringMaxLengthFacet() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.string.iri,
+            datatype: XSDDatatype.string.iri.rawValue,
             facets: [.maxLength(2)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -263,7 +264,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("String contradictory length: minLength=5, maxLength=2 returns nil")
     func stringContradictoryLengthReturnsNil() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.string.iri,
+            datatype: XSDDatatype.string.iri.rawValue,
             facets: [.minLength(5), .maxLength(2)]
         )
         let witness = testGenerateWitness(for: dataRange)
@@ -282,7 +283,7 @@ struct TransitiveClosureCorrectnessTests {
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
             range: .datatypeRestriction(
-                datatype: XSDDatatype.integer.iri,
+                datatype: XSDDatatype.integer.iri.rawValue,
                 facets: [.minInclusive(10), .maxExclusive(5)]
             )
         )
@@ -353,7 +354,7 @@ struct TransitiveClosureCorrectnessTests {
         // ¬xsd:integer — complement of integers includes all strings, dates, etc.
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
-            range: .dataComplementOf(.datatype(XSDDatatype.integer.iri))
+            range: .dataComplementOf(.datatype(XSDDatatype.integer.iri.rawValue))
         )
         graph.addConcept(concept, to: nodeID)
 
@@ -363,7 +364,10 @@ struct TransitiveClosureCorrectnessTests {
             let values = graph.node(nodeID)?.dataValues["test:prop"]
             #expect(values != nil && !values!.isEmpty, "Witness should be generated")
             if let w = values?.first {
-                #expect(w.datatype != XSDDatatype.integer.iri, "Witness must not be an integer")
+                #expect(
+                    w.datatypeIRI != XSDDatatype.integer.iri,
+                    "Witness must not be an integer"
+                )
             }
         } else if case .clash = result {
             Issue.record("dataComplementOf should not cause clash (¬xsd:integer is satisfiable)")
@@ -380,7 +384,7 @@ struct TransitiveClosureCorrectnessTests {
 
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
-            range: .dataUnionOf([.datatype(XSDDatatype.integer.iri), .datatype(XSDDatatype.string.iri)])
+            range: .dataUnionOf([.datatype(XSDDatatype.integer.iri.rawValue), .datatype(XSDDatatype.string.iri.rawValue)])
         )
         graph.addConcept(concept, to: nodeID)
 
@@ -395,14 +399,13 @@ struct TransitiveClosureCorrectnessTests {
         }
     }
 
-    @Test("dataUnionOf with empty sub-ranges returns clash")
-    func dataUnionOfEmptyClashes() {
+    @Test("dataUnionOf with invalid cardinality returns validation failure")
+    func dataUnionOfInvalidCardinalityFailsValidation() {
         let rh = RoleHierarchy()
         let ch = ClassHierarchy()
         let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
         let nodeID = graph.createNode()
 
-        // Empty union — no possible values
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
             range: .dataUnionOf([])
@@ -410,10 +413,9 @@ struct TransitiveClosureCorrectnessTests {
         graph.addConcept(concept, to: nodeID)
 
         let result = ExpansionRules.applyDataExistentialRule(at: nodeID, in: graph)
-        if case .clash(let info) = result {
-            #expect(info.type == .datatype)
-        } else {
-            Issue.record("Expected clash for empty union but got \(result)")
+        guard case .failure(.datatype(.invalidRestriction)) = result else {
+            Issue.record("Expected invalid restriction failure but got \(result)")
+            return
         }
     }
 
@@ -426,10 +428,10 @@ struct TransitiveClosureCorrectnessTests {
 
         // Union of two contradictory ranges
         let range1 = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri, facets: [.minInclusive(10), .maxExclusive(5)]
+            datatype: XSDDatatype.integer.iri.rawValue, facets: [.minInclusive(10), .maxExclusive(5)]
         )
         let range2 = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri, facets: [.minInclusive(20), .maxExclusive(15)]
+            datatype: XSDDatatype.integer.iri.rawValue, facets: [.minInclusive(20), .maxExclusive(15)]
         )
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
@@ -454,10 +456,10 @@ struct TransitiveClosureCorrectnessTests {
 
         // Intersection: [0, 100] ∩ [50, 200] = [50, 100]
         let range1 = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri, facets: [.minInclusive(0), .maxInclusive(100)]
+            datatype: XSDDatatype.integer.iri.rawValue, facets: [.minInclusive(0), .maxInclusive(100)]
         )
         let range2 = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri, facets: [.minInclusive(50), .maxInclusive(200)]
+            datatype: XSDDatatype.integer.iri.rawValue, facets: [.minInclusive(50), .maxInclusive(200)]
         )
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
@@ -484,7 +486,7 @@ struct TransitiveClosureCorrectnessTests {
         // minInclusive=5 AND minExclusive=5 → effective: x > 5
         // With maxInclusive=6 → range is (5, 6], witness should be 6
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri,
+            datatype: XSDDatatype.integer.iri.rawValue,
             facets: [.minInclusive(5), .minExclusive(5), .maxInclusive(6)]
         )
 
@@ -504,7 +506,7 @@ struct TransitiveClosureCorrectnessTests {
         let minVal = 9007199254740980
         let maxVal = 9007199254740990
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri,
+            datatype: XSDDatatype.integer.iri.rawValue,
             facets: [.minInclusive(minVal), .maxInclusive(maxVal)]
         )
 
@@ -518,7 +520,7 @@ struct TransitiveClosureCorrectnessTests {
     @Test("Integer witness: single point [42, 42]")
     func integerWitnessSinglePoint() {
         let dataRange = OWLDataRange.datatypeRestriction(
-            datatype: XSDDatatype.integer.iri,
+            datatype: XSDDatatype.integer.iri.rawValue,
             facets: [.minInclusive(42), .maxInclusive(42)]
         )
 
@@ -540,7 +542,7 @@ struct TransitiveClosureCorrectnessTests {
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
             range: .datatypeRestriction(
-                datatype: XSDDatatype.string.iri,
+                datatype: XSDDatatype.string.iri.rawValue,
                 facets: [.pattern("[0-9]+")]
             )
         )
@@ -564,7 +566,7 @@ struct TransitiveClosureCorrectnessTests {
         let concept = OWLClassExpression.dataSomeValuesFrom(
             property: "test:prop",
             range: .datatypeRestriction(
-                datatype: XSDDatatype.integer.iri,
+                datatype: XSDDatatype.integer.iri.rawValue,
                 facets: [.pattern("[13579]")]
             )
         )
@@ -576,8 +578,8 @@ struct TransitiveClosureCorrectnessTests {
         }
     }
 
-    @Test("dataOneOf with empty values returns clash")
-    func dataOneOfEmptyClashes() {
+    @Test("dataOneOf with invalid cardinality returns validation failure")
+    func dataOneOfInvalidCardinalityFailsValidation() {
         let rh = RoleHierarchy()
         let ch = ClassHierarchy()
         let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
@@ -590,10 +592,9 @@ struct TransitiveClosureCorrectnessTests {
         graph.addConcept(concept, to: nodeID)
 
         let result = ExpansionRules.applyDataExistentialRule(at: nodeID, in: graph)
-        if case .clash(let info) = result {
-            #expect(info.type == .datatype)
-        } else {
-            Issue.record("Expected clash for empty dataOneOf but got \(result)")
+        guard case .failure(.datatype(.invalidRestriction)) = result else {
+            Issue.record("Expected invalid restriction failure but got \(result)")
+            return
         }
     }
 

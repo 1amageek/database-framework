@@ -9,7 +9,7 @@ import Testing
 import TestHeartbeat
 import StorageKit
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 
 // MARK: - MutualIndexConfiguration Tests
 

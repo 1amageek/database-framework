@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 /// One logical RDF dataset composed from the authoritative mutable graph store
@@ -24,9 +24,9 @@ public struct CanonicalRDFDatasetScanner: RDFDatasetScanner {
     }
 
     public func scan(
-        subject: DatabaseRDFTerm?,
-        predicate: DatabaseRDFTerm?,
-        object: DatabaseRDFTerm?,
+        subject: RDFTerm?,
+        predicate: RDFTerm?,
+        object: RDFTerm?,
         graphScope: RDFGraphScanScope,
         limit: Int?,
         readMode: RDFDatasetReadMode,

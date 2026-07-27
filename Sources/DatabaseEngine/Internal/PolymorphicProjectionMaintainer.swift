@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import StorageKit
 
 /// Maintains the shared polymorphic projection for primary Persistable writes.

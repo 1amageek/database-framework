@@ -3,54 +3,36 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Vector
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import VectorIndex
 
 // MARK: - Test Types
-//
-// Polymorphable conformance is declared manually rather than with the
-// @Polymorphable macro because the Swift 6.3 frontend currently crashes when a
-// protocol body expands freestanding macros such as #Directory.
 
-protocol PolymorphicVectorE2EDocument: Polymorphable {
+@Polymorphable(identifier: "PolymorphicVectorE2EDocument")
+@PolymorphicDirectory("polymorphic_vector_e2e_shared")
+@PolymorphicIndex(
+    .vector(dimensions: 3, metric: .cosine),
+    embedding: "embedding",
+    name: "PolymorphicVectorE2EDocument_embedding"
+)
+protocol PolymorphicVectorE2EDocument:
+    Polymorphable<PolymorphicVectorE2EDocumentPolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
-    var embedding: [Float] { get }
-}
-
-extension PolymorphicVectorE2EDocument {
-    public static var polymorphableType: String { "PolymorphicVectorE2EDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("polymorphic_vector_e2e_shared")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "PolymorphicVectorE2EDocument_embedding",
-                keyPaths: [\Self.embedding],
-                kind: VectorIndexKind<Self>(
-                    embedding: \Self.embedding,
-                    dimensions: 3,
-                    metric: .cosine
-                )
-            )
-        ]
-    }
+    var embedding: Vector { get }
 }
 
 @Persistable
 struct PolymorphicVectorArticle: PolymorphicVectorE2EDocument {
     #Directory<PolymorphicVectorArticle>("polymorphic_vector_e2e_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var embedding: [Float]
+    var embedding: Vector
     var body: String
 }
 
@@ -58,71 +40,54 @@ struct PolymorphicVectorArticle: PolymorphicVectorE2EDocument {
 struct PolymorphicVectorReport: PolymorphicVectorE2EDocument {
     #Directory<PolymorphicVectorReport>("polymorphic_vector_e2e_reports")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var embedding: [Float]
-    var pageCount: Int
+    var embedding: Vector
+    var pageCount: Int64
 }
 
-protocol PolymorphicVectorNoIndexDocument: Polymorphable {
+@Polymorphable(identifier: "PolymorphicVectorNoIndexDocument")
+@PolymorphicDirectory("polymorphic_vector_no_index_shared")
+protocol PolymorphicVectorNoIndexDocument:
+    Polymorphable<PolymorphicVectorNoIndexDocumentPolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
-    var embedding: [Float] { get }
-}
-
-extension PolymorphicVectorNoIndexDocument {
-    public static var polymorphableType: String { "PolymorphicVectorNoIndexDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("polymorphic_vector_no_index_shared")]
-    }
+    var embedding: Vector { get }
 }
 
 @Persistable
 struct PolymorphicVectorNoIndexArticle: PolymorphicVectorNoIndexDocument {
     #Directory<PolymorphicVectorNoIndexArticle>("polymorphic_vector_no_index_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var embedding: [Float]
+    var embedding: Vector
     var body: String
 }
 
-protocol PolymorphicOptionalVectorE2EDocument: Polymorphable {
+@Polymorphable(identifier: "PolymorphicOptionalVectorE2EDocument")
+@PolymorphicDirectory("polymorphic_optional_vector_e2e_shared")
+@PolymorphicIndex(
+    .vector(dimensions: 3, metric: .cosine),
+    embedding: "embedding",
+    name: "PolymorphicOptionalVectorE2EDocument_embedding"
+)
+protocol PolymorphicOptionalVectorE2EDocument:
+    Polymorphable<PolymorphicOptionalVectorE2EDocumentPolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
-    var embedding: [Float]? { get }
-}
-
-extension PolymorphicOptionalVectorE2EDocument {
-    public static var polymorphableType: String { "PolymorphicOptionalVectorE2EDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("polymorphic_optional_vector_e2e_shared")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "PolymorphicOptionalVectorE2EDocument_embedding",
-                keyPaths: [\Self.embedding],
-                kind: VectorIndexKind<Self>(
-                    embedding: \Self.embedding,
-                    dimensions: 3,
-                    metric: .cosine
-                )
-            )
-        ]
-    }
+    var embedding: Vector? { get }
 }
 
 @Persistable
 struct PolymorphicOptionalVectorArticle: PolymorphicOptionalVectorE2EDocument {
     #Directory<PolymorphicOptionalVectorArticle>("polymorphic_optional_vector_e2e_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var embedding: [Float]?
+    var embedding: Vector?
     var body: String
 }
 
@@ -130,10 +95,10 @@ struct PolymorphicOptionalVectorArticle: PolymorphicOptionalVectorE2EDocument {
 struct PolymorphicOptionalVectorReport: PolymorphicOptionalVectorE2EDocument {
     #Directory<PolymorphicOptionalVectorReport>("polymorphic_optional_vector_e2e_reports")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var embedding: [Float]?
-    var pageCount: Int
+    var embedding: Vector?
+    var pageCount: Int64
 }
 
 @Suite("Polymorphic Vector Index E2E Tests", .tags(.fdb), .serialized, .heartbeat)
@@ -144,8 +109,11 @@ struct PolymorphicVectorIndexE2ETests {
     private func setupContainer() async throws -> DBContainer {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema(
-            [PolymorphicVectorArticle.self, PolymorphicVectorReport.self],
+        let schema = try Schema(
+            entities: [
+                try PolymorphicVectorArticle.schemaEntity,
+                try PolymorphicVectorReport.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -160,8 +128,11 @@ struct PolymorphicVectorIndexE2ETests {
     private func setupOptionalContainer() async throws -> DBContainer {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema(
-            [PolymorphicOptionalVectorArticle.self, PolymorphicOptionalVectorReport.self],
+        let schema = try Schema(
+            entities: [
+                try PolymorphicOptionalVectorArticle.schemaEntity,
+                try PolymorphicOptionalVectorReport.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -176,8 +147,10 @@ struct PolymorphicVectorIndexE2ETests {
     private func setupNoIndexContainer() async throws -> DBContainer {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema(
-            [PolymorphicVectorNoIndexArticle.self],
+        let schema = try Schema(
+            entities: [
+                try PolymorphicVectorNoIndexArticle.schemaEntity
+            ],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -273,8 +246,11 @@ struct PolymorphicVectorIndexE2ETests {
 
     @Test("Schema keeps member-specific polymorphic vector descriptors")
     func schemaKeepsMemberSpecificVectorDescriptors() throws {
-        let schema = Schema(
-            [PolymorphicVectorArticle.self, PolymorphicVectorReport.self],
+        let schema = try Schema(
+            entities: [
+                try PolymorphicVectorArticle.schemaEntity,
+                try PolymorphicVectorReport.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -291,16 +267,16 @@ struct PolymorphicVectorIndexE2ETests {
             ).first { $0.name == indexName }
         )
 
-        let articleKind = try VectorIndexKind<PolymorphicVectorArticle>(
-            canonical: articleDescriptor.kind
+        let articleSpecification = try VectorIndexSpecification(
+            articleDescriptor.kind
         )
-        let reportKind = try VectorIndexKind<PolymorphicVectorReport>(
-            canonical: reportDescriptor.kind
+        let reportSpecification = try VectorIndexSpecification(
+            reportDescriptor.kind
         )
-        #expect(articleKind.fieldNames == ["embedding"])
-        #expect(reportKind.fieldNames == ["embedding"])
-        #expect(articleKind.dimensions == 3)
-        #expect(reportKind.dimensions == 3)
+        #expect(articleSpecification.metadata.fieldNames == ["embedding"])
+        #expect(reportSpecification.metadata.fieldNames == ["embedding"])
+        #expect(articleSpecification.dimensions == 3)
+        #expect(reportSpecification.dimensions == 3)
     }
 
     @Test("Polymorphic vector query requires a query vector")
@@ -310,7 +286,7 @@ struct PolymorphicVectorIndexE2ETests {
 
         do {
             _ = try await context.findPolymorphic(PolymorphicVectorArticle.self)
-                .vector(\.embedding, dimensions: 3)
+                .vector(PolymorphicVectorArticle.fields.embedding, dimensions: 3)
                 .executePage()
             Issue.record("Expected VectorQueryError.noQueryVector")
         } catch VectorQueryError.noQueryVector {
@@ -326,7 +302,7 @@ struct PolymorphicVectorIndexE2ETests {
 
         do {
             _ = try await context.findPolymorphic(PolymorphicVectorArticle.self)
-                .vector(\.embedding, dimensions: 3)
+                .vector(PolymorphicVectorArticle.fields.embedding, dimensions: 3)
                 .query([1.0, 0.0], k: 1)
                 .executePage()
             Issue.record("Expected VectorQueryError.dimensionMismatch")
@@ -346,7 +322,10 @@ struct PolymorphicVectorIndexE2ETests {
 
         do {
             _ = try await context.findPolymorphic(PolymorphicVectorNoIndexArticle.self)
-                .vector(\.embedding, dimensions: 3)
+                .vector(
+                    PolymorphicVectorNoIndexArticle.fields.embedding,
+                    dimensions: 3
+                )
                 .query([1.0, 0.0, 0.0], k: 1)
                 .executePage()
             Issue.record("Expected PolymorphicVectorQueryError.indexNotFound")
@@ -365,12 +344,12 @@ struct PolymorphicVectorIndexE2ETests {
         let context = container.newContext()
         let article = PolymorphicOptionalVectorArticle(
             title: "Optional Anchor",
-            embedding: [1.0, 0.0, 0.0],
+            embedding: try Vector(float32: [1.0, 0.0, 0.0]),
             body: "Article body"
         )
         let report = PolymorphicOptionalVectorReport(
             title: "Optional Near",
-            embedding: [0.95, 0.05, 0.0],
+            embedding: try Vector(float32: [0.95, 0.05, 0.0]),
             pageCount: 3
         )
 
@@ -381,14 +360,20 @@ struct PolymorphicVectorIndexE2ETests {
         #expect(try await countOptionalVectorIndexEntries(container: container) == 2)
 
         let first = try await context.findPolymorphic(PolymorphicOptionalVectorArticle.self)
-            .vector(\.embedding, dimensions: 3)
+            .vector(
+                PolymorphicOptionalVectorArticle.fields.embedding,
+                dimensions: 3
+            )
             .query([1.0, 0.0, 0.0], k: 1)
             .first()
 
         #expect(first?.item(as: PolymorphicOptionalVectorArticle.self)?.id == article.id)
 
         let results = try await context.findPolymorphic(PolymorphicOptionalVectorReport.self)
-            .vector(\.embedding, dimensions: 3)
+            .vector(
+                PolymorphicOptionalVectorReport.fields.embedding,
+                dimensions: 3
+            )
             .query([1.0, 0.0, 0.0], k: 2)
             .execute()
         let resultIDs = Set(results.compactMap(optionalResultID))
@@ -404,17 +389,17 @@ struct PolymorphicVectorIndexE2ETests {
 
         let article = PolymorphicVectorArticle(
             title: "Anchor",
-            embedding: [1.0, 0.0, 0.0],
+            embedding: try Vector(float32: [1.0, 0.0, 0.0]),
             body: "Article body"
         )
         var report = PolymorphicVectorReport(
             title: "Near",
-            embedding: [0.95, 0.05, 0.0],
+            embedding: try Vector(float32: [0.95, 0.05, 0.0]),
             pageCount: 3
         )
         let farReport = PolymorphicVectorReport(
             title: "Far",
-            embedding: [0.0, 1.0, 0.0],
+            embedding: try Vector(float32: [0.0, 1.0, 0.0]),
             pageCount: 9
         )
 
@@ -426,7 +411,7 @@ struct PolymorphicVectorIndexE2ETests {
         #expect(try await countVectorIndexEntries(container: container) == 3)
 
         let firstPage = try await context.findPolymorphic(PolymorphicVectorArticle.self)
-            .vector(\.embedding, dimensions: 3)
+            .vector(PolymorphicVectorArticle.fields.embedding, dimensions: 3)
             .query([1.0, 0.0, 0.0], k: 2)
             .metric(.cosine)
             .executePage()
@@ -436,7 +421,7 @@ struct PolymorphicVectorIndexE2ETests {
         #expect(firstPage.results.dropFirst().first?.item(as: PolymorphicVectorReport.self)?.id == report.id)
 
         let reportStartedPage = try await context.findPolymorphic(PolymorphicVectorReport.self)
-            .vector(\.embedding, dimensions: 3)
+            .vector(PolymorphicVectorReport.fields.embedding, dimensions: 3)
             .query([1.0, 0.0, 0.0], k: 2)
             .metric(.cosine)
             .executePage()
@@ -444,14 +429,14 @@ struct PolymorphicVectorIndexE2ETests {
 
         #expect(reportStartedIDs == Set([article.id, report.id]))
 
-        report.embedding = [1.0, 0.0, 0.0]
+        report.embedding = try Vector(float32: [1.0, 0.0, 0.0])
         try context.upsert(report)
         try await context.save()
 
         #expect(try await countVectorIndexEntries(container: container) == 3)
 
         let updatedPage = try await context.findPolymorphic(PolymorphicVectorArticle.self)
-            .vector(\.embedding, dimensions: 3)
+            .vector(PolymorphicVectorArticle.fields.embedding, dimensions: 3)
             .query([1.0, 0.0, 0.0], k: 2)
             .metric(.cosine)
             .executePage()
@@ -465,7 +450,7 @@ struct PolymorphicVectorIndexE2ETests {
         #expect(try await countVectorIndexEntries(container: container) == 2)
 
         let finalPage = try await context.findPolymorphic(PolymorphicVectorArticle.self)
-            .vector(\.embedding, dimensions: 3)
+            .vector(PolymorphicVectorArticle.fields.embedding, dimensions: 3)
             .query([1.0, 0.0, 0.0], k: 1)
             .metric(.cosine)
             .executePage()

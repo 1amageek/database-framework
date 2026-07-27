@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -91,7 +91,14 @@ private struct SumIndexContext {
         // Expression: category + amount (grouping + sum value)
         let index = Index(
             name: indexName,
-            kind: SumIndexKind<RegionalSale, Double>(groupBy: [\.category], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .sum,
+                groupingFields: [
+                    FieldIdentity(name: "category", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 4),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "category"),
                 FieldKeyExpression(fieldName: "amount")
@@ -116,7 +123,7 @@ private struct SumIndexContext {
 
     func getSum(for category: String) async throws -> Double {
         guard let sum = try await getOptionalSum(for: category) else {
-            throw IndexError.noData("No SUM value for category")
+            throw AggregationIndexError.noData("No SUM value for category")
         }
         return sum
     }
@@ -482,7 +489,15 @@ struct SumIndexBehaviorTests {
         // Expression: region + category + amount
         let index = Index(
             name: "RegionalSale_region_category_amount",
-            kind: SumIndexKind<RegionalSale, Double>(groupBy: [\.region, \.category], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .sum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 3),
+                    FieldIdentity(name: "category", number: 2),
+                ],
+                valueField: FieldIdentity(name: "amount", number: 4),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),

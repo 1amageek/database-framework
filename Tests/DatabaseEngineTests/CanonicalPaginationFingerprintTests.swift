@@ -1,8 +1,7 @@
 #if !os(WASI)
-import DatabaseDigest
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
+import DatabaseKit
 import Testing
 @testable import DatabaseEngine
 
@@ -11,7 +10,7 @@ struct CanonicalPaginationFingerprintTests {
     @Test("streaming fingerprint preserves the canonical digest format")
     func streamingFingerprintMatchesMaterializedGoldenDigest() throws {
         let query = selectQuery()
-        let scope = DatabaseBytes([9, 8, 7, 6])
+        let scope = ByteString([9, 8, 7, 6])
         let page = try CanonicalQueryPagination.window(
             rows: rows(2),
             selectQuery: query,
@@ -21,11 +20,11 @@ struct CanonicalPaginationFingerprintTests {
             )
         )
         let continuation = try #require(page.continuation)
-        var reader = DatabaseWireReader(continuation.bytes)
+        var reader = try StorageFrameDecoder(continuation.bytes)
         #expect(try reader.readUInt32() == 0x4351_5031)
         let actualQueryFingerprint = try reader.readBytes()
 
-        let encodedQuery = try QueryIRWireCodec.encode(.select(query))
+        let encodedQuery = try QueryIRWireFormat.encode(.select(query))
         var hasher = SHA256Accumulator()
         update(UInt32(0x0151_4244), hasher: &hasher)
         updateLength(encodedQuery.count, hasher: &hasher)
@@ -39,7 +38,7 @@ struct CanonicalPaginationFingerprintTests {
 
     @Test("work budget rejection leaves the meter unconsumed")
     func workBudgetRejectsBeforeStreamingEmission() throws {
-        let budget = DatabaseExecutionBudget(
+        let budget = ExecutionBudget(
             maximumRows: UInt32.max,
             maximumWorkUnits: 1,
             maximumIntermediateRows: UInt32.max,
@@ -75,7 +74,7 @@ struct CanonicalPaginationFingerprintTests {
 
     @Test("intermediate byte budget rejects before work is consumed")
     func intermediateBudgetRejectsBeforeWorkClaim() throws {
-        let budget = DatabaseExecutionBudget(
+        let budget = ExecutionBudget(
             maximumRows: UInt32.max,
             maximumWorkUnits: UInt64.max,
             maximumIntermediateRows: UInt32.max,
@@ -133,14 +132,16 @@ struct CanonicalPaginationFingerprintTests {
         )
     }
 
-    private func rows(_ count: Int) -> [QueryRow] {
+    private func rows(_ count: Int) -> [DatabaseEngine.QueryRow] {
         (0..<count).map {
-            QueryRow(fields: ["id": .int64(Int64($0))])
+            DatabaseEngine.QueryRow(
+                fields: ["id": .int64(Int64($0))]
+            )
         }
     }
 
-    private func unlimitedBudget() -> DatabaseExecutionBudget {
-        DatabaseExecutionBudget(
+    private func unlimitedBudget() -> ExecutionBudget {
+        ExecutionBudget(
             maximumRows: UInt32.max,
             maximumWorkUnits: UInt64.max,
             maximumIntermediateRows: UInt32.max,
@@ -150,9 +151,9 @@ struct CanonicalPaginationFingerprintTests {
     }
 
     private func execution(
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         workMeter: DatabaseWorkMeter? = nil,
-        continuationScope: DatabaseBytes = [],
+        continuationScope: ByteString = [],
         structuralLimits: QueryStructuralLimits = .default
     ) -> ReadExecutionContext {
         ReadExecutionContext(

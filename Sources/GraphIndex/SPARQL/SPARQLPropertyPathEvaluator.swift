@@ -1,7 +1,7 @@
 import DatabaseEngine
-import DatabaseValue
-import Graph
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
+import DatabaseKit
 import StorageKit
 
 /// Executes SPARQL property-path algebra over retained RDF endpoint pairs.
@@ -148,8 +148,8 @@ struct SPARQLPropertyPathEvaluator: Sendable {
 
     private func evaluate(
         _ path: ExecutionPropertyPath,
-        startConstraint: DatabaseRDFTerm?,
-        endConstraint: DatabaseRDFTerm?,
+        startConstraint: RDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess
     ) async throws -> MatchResult {
@@ -267,8 +267,8 @@ struct SPARQLPropertyPathEvaluator: Sendable {
     private func evaluateFixedLength(
         _ inner: ExecutionPropertyPath,
         repetitions: Int,
-        startConstraint: DatabaseRDFTerm?,
-        endConstraint: DatabaseRDFTerm?,
+        startConstraint: RDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess
     ) async throws -> MatchResult {
@@ -320,9 +320,9 @@ struct SPARQLPropertyPathEvaluator: Sendable {
     }
 
     private func evaluatePredicate(
-        _ predicate: DatabaseRDFPredicateIRI,
-        startConstraint: DatabaseRDFTerm?,
-        endConstraint: DatabaseRDFTerm?,
+        _ predicate: RDFPredicateIRI,
+        startConstraint: RDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess
     ) async throws -> MatchResult {
@@ -335,9 +335,9 @@ struct SPARQLPropertyPathEvaluator: Sendable {
             of: predicate.rawValue
         ) {
             for scan in scans {
-                let typedPredicate: DatabaseRDFPredicateIRI
+                let typedPredicate: RDFPredicateIRI
                 do {
-                    typedPredicate = try DatabaseRDFPredicateIRI(
+                    typedPredicate = try RDFPredicateIRI(
                         scan.predicateIRI
                     )
                 } catch {
@@ -377,10 +377,10 @@ struct SPARQLPropertyPathEvaluator: Sendable {
     }
 
     private func appendPredicateScan(
-        _ predicate: DatabaseRDFPredicateIRI,
+        _ predicate: RDFPredicateIRI,
         inverse: Bool,
-        startConstraint: DatabaseRDFTerm?,
-        endConstraint: DatabaseRDFTerm?,
+        startConstraint: RDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess,
         builder: inout SPARQLPropertyPathMatchBuilder,
@@ -415,8 +415,8 @@ struct SPARQLPropertyPathEvaluator: Sendable {
 
     private func evaluateNegatedPropertySet(
         _ exclusions: PropertyPathNegatedSet,
-        startConstraint: DatabaseRDFTerm?,
-        endConstraint: DatabaseRDFTerm?,
+        startConstraint: RDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess
     ) async throws -> MatchResult {
@@ -461,10 +461,10 @@ struct SPARQLPropertyPathEvaluator: Sendable {
     }
 
     private func appendNegatedScan(
-        excludedPredicates: Set<DatabaseRDFPredicateIRI>,
+        excludedPredicates: Set<RDFPredicateIRI>,
         inverse: Bool,
-        startConstraint: DatabaseRDFTerm?,
-        endConstraint: DatabaseRDFTerm?,
+        startConstraint: RDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess,
         builder: inout SPARQLPropertyPathMatchBuilder,
@@ -487,14 +487,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
             guard case .iri(let predicateIRI) = quad.predicate else {
                 continue
             }
-            let predicate: DatabaseRDFPredicateIRI
-            do {
-                predicate = try DatabaseRDFPredicateIRI(predicateIRI)
-            } catch {
-                throw SPARQLQueryError.invalidRDFTerm(
-                    String(describing: quad.predicate)
-                )
-            }
+            let predicate = RDFPredicateIRI(predicateIRI)
             guard !excludedPredicates.contains(predicate) else { continue }
             let match = inverse
                 ? SPARQLPropertyPathMatch(
@@ -512,8 +505,8 @@ struct SPARQLPropertyPathEvaluator: Sendable {
     private func evaluateSequence(
         left: ExecutionPropertyPath,
         right: ExecutionPropertyPath,
-        startConstraint: DatabaseRDFTerm?,
-        endConstraint: DatabaseRDFTerm?,
+        startConstraint: RDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess
     ) async throws -> MatchResult {
@@ -560,8 +553,8 @@ struct SPARQLPropertyPathEvaluator: Sendable {
     private func evaluateAlternative(
         left: ExecutionPropertyPath,
         right: ExecutionPropertyPath,
-        startConstraint: DatabaseRDFTerm?,
-        endConstraint: DatabaseRDFTerm?,
+        startConstraint: RDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess
     ) async throws -> MatchResult {
@@ -596,8 +589,8 @@ struct SPARQLPropertyPathEvaluator: Sendable {
     }
 
     private func evaluateIdentity(
-        startConstraint: DatabaseRDFTerm?,
-        endConstraint: DatabaseRDFTerm?,
+        startConstraint: RDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess
     ) async throws -> MatchResult {
@@ -658,8 +651,8 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         _ inner: ExecutionPropertyPath,
         minimum: Int,
         maximum: Int?,
-        startConstraint: DatabaseRDFTerm?,
-        endConstraint: DatabaseRDFTerm?,
+        startConstraint: RDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess
     ) async throws -> MatchResult {
@@ -880,7 +873,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
     private func advancePreservingMultiplicity(
         _ frontier: borrowing SPARQLPropertyPathMatches,
         through path: ExecutionPropertyPath,
-        endConstraint: DatabaseRDFTerm?,
+        endConstraint: RDFTerm?,
         graphScope: RDFGraphScanScope,
         transaction: any TransactionAccess
     ) async throws -> MatchResult {
@@ -914,7 +907,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
 
     private func appendEligibleDistinct(
         _ source: borrowing SPARQLPropertyPathMatches,
-        endConstraint: DatabaseRDFTerm?,
+        endConstraint: RDFTerm?,
         builder: inout SPARQLPropertyPathMatchBuilder,
         seen: inout SPARQLPropertyPathMatchSet
     ) throws {
@@ -952,7 +945,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
 
     private func boundRDFTerm(
         _ term: ExecutionTerm
-    ) throws -> DatabaseRDFTerm? {
+    ) throws -> RDFTerm? {
         guard term.isBound else { return nil }
         guard let value = term.literalValue,
               case .rdfTerm(let rdfTerm) = value else {

@@ -6,9 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Permuted
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import PermutedIndex
@@ -82,7 +81,6 @@ private struct PermutedIndexContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: PermutedIndexMaintainer<GeographicLocation>
-    let kind: PermutedIndexKind<GeographicLocation>
 
     /// Creates a test context with a permutation that reorders (country, city, name) to (city, country, name)
     init(permutation: Permutation? = nil, indexName: String = "GeographicLocation_compound") async throws {
@@ -92,16 +90,17 @@ private struct PermutedIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         // Default permutation: [1, 0, 2] - (city, country, name)
-        let perm = permutation ?? (try! Permutation(indices: [1, 0, 2]))
-        self.kind = PermutedIndexKind<GeographicLocation>(
-            fields: [\GeographicLocation.country, \GeographicLocation.city, \GeographicLocation.name],
-            permutation: perm
-        )
+        let perm: Permutation
+        if let permutation {
+            perm = permutation
+        } else {
+            perm = try Permutation(indices: [1, 0, 2])
+        }
 
         // Expression: country + city + name (compound fields)
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: permutedIndexMetadata(permutation: perm),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "country"),
                 FieldKeyExpression(fieldName: "city"),
@@ -160,6 +159,31 @@ private struct PermutedIndexContext {
             try await maintainer.scanAll(transaction: transaction)
         }
     }
+}
+
+private func permutedIndexMetadata(
+    permutation: Permutation
+) -> IndexKindMetadata {
+    IndexKindMetadata(
+        identifier: "permuted",
+        subspaceStructure: .flat,
+        fields: [
+            IndexFieldMetadata(
+                identity: FieldIdentity(name: "country", number: 2)
+            ),
+            IndexFieldMetadata(
+                identity: FieldIdentity(name: "city", number: 3)
+            ),
+            IndexFieldMetadata(
+                identity: FieldIdentity(name: "name", number: 4)
+            ),
+        ],
+        metadata: [
+            "permutation": .array(
+                permutation.indices.map { .int64(Int64($0)) }
+            )
+        ]
+    )
 }
 
 // MARK: - Behavior Tests

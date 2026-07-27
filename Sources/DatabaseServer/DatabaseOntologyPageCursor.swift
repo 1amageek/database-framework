@@ -1,7 +1,7 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
-struct DatabaseOntologyPageCursor: DatabaseWireValue, Hashable {
+struct DatabaseOntologyPageCursor: ServerPayloadValue, Hashable {
     enum Kind: Sendable, Hashable {
         case reason(OntologyExecuteOperation.ReasoningProfile)
         case hierarchy(
@@ -16,7 +16,7 @@ struct DatabaseOntologyPageCursor: DatabaseWireValue, Hashable {
     private static let formatVersion: UInt8 = 1
 
     let ontology: String
-    let dependencyFingerprint: DatabaseBytes
+    let dependencyFingerprint: ByteString
     let offset: UInt64
     let kind: Kind
 
@@ -100,7 +100,7 @@ struct DatabaseOntologyPageCursor: DatabaseWireValue, Hashable {
 
     init(
         ontology: String,
-        dependencyFingerprint: DatabaseBytes,
+        dependencyFingerprint: ByteString,
         offset: UInt64,
         kind: Kind
     ) {

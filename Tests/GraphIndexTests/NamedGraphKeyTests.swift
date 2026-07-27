@@ -9,9 +9,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -25,20 +24,6 @@ struct NamedGraphQuad {
     var predicate: String
     var object: String
     var graph: String
-
-    init(
-        id: String = UUID().uuidString,
-        subject: String,
-        predicate: String,
-        object: String,
-        graph: String
-    ) {
-        self.id = id
-        self.subject = subject
-        self.predicate = predicate
-        self.object = object
-        self.graph = graph
-    }
 }
 
 // MARK: - Test Helper
@@ -63,11 +48,11 @@ private struct NamedGraphKeyContext {
 
         let index = Index(
             name: indexName,
-            kind: GraphIndexKind<NamedGraphQuad>(
-                fromField: "subject",
-                edgeField: "predicate",
-                toField: "object",
-                graphField: graphField,
+            kind: propertyGraphIndexMetadata(
+                sourceFieldName: "subject",
+                labelFieldName: "predicate",
+                targetFieldName: "object",
+                namespaceFieldName: graphField,
                 strategy: strategy
             ),
             rootExpression: ConcatenateKeyExpression(children: [
@@ -79,15 +64,11 @@ private struct NamedGraphKeyContext {
             itemTypes: Set(["NamedGraphQuad"])
         )
 
-        self.maintainer = GraphIndexMaintainer<NamedGraphQuad>(
+        self.maintainer = try GraphIndexMaintainer<NamedGraphQuad>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            fromField: "subject",
-            edgeField: "predicate",
-            toField: "object",
-            graphField: graphField,
-            strategy: strategy
+            metadata: try PropertyGraphIndexMetadata(canonical: index.kind)
         )
     }
 
@@ -151,7 +132,7 @@ private struct NamedGraphKeyContext {
 
 // MARK: - TripleStore Strategy Key Tests
 
-@Suite("NamedGraph TripleStore Key Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("NamedGraph TripleStore Key Tests", .tags(.fdb), .serialized, .foundationDBScenario, .heartbeat)
 struct NamedGraphTripleStoreKeyTests {
 
     @Test("TripleStore with graph produces 3 entries")
@@ -272,7 +253,7 @@ struct NamedGraphTripleStoreKeyTests {
 
 // MARK: - Hexastore Strategy Key Tests
 
-@Suite("NamedGraph Hexastore Key Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("NamedGraph Hexastore Key Tests", .tags(.fdb), .serialized, .foundationDBScenario, .heartbeat)
 struct NamedGraphHexastoreKeyTests {
 
     @Test("Hexastore with graph produces 6 entries")
@@ -343,7 +324,7 @@ struct NamedGraphHexastoreKeyTests {
 
 // MARK: - Adjacency Strategy Key Tests
 
-@Suite("NamedGraph Adjacency Key Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("NamedGraph Adjacency Key Tests", .tags(.fdb), .serialized, .foundationDBScenario, .heartbeat)
 struct NamedGraphAdjacencyKeyTests {
 
     @Test("Adjacency with graph produces 2 entries")
@@ -360,7 +341,7 @@ struct NamedGraphAdjacencyKeyTests {
         try await ctx.cleanup()
     }
 
-    @Test("Out key has graph at end: [edge, from, to, graph]")
+    @Test("Out key has graph at end: [from, edge, to, graph]")
     func testAdjacencyOutKeyHasGraphAtEnd() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await NamedGraphKeyContext(strategy: .adjacency)
@@ -372,15 +353,15 @@ struct NamedGraphAdjacencyKeyTests {
         #expect(outKeys.count == 1)
         let tuple = outKeys[0]
         #expect(tuple.count == 4)
-        #expect(tuple[0] as? String == "knows")
-        #expect(tuple[1] as? String == "Alice")
+        #expect(tuple[0] as? String == "Alice")
+        #expect(tuple[1] as? String == "knows")
         #expect(tuple[2] as? String == "Bob")
         #expect(tuple[3] as? String == "g1")
 
         try await ctx.cleanup()
     }
 
-    @Test("In key has graph at end: [edge, to, from, graph]")
+    @Test("In key has graph at end: [to, edge, from, graph]")
     func testAdjacencyInKeyHasGraphAtEnd() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await NamedGraphKeyContext(strategy: .adjacency)
@@ -392,8 +373,8 @@ struct NamedGraphAdjacencyKeyTests {
         #expect(inKeys.count == 1)
         let tuple = inKeys[0]
         #expect(tuple.count == 4)
-        #expect(tuple[0] as? String == "knows")
-        #expect(tuple[1] as? String == "Bob")
+        #expect(tuple[0] as? String == "Bob")
+        #expect(tuple[1] as? String == "knows")
         #expect(tuple[2] as? String == "Alice")
         #expect(tuple[3] as? String == "g1")
 
@@ -416,10 +397,10 @@ struct NamedGraphAdjacencyKeyTests {
     }
 }
 
-// MARK: - Backward Compatibility Tests
+// MARK: - Indexes Without Namespace Fields
 
-@Suite("NamedGraph Backward Compatibility Key Tests", .tags(.fdb), .serialized, .heartbeat)
-struct NamedGraphBackwardCompatibilityKeyTests {
+@Suite("Graph index keys without namespace fields", .tags(.fdb), .serialized, .foundationDBScenario, .heartbeat)
+struct GraphIndexWithoutNamespaceKeyTests {
 
     @Test("TripleStore without graph produces 3-element keys")
     func testTripleStoreWithoutGraphProduces3ElementKeys() async throws {

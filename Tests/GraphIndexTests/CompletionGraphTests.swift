@@ -5,7 +5,7 @@
 import Testing
 import TestHeartbeat
 import Foundation
-import Graph
+import DatabaseKit
 @testable import GraphIndex
 @testable import OntologyIndex
 

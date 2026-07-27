@@ -1,8 +1,7 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
 import StorageKit
 
-package struct DatabaseIndexRebuildState: DatabaseWireValue, Hashable {
+package struct DatabaseIndexRebuildState: StorageFrameValue, Hashable {
     package enum Phase: UInt8, Sendable, Hashable {
         case building = 1
         case complete = 2
@@ -11,7 +10,7 @@ package struct DatabaseIndexRebuildState: DatabaseWireValue, Hashable {
 
     package let entity: String
     package let index: String
-    package let generation: DatabaseUUID
+    package let generation: DatabaseTypes.UUID
     package let phase: Phase
     package let lastProcessedKey: Bytes?
     package let indexedEntityCount: UInt64
@@ -20,7 +19,7 @@ package struct DatabaseIndexRebuildState: DatabaseWireValue, Hashable {
     package init(
         entity: String,
         index: String,
-        generation: DatabaseUUID,
+        generation: DatabaseTypes.UUID,
         phase: Phase,
         lastProcessedKey: Bytes? = nil,
         indexedEntityCount: UInt64 = 0,
@@ -36,28 +35,32 @@ package struct DatabaseIndexRebuildState: DatabaseWireValue, Hashable {
     }
 
     package func encode(
-        into writer: inout DatabaseWireWriter
-    ) throws(DatabaseWireError) {
+        to writer: inout StorageFrameEncoder
+    ) throws(StorageFrameError) {
         try writer.writeString(entity)
         try writer.writeString(index)
-        try generation.encode(into: &writer)
+        writer.writeUInt64(generation.high)
+        writer.writeUInt64(generation.low)
         writer.writeUInt8(phase.rawValue)
         try writer.writeOptionalBytes(
-            lastProcessedKey.map(DatabaseBytes.init(retaining:))
+            lastProcessedKey.map(ByteString.init(retaining:))
         )
         writer.writeUInt64(indexedEntityCount)
         try writer.writeOptionalString(detail)
     }
 
     package init(
-        from reader: inout DatabaseWireReader
-    ) throws(DatabaseWireError) {
+        from reader: inout StorageFrameDecoder
+    ) throws(StorageFrameError) {
         let entity = try reader.readString()
         let index = try reader.readString()
-        let generation = try DatabaseUUID(from: &reader)
+        let generation = DatabaseTypes.UUID(
+            high: try reader.readUInt64(),
+            low: try reader.readUInt64()
+        )
         let rawPhase = try reader.readUInt8()
         guard let phase = Phase(rawValue: rawPhase) else {
-            throw DatabaseWireError.invalidValueTag(rawPhase)
+            throw StorageFrameError.invalidValueTag(rawPhase)
         }
         self.init(
             entity: entity,

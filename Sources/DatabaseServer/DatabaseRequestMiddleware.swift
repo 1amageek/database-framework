@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public typealias DatabaseRequestHandler = @Sendable (
     DatabaseWireRequestEnvelope,

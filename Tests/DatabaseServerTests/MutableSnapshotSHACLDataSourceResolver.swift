@@ -1,5 +1,5 @@
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import GraphIndex
 import StorageKit
@@ -7,19 +7,19 @@ import StorageKit
 actor MutableSnapshotSHACLDataSourceResolver: DatabaseSHACLDataSourceResolver {
     private let executor: SPARQLQueryExecutor
     private let graphScope: SHACLDataGraphScope
-    private var snapshotFingerprint: DatabaseBytes
+    private var snapshotFingerprint: ByteString
 
     init(
         executor: SPARQLQueryExecutor,
         graphScope: SHACLDataGraphScope,
-        snapshotFingerprint: DatabaseBytes
+        snapshotFingerprint: ByteString
     ) {
         self.executor = executor
         self.graphScope = graphScope
         self.snapshotFingerprint = snapshotFingerprint
     }
 
-    func updateSnapshotFingerprint(_ value: DatabaseBytes) {
+    func updateSnapshotFingerprint(_ value: ByteString) {
         snapshotFingerprint = value
     }
 
@@ -45,7 +45,7 @@ actor MutableSnapshotSHACLDataSourceResolver: DatabaseSHACLDataSourceResolver {
 
     private func selectedNodes(
         for focus: SHACLExecuteOperation.Focus
-    ) -> [DatabaseRDFTerm]? {
+    ) -> [RDFTerm]? {
         switch focus {
         case .targets:
             return nil

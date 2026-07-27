@@ -9,7 +9,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseEngine
-import Graph
+import DatabaseKit
 
 // MARK: - WeightedShortestPathConfiguration
 

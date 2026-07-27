@@ -1,13 +1,13 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 
 struct DatabasePersistentJobStore: Sendable {
     struct PreparedSpecification: Sendable {
         let value: DatabasePersistentJobSpecification
-        let encoded: DatabaseBytes
-        let digest: DatabaseBytes
+        let encoded: ByteString
+        let digest: ByteString
     }
 
     private let container: DBContainer
@@ -124,7 +124,7 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     func load(
-        _ jobID: DatabaseUUID,
+        _ jobID: DatabaseTypes.UUID,
         transaction: any TransactionAccess,
         snapshot: Bool = false
     ) async throws -> DatabasePersistentJobSnapshot? {
@@ -154,9 +154,9 @@ struct DatabasePersistentJobStore: Sendable {
             throw DatabaseJobRuntimeError.corruptedState
         }
 
-        let specificationBytes = DatabaseBytes(retaining: specificationStorage)
-        let planBytes = DatabaseBytes(retaining: planStorage)
-        let stateBytes = DatabaseBytes(retaining: stateStorage)
+        let specificationBytes = ByteString(retaining: specificationStorage)
+        let planBytes = ByteString(retaining: planStorage)
+        let stateBytes = ByteString(retaining: stateStorage)
         let specification = try decodeSpecification(specificationBytes)
         let plan = try decodePlan(planBytes)
         let state = try decodeState(stateBytes)
@@ -190,7 +190,7 @@ struct DatabasePersistentJobStore: Sendable {
         )
     }
 
-    func load(_ jobID: DatabaseUUID) async throws -> DatabasePersistentJobSnapshot? {
+    func load(_ jobID: DatabaseTypes.UUID) async throws -> DatabasePersistentJobSnapshot? {
         try await container.engine.withTransaction(configuration: .readOnly) {
             transaction in
             try await load(jobID, transaction: transaction, snapshot: true)
@@ -198,8 +198,8 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     func loadState(
-        _ jobID: DatabaseUUID,
-        specificationDigest: DatabaseBytes,
+        _ jobID: DatabaseTypes.UUID,
+        specificationDigest: ByteString,
         transaction: any TransactionAccess
     ) async throws -> DatabasePersistentJobState {
         guard let value = try await transaction.getValue(
@@ -208,7 +208,7 @@ struct DatabasePersistentJobStore: Sendable {
         ) else {
             throw DatabaseJobRuntimeError.corruptedState
         }
-        let state = try decodeState(DatabaseBytes(retaining: value))
+        let state = try decodeState(ByteString(retaining: value))
         guard state.jobID == jobID,
               state.specificationDigest == specificationDigest else {
             throw DatabaseJobRuntimeError.corruptedState
@@ -243,11 +243,11 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     func storeResult(
-        _ responsePayload: DatabaseBytes,
+        _ responsePayload: ByteString,
         snapshot: DatabasePersistentJobSnapshot,
-        completedAt: DatabaseTimestamp,
+        completedAt: Timestamp,
         transaction: any TransactionAccess
-    ) async throws -> DatabaseJobResultDigest {
+    ) async throws -> JobResultDigest {
         let count = responsePayload.count
         guard count <= storageLimits.maximumResultBytes else {
             throw DatabaseJobRuntimeError.responseTooLarge(
@@ -275,12 +275,12 @@ struct DatabasePersistentJobStore: Sendable {
             operation: snapshot.specification.operation,
             payload: responsePayload
         )
-        var chunkDigests: [DatabaseBytes] = []
+        var chunkDigests: [ByteString] = []
         chunkDigests.reserveCapacity(chunkCount)
         for chunkIndex in 0..<chunkCount {
             let start = chunkIndex * chunkSize
             let end = min(start + chunkSize, count)
-            let chunk = responsePayload.slice(start..<end)
+            let chunk = responsePayload[start..<end]
             let exactIndex = UInt32(chunkIndex)
             chunkDigests.append(
                 DatabasePersistentJobDigest.chunk(
@@ -309,7 +309,7 @@ struct DatabasePersistentJobStore: Sendable {
             createdAt: completedAt
         )
         try manifest.validate()
-        let manifestBytes = try DatabaseEnvelopeCodec.encode(
+        let manifestBytes = try ServerPayloadEncoder.encode(
             manifest,
             limits: wireLimits
         )
@@ -342,9 +342,9 @@ struct DatabasePersistentJobStore: Sendable {
             }
             let manifest: DatabasePersistentJobResultManifest
             do {
-                manifest = try DatabaseEnvelopeCodec.decode(
+                manifest = try ServerPayloadDecoder.decode(
                     DatabasePersistentJobResultManifest.self,
-                    from: DatabaseBytes(retaining: value),
+                    from: ByteString(retaining: value),
                     limits: wireLimits
                 )
                 try manifest.validate()
@@ -368,7 +368,7 @@ struct DatabasePersistentJobStore: Sendable {
     func loadResultChunk(
         manifest: DatabasePersistentJobResultManifest,
         index: UInt32
-    ) async throws -> DatabaseBytes {
+    ) async throws -> ByteString {
         guard index < manifest.chunkCount,
               Int(index) < manifest.chunkDigests.count else {
             throw DatabaseJobRuntimeError.invalidResultContinuation
@@ -385,7 +385,7 @@ struct DatabasePersistentJobStore: Sendable {
                     index: index
                 )
             }
-            let chunk = DatabaseBytes(retaining: value)
+            let chunk = ByteString(retaining: value)
             let expectedCount = Self.expectedChunkCount(
                 manifest: manifest,
                 index: index
@@ -403,7 +403,7 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     func dueJobs(
-        through timestamp: DatabaseTimestamp,
+        through timestamp: Timestamp,
         limit: Int
     ) async throws -> [DatabasePersistentJobDueEntry] {
         guard limit > 0 else { return [] }
@@ -429,7 +429,7 @@ struct DatabasePersistentJobStore: Sendable {
         }
     }
 
-    func earliestScheduledAt() async throws -> DatabaseTimestamp? {
+    func earliestScheduledAt() async throws -> Timestamp? {
         try await container.engine.withTransaction(configuration: .readOnly) {
             transaction in
             let range = due.range()
@@ -447,8 +447,8 @@ struct DatabasePersistentJobStore: Sendable {
 
     private func encodeSpecification(
         _ specification: DatabasePersistentJobSpecification
-    ) throws -> DatabaseBytes {
-        let bytes = try DatabaseEnvelopeCodec.encode(
+    ) throws -> ByteString {
+        let bytes = try ServerPayloadEncoder.encode(
             specification,
             limits: wireLimits
         )
@@ -463,8 +463,8 @@ struct DatabasePersistentJobStore: Sendable {
 
     private func encodePlan(
         _ plan: DatabasePersistentJobPlan
-    ) throws -> DatabaseBytes {
-        let bytes = try DatabaseEnvelopeCodec.encode(plan, limits: wireLimits)
+    ) throws -> ByteString {
+        let bytes = try ServerPayloadEncoder.encode(plan, limits: wireLimits)
         guard bytes.count <= storageLimits.maximumPlanBytes else {
             throw DatabaseJobRuntimeError.planTooLarge(
                 actual: bytes.count,
@@ -476,7 +476,7 @@ struct DatabasePersistentJobStore: Sendable {
 
     private func encodeState(
         _ state: DatabasePersistentJobState
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         guard state.operationStatePayload.count
                 <= storageLimits.maximumOperationStateBytes else {
             throw DatabaseJobRuntimeError.stateTooLarge(
@@ -485,7 +485,7 @@ struct DatabasePersistentJobStore: Sendable {
             )
         }
         try validateUnsuccessfulOutcome(in: state)
-        let bytes = try DatabaseEnvelopeCodec.encode(state, limits: wireLimits)
+        let bytes = try ServerPayloadEncoder.encode(state, limits: wireLimits)
         guard bytes.count <= storageLimits.maximumStateBytes else {
             throw DatabaseJobRuntimeError.stateTooLarge(
                 actual: bytes.count,
@@ -496,13 +496,13 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     private func decodeSpecification(
-        _ bytes: DatabaseBytes
+        _ bytes: ByteString
     ) throws -> DatabasePersistentJobSpecification {
         guard bytes.count <= storageLimits.maximumSpecificationBytes else {
             throw DatabaseJobRuntimeError.corruptedSpecification
         }
         do {
-            let value = try DatabaseEnvelopeCodec.decode(
+            let value = try ServerPayloadDecoder.decode(
                 DatabasePersistentJobSpecification.self,
                 from: bytes,
                 limits: wireLimits
@@ -517,13 +517,13 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     private func decodePlan(
-        _ bytes: DatabaseBytes
+        _ bytes: ByteString
     ) throws -> DatabasePersistentJobPlan {
         guard bytes.count <= storageLimits.maximumPlanBytes else {
             throw DatabaseJobRuntimeError.corruptedPlan
         }
         do {
-            let value = try DatabaseEnvelopeCodec.decode(
+            let value = try ServerPayloadDecoder.decode(
                 DatabasePersistentJobPlan.self,
                 from: bytes,
                 limits: wireLimits
@@ -542,13 +542,13 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     private func decodeState(
-        _ bytes: DatabaseBytes
+        _ bytes: ByteString
     ) throws -> DatabasePersistentJobState {
         guard bytes.count <= storageLimits.maximumStateBytes else {
             throw DatabaseJobRuntimeError.corruptedState
         }
         do {
-            let value = try DatabaseEnvelopeCodec.decode(
+            let value = try ServerPayloadDecoder.decode(
                 DatabasePersistentJobState.self,
                 from: bytes,
                 limits: wireLimits
@@ -583,16 +583,18 @@ struct DatabasePersistentJobStore: Sendable {
             return
         }
         do {
-            _ = try DatabaseWireWriter.encodedByteCount(
+            _ = try PersistentJobPayloadStorage.encodedByteCount(
+                outcome,
                 limits: unsuccessfulOutcomeWireLimits
-            ) {
-                (writer: inout DatabaseWireWriter)
-                    throws(DatabaseWireError) -> Void in
-                try outcome.encode(into: &writer)
-            }
-        } catch {
+            )
+        } catch let error as DatabaseWireError {
             throw DatabaseJobRuntimeError
                 .unsuccessfulOutcomeExceedsLimits(error)
+        } catch {
+            throw DatabaseJobRuntimeError
+                .unsuccessfulOutcomeExceedsLimits(
+                    .invalidFieldValueWireState
+                )
         }
     }
 
@@ -601,7 +603,7 @@ struct DatabasePersistentJobStore: Sendable {
         transaction: any TransactionAccess
     ) throws {
         guard let scheduledAt = state.scheduledAt else { return }
-        let value = try DatabaseEnvelopeCodec.encode(
+        let value = try ServerPayloadEncoder.encode(
             DatabasePersistentJobDueEntry(
                 jobID: state.jobID,
                 stateRevision: state.revision
@@ -614,32 +616,32 @@ struct DatabasePersistentJobStore: Sendable {
         )
     }
 
-    private func specificationKey(_ jobID: DatabaseUUID) -> Bytes {
+    private func specificationKey(_ jobID: DatabaseTypes.UUID) -> Bytes {
         specifications.pack(Tuple(jobID))
     }
 
-    private func planKey(_ jobID: DatabaseUUID) -> Bytes {
+    private func planKey(_ jobID: DatabaseTypes.UUID) -> Bytes {
         plans.pack(Tuple(jobID))
     }
 
-    private func stateKey(_ jobID: DatabaseUUID) -> Bytes {
+    private func stateKey(_ jobID: DatabaseTypes.UUID) -> Bytes {
         states.pack(Tuple(jobID))
     }
 
-    private func resultManifestKey(_ jobID: DatabaseUUID) -> Bytes {
+    private func resultManifestKey(_ jobID: DatabaseTypes.UUID) -> Bytes {
         resultManifests.pack(Tuple(jobID))
     }
 
     private func resultChunkKey(
-        _ jobID: DatabaseUUID,
+        _ jobID: DatabaseTypes.UUID,
         index: UInt32
     ) -> Bytes {
         resultChunks.pack(Tuple(jobID, Int64(index)))
     }
 
     private func dueKey(
-        _ timestamp: DatabaseTimestamp,
-        jobID: DatabaseUUID
+        _ timestamp: Timestamp,
+        jobID: DatabaseTypes.UUID
     ) -> Bytes {
         due.pack(
             Tuple(
@@ -654,7 +656,7 @@ struct DatabasePersistentJobStore: Sendable {
         from key: Bytes,
         value: Bytes
     ) throws -> (
-        timestamp: DatabaseTimestamp,
+        timestamp: Timestamp,
         dueEntry: DatabasePersistentJobDueEntry
     ) {
         do {
@@ -677,13 +679,13 @@ struct DatabasePersistentJobStore: Sendable {
                 throw DatabaseJobRuntimeError.corruptedState
             }
             offset += 1
-            let keyJobID = try DatabaseUUID.decodeTuple(
+            let keyJobID = try DatabaseTypes.UUID.decodeTuple(
                 from: encoded,
                 at: &offset
             )
-            let dueEntry = try DatabaseEnvelopeCodec.decode(
+            let dueEntry = try ServerPayloadDecoder.decode(
                 DatabasePersistentJobDueEntry.self,
-                from: DatabaseBytes(retaining: value),
+                from: ByteString(retaining: value),
                 limits: wireLimits
             )
             guard offset == encoded.count,
@@ -693,7 +695,7 @@ struct DatabasePersistentJobStore: Sendable {
                 throw DatabaseJobRuntimeError.corruptedState
             }
             return (
-                DatabaseTimestamp(
+                try Timestamp(
                     secondsSinceUnixEpoch: seconds,
                     nanoseconds: exactNanoseconds
                 ),

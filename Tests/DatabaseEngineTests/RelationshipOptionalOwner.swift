@@ -1,8 +1,8 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 
 @Persistable
 struct RelationshipOptionalOwner {
@@ -12,7 +12,7 @@ struct RelationshipOptionalOwner {
     var name: String
 
     @Relationship(deleteRule: .nullify)
-    var target: DatabaseReference<RelationshipTarget>? = nil
+    var target: PersistableReference<RelationshipTarget>? = nil
 }
 #endif
 #endif

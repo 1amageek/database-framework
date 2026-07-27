@@ -1,9 +1,10 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import Testing
 
 @Persistable
 private struct ModelDiffTestEntity {
+    var id: String = ""
     var name: String
     var score: Int64
 }

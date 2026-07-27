@@ -130,7 +130,8 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                     entityName: data.entity,
                     indexName: data.index,
                     indexSubspace: $0,
-                    coverage: coverage
+                    coverage: coverage,
+                    storedFieldNames: selection.storedFieldNames
                 )
             },
             graphScope: graphScope

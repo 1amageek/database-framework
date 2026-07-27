@@ -5,8 +5,8 @@
 import Testing
 import TestHeartbeat
 import Foundation
-import Core
-import Graph
+import DatabaseKit
+import DatabaseKit
 import DatabaseEngine
 @testable import GraphIndex
 
@@ -50,7 +50,7 @@ struct FilterAnalyzerTests {
     func testLessThanPushdown() {
         let analyzer = makeAnalyzer()
 
-        let filter = FilterExpression.lessThan("?score", .double(0.5))
+        let filter = FilterExpression.lessThan("?score", .float64(0.5))
         let (pushable, remaining) = analyzer.analyze(filter)
 
         #expect(pushable.count == 1)
@@ -235,7 +235,7 @@ struct FilterAnalyzerTests {
 
         let filter = FilterExpression.and(
             .regex("?status", "^active"),
-            .not(.equals("?score", .double(0.0)))
+            .not(.equals("?score", .float64(0.0)))
         )
         let (pushable, remaining) = analyzer.analyze(filter)
 
@@ -277,7 +277,7 @@ struct FilterAnalyzerTests {
                 .equals("?since", .int64(2020)),
                 .equals("?status", .string("active"))
             ),
-            .greaterThan("?score", .double(0.5))
+            .greaterThan("?score", .float64(0.5))
         )
         let (pushable, remaining) = analyzer.analyze(filter)
 

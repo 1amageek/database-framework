@@ -13,79 +13,142 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseMath
+import DatabaseTypes
 import StorageKit
 import DatabaseEngine
 
-/// Unified vector conversion utilities for VectorIndex module
+/// Converts canonical vector field values to the Float32 representation used
+/// by the vector index algorithms and their persisted payloads.
 ///
-/// **MANDATORY**: All VectorIndex maintainers MUST use this utility.
-/// Custom conversion implementations are PROHIBITED.
-///
-/// ## Type Mapping
-/// | Input Type | Output (to Float) |
-/// |------------|------------------|
-/// | Float | Direct |
-/// | Double | Float(d) |
-/// | Int64 | Float(i64) |
-/// | Int | Float(i) |
-/// | [Float] | Append all |
-/// | [Double] | Map to Float |
+/// `DatabaseTypes.Vector` preserves its declared scalar width. Vector indexes
+/// intentionally operate on Float32 values, so integer and Float64 vectors are
+/// converted at this boundary. The source vector's contiguous storage is
+/// borrowed and only the required Float32 result buffer is allocated.
 public struct VectorConversion: Sendable {
 
     private init() {}
 
-    // MARK: - Vector to Tuple
-
-    /// Convert Float vector to Tuple
-    ///
-    /// - Parameter vector: Float vector
-    /// - Returns: Tuple containing vector elements
-    public static func vectorToTuple(_ vector: [Float]) -> Tuple {
-        let elements: [any TupleElement] = vector.map { $0 as any TupleElement }
-        return Tuple(elements)
-    }
-
     // MARK: - Field Value Extraction
 
-    /// Extract Float vector from field values
-    ///
-    /// Handles arrays and individual numeric values.
-    ///
-    /// - Parameter fieldValues: Array of field values from DataAccess
-    /// - Returns: Float vector
-    /// - Throws: VectorIndexError if values are not numeric
+    /// Extracts the one canonical vector value produced by the index key
+    /// expression.
     public static func extractFloatArray(from fieldValues: [any TupleElement]) throws -> [Float] {
-        var floatArray: [Float] = []
-        for element in fieldValues {
-            if let tuple = element as? Tuple {
-                for index in 0..<tuple.count {
-                    try appendNumeric(
-                        try tuple.element(at: index),
-                        to: &floatArray
-                    )
-                }
-            } else {
-                try appendNumeric(element, to: &floatArray)
-            }
-        }
-        return floatArray
-    }
-
-    private static func appendNumeric(
-        _ element: any TupleElement,
-        to values: inout [Float]
-    ) throws {
-        if let f = element as? Float {
-            values.append(f)
-        } else if let d = element as? Double {
-            values.append(Float(d))
-        } else if let integer = element as? Int64 {
-            values.append(Float(integer))
-        } else {
-            throw VectorIndexError.invalidArgument(
-                "Vector field must contain numeric values, got: \(type(of: element))"
+        guard fieldValues.count == 1, let element = fieldValues.first else {
+            throw VectorIndexError.invalidStructure(
+                "A vector index expression must produce exactly one field value"
             )
         }
+
+        let fieldValue: FieldValue
+        do {
+            fieldValue = try FieldValue(tupleElement: element)
+        } catch {
+            throw VectorIndexError.invalidStructure(
+                "The vector index expression did not produce a canonical field value: \(error)"
+            )
+        }
+
+        guard case .vector(let vector) = fieldValue else {
+            throw VectorIndexError.invalidArgument(
+                "A vector index expression must resolve to FieldValue.vector"
+            )
+        }
+        return try floatArray(from: vector)
+    }
+
+    private static func floatArray(from vector: Vector) throws -> [Float] {
+        var values: [Float] = []
+        values.reserveCapacity(vector.count)
+
+        switch vector.elementType {
+        case .int8:
+            guard vector.withInt8Elements({
+                appendIntegers($0, to: &values)
+            }) != nil else {
+                throw inconsistentStorage(for: vector)
+            }
+        case .int16:
+            guard vector.withInt16Elements({
+                appendIntegers($0, to: &values)
+            }) != nil else {
+                throw inconsistentStorage(for: vector)
+            }
+        case .int32:
+            guard vector.withInt32Elements({
+                appendIntegers($0, to: &values)
+            }) != nil else {
+                throw inconsistentStorage(for: vector)
+            }
+        case .int64:
+            guard vector.withInt64Elements({
+                appendIntegers($0, to: &values)
+            }) != nil else {
+                throw inconsistentStorage(for: vector)
+            }
+        case .uint8:
+            guard vector.withUInt8Elements({
+                appendIntegers($0, to: &values)
+            }) != nil else {
+                throw inconsistentStorage(for: vector)
+            }
+        case .uint16:
+            guard vector.withUInt16Elements({
+                appendIntegers($0, to: &values)
+            }) != nil else {
+                throw inconsistentStorage(for: vector)
+            }
+        case .uint32:
+            guard vector.withUInt32Elements({
+                appendIntegers($0, to: &values)
+            }) != nil else {
+                throw inconsistentStorage(for: vector)
+            }
+        case .uint64:
+            guard vector.withUInt64Elements({
+                appendIntegers($0, to: &values)
+            }) != nil else {
+                throw inconsistentStorage(for: vector)
+            }
+        case .float32:
+            guard vector.withFloat32Elements({
+                values.append(contentsOf: $0)
+            }) != nil else {
+                throw inconsistentStorage(for: vector)
+            }
+        case .float64:
+            guard try vector.withFloat64Elements({
+                for element in $0 {
+                    let converted = Float(element)
+                    guard converted.isFinite else {
+                        throw VectorIndexError.invalidArgument(
+                            "A Float64 vector element exceeds the finite Float32 range"
+                        )
+                    }
+                    values.append(converted)
+                }
+                return ()
+            }) != nil else {
+                throw inconsistentStorage(for: vector)
+            }
+        }
+        return values
+    }
+
+    private static func appendIntegers<Element>(
+        _ elements: UnsafeBufferPointer<Element>,
+        to values: inout [Float]
+    ) where Element: BinaryInteger {
+        for element in elements {
+            values.append(Float(element))
+        }
+    }
+
+    private static func inconsistentStorage(
+        for vector: Vector
+    ) -> VectorIndexError {
+        .invalidStructure(
+            "Vector storage does not match its declared element type \(vector.elementType)"
+        )
     }
 
     // MARK: - Byte Conversion

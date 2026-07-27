@@ -8,7 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -119,17 +120,17 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
         let sumBytes = try await transaction.getValue(for: sumKey)
         let countBytes = try await transaction.getValue(for: countKey)
         guard sumBytes != nil || countBytes != nil else {
-            throw IndexError.noData("No values found for AVERAGE aggregate")
+            throw AggregationIndexError.noData("No values found for AVERAGE aggregate")
         }
         guard let sumBytes, let countBytes else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Average index requires both sum and count entries"
             )
         }
         let sum = try readStoredNumericAccumulator(sumBytes)
         let count = try readInt64Value(countBytes)
         guard count > 0 else {
-            throw IndexError.invalidStructure("Average index count must be positive")
+            throw AggregationIndexError.invalidStructure("Average index count must be positive")
         }
         return (
             count: count,
@@ -221,7 +222,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
             let grouping = decodedKey.groupingElements
             let groupingKey = decodedKey.groupingIdentity
             guard grouping.count == index.rootExpression.columnCount - 1 else {
-                throw IndexError.invalidStructure(
+                throw AggregationIndexError.invalidStructure(
                     "Average index key has an invalid grouping field count"
                 )
             }
@@ -244,13 +245,13 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
             } else if decodedKey.marker == "count" {
                 let count = try readInt64Value(value)
                 guard count > 0 else {
-                    throw IndexError.invalidStructure(
+                    throw AggregationIndexError.invalidStructure(
                         "Average index count must be positive"
                     )
                 }
                 countData[groupingKey] = count
             } else {
-                throw IndexError.invalidStructure(
+                throw AggregationIndexError.invalidStructure(
                     "Average index key has an unknown value marker: \(decodedKey.marker)"
                 )
             }
@@ -265,7 +266,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
 
         for (groupingKey, sumInfo) in sumData {
             guard let count = countData[groupingKey] else {
-                throw IndexError.invalidStructure(
+                throw AggregationIndexError.invalidStructure(
                     "Average index sum is missing a positive count"
                 )
             }
@@ -276,7 +277,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
             ))
         }
         for groupingKey in countData.keys where sumData[groupingKey] == nil {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Average index count is missing its sum"
             )
         }
@@ -425,7 +426,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue
     private func validateGroupingCount(_ count: Int) throws {
         guard index.rootExpression.columnCount >= 1,
               count == index.rootExpression.columnCount - 1 else {
-            throw IndexError.invalidArgument(
+            throw AggregationIndexError.invalidArgument(
                 "Grouping value count does not match average index '\(index.name)'"
             )
         }

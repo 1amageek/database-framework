@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Persistence capabilities available while maintaining derived transaction
@@ -29,10 +29,8 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
         self.storageAccess = storageAccess
     }
 
-    deinit {}
-
     public func fetch(
-        _ identity: PersistableIdentity
+        _ identity: EntityReference
     ) async throws -> (any Persistable)? {
         try await perform {
             try await transaction.fetchPersistedModel(
@@ -69,7 +67,7 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
     }
 
     public func isDeletionScheduled(
-        for identity: PersistableIdentity
+        for identity: EntityReference
     ) async throws -> Bool {
         try await perform {
             try await transaction.isDeletionScheduled(

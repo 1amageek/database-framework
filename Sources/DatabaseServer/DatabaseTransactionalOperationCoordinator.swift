@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 
 public struct DatabaseTransactionalOperationCoordinator: Sendable {
@@ -20,7 +20,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
 
     public func execute<Value: Sendable>(
         operation: DatabaseOperationIdentifier,
-        requestPayload: DatabaseBytes,
+        requestPayload: ByteString,
         context: DatabaseOperationContext,
         timeoutMilliseconds: UInt32,
         body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
@@ -52,7 +52,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
     /// external I/O therefore never runs inside a retryable transaction body.
     public func executeStaged<Preparation: Sendable, Value: Sendable>(
         operation: DatabaseOperationIdentifier,
-        requestPayload: DatabaseBytes,
+        requestPayload: ByteString,
         context: DatabaseOperationContext,
         timeoutMilliseconds: UInt32,
         prepare: @Sendable @escaping () async throws -> Preparation,
@@ -107,12 +107,12 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
 
     private func executePrepared<Value: Sendable, Prepared: Sendable>(
         operation: DatabaseOperationIdentifier,
-        requestPayload: DatabaseBytes,
+        requestPayload: ByteString,
         context: DatabaseOperationContext,
         deadline: DatabaseExecutionDeadline,
         body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
         decodeStoredResponse: @Sendable @escaping (
-            DatabaseBytes
+            ByteString
         ) throws -> Prepared,
         makeResponse: @Sendable @escaping (
             Value,
@@ -158,13 +158,13 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                             bytes: stored.responsePayload,
                             limits: wireLimits
                         )
-                        let frame = try DatabaseEnvelopeCodec
-                            .encodeSuccessResponse(
-                                requestID: context.requestID,
-                                operation: operation,
-                                payload: successPayload.bytes,
-                                limits: wireLimits
-                            )
+                        let frame = try DatabaseWireEncoder(
+                            limits: wireLimits
+                        ).encodeSuccessPayload(
+                            requestID: context.requestID,
+                            operation: operation,
+                            payload: successPayload.bytes
+                        )
                         let prepared = try decodeStoredResponse(
                             successPayload.bytes
                         )
@@ -192,15 +192,12 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                     value,
                     logicalVersion
                 )
-                let encodedResponse: DatabaseEncodedSuccessResponse
+                let encodedResponse: DatabaseWireEncodedResponse
                 do {
-                    encodedResponse = try DatabaseEnvelopeCodec
-                        .encodeSuccessResponseAndPayload(
-                            requestID: context.requestID,
-                            operation: operation,
-                            limits: wireLimits,
-                            encodePayload: encoder.encode(into:)
-                        )
+                    encodedResponse = try encoder.encode(
+                        requestID: context.requestID,
+                        limits: wireLimits
+                    )
                 } catch let wireError as DatabaseWireError {
                     throw DatabaseResponsePreparationError(
                         wireError: wireError
@@ -261,9 +258,12 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         }
     }
 
-    public func execute<Operation: DatabaseOperation, Value: Sendable>(
+    public func execute<
+        Operation: ServerOperationDeclaration,
+        Value: Sendable
+    >(
         _ operation: Operation.Type,
-        requestPayload: DatabaseBytes,
+        requestPayload: ByteString,
         context: DatabaseOperationContext,
         timeoutMilliseconds: UInt32,
         body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
@@ -277,22 +277,26 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
             clock: context.container.engine.monotonicClock
         )
         let executed = try await executePrepared(
-            operation: Operation.identifier,
+            operation: Operation.operation.identifier,
             requestPayload: requestPayload,
             context: context,
             deadline: deadline,
             body: body,
             decodeStoredResponse: { bytes in
-                try DatabaseEnvelopeCodec.decode(
-                    Operation.Response.self,
-                    from: bytes,
+                try DatabaseWireDecoder(
                     limits: wireLimits
+                ).decodeResponsePayload(
+                    Operation.operation,
+                    from: bytes,
                 )
             },
             makeResponse: { value, logicalVersion in
                 let response = try makeResponse(value, logicalVersion)
                 return (
-                    DatabaseOperationResponseEncoder(response),
+                    DatabaseOperationResponseEncoder(
+                        Operation.self,
+                        response: response
+                    ),
                     response
                 )
             }
@@ -320,7 +324,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
     private func storedResponseIfPresent(
         operation: DatabaseOperationIdentifier,
         idempotencyKey: String,
-        requestDigest: DatabaseBytes,
+        requestDigest: ByteString,
         context: DatabaseOperationContext,
         deadline: DatabaseExecutionDeadline
     ) async throws -> DatabaseCoordinatedOperationResponse? {
@@ -348,11 +352,12 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                         bytes: stored.responsePayload,
                         limits: wireLimits
                     )
-                    let frame = try DatabaseEnvelopeCodec.encodeSuccessResponse(
+                    let frame = try DatabaseWireEncoder(
+                        limits: wireLimits
+                    ).encodeSuccessPayload(
                         requestID: context.requestID,
                         operation: operation,
-                        payload: successPayload.bytes,
-                        limits: wireLimits
+                        payload: successPayload.bytes
                     )
                     return DatabaseCoordinatedOperationResponse(
                         result: DatabaseOperationResult(

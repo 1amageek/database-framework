@@ -6,7 +6,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 
 /// TaskLocal storage for IndexQueryContext during fusion query building
 ///

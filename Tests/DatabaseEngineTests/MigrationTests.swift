@@ -4,33 +4,39 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
 
 @Persistable(type: "SchemaRegistryAppendOnlyUser")
 struct SchemaRegistryAppendOnlyUserV1 {
+    var id: String = ""
     var name: String
     var email: String
 }
 
 @Persistable(type: "SchemaRegistryAppendOnlyUser")
 struct SchemaRegistryAppendOnlyUserV2 {
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 enum SchemaRegistryAppendOnlySchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [SchemaRegistryAppendOnlyUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try SchemaRegistryAppendOnlyUserV1.schemaEntity] }
+    }
 }
 
 enum SchemaRegistryAppendOnlySchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [SchemaRegistryAppendOnlyUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try SchemaRegistryAppendOnlyUserV2.schemaEntity] }
+    }
 }
 
 enum SchemaRegistryAppendOnlyMigrationPlan: SchemaMigrationPlan {
@@ -50,32 +56,39 @@ enum SchemaRegistryAppendOnlyMigrationPlan: SchemaMigrationPlan {
 
 @Persistable(type: "SchemaRegistryAppendOnlyUser")
 struct SchemaRegistryAppendOnlyUserReordered {
+    var id: String = ""
     var email: String
     var name: String
 }
 
 @Persistable(type: "SchemaRegistryMigratedUser")
 struct SchemaRegistryMigratedUserV1 {
+    var id: String = ""
     var name: String
     var email: String
 }
 
 @Persistable(type: "SchemaRegistryMigratedUser")
 struct SchemaRegistryMigratedUserV2 {
-    #Index(ScalarIndexKind<SchemaRegistryMigratedUserV2>(fields: [\.fullName]), name: "SchemaRegistryMigratedUser_fullName")
+    #Index(.scalar, fields: [\SchemaRegistryMigratedUserV2.fullName], name: "SchemaRegistryMigratedUser_fullName")
 
+    var id: String = ""
     var fullName: String
     var email: String
 }
 
 enum SchemaRegistryMigrationSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [SchemaRegistryMigratedUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try SchemaRegistryMigratedUserV1.schemaEntity] }
+    }
 }
 
 enum SchemaRegistryMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [SchemaRegistryMigratedUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try SchemaRegistryMigratedUserV2.schemaEntity] }
+    }
 }
 
 enum SchemaRegistryCustomMigrationPlan: SchemaMigrationPlan {
@@ -119,7 +132,7 @@ enum SchemaRegistryCustomMigrationPlan: SchemaMigrationPlan {
 /// **Coverage**:
 /// - Schema version operations
 /// - MigrationContext batch operations
-@Suite("Migration Tests", .serialized, .heartbeat)
+@Suite("Migration Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct MigrationTests {
 
     // MARK: - Helper Types
@@ -127,9 +140,9 @@ struct MigrationTests {
     @Persistable
     struct MigrationUser {
         #Directory<MigrationUser>("test", "migration", "users")
-        #Index(ScalarIndexKind<MigrationUser>(fields: [\.email]))
+        #Index(.scalar, fields: [\MigrationUser.email])
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var email: String
         var name: String
     }
@@ -138,15 +151,9 @@ struct MigrationTests {
     struct BatchMigrationEntity {
         #Directory<BatchMigrationEntity>("test", "migration", "batch")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var name: String
-        var status: String
-
-        init(id: String = ULID().ulidString, name: String, status: String = "active") {
-            self.id = id
-            self.name = name
-            self.status = status
-        }
+        var status: String = "active"
     }
 
     // MARK: - Helper Methods
@@ -224,7 +231,6 @@ struct MigrationTests {
         container: DBContainer,
         entities: [BatchMigrationEntity]
     ) async throws {
-        let encoder = ProtobufEncoder()
         let subspace = try await container.resolveDirectory(for: BatchMigrationEntity.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationEntity.persistableType)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
@@ -232,10 +238,10 @@ struct MigrationTests {
         try await container.engine.withTransaction { transaction in
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             for entity in entities {
-                let data = try encoder.encode(entity)
+                let data = try PersistableStorageCodec.encode(entity)
                 let identifier = try entity.persistableIdentifierTuple()
                 let itemKey = itemSubspace.pack(identifier)
-                try await storage.write(Bytes(data), for: itemKey)
+                try await storage.write(data, for: itemKey)
             }
         }
     }
@@ -317,8 +323,8 @@ struct MigrationTests {
 
             try await clearSchemaEntries(in: database, typeNames: [typeName])
 
-            try await registry.persist(Schema([SchemaRegistryAppendOnlyUserV1.self]))
-            try await registry.persist(Schema([SchemaRegistryAppendOnlyUserV2.self]))
+            try await registry.persist(try Schema(entities: [try SchemaRegistryAppendOnlyUserV1.schemaEntity]))
+            try await registry.persist(try Schema(entities: [try SchemaRegistryAppendOnlyUserV2.schemaEntity]))
 
             let entity = try await registry.load(typeName: typeName)
             #expect(entity?.fieldMapByName["name"]?.fieldNumber == 2)
@@ -390,10 +396,10 @@ struct MigrationTests {
 
             try await clearSchemaEntries(in: database, typeNames: [typeName])
 
-            try await registry.persist(Schema([SchemaRegistryAppendOnlyUserV1.self]))
+            try await registry.persist(try Schema(entities: [try SchemaRegistryAppendOnlyUserV1.schemaEntity]))
 
             do {
-                try await registry.persist(Schema([SchemaRegistryAppendOnlyUserReordered.self]))
+                try await registry.persist(try Schema(entities: [try SchemaRegistryAppendOnlyUserReordered.schemaEntity]))
                 Issue.record("Expected incompatibleEntityEvolution error")
             } catch let error as SchemaRegistryError {
                 if case .incompatibleEntityEvolution(let entityName, let issues) = error {

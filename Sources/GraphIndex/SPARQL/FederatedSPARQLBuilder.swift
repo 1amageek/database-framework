@@ -14,10 +14,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
-import Graph
+import DatabaseKit
 import StorageKit
 
 /// Fluent builder for graph-scoped federated SPARQL queries.
@@ -161,11 +161,11 @@ public struct FederatedSPARQLBuilder: Sendable {
     }
 
     public func filter(_ variable: String, equals value: String) -> Self {
-        filter(.equals(variable, .string(value)))
+        filter(.equals(variable, .rdfTerm(.string(value))))
     }
 
     public func filter(_ variable: String, notEquals value: String) -> Self {
-        filter(.notEquals(variable, .string(value)))
+        filter(.notEquals(variable, .rdfTerm(.string(value))))
     }
 
     public func filter(_ variable: String, matches regex: String) -> Self {
@@ -253,7 +253,7 @@ public struct FederatedSPARQLBuilder: Sendable {
     /// Follows W3C SPARQL 1.1 §15 execution order: pattern → ORDER BY →
     /// projection → DISTINCT → OFFSET/LIMIT.
     public func execute(
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLResult {
         guard offsetCount >= 0, limitCount.map({ $0 >= 0 }) ?? true else {
             throw SPARQLQueryError.invalidPagination
@@ -303,21 +303,21 @@ public struct FederatedSPARQLBuilder: Sendable {
 
     /// Execute and return just the first result (or nil).
     public func first(
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> VariableBinding? {
         try await limit(1).execute(budget: budget).bindings.first
     }
 
     /// Execute and return the total count.
     public func count(
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> Int {
         try await execute(budget: budget).count
     }
 
     /// Check if any results exist.
     public func exists(
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> Bool {
         try await first(budget: budget) != nil
     }

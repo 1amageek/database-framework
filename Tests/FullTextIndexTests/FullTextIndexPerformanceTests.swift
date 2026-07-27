@@ -4,70 +4,21 @@
 
 import Testing
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 import FDBStorage
-import FullText
 import TestSupport
 @testable import DatabaseEngine
 @testable import FullTextIndex
 
 // MARK: - Test Model
 
-struct BenchmarkArticle: Persistable {
-    typealias ID = String
-
+@Persistable
+struct BenchmarkArticle {
     var id: String
     var title: String
     var content: String
-
-    init(id: String = UUID().uuidString, title: String, content: String) {
-        self.id = id
-        self.title = title
-        self.content = content
-    }
-
-    static var persistableType: String { "BenchmarkArticle" }
-    static var allFields: [String] { ["id", "title", "content"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "title": return title
-        case "content": return content
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BenchmarkArticle, Value>) -> String {
-        switch keyPath {
-        case \BenchmarkArticle.id: return "id"
-        case \BenchmarkArticle.title: return "title"
-        case \BenchmarkArticle.content: return "content"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BenchmarkArticle>) -> String {
-        switch keyPath {
-        case \BenchmarkArticle.id: return "id"
-        case \BenchmarkArticle.title: return "title"
-        case \BenchmarkArticle.content: return "content"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BenchmarkArticle> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Full-Text Benchmark Context
@@ -77,7 +28,6 @@ private struct BenchmarkContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: FullTextIndexMaintainer<BenchmarkArticle>
-    let kind: FullTextIndexKind<BenchmarkArticle>
 
     init(tokenizer: TokenizationStrategy = .simple, storePositions: Bool = false, indexName: String = "BenchmarkArticle_content") async throws {
         self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
@@ -85,15 +35,14 @@ private struct BenchmarkContext {
         self.subspace = Subspace(prefix: Tuple("benchmark", "fulltext", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = FullTextIndexKind<BenchmarkArticle>(
-            fields: [\.content],
-            tokenizer: tokenizer,
-            storePositions: storePositions
-        )
-
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: fullTextIndexMetadata(
+                fieldName: "content",
+                fieldNumber: 3,
+                tokenizer: tokenizer,
+                storePositions: storePositions
+            ),
             rootExpression: FieldKeyExpression(fieldName: "content"),
             subspaceKey: indexName,
             itemTypes: Set(["BenchmarkArticle"])
@@ -103,8 +52,8 @@ private struct BenchmarkContext {
             index: index,
             tokenizer: tokenizer,
             storePositions: storePositions,
-            ngramSize: kind.ngramSize,
-            minTermLength: kind.minTermLength,
+            ngramSize: 3,
+            minTermLength: 2,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

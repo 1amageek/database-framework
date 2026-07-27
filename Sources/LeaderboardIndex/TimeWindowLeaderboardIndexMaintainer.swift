@@ -9,18 +9,30 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseMath
 import DatabaseEngine
 import StorageKit
 
 public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConvertible {
     case corruptedPosition(indexName: String, primaryKey: String)
+    case missingScoreField(indexName: String)
+    case missingScoreValue(indexName: String, fieldName: String)
+    case malformedWindowMetadataKey(indexName: String)
+    case malformedWindowIdentifier(indexName: String)
 
     public var description: String {
         switch self {
         case .corruptedPosition(let indexName, let primaryKey):
             return "Time-window leaderboard '\(indexName)' has corrupted position metadata for primary key \(primaryKey)"
+        case .missingScoreField(let indexName):
+            return "Time-window leaderboard '\(indexName)' has no score field"
+        case .missingScoreValue(let indexName, let fieldName):
+            return "Time-window leaderboard '\(indexName)' has no value for score field '\(fieldName)'"
+        case .malformedWindowMetadataKey(let indexName):
+            return "Time-window leaderboard '\(indexName)' has a malformed window metadata key"
+        case .malformedWindowIdentifier(let indexName):
+            return "Time-window leaderboard '\(indexName)' has a non-Int64 window identifier"
         }
     }
 }
@@ -300,7 +312,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     /// Extract score from item (type-safe)
     private func extractScore(from item: Item) throws -> Int64 {
         guard let scoreField = index.kind.fieldNames.last else {
-            throw IndexError.invalidConfiguration("Leaderboard index requires a score field")
+            throw TimeWindowLeaderboardIndexError.missingScoreField(
+                indexName: index.name
+            )
         }
 
         let values = try DataAccess.extractField(
@@ -309,10 +323,13 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         )
 
         guard let first = values.first else {
-            throw IndexError.invalidConfiguration("Score field value is nil")
+            throw TimeWindowLeaderboardIndexError.missingScoreValue(
+                indexName: index.name,
+                fieldName: scoreField
+            )
         }
 
-        return try TypeConversion.int64(from: first)
+        return try decodeInt64(first)
     }
 
     /// Extract grouping fields from item (all fields except the last which is score)
@@ -394,8 +411,8 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         let windowId: Int64
         let score: Int64
         do {
-            windowId = try TypeConversion.int64(from: posElements[0])
-            score = try TypeConversion.int64(from: posElements[1])
+            windowId = try decodeInt64(posElements[0])
+            score = try decodeInt64(posElements[1])
         } catch {
             throw corruptedPositionError(pk: pk)
         }
@@ -673,12 +690,26 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         for (key, _) in sequence {
             let keyTuple = try metaSubspace.subspace("start").unpack(key)
             guard let element = keyTuple[0] else {
-                throw IndexError.invalidStructure("Invalid leaderboard window metadata key")
+                throw TimeWindowLeaderboardIndexError.malformedWindowMetadataKey(
+                    indexName: index.name
+                )
             }
-            windowIds.append(try TypeConversion.int64(from: element))
+            do {
+                windowIds.append(try decodeInt64(element))
+            } catch {
+                throw TimeWindowLeaderboardIndexError.malformedWindowIdentifier(
+                    indexName: index.name
+                )
+            }
         }
 
         return windowIds.sorted(by: >)  // Newest first
+    }
+
+    private func decodeInt64(
+        _ element: any TupleElement
+    ) throws -> Int64 {
+        try TupleDecoder.decodeInt64(element)
     }
 
     // MARK: - Bottom-K Queries

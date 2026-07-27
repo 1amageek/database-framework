@@ -1,4 +1,4 @@
-import QueryIR
+import DatabaseKit
 
 public struct SPARQLGroupKeyPlan: Sendable, Hashable {
     public let outputVariable: String

@@ -1,6 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import Graph
+import DatabaseKit
 
 /// Enumerates canonical RDF dataset indexes that can expose a named graph.
 public struct RDFDatasetSourcePlanner: Sendable {
@@ -35,7 +35,8 @@ public struct RDFDatasetSourcePlanner: Sendable {
                         entityName: entity.name,
                         indexName: descriptor.name,
                         indexSubspace: typeSubspace.subspace(descriptor.name),
-                        coverage: try metadata.graphScope.sourceCoverage
+                        coverage: try metadata.graphScope.sourceCoverage,
+                        storedFieldNames: selection.storedFieldNames
                     )
                 )
             }

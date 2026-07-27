@@ -1,5 +1,5 @@
-import DatabaseValue
+import DatabaseTypes
 
 public protocol DatabaseUUIDGenerator: Sendable {
-    func generate() -> DatabaseUUID
+    func generate() -> DatabaseTypes.UUID
 }

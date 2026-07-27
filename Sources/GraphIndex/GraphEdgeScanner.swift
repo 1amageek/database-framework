@@ -1,7 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 /// One canonical graph edge decoded from an index key.

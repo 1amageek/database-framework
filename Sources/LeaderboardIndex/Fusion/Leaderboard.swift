@@ -1,15 +1,13 @@
 // Leaderboard.swift
 // LeaderboardIndex - Leaderboard ranking query for Fusion
 //
-// This file is part of LeaderboardIndex module, not DatabaseEngine.
-// DatabaseEngine does not know about TimeWindowLeaderboardIndexKind.
-
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import StorageKit
 
@@ -22,7 +20,7 @@ import StorageKit
 /// ```swift
 /// let results = try await context.fuse(GameScore.self) {
 ///     // Get top 100 from leaderboard
-///     Leaderboard(\.score).top(100)
+///     Leaderboard(#field(\GameScore.score)).top(100)
 ///
 ///     // Combine with user preferences
 ///     Similar(\.playerProfile, dimensions: 128).nearest(to: userVector, k: 50)
@@ -32,7 +30,10 @@ import StorageKit
 ///
 /// // With grouping (e.g., by region)
 /// let results = try await context.fuse(GameScore.self) {
-///     Leaderboard(\.score, groupBy: \.region).top(50).group("asia")
+///     Leaderboard(
+///         #field(\GameScore.score),
+///         groupBy: #field(\GameScore.region)
+///     ).top(50).group("asia")
 /// }
 /// .execute()
 /// ```
@@ -43,7 +44,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     private let scoreFieldName: String
     private let groupByFieldName: String?
     private var k: Int = 100
-    private var groupValue: (any Sendable & TupleElement)?
+    private var groupValue: FieldValue?
     private var windowId: Int64?
 
     // MARK: - Initialization (FusionContext)
@@ -55,15 +56,15 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     /// **Usage**:
     /// ```swift
     /// context.fuse(GameScore.self) {
-    ///     Leaderboard(\.score).top(100)
+    ///     Leaderboard(#field(\GameScore.score)).top(100)
     /// }
     /// ```
     /// Create a Leaderboard query for an Int64 score field
-    public init(_ scoreKeyPath: KeyPath<T, Int64>) {
+    public init(_ scoreField: Field<T, Int64>) {
         guard let context = FusionContext.current else {
             fatalError("Leaderboard must be used within context.fuse { } block")
         }
-        self.scoreFieldName = T.fieldName(for: scoreKeyPath)
+        self.scoreFieldName = scoreField.name
         self.groupByFieldName = nil
         self.queryContext = context
     }
@@ -72,17 +73,20 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     ///
     /// **Usage**:
     /// ```swift
-    /// Leaderboard(\.score, groupBy: \.region).top(50).group("asia")
+    /// Leaderboard(
+    ///     #field(\GameScore.score),
+    ///     groupBy: #field(\GameScore.region)
+    /// ).top(50).group("asia")
     /// ```
-    public init<G: Sendable & Hashable>(
-        _ scoreKeyPath: KeyPath<T, Int64>,
-        groupBy groupKeyPath: KeyPath<T, G>
+    public init<G>(
+        _ scoreField: Field<T, Int64>,
+        groupBy groupField: Field<T, G>
     ) {
         guard let context = FusionContext.current else {
             fatalError("Leaderboard must be used within context.fuse { } block")
         }
-        self.scoreFieldName = T.fieldName(for: scoreKeyPath)
-        self.groupByFieldName = T.fieldName(for: groupKeyPath)
+        self.scoreFieldName = scoreField.name
+        self.groupByFieldName = groupField.name
         self.queryContext = context
     }
 
@@ -90,20 +94,20 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
 
     /// Create a Leaderboard query with explicit context
     /// Create a Leaderboard query for Int64 with explicit context
-    public init(_ scoreKeyPath: KeyPath<T, Int64>, context: IndexQueryContext) {
-        self.scoreFieldName = T.fieldName(for: scoreKeyPath)
+    public init(_ scoreField: Field<T, Int64>, context: IndexQueryContext) {
+        self.scoreFieldName = scoreField.name
         self.groupByFieldName = nil
         self.queryContext = context
     }
 
     /// Create a Leaderboard query with grouping and explicit context
-    public init<G: Sendable & Hashable>(
-        _ scoreKeyPath: KeyPath<T, Int64>,
-        groupBy groupKeyPath: KeyPath<T, G>,
+    public init<G>(
+        _ scoreField: Field<T, Int64>,
+        groupBy groupField: Field<T, G>,
         context: IndexQueryContext
     ) {
-        self.scoreFieldName = T.fieldName(for: scoreKeyPath)
-        self.groupByFieldName = T.fieldName(for: groupKeyPath)
+        self.scoreFieldName = scoreField.name
+        self.groupByFieldName = groupField.name
         self.queryContext = context
     }
 
@@ -123,9 +127,9 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     ///
     /// - Parameter value: Group value to filter by
     /// - Returns: Updated query
-    public func group<V: Sendable & TupleElement>(_ value: V) -> Self {
+    public func group<V: FieldValueRepresentable>(_ value: V) -> Self {
         var copy = self
-        copy.groupValue = value
+        copy.groupValue = value.fieldValue
         return copy
     }
 
@@ -144,15 +148,17 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     /// Find the index descriptor and kind for leaderboard
     private func findIndexDescriptorAndKind() throws -> (
         descriptor: IndexDescriptor,
-        kind: TimeWindowLeaderboardIndexKind<T>
+        configuration: TimeWindowLeaderboardConfiguration
     )? {
-        for descriptor in T.indexDescriptors {
-            guard descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<T>.identifier else {
+        for descriptor in try T.indexDescriptors {
+            guard descriptor.kind.identifier == "time_window_leaderboard" else {
                 continue
             }
-            let kind = try TimeWindowLeaderboardIndexKind<T>(canonical: descriptor.kind)
-            if kind.fieldNames.contains(scoreFieldName) {
-                return (descriptor, kind)
+            let configuration = try TimeWindowLeaderboardConfiguration(
+                metadata: descriptor.kind
+            )
+            if configuration.scoreFieldName == scoreFieldName {
+                return (descriptor, configuration)
             }
         }
         return nil
@@ -177,11 +183,14 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         let indexSubspace = typeSubspace.subspace(indexName)
 
         // Execute leaderboard query within transaction
+        let grouping = try groupValue.map {
+            [try $0.toTupleElement() as any TupleElement]
+        }
         let topKResults: [(pk: Tuple, score: Int64)] = try await queryContext.withTransaction { transaction in
             try await self.readTopK(
                 indexSubspace: indexSubspace,
                 k: self.k,
-                grouping: self.groupValue.map { [$0] },
+                grouping: grouping,
                 windowId: self.windowId,
                 windowDurationSeconds: windowDurationSeconds,
                 transaction: transaction

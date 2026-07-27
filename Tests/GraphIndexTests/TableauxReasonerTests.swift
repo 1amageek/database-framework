@@ -5,7 +5,8 @@
 import Testing
 import TestHeartbeat
 import Foundation
-import Graph
+import DatabaseKit
+import DatabaseTypes
 @testable import GraphIndex
 @testable import OntologyIndex
 
@@ -1286,7 +1287,7 @@ struct TableauxReasonerDataPropertyTests {
         let result = reasoner.checkSatisfiability(
             .dataHasValue(
                 property: "ex:age",
-                literal: OWLLiteral(
+                literal: RDFLiteral(
                     lexicalForm: "30",
                     datatype: XSDDatatype.integer.typedLiteralDatatype
                 )
@@ -1302,7 +1303,7 @@ struct TableauxReasonerDataPropertyTests {
         ontology.axioms.append(.dataPropertyAssertion(
             subject: "ex:alice",
             property: "ex:age",
-            value: OWLLiteral(
+            value: RDFLiteral(
                 lexicalForm: "30",
                 datatype: XSDDatatype.integer.typedLiteralDatatype
             )
@@ -1313,7 +1314,7 @@ struct TableauxReasonerDataPropertyTests {
             individual: "ex:alice",
             classExpr: .dataHasValue(
                 property: "ex:age",
-                literal: OWLLiteral(
+                literal: RDFLiteral(
                     lexicalForm: "30",
                     datatype: XSDDatatype.integer.typedLiteralDatatype
                 )

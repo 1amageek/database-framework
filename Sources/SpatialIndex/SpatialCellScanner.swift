@@ -8,10 +8,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
-import Geospatial
+import DatabaseKit
 
 /// Unified spatial cell scanner for S2 and Morton encodings
 ///

@@ -1,8 +1,8 @@
-import Core
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseEngine
 @testable import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import StorageKit
 import Testing
@@ -13,13 +13,14 @@ struct DatabaseServerRuntimeTests {
     func registersEveryOperationHandler() async throws {
         let container = try await makeContainer()
         let runtime = try await makeRuntime(container: container)
+
         #expect(
             try await container.getCurrentSchemaVersion()
                 == container.schema.version
         )
-        let response: CapabilitiesDescribeOperation.Response = try await invoke(
-            CapabilitiesDescribeOperation.self,
-            request: DatabaseEmpty(),
+        let response = try await invoke(
+            DatabaseOperations.capabilitiesDescribe,
+            request: EmptyOperationPayload(),
             requestID: 1,
             runtime: runtime
         )
@@ -27,8 +28,8 @@ struct DatabaseServerRuntimeTests {
         #expect(response.runtimeVersion == "test-runtime")
         #expect(
             response.jobOperations == [
-                try DatabaseJobOperationIdentifier(
-                    family: .commandWrite,
+                try JobOperationIdentifier(
+                    family: .commandExecute,
                     kind: "database.test.runtime-job"
                 ),
             ]
@@ -38,98 +39,102 @@ struct DatabaseServerRuntimeTests {
     @Test("write commands are atomic and replay idempotently")
     func writeCommandUsesSharedTransactionalCoordinator() async throws {
         let container = try await makeContainer()
-        let command = CountingCommand(stateID: "command-count")
+        let command = try CountingCommand(stateID: "command-count")
         let runtime = try await makeRuntime(
             container: container,
             writeCommands: [AnyDatabaseWriteCommand(command)]
         )
-        let request = DatabaseTypedCommandRequest<CountingCommandDescriptor>(
-            input: CountingCommandInput(value: "same-input")
+        let request = try commandRequest(
+            declaration: command.declaration,
+            value: "same-input"
         )
-        let firstRequestBytes = try makeRequest(
-            operation: CountingCommandOperation.self,
-            requestID: 2,
-            metadata: DatabaseRequestMetadata(idempotencyKey: "command-key"),
-            payload: request
-        )
-        let secondRequestBytes = try makeRequest(
-            operation: CountingCommandOperation.self,
-            requestID: 3,
-            metadata: DatabaseRequestMetadata(idempotencyKey: "command-key"),
-            payload: request
+        let metadata = OperationRequestMetadata(
+            idempotencyKey: "command-key"
         )
 
-        let firstEnvelope = try DatabaseEnvelopeCodec.decodeResponse(
-            try await runtime.execute(firstRequestBytes)
+        let first = try await invoke(
+            DatabaseOperations.commandExecute,
+            request: request,
+            requestID: 2,
+            metadata: metadata,
+            runtime: runtime
         )
-        let secondEnvelope = try DatabaseEnvelopeCodec.decodeResponse(
-            try await runtime.execute(secondRequestBytes)
-        )
-        guard case .success(let firstPayload) = firstEnvelope.payload,
-              case .success(let secondPayload) = secondEnvelope.payload else {
-            Issue.record("Expected successful command responses")
-            return
-        }
-        let first = try DatabaseEnvelopeCodec.decode(
-            CountingCommandOperation.Response.self,
-            from: firstPayload
-        )
-        let second = try DatabaseEnvelopeCodec.decode(
-            CountingCommandOperation.Response.self,
-            from: secondPayload
+        let second = try await invoke(
+            DatabaseOperations.commandExecute,
+            request: request,
+            requestID: 3,
+            metadata: metadata,
+            runtime: runtime
         )
         let storedCount = try await container.newContext().model(
             for: command.stateID,
             as: DatabaseEndpointEntity.self
         )
 
-        #expect(first.output == CountingCommandOutput(count: 1))
-        #expect(first.commitVersion == 1)
-        #expect(second.output == CountingCommandOutput(count: 1))
-        #expect(second.commitVersion == 1)
-        #expect(firstEnvelope.requestID == 2)
-        #expect(secondEnvelope.requestID == 3)
-        #expect(firstPayload == secondPayload)
+        guard case .write(
+            let firstOutput,
+            let firstCommitVersion,
+            nil
+        ) = first,
+        case .write(
+            let secondOutput,
+            let secondCommitVersion,
+            nil
+        ) = second else {
+            Issue.record("Expected successful write command responses")
+            return
+        }
+        #expect(firstOutput == .uint8(1))
+        #expect(firstCommitVersion == 1)
+        #expect(secondOutput == .uint8(1))
+        #expect(secondCommitVersion == 1)
         #expect(storedCount?.priority == 1)
     }
 
     @Test("an idempotency key cannot be reused with a different payload")
     func idempotencyConflictIsTyped() async throws {
         let container = try await makeContainer()
-        let command = CountingCommand(stateID: "conflict-count")
+        let command = try CountingCommand(stateID: "conflict-count")
         let runtime = try await makeRuntime(
             container: container,
             writeCommands: [AnyDatabaseWriteCommand(command)]
         )
-        let metadata = DatabaseRequestMetadata(idempotencyKey: "conflict-key")
+        let metadata = OperationRequestMetadata(
+            idempotencyKey: "conflict-key"
+        )
         let first = try makeRequest(
-            operation: CountingCommandOperation.self,
+            operation: DatabaseOperations.commandExecute,
             requestID: 3,
             metadata: metadata,
-            payload: DatabaseTypedCommandRequest<CountingCommandDescriptor>(
-                input: CountingCommandInput(value: "first")
+            request: commandRequest(
+                declaration: command.declaration,
+                value: "first"
             )
         )
         let conflicting = try makeRequest(
-            operation: CountingCommandOperation.self,
+            operation: DatabaseOperations.commandExecute,
             requestID: 4,
             metadata: metadata,
-            payload: DatabaseTypedCommandRequest<CountingCommandDescriptor>(
-                input: CountingCommandInput(value: "second")
+            request: commandRequest(
+                declaration: command.declaration,
+                value: "second"
             )
         )
 
         _ = try await runtime.execute(first)
         let responseBytes = try await runtime.execute(conflicting)
-        let response = try DatabaseEnvelopeCodec.decodeResponse(responseBytes)
+        let response = try DatabaseWireDecoder().decodeResponse(
+            DatabaseOperations.commandExecute,
+            from: responseBytes,
+            matching: 4
+        )
 
-        switch response.payload {
-        case .success:
+        guard case .failure(let error) = response else {
             Issue.record("Expected an idempotency conflict")
-        case .failure(let error):
-            #expect(error.category == .conflict)
-            #expect(error.code == "IDEMPOTENCY_KEY_CONFLICT")
+            return
         }
+        #expect(error.category == .conflict)
+        #expect(error.code == "IDEMPOTENCY_KEY_CONFLICT")
     }
 
     @Test("oversized final responses roll back mutations and idempotency state")
@@ -143,7 +148,7 @@ struct DatabaseServerRuntimeTests {
             maximumObjectCount: 100
         )
         let container = try await makeContainer()
-        let command = OversizedResponseCommand(
+        let command = try OversizedResponseCommand(
             stateID: "oversized-response"
         )
         let runtime = try await makeRuntime(
@@ -152,22 +157,21 @@ struct DatabaseServerRuntimeTests {
             wireLimits: limits
         )
         let request = try makeRequest(
-            operation: OversizedResponseOperation.self,
+            operation: DatabaseOperations.commandExecute,
             requestID: 5,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 idempotencyKey: "oversized-response"
             ),
-            payload: DatabaseTypedCommandRequest<
-                OversizedResponseCommandDescriptor
-            >(input: DatabaseEmpty()),
+            request: CommandRequest(command: command.declaration),
             limits: limits
         )
 
-        let response = try DatabaseEnvelopeCodec.decodeResponse(
-            try await runtime.execute(request),
-            limits: limits
+        let response = try DatabaseWireDecoder(limits: limits).decodeResponse(
+            DatabaseOperations.commandExecute,
+            from: try await runtime.execute(request),
+            matching: 5
         )
-        guard case .failure(let error) = response.payload else {
+        guard case .failure(let error) = response else {
             Issue.record("Expected response resource limit failure")
             return
         }
@@ -224,7 +228,7 @@ struct DatabaseServerRuntimeTests {
         writeCommands: [AnyDatabaseWriteCommand] = [],
         wireLimits: DatabaseWireLimits = .default
     ) async throws -> DatabaseServerRuntime {
-        return try await DatabaseServerRuntime(
+        try await DatabaseServerRuntime(
             container: container,
             configuration: DatabaseServerRuntimeConfiguration(
                 identity: DatabaseRuntimeIdentity(version: "test-runtime"),
@@ -242,116 +246,78 @@ struct DatabaseServerRuntimeTests {
         )
     }
 
-    private func makeRequest<Operation: DatabaseOperation>(
-        operation: Operation.Type,
+    private func makeRequest<Request, Response>(
+        operation: DatabaseOperation<Request, Response>,
         requestID: UInt64,
-        metadata: DatabaseRequestMetadata = DatabaseRequestMetadata(),
-        payload: Operation.Request,
+        metadata: OperationRequestMetadata = OperationRequestMetadata(),
+        request: Request,
         limits: DatabaseWireLimits = .default
-    ) throws -> DatabaseBytes {
-        try DatabaseEnvelopeCodec.encodeRequest(
+    ) throws -> ByteString {
+        try DatabaseWireEncoder(limits: limits).encodeRequest(
             operation,
             requestID: requestID,
             metadata: metadata,
-            request: payload,
-            limits: limits
+            request: request
         )
     }
 
-    private func invoke<Operation: DatabaseOperation>(
-        _ operation: Operation.Type,
-        request: Operation.Request,
+    private func invoke<Request, Response>(
+        _ operation: DatabaseOperation<Request, Response>,
+        request: Request,
         requestID: UInt64,
+        metadata: OperationRequestMetadata = OperationRequestMetadata(),
         runtime: DatabaseServerRuntime
-    ) async throws -> Operation.Response {
-        try await invoke(
-            makeRequest(
-                operation: operation,
-                requestID: requestID,
-                payload: request
-            ),
-            as: operation,
-            runtime: runtime
+    ) async throws -> Response {
+        let requestBytes = try makeRequest(
+            operation: operation,
+            requestID: requestID,
+            metadata: metadata,
+            request: request
         )
-    }
-
-    private func invoke<Operation: DatabaseOperation>(
-        _ request: DatabaseBytes,
-        as operation: Operation.Type,
-        runtime: DatabaseServerRuntime
-    ) async throws -> Operation.Response {
-        let responseBytes = try await runtime.execute(request)
-        let response = try DatabaseEnvelopeCodec.decodeResponse(responseBytes)
-        switch response.payload {
-        case .success(let payload):
-            return try DatabaseEnvelopeCodec.decode(
-                Operation.Response.self,
-                from: payload
-            )
+        let response = try DatabaseWireDecoder().decodeResponse(
+            operation,
+            from: try await runtime.execute(requestBytes),
+            matching: requestID
+        )
+        switch response {
+        case .success(let value):
+            return value
         case .failure(let error):
             throw error
         }
     }
 
-    private typealias CountingCommandOperation =
-        DatabaseTypedWriteCommandOperation<CountingCommandDescriptor>
-
-    private enum CountingCommandDescriptor: DatabaseWriteCommandDescriptor {
-        typealias Input = CountingCommandInput
-        typealias Output = CountingCommandOutput
-
-        static let identifier = "test.increment"
-    }
-
-    private struct CountingCommandInput: DatabaseWireValue, Equatable {
-        let value: String
-
-        func encode(
-            into writer: inout DatabaseWireWriter
-        ) throws(DatabaseWireError) {
-            try writer.writeString(value)
-        }
-
-        init(value: String) {
-            self.value = value
-        }
-
-        init(
-            from reader: inout DatabaseWireReader
-        ) throws(DatabaseWireError) {
-            self.init(value: try reader.readString())
-        }
-    }
-
-    private struct CountingCommandOutput: DatabaseWireValue, Equatable {
-        let count: UInt8
-
-        func encode(
-            into writer: inout DatabaseWireWriter
-        ) throws(DatabaseWireError) {
-            writer.writeUInt8(count)
-        }
-
-        init(count: UInt8) {
-            self.count = count
-        }
-
-        init(
-            from reader: inout DatabaseWireReader
-        ) throws(DatabaseWireError) {
-            self.init(count: try reader.readUInt8())
-        }
+    private func commandRequest(
+        declaration: CommandDeclaration,
+        value: String
+    ) throws -> CommandRequest {
+        CommandRequest(
+            command: declaration,
+            input: try FieldObject([
+                (key: "value", value: .string(value)),
+            ])
+        )
     }
 
     private struct CountingCommand: DatabaseWriteCommand {
-        typealias Descriptor = CountingCommandDescriptor
-
+        let declaration: CommandDeclaration
         let stateID: String
 
+        init(stateID: String) throws {
+            self.declaration = CommandDeclaration(
+                identifier: try CommandIdentifier("test.increment"),
+                access: .readWrite
+            )
+            self.stateID = stateID
+        }
+
         func execute(
-            input: CountingCommandInput,
+            input: FieldObject,
             context: DatabaseWriteCommandContext
-        ) async throws -> DatabaseCommandResult<CountingCommandOutput> {
+        ) async throws -> DatabaseCommandResult {
+            guard case .string(let value) = input["value"] else {
+                throw CountingCommandError.invalidInput
+            }
             let stored = try await context.transaction.fetch(
                 DatabaseEndpointEntity.self,
                 identifiedBy: stateID
@@ -363,65 +329,42 @@ struct DatabaseServerRuntimeTests {
             let next = current + 1
             var nextState = DatabaseEndpointEntity()
             nextState.id = stateID
-            nextState.title = input.value
+            nextState.title = value
             nextState.priority = next
             try await context.transaction.save(
                 nextState,
                 precondition: stored == nil ? .notExists : .exists
             )
-            return DatabaseCommandResult(
-                output: CountingCommandOutput(count: UInt8(next))
-            )
+            return DatabaseCommandResult(output: .uint8(UInt8(next)))
         }
     }
 
     private enum CountingCommandError: Error {
+        case invalidInput
         case overflow
     }
 
-    private typealias OversizedResponseOperation =
-        DatabaseTypedWriteCommandOperation<
-            OversizedResponseCommandDescriptor
-        >
-
-    private enum OversizedResponseCommandDescriptor:
-        DatabaseWriteCommandDescriptor {
-        typealias Input = DatabaseEmpty
-        typealias Output = OversizedResponseOutput
-
-        static let identifier = "test.oversized-response"
-    }
-
-    private struct OversizedResponseOutput: DatabaseWireValue {
-        let bytes: DatabaseBytes
-
-        func encode(
-            into writer: inout DatabaseWireWriter
-        ) throws(DatabaseWireError) {
-            try writer.writeBytes(bytes)
-        }
-
-        init(bytes: DatabaseBytes) {
-            self.bytes = bytes
-        }
-
-        init(
-            from reader: inout DatabaseWireReader
-        ) throws(DatabaseWireError) {
-            self.init(bytes: try reader.readBytes())
-        }
-    }
-
     private struct OversizedResponseCommand: DatabaseWriteCommand {
-        typealias Descriptor = OversizedResponseCommandDescriptor
-
+        let declaration: CommandDeclaration
         let stateID: String
 
+        init(stateID: String) throws {
+            self.declaration = CommandDeclaration(
+                identifier: try CommandIdentifier(
+                    "test.oversized.response"
+                ),
+                access: .readWrite
+            )
+            self.stateID = stateID
+        }
+
         func execute(
-            input: DatabaseEmpty,
+            input: FieldObject,
             context: DatabaseWriteCommandContext
-        ) async throws -> DatabaseCommandResult<OversizedResponseOutput> {
-            _ = input
+        ) async throws -> DatabaseCommandResult {
+            guard input.isEmpty else {
+                throw CountingCommandError.invalidInput
+            }
             var state = DatabaseEndpointEntity()
             state.id = stateID
             state.title = "must-roll-back"
@@ -431,16 +374,15 @@ struct DatabaseServerRuntimeTests {
                 precondition: .notExists
             )
             return DatabaseCommandResult(
-                output: OversizedResponseOutput(
-                    bytes: DatabaseBytes(
-                        [UInt8](repeating: 0xa5, count: 600)
-                    )
+                output: .bytes(
+                    ByteString([UInt8](repeating: 0xa5, count: 600))
                 )
             )
         }
     }
 
-    private final class ConfiguredCommandServiceFactory: DatabaseServerServiceFactory {
+    private final class ConfiguredCommandServiceFactory:
+        DatabaseServerServiceFactory {
         let readCommands: [AnyDatabaseReadCommand]
         let writeCommands: [AnyDatabaseWriteCommand]
 
@@ -485,13 +427,12 @@ struct DatabaseServerRuntimeTests {
         DatabaseSHACLService,
         DatabaseMaintenanceService,
         DatabaseJobService {
-
-        let jobOperations: [DatabaseJobOperationIdentifier]
+        let jobOperations: [JobOperationIdentifier]
 
         init() throws {
             self.jobOperations = [
-                try DatabaseJobOperationIdentifier(
-                    family: .commandWrite,
+                try JobOperationIdentifier(
+                    family: .commandExecute,
                     kind: "database.test.runtime-job"
                 ),
             ]

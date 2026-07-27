@@ -1,5 +1,5 @@
 // Transaction-scoped typed database read contract.
-import Core
+import DatabaseKit
 
 public enum DatabaseReadConsistency: Sendable, Equatable {
     case serializable

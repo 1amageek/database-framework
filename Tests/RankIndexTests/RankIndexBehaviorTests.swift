@@ -6,9 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Rank
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import RankIndex
@@ -72,12 +71,30 @@ struct RankedPlayer: Persistable {
 
 // MARK: - Rank Index Context
 
+func rankIndexMetadata(
+    scoreType: IndexScalarType,
+    bucketSize: Int = 100
+) -> IndexKindMetadata {
+    IndexKindMetadata(
+        identifier: "rank",
+        subspaceStructure: .hierarchical,
+        fields: [
+            IndexFieldMetadata(
+                identity: FieldIdentity(name: "score", number: 3)
+            )
+        ],
+        metadata: [
+            "scoreType": .string(scoreType.rawValue),
+            "bucketSize": .int64(Int64(bucketSize)),
+        ]
+    )
+}
+
 private struct RankIndexContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: RankIndexMaintainer<RankedPlayer, Int64>
-    let kind: RankIndexKind<RankedPlayer, Int64>
 
     init(indexName: String = "RankedPlayer_score") async throws {
         self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
@@ -85,12 +102,10 @@ private struct RankIndexContext {
         self.subspace = Subspace(prefix: Tuple("test", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = RankIndexKind<RankedPlayer, Int64>(field: \.score)
-
         // Expression: score
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: rankIndexMetadata(scoreType: .int64),
             rootExpression: FieldKeyExpression(fieldName: "score"),
             subspaceKey: indexName,
             itemTypes: Set(["RankedPlayer"])
@@ -98,7 +113,7 @@ private struct RankIndexContext {
 
         self.maintainer = RankIndexMaintainer<RankedPlayer, Int64>(
             index: index,
-            bucketSize: kind.bucketSize,
+            bucketSize: 100,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

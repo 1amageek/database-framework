@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import BitmapIndex
@@ -90,7 +90,10 @@ private struct BitmapIndexContext {
 
         let index = Index(
             name: indexName,
-            kind: BitmapIndexKind<BitmapIndexedProduct>(field: \.category),
+            kind: bitmapIndexMetadata(
+                fieldName: "category",
+                fieldNumber: 2
+            ),
             rootExpression: FieldKeyExpression(fieldName: "category"),
             subspaceKey: indexName,
             itemTypes: Set(["BitmapIndexedProduct"])
@@ -593,7 +596,10 @@ struct BitmapIndexMaintainerBehaviorTests {
         let categoryMaintainer = BitmapIndexMaintainer<BitmapIndexedProduct>(
             index: Index(
                 name: "category_idx",
-                kind: BitmapIndexKind<BitmapIndexedProduct>(field: \.category),
+                kind: bitmapIndexMetadata(
+                    fieldName: "category",
+                    fieldNumber: 2
+                ),
                 rootExpression: FieldKeyExpression(fieldName: "category"),
                 subspaceKey: "category_idx",
                 itemTypes: Set(["BitmapIndexedProduct"])
@@ -605,7 +611,10 @@ struct BitmapIndexMaintainerBehaviorTests {
         let brandMaintainer = BitmapIndexMaintainer<BitmapIndexedProduct>(
             index: Index(
                 name: "brand_idx",
-                kind: BitmapIndexKind<BitmapIndexedProduct>(field: \.brand),
+                kind: bitmapIndexMetadata(
+                    fieldName: "brand",
+                    fieldNumber: 3
+                ),
                 rootExpression: FieldKeyExpression(fieldName: "brand"),
                 subspaceKey: "brand_idx",
                 itemTypes: Set(["BitmapIndexedProduct"])

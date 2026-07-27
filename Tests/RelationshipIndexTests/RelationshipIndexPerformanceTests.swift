@@ -4,9 +4,8 @@
 
 import Testing
 import Foundation
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
 @testable import DatabaseEngine
 @testable import RelationshipIndex
 import StorageKit
@@ -19,21 +18,23 @@ import DatabaseRuntime
 @Persistable
 struct PerfCustomer {
     #Directory<PerfCustomer>("test", "perf", "rel", "customers")
+    var id: String = UUID().uuidString
     var name: String = ""
     var tier: String = "standard"
 
     @Relationship
-    var orders: [DatabaseReference<PerfOrder>] = []
+    var orders: [PersistableReference<PerfOrder>] = []
 }
 
 @Persistable
 struct PerfOrder {
     #Directory<PerfOrder>("test", "perf", "rel", "orders")
+    var id: String = UUID().uuidString
     var total: Double = 0
     var status: String = "pending"
 
     @Relationship
-    var customer: DatabaseReference<PerfCustomer>? = nil
+    var customer: PersistableReference<PerfCustomer>? = nil
 }
 
 // MARK: - Benchmark Helpers
@@ -80,7 +81,13 @@ struct RelationshipIndexPerformanceTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
-        let schema = Schema([PerfCustomer.self, PerfOrder.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try PerfCustomer.schemaEntity,
+                try PerfOrder.schemaEntity,
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
 
         let container = try await DBContainer.open(
             for: schema,
@@ -140,9 +147,9 @@ struct RelationshipIndexPerformanceTests {
         let ordersPerCustomer = 5
 
         // Create orders first
-        var orderReferences: [[DatabaseReference<PerfOrder>]] = []
+        var orderReferences: [[PersistableReference<PerfOrder>]] = []
         for i in 1...count {
-            var references: [DatabaseReference<PerfOrder>] = []
+            var references: [PersistableReference<PerfOrder>] = []
             for j in 1...ordersPerCustomer {
                 let orderId = uniqueID("O-many-\(i)-\(j)")
                 var order = PerfOrder(total: Double(j * 10))
@@ -202,7 +209,10 @@ struct RelationshipIndexPerformanceTests {
         let (_, result) = try await benchmark("related() To-One", count: lookupCount) {
             for i in 0..<lookupCount {
                 let order = try await context.model(for: orderIds[i], as: PerfOrder.self)!
-                let _ = try await context.related(order, \.customer)
+                let _ = try await context.related(
+                    order,
+                    PerfOrder.fields.customer
+                )
             }
         }
 
@@ -222,7 +232,7 @@ struct RelationshipIndexPerformanceTests {
         // Setup: Create customers with orders
         var customerIds: [String] = []
         for i in 1...customerCount {
-            var orderReferences: [DatabaseReference<PerfOrder>] = []
+            var orderReferences: [PersistableReference<PerfOrder>] = []
             for j in 1...ordersPerCustomer {
                 let orderId = uniqueID("O-tmany-\(i)-\(j)")
                 var order = PerfOrder(total: Double(j * 10))
@@ -244,7 +254,10 @@ struct RelationshipIndexPerformanceTests {
         let (_, result) = try await benchmark("related() To-Many", count: customerCount) {
             for customerId in customerIds {
                 let customer = try await context.model(for: customerId, as: PerfCustomer.self)!
-                let _ = try await context.related(customer, \.orders)
+                let _ = try await context.related(
+                    customer,
+                    PerfCustomer.fields.orders
+                )
             }
         }
 
@@ -278,7 +291,7 @@ struct RelationshipIndexPerformanceTests {
         // Benchmark: fetch() with joining()
         let (snapshots, result) = try await benchmark("joining() eager load", count: orderCount) {
             try await context.fetch(PerfOrder.self)
-                .joining(\.customer)
+                .joining(PerfOrder.fields.customer)
                 .limit(orderCount)
                 .execute()
         }
@@ -288,7 +301,7 @@ struct RelationshipIndexPerformanceTests {
         // Verify snapshots have loaded relations
         var loadedCount = 0
         for snapshot in snapshots {
-            if try snapshot.ref(\.customer) != nil {
+            if try snapshot.ref(PerfOrder.fields.customer) != nil {
                 loadedCount += 1
             }
         }
@@ -304,9 +317,9 @@ struct RelationshipIndexPerformanceTests {
         let ordersPerCustomer = 5
 
         // Setup: Create customers with orders
-        var customerReferences: [DatabaseReference<PerfCustomer>] = []
+        var customerReferences: [PersistableReference<PerfCustomer>] = []
         for i in 1...customerCount {
-            var orderReferences: [DatabaseReference<PerfOrder>] = []
+            var orderReferences: [PersistableReference<PerfOrder>] = []
             for j in 1...ordersPerCustomer {
                 let orderId = uniqueID("O-getj-\(i)-\(j)")
                 var order = PerfOrder(total: Double(j * 10))
@@ -327,7 +340,10 @@ struct RelationshipIndexPerformanceTests {
         // Benchmark: get() with To-Many joining
         let (_, result) = try await benchmark("get() with joining", count: customerCount) {
             for customerReference in customerReferences {
-                let _ = try await context.get(customerReference, joining: \.orders)
+                let _ = try await context.get(
+                    customerReference,
+                    joining: PerfCustomer.fields.orders
+                )
             }
         }
 
@@ -394,7 +410,7 @@ struct RelationshipIndexPerformanceTests {
         var customer = PerfCustomer(name: "To-Many Update Customer")
         customer.id = customerId
 
-        var orderReferences: [DatabaseReference<PerfOrder>] = []
+        var orderReferences: [PersistableReference<PerfOrder>] = []
         for i in 1...orderCount {
             let orderId = uniqueID("O-tmupd-\(i)")
             var order = PerfOrder(total: Double(i * 10))
@@ -481,7 +497,7 @@ struct RelationshipIndexPerformanceTests {
         let orderCount = 200
 
         // Create many orders
-        var orderReferences: [DatabaseReference<PerfOrder>] = []
+        var orderReferences: [PersistableReference<PerfOrder>] = []
         for i in 1...orderCount {
             let orderId = uniqueID("O-large-\(i)")
             var order = PerfOrder(total: Double(i))
@@ -505,7 +521,10 @@ struct RelationshipIndexPerformanceTests {
         // Benchmark: Load customer with a large reference array
         let (orders, loadResult) = try await benchmark("Large array load", count: orderCount) {
             let customer = try await context.model(for: customerId, as: PerfCustomer.self)!
-            return try await context.related(customer, \.orders)
+            return try await context.related(
+                customer,
+                PerfCustomer.fields.orders
+            )
         }
 
         print("Load: \(loadResult.description)")
@@ -522,7 +541,7 @@ struct RelationshipIndexPerformanceTests {
         let ordersPerCustomer = 10
 
         // Setup: Create customers with orders
-        var customerReferences: [DatabaseReference<PerfCustomer>] = []
+        var customerReferences: [PersistableReference<PerfCustomer>] = []
         for i in 1...customerCount {
             let customerId = uniqueID("C-trav-\(i)")
             var customer = PerfCustomer(name: "Customer \(i)")
@@ -530,7 +549,7 @@ struct RelationshipIndexPerformanceTests {
             let customerReference = try context.reference(to: customer)
             customerReferences.append(customerReference)
 
-            var orderReferences: [DatabaseReference<PerfOrder>] = []
+            var orderReferences: [PersistableReference<PerfOrder>] = []
             for j in 1...ordersPerCustomer {
                 let orderId = uniqueID("O-trav-\(i)-\(j)")
                 var order = PerfOrder(total: Double(j * 10))
@@ -551,14 +570,17 @@ struct RelationshipIndexPerformanceTests {
             for customerReference in customerReferences {
                 // Forward: Customer -> Orders
                 let customer = try await context.model(for: customerReference)!
-                let orders = try await context.related(customer, \.orders)
+                let orders = try await context.related(
+                    customer,
+                    PerfCustomer.fields.orders
+                )
                 #expect(orders.count == ordersPerCustomer)
 
                 // Reverse: Customer <- Orders through the catalog
                 let inverse = try await context.inverseRelationshipResolver().referencedBy(
                     customerReference,
                     from: PerfOrder.self,
-                    via: \.customer,
+                    via: PerfOrder.fields.customer,
                     limit: ordersPerCustomer
                 )
                 #expect(inverse.entities.count == ordersPerCustomer)

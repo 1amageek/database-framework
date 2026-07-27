@@ -3,13 +3,13 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 public enum QueryRowCodec {
     public static func encode<T: Persistable>(
         _ item: T,
-        annotations: [String: DatabaseValue] = [:]
+        annotations: [String: FieldValue] = [:]
     ) throws -> QueryRow {
         let fields = try canonicalFields(item)
         return QueryRow(
@@ -24,7 +24,7 @@ public enum QueryRowCodec {
         as type: T.Type
     ) throws -> T {
         let schemas = Dictionary(uniqueKeysWithValues: T.fieldSchemas.map { ($0.name, $0) })
-        var fields: [DatabaseObjectField] = []
+        var fields: [PersistableField] = []
         fields.reserveCapacity(row.fields.count)
         for (name, value) in row.fields {
             guard let schema = schemas[name],
@@ -33,7 +33,7 @@ public enum QueryRowCodec {
                 throw QueryRowCodecError.unknownField(type: T.persistableType, field: name)
             }
             fields.append(
-                DatabaseObjectField(
+                try PersistableField(
                     number: number,
                     name: name,
                     value: value
@@ -45,7 +45,7 @@ public enum QueryRowCodec {
 
     public static func encodeAny(
         _ item: any Persistable,
-        annotations: [String: DatabaseValue] = [:]
+        annotations: [String: FieldValue] = [:]
     ) throws -> QueryRow {
         let fields = try canonicalFields(item)
         return QueryRow(
@@ -57,9 +57,9 @@ public enum QueryRowCodec {
 
     private static func canonicalFields(
         _ item: any Persistable
-    ) throws -> [String: DatabaseValue] {
+    ) throws -> [String: FieldValue] {
         let encoded = try PersistableFieldEncoder.encode(item)
-        var fields: [String: DatabaseValue] = [:]
+        var fields: [String: FieldValue] = [:]
         fields.reserveCapacity(encoded.count)
         for field in encoded {
             guard fields.updateValue(field.value, forKey: field.name) == nil else {

@@ -181,7 +181,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             fieldName: fieldName
         )
         let concreteDescriptor = try resolveConcreteDescriptor(
-            context: context,
+            schema: context.container.schema,
             group: group,
             indexName: indexScan.indexName
         )
@@ -455,16 +455,15 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func resolveConcreteDescriptor(
-        context: DatabaseContext,
+        schema: Schema,
         group: PolymorphicGroup,
         indexName: String
     ) throws -> IndexDescriptor {
         for memberTypeName in group.memberTypeNames {
-            guard let memberType = context.container.runtimeConfiguration
-                .persistableTypes.type(named: memberTypeName) else {
-                continue
-            }
-            if let descriptor = try memberType.indexDescriptors.first(
+            if let descriptor = schema.polymorphicIndexDescriptors(
+                identifier: group.identifier,
+                memberTypeName: memberTypeName
+            ).first(
                 where: { $0.name == indexName }
             ) {
                 return descriptor

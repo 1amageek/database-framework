@@ -3,9 +3,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 
 public protocol IndexReadExecutor: Sendable {
     var kindIdentifier: String { get }
@@ -23,7 +22,7 @@ public protocol IndexReadExecutor: Sendable {
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult
 }
 
@@ -38,7 +37,7 @@ public protocol PolymorphicIndexReadExecutor: Sendable {
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult
 }
 
@@ -51,7 +50,7 @@ public protocol FusionReadExecutor: Sendable {
         fusionSource: FusionSource,
         as type: T.Type,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> QueryResponse
 }
 

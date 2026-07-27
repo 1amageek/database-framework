@@ -1,9 +1,9 @@
-import QueryIR
+import DatabaseKit
 
 /// Compiles EXISTS graph algebra once as part of its owning expression plan.
 enum SPARQLExistsPatternCompiler {
     static func compile(_ query: SelectQuery) throws -> ExecutionPattern {
-        let sourcePattern: QueryIR.GraphPattern
+        let sourcePattern: GraphPattern
         switch query.source {
         case .graphPattern(let pattern):
             sourcePattern = pattern

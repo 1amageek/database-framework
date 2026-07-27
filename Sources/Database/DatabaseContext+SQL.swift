@@ -6,8 +6,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import QueryIR
+import DatabaseKit
+import DatabaseKit
 import QueryAST
 import DatabaseEngine
 import DatabaseRuntime
@@ -46,7 +46,7 @@ extension DatabaseContext {
     public func executeSQL<T: Persistable>(
         _ sql: String,
         as type: T.Type,
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> [T] {
         let workMeter = DatabaseWorkMeter(budget: budget)
         // 1. Parse SQL string
@@ -94,9 +94,9 @@ extension DatabaseContext {
     /// - Returns: Rewritten query with SPARQL() replaced by literal values
     /// - Throws: `SPARQLFunctionError` for SPARQL execution errors
     private func rewriteSPARQLFunctions(
-        _ selectQuery: QueryIR.SelectQuery,
+        _ selectQuery: SelectQuery,
         workMeter: DatabaseWorkMeter
-    ) async throws -> QueryIR.SelectQuery {
+    ) async throws -> SelectQuery {
         let rewriter = SPARQLFunctionRewriter(
             context: self,
             workMeter: workMeter

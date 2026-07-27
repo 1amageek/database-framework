@@ -1,46 +1,91 @@
 // LiteralConversion.swift
-// DatabaseEngine - Conversion between Core.FieldValue and QueryIR.Literal
+// DatabaseEngine - Conversion between FieldValue and Literal
 
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 
 // MARK: - FieldValue → Literal
 
 extension FieldValue {
-    /// Convert a FieldValue to a QueryIR Literal.
+    /// Convert a canonical field value to a query literal.
     ///
-    /// All FieldValue cases have direct QueryIR.Literal equivalents.
-    /// This conversion always succeeds.
-    public func toLiteral() -> QueryIR.Literal {
+    /// Object and reference values have no QueryIR literal representation and
+    /// fail explicitly instead of being projected into a lossy substitute.
+    public func toLiteral() throws(LiteralConversionError) -> Literal {
         switch self {
         case .null:
             return .null
         case .bool(let v):
             return .bool(v)
+        case .int8(let v):
+            return .int(Int64(v))
+        case .int16(let v):
+            return .int(Int64(v))
+        case .int32(let v):
+            return .int(Int64(v))
         case .int64(let v):
             return .int(v)
+        case .uint8(let value):
+            return .uint(UInt64(value))
+        case .uint16(let value):
+            return .uint(UInt64(value))
+        case .uint32(let value):
+            return .uint(UInt64(value))
         case .uint64(let value):
             return .uint(value)
-        case .double(let v):
+        case .decimal(let value):
+            return .decimal(value)
+        case .float32(let v):
+            return .double(Double(v))
+        case .float64(let v):
             return .double(v)
         case .string(let v):
             return .string(v)
-        case .data(let v):
+        case .bytes(let v):
             return .binary(v)
+        case .date(let value):
+            return .date(value)
+        case .timestamp(let value):
+            return .timestamp(value)
+        case .uuid(let value):
+            return .uuid(value)
         case .rdfTerm(let term):
             return .rdfTerm(term)
         case .array(let values):
-            return .array(values.map { $0.toLiteral() })
+            var literals: [Literal] = []
+            literals.reserveCapacity(values.count)
+            for value in values {
+                literals.append(try value.toLiteral())
+            }
+            return .array(literals)
+        case .object:
+            throw .fieldValueUnsupported(kind: .object)
+        case .reference:
+            throw .fieldValueUnsupported(kind: .reference)
+        case .time:
+            throw .fieldValueUnsupported(kind: .time)
+        case .dateTime:
+            throw .fieldValueUnsupported(kind: .dateTime)
+        case .timeSpan:
+            throw .fieldValueUnsupported(kind: .timeSpan)
+        case .calendarPeriod:
+            throw .fieldValueUnsupported(kind: .calendarPeriod)
+        case .geographicPoint:
+            throw .fieldValueUnsupported(kind: .geographicPoint)
+        case .geographicPosition:
+            throw .fieldValueUnsupported(kind: .geographicPosition)
+        case .vector:
+            throw .fieldValueUnsupported(kind: .vector)
         }
     }
 }
 
 // MARK: - Literal → FieldValue
 
-extension QueryIR.Literal {
+extension Literal {
     /// Convert a query literal into the canonical database value model.
-    public func toDatabaseValue() throws(LiteralConversionError) -> DatabaseValue {
+    public func toFieldValue() throws(LiteralConversionError) -> FieldValue {
         switch self {
         case .null:
             return .null
@@ -50,10 +95,10 @@ extension QueryIR.Literal {
             return .int64(value)
         case .uint(let value):
             return .uint64(value)
-        case .decimal(let coefficient, let scale):
-            return .decimal(coefficient: coefficient, scale: scale)
+        case .decimal(let value):
+            return .decimal(value)
         case .double(let value):
-            return .double(value)
+            return .float64(value)
         case .string(let value):
             return .string(value)
         case .date(let value):
@@ -65,21 +110,31 @@ extension QueryIR.Literal {
         case .uuid(let value):
             return .uuid(value)
         case .array(let values):
-            var converted: [DatabaseValue] = []
+            var converted: [FieldValue] = []
             converted.reserveCapacity(values.count)
             for value in values {
-                converted.append(try value.toDatabaseValue())
+                converted.append(try value.toFieldValue())
             }
             return .array(converted)
         case .iri(let value):
-            return .rdfTerm(.iri(value))
+            do {
+                return .rdfTerm(.iri(try RDFIRI(value)))
+            } catch {
+                throw .invalidRDFLiteral(datatype: value)
+            }
         case .blankNode(let value):
-            return .rdfTerm(.blankNode(value))
+            do {
+                return .rdfTerm(
+                    .blankNode(try RDFBlankNodeIdentifier(value))
+                )
+            } catch {
+                throw .invalidRDFLiteral(datatype: value)
+            }
         case .typedLiteral(let value, let datatype):
             do {
                 return .rdfTerm(
                     .literal(
-                        try DatabaseRDFLiteral(
+                        try RDFLiteral(
                             lexicalForm: value,
                             datatype: datatype
                         )
@@ -89,28 +144,28 @@ extension QueryIR.Literal {
                 throw .invalidRDFLiteral(datatype: datatype)
             }
         case .langLiteral(let value, let language):
-            let tag: DatabaseRDFLanguageTag
+            let tag: RDFLanguageTag
             do {
-                tag = try DatabaseRDFLanguageTag(language)
+                tag = try RDFLanguageTag(language)
             } catch {
                 throw .invalidLanguageTag(language)
             }
             return .rdfTerm(
-                .literal(DatabaseRDFLiteral(lexicalForm: value, language: tag))
+                .literal(RDFLiteral(lexicalForm: value, language: tag))
             )
         case .dirLangLiteral(let value, let language, let direction):
-            let tag: DatabaseRDFLanguageTag
+            let tag: RDFLanguageTag
             do {
-                tag = try DatabaseRDFLanguageTag(language)
+                tag = try RDFLanguageTag(language)
             } catch {
                 throw .invalidLanguageTag(language)
             }
-            guard let baseDirection = DatabaseRDFDirection(rawValue: direction) else {
+            guard let baseDirection = RDFDirection(rawValue: direction) else {
                 throw .invalidBaseDirection(direction)
             }
             return .rdfTerm(
                 .literal(
-                    DatabaseRDFLiteral(
+                    RDFLiteral(
                         lexicalForm: value,
                         language: tag,
                         direction: baseDirection
@@ -122,49 +177,4 @@ extension QueryIR.Literal {
         }
     }
 
-    /// Project a query literal into the narrower `FieldValue` model.
-    ///
-    /// Canonical values that `FieldValue` cannot preserve exactly fail with a
-    /// typed error. Call `toDatabaseValue()` when decimal, date, timestamp, or
-    /// UUID semantics must be retained.
-    public func toFieldValue() throws(LiteralConversionError) -> FieldValue {
-        switch self {
-        case .null:
-            return .null
-        case .bool(let v):
-            return .bool(v)
-        case .int(let v):
-            return .int64(v)
-        case .uint(let value):
-            return .uint64(value)
-        case .decimal:
-            throw .fieldValueUnsupported(kind: .decimal)
-        case .double(let v):
-            return .double(v)
-        case .string(let v):
-            return .string(v)
-        case .binary(let v):
-            return .data(v)
-        case .uuid:
-            throw .fieldValueUnsupported(kind: .uuid)
-        case .array(let literals):
-            var values: [FieldValue] = []
-            values.reserveCapacity(literals.count)
-            for literal in literals {
-                values.append(try literal.toFieldValue())
-            }
-            return .array(values)
-        case .date:
-            throw .fieldValueUnsupported(kind: .date)
-        case .timestamp:
-            throw .fieldValueUnsupported(kind: .timestamp)
-        case .iri, .blankNode, .typedLiteral, .langLiteral,
-             .dirLangLiteral, .rdfTerm:
-            let canonical = try toDatabaseValue()
-            guard case .rdfTerm(let term) = canonical else {
-                throw .fieldValueConversionInvariantViolation
-            }
-            return .rdfTerm(term)
-        }
-    }
 }

@@ -1,13 +1,6 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
-import DatabaseValue
-import Core
-import QueryIR
-import Rank
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 enum RankReadParameter {
@@ -61,9 +54,12 @@ private struct RankReadExecutor: IndexReadExecutor {
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult {
-        let fieldName = try requireString(RankReadParameter.fieldName, from: indexScan.parameters)
+        let parameters = IndexReadParameters(indexScan.parameters)
+        let fieldName = try parameters.requireString(
+            named: RankReadParameter.fieldName
+        )
 
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
@@ -72,26 +68,37 @@ private struct RankReadExecutor: IndexReadExecutor {
         let queryContext = try context.indexQueryContext.withPartitions(partitions, for: T.self)
         var builder = RankQueryBuilder<T>(
             queryContext: queryContext,
-            fieldName: fieldName
+            fieldName: fieldName,
+            selectedIndexName: indexScan.indexName
         )
 
-        let mode = try requireString(RankReadParameter.mode, from: indexScan.parameters)
+        let mode = try parameters.requireString(named: RankReadParameter.mode)
         switch mode {
         case RankReadParameter.topMode:
-            let count = try requireInt(RankReadParameter.count, from: indexScan.parameters)
+            let count = try parameters.requireInteger(
+                named: RankReadParameter.count
+            )
             try validateRankCount(count)
             builder = builder.top(count)
         case RankReadParameter.bottomMode:
-            let count = try requireInt(RankReadParameter.count, from: indexScan.parameters)
+            let count = try parameters.requireInteger(
+                named: RankReadParameter.count
+            )
             try validateRankCount(count)
             builder = builder.bottom(count)
         case RankReadParameter.rangeMode:
-            let from = try requireInt(RankReadParameter.from, from: indexScan.parameters)
-            let to = try requireInt(RankReadParameter.to, from: indexScan.parameters)
+            let from = try parameters.requireInteger(
+                named: RankReadParameter.from
+            )
+            let to = try parameters.requireInteger(
+                named: RankReadParameter.to
+            )
             try validateRankRange(from: from, to: to)
             builder = builder.range(from: from, to: to)
         case RankReadParameter.percentileMode:
-            let percentile = try requireDouble(RankReadParameter.percentile, from: indexScan.parameters)
+            let percentile = try parameters.requireFloatingPoint(
+                named: RankReadParameter.percentile
+            )
             try validatePercentile(percentile)
             builder = builder.percentile(percentile)
         default:
@@ -111,39 +118,6 @@ private struct RankReadExecutor: IndexReadExecutor {
         }
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
-
-    private func requireString(
-        _ key: String,
-        from parameters: [String: QueryParameterValue]
-    ) throws -> String {
-        guard let value = parameters[key]?.stringValue else {
-            throw RankReadError.missingParameter(key)
-        }
-        return value
-    }
-
-    private func requireInt(
-        _ key: String,
-        from parameters: [String: QueryParameterValue]
-    ) throws -> Int {
-        guard let value = parameters[key]?.int64Value else {
-            throw RankReadError.missingParameter(key)
-        }
-        guard let result = Int(exactly: value) else {
-            throw RankReadError.invalidParameter(key)
-        }
-        return result
-    }
-
-    private func requireDouble(
-        _ key: String,
-        from parameters: [String: QueryParameterValue]
-    ) throws -> Double {
-        guard let value = parameters[key]?.doubleValue else {
-            throw RankReadError.missingParameter(key)
-        }
-        return value
-    }
 }
 
 private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
@@ -155,20 +129,25 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult {
-        _ = try requireString(RankReadParameter.fieldName, from: indexScan.parameters)
+        let parameters = IndexReadParameters(indexScan.parameters)
+        _ = try parameters.requireString(named: RankReadParameter.fieldName)
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .snapshot
         )
-        let orderByFields = try RankReadResultAssembler.orderByFields(
-            from: selectQuery.orderBy
-        )
+        let orderByFields = try selectQuery.requiredOrderByColumnNames()
         try context.authorizePolymorphicListAccess(
             group: group,
-            limit: selectQuery.limit,
-            offset: selectQuery.offset,
+            limit: try runtimeInteger(
+                selectQuery.limit,
+                parameter: "limit"
+            ),
+            offset: try runtimeInteger(
+                selectQuery.offset,
+                parameter: "offset"
+            ),
             orderBy: orderByFields
         )
 
@@ -183,7 +162,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             try await scanRanked(
                 indexSubspace: indexSubspace,
                 transaction: transaction,
-                parameters: indexScan.parameters
+                parameters: parameters
             )
         }
 
@@ -215,34 +194,44 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
     private func scanRanked(
         indexSubspace: Subspace,
         transaction: any TransactionAccess,
-        parameters: [String: QueryParameterValue]
+        parameters: IndexReadParameters
     ) async throws -> [(primaryKey: Tuple, rank: Int)] {
         let scoresSubspace = indexSubspace.subspace("scores")
         let scanner = RankScanner(scoresSubspace: scoresSubspace, transaction: transaction)
-        let mode = try requireString(RankReadParameter.mode, from: parameters)
+        let mode = try parameters.requireString(named: RankReadParameter.mode)
 
         switch mode {
         case RankReadParameter.topMode:
-            let count = try requireInt(RankReadParameter.count, from: parameters)
+            let count = try parameters.requireInteger(
+                named: RankReadParameter.count
+            )
             try validateRankCount(count)
             let entries = try await scanner.top(k: count)
             return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: $0.offset) }
 
         case RankReadParameter.bottomMode:
-            let count = try requireInt(RankReadParameter.count, from: parameters)
+            let count = try parameters.requireInteger(
+                named: RankReadParameter.count
+            )
             try validateRankCount(count)
             let entries = try await scanner.bottom(k: count)
             return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: $0.offset) }
 
         case RankReadParameter.rangeMode:
-            let from = try requireInt(RankReadParameter.from, from: parameters)
-            let to = try requireInt(RankReadParameter.to, from: parameters)
+            let from = try parameters.requireInteger(
+                named: RankReadParameter.from
+            )
+            let to = try parameters.requireInteger(
+                named: RankReadParameter.to
+            )
             try validateRankRange(from: from, to: to)
             let entries = try await scanner.rangeDescending(from: from, to: to)
             return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: from + $0.offset) }
 
         case RankReadParameter.percentileMode:
-            let percentile = try requireDouble(RankReadParameter.percentile, from: parameters)
+            let percentile = try parameters.requireFloatingPoint(
+                named: RankReadParameter.percentile
+            )
             try validatePercentile(percentile)
             let countKey = indexSubspace.pack(Tuple("_count"))
             let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
@@ -265,36 +254,17 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
         }
     }
 
-    private func requireString(
-        _ key: String,
-        from parameters: [String: QueryParameterValue]
-    ) throws -> String {
-        guard let value = parameters[key]?.stringValue else {
-            throw RankReadError.missingParameter(key)
-        }
-        return value
-    }
-
-    private func requireInt(
-        _ key: String,
-        from parameters: [String: QueryParameterValue]
-    ) throws -> Int {
-        guard let value = parameters[key]?.int64Value else {
-            throw RankReadError.missingParameter(key)
+    private func runtimeInteger(
+        _ value: UInt64?,
+        parameter: String
+    ) throws -> Int? {
+        guard let value else {
+            return nil
         }
         guard let result = Int(exactly: value) else {
-            throw RankReadError.invalidParameter(key)
+            throw RankReadError.invalidParameter(parameter)
         }
         return result
     }
 
-    private func requireDouble(
-        _ key: String,
-        from parameters: [String: QueryParameterValue]
-    ) throws -> Double {
-        guard let value = parameters[key]?.doubleValue else {
-            throw RankReadError.missingParameter(key)
-        }
-        return value
-    }
 }

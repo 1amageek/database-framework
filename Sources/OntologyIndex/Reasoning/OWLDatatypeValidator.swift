@@ -1,4 +1,5 @@
-import Graph
+import DatabaseTypes
+import DatabaseKit
 
 /// Compiles OWL data ranges and evaluates literals using XSD value semantics.
 ///
@@ -20,7 +21,7 @@ public struct OWLDatatypeValidator: Sendable {
         self.limits = limits
     }
 
-    public func validateLexicalForm(_ literal: OWLLiteral) throws {
+    public func validateLexicalForm(_ literal: RDFLiteral) throws {
         _ = try parser.parse(literal)
     }
 
@@ -34,7 +35,7 @@ public struct OWLDatatypeValidator: Sendable {
     }
 
     public func contains(
-        _ literal: OWLLiteral,
+        _ literal: RDFLiteral,
         in range: CompiledOWLDataRange
     ) throws -> DataRangeMembership {
         let value = try parser.parse(literal)
@@ -46,28 +47,28 @@ public struct OWLDatatypeValidator: Sendable {
     }
 
     public func membership(
-        of literal: OWLLiteral,
+        of literal: RDFLiteral,
         in range: OWLDataRange
     ) throws -> DataRangeMembership {
         try contains(literal, in: compile(range))
     }
 
     public func validateFacets(
-        _ literal: OWLLiteral,
+        _ literal: RDFLiteral,
         facets: [FacetRestriction]
     ) throws -> DataRangeMembership {
         try membership(
             of: literal,
             in: .datatypeRestriction(
-                datatype: literal.datatype,
+                datatype: literal.datatypeIRI.rawValue,
                 facets: facets
             )
         )
     }
 
     public func compare(
-        _ lhs: OWLLiteral,
-        _ rhs: OWLLiteral
+        _ lhs: RDFLiteral,
+        _ rhs: RDFLiteral
     ) throws -> XSDOrder {
         let lhsValue = try parser.parse(lhs)
         let rhsValue = try parser.parse(rhs)
@@ -75,8 +76,8 @@ public struct OWLDatatypeValidator: Sendable {
     }
 
     public func isIdenticalValue(
-        _ lhs: OWLLiteral,
-        _ rhs: OWLLiteral
+        _ lhs: RDFLiteral,
+        _ rhs: RDFLiteral
     ) throws -> Bool {
         let left = try parser.parse(lhs)
         let right = try parser.parse(rhs)
@@ -298,14 +299,23 @@ public struct OWLDatatypeValidator: Sendable {
     }
 
     private func validateDataOneOfPayload(
-        _ literals: [OWLLiteral]
+        _ literals: [RDFLiteral]
     ) throws {
         var total = 0
         for literal in literals {
             try addDataOneOfPayload(literal.lexicalForm, to: &total)
-            try addDataOneOfPayload(literal.datatype, to: &total)
-            try addDataOneOfPayload(literal.language, to: &total)
-            try addDataOneOfPayload(literal.direction, to: &total)
+            try addDataOneOfPayload(
+                literal.datatypeIRI.rawValue,
+                to: &total
+            )
+            try addDataOneOfPayload(
+                literal.languageTag?.rawValue,
+                to: &total
+            )
+            try addDataOneOfPayload(
+                literal.baseDirection?.rawValue,
+                to: &total
+            )
         }
     }
 
@@ -328,7 +338,7 @@ public struct OWLDatatypeValidator: Sendable {
     }
 
     private func compileBound(
-        _ literal: OWLLiteral,
+        _ literal: RDFLiteral,
         for kind: XSDDatatypeKind
     ) throws -> XSDParsedValue {
         let value: XSDParsedValue
@@ -352,7 +362,7 @@ public struct OWLDatatypeValidator: Sendable {
     }
 
     private func compileNonNegativeInteger(
-        _ literal: OWLLiteral
+        _ literal: RDFLiteral
     ) throws -> XSDDecimalValue {
         let value: XSDParsedValue
         do {
@@ -377,7 +387,7 @@ public struct OWLDatatypeValidator: Sendable {
     }
 
     private func contains(
-        literal: OWLLiteral,
+        literal: RDFLiteral,
         value: XSDParsedValue,
         in node: CompiledOWLDataRange.Node
     ) throws -> DataRangeMembership {
@@ -451,7 +461,7 @@ public struct OWLDatatypeValidator: Sendable {
 
     private func evaluate(
         _ facet: CompiledFacet,
-        literal: OWLLiteral,
+        literal: RDFLiteral,
         value: XSDParsedValue
     ) throws -> DataRangeMembership {
         switch facet {

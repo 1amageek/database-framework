@@ -4,7 +4,7 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -15,7 +15,7 @@ import DatabaseRuntime
 /// - Verifies AdminContext methods respect #Directory macro definitions
 /// - Tests indexStatistics, rebuildIndex, collectionStatistics, updateStatistics
 /// - Ensures correct directory paths are used (not entity.name)
-@Suite("AdminContext Tests", .serialized, .heartbeat)
+@Suite("AdminContext Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct AdminContextTests {
 
     // MARK: - Helper Types
@@ -24,17 +24,17 @@ struct AdminContextTests {
     struct AdminIndexedEntity {
         #Directory<AdminIndexedEntity>("test", "admin", "custom", "path")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var value: String = ""
 
-        #Index(ScalarIndexKind<AdminIndexedEntity>(fields: [\.value]))
+        #Index(.scalar, fields: [\AdminIndexedEntity.value])
     }
 
     @Persistable
     struct AdminUnindexedEntity {
         #Directory<AdminUnindexedEntity>("test", "admin", "no", "index")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var name: String = ""
     }
 
@@ -224,9 +224,9 @@ struct AdminContextTests {
             #expect(stats.documentCount == 1)
 
             // Verify the key range starts with the correct subspace prefix
-            if let keyRangeStart = stats.keyRangeStart {
-                #expect(keyRangeStart.starts(with: containerSubspace.prefix))
-            }
+            #expect(
+                stats.keyRangeStart.starts(with: containerSubspace.prefix)
+            )
         }
     }
 }

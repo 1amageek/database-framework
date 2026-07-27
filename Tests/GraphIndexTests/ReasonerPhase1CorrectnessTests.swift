@@ -9,7 +9,7 @@
 import Testing
 import TestHeartbeat
 import Foundation
-import Graph
+import DatabaseKit
 import StorageKit
 @testable import GraphIndex
 @testable import OntologyIndex

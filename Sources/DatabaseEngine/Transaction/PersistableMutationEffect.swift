@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 public enum PersistableMutationKind: Sendable, Equatable {
     case insert
@@ -10,12 +10,12 @@ public enum PersistableMutationKind: Sendable, Equatable {
 /// Net observable effect of a logical transaction on one persisted identity.
 public struct PersistableMutationEffect: Sendable {
     public let kind: PersistableMutationKind
-    public let identity: PersistableIdentity
+    public let identity: EntityReference
     public let model: (any Persistable)?
 
     package init(
         kind: PersistableMutationKind,
-        identity: PersistableIdentity,
+        identity: EntityReference,
         model: (any Persistable)?
     ) {
         self.kind = kind

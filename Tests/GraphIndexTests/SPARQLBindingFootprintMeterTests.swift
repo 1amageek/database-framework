@@ -1,6 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import Testing
 @testable import GraphIndex
@@ -33,14 +33,11 @@ struct SPARQLBindingFootprintMeterTests {
         let meter = try makeFootprintMeter()
         defer { meter.shutdown() }
         let backing = [UInt8](repeating: 7, count: 4_096)
-        let bytes = DatabaseBytes(
-            sharing: backing,
-            storageRange: 0..<1
-        )
+        let bytes = ByteString(backing)[0..<1]
 
         #expect(
             try meter.footprint(
-                of: VariableBinding(["?x": .data(bytes)])
+                of: VariableBinding(["?x": .bytes(bytes)])
             ) == DatabaseIntermediateFootprint(rows: 1, bytes: 4_322)
         )
     }
@@ -51,12 +48,12 @@ struct SPARQLBindingFootprintMeterTests {
         defer { meter.shutdown() }
         let backing = [UInt8](repeating: 9, count: 4_096)
         let left = VariableBinding([
-            "?payload": .data(
-                DatabaseBytes(sharing: backing, storageRange: 0..<1)
+            "?payload": .bytes(
+                ByteString(backing)[0..<1]
             ),
         ])
         let right = VariableBinding([
-            "?payload": .data(DatabaseBytes([9])),
+            "?payload": .bytes(ByteString([9])),
             "?name": .string("row"),
         ])
         let materialized = try #require(left.merged(with: right))
@@ -168,7 +165,7 @@ struct SPARQLBindingFootprintMeterTests {
     @Test("scratch rejection leaves the meter reusable and typed")
     func scratchRejectionLeavesMeterReusable() throws {
         let workMeter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 10,
                 maximumWorkUnits: 10,
                 maximumIntermediateRows: 10,
@@ -181,11 +178,11 @@ struct SPARQLBindingFootprintMeterTests {
             stage: .joinCandidate
         )
         defer { footprintMeter.shutdown() }
-        let deepTerm = makeDeepTripleTerm(depth: 8)
+        let deeplyNestedValue = makeDeeplyNestedArray(depth: 8)
 
         #expect {
             try footprintMeter.footprint(
-                of: VariableBinding(["?term": .rdfTerm(deepTerm)])
+                of: VariableBinding(["?value": deeplyNestedValue])
             )
         } throws: { error in
             error as? DatabaseWorkLimitError
@@ -229,7 +226,7 @@ struct SPARQLBindingFootprintMeterTests {
 
     private func makeWorkMeter() -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 100,
                 maximumWorkUnits: 100,
                 maximumIntermediateRows: 100,
@@ -239,15 +236,13 @@ struct SPARQLBindingFootprintMeterTests {
         )
     }
 
-    private func makeDeepTripleTerm(depth: Int) -> DatabaseRDFTerm {
-        var term = DatabaseRDFTerm.iri("urn:leaf")
-        for index in 0..<depth {
-            term = .tripleTerm(
-                subject: term,
-                predicate: .iri("urn:predicate:\(index)"),
-                object: .iri("urn:object:\(index)")
-            )
+    private func makeDeeplyNestedArray(
+        depth: Int
+    ) -> FieldValue {
+        var value = FieldValue.null
+        for _ in 0..<depth {
+            value = .array([value, .null])
         }
-        return term
+        return value
     }
 }

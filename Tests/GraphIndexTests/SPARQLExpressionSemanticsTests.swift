@@ -1,6 +1,6 @@
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import TestHeartbeat
 import Testing
 @testable import GraphIndex
@@ -20,7 +20,7 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("Language-tagged literals have no effective boolean value")
     func languageLiteralEBVIsAnExpressionError() {
-        let expression = QueryIR.Expression.not(
+        let expression = Expression.not(
             .literal(.langLiteral(value: "text", language: "en"))
         )
 
@@ -34,9 +34,9 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("AND follows the SPARQL true false error table")
     func logicalAndTruthTable() throws {
-        let error = QueryIR.Expression.variable(Variable("missing"))
-        let falseValue = QueryIR.Expression.literal(.bool(false))
-        let trueValue = QueryIR.Expression.literal(.bool(true))
+        let error = Expression.variable(Variable("missing"))
+        let falseValue = Expression.literal(.bool(false))
+        let trueValue = Expression.literal(.bool(true))
 
         #expect(
             try ExpressionEvaluator.evaluate(
@@ -66,9 +66,9 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("OR follows the SPARQL true false error table")
     func logicalOrTruthTable() throws {
-        let error = QueryIR.Expression.variable(Variable("missing"))
-        let falseValue = QueryIR.Expression.literal(.bool(false))
-        let trueValue = QueryIR.Expression.literal(.bool(true))
+        let error = Expression.variable(Variable("missing"))
+        let falseValue = Expression.literal(.bool(false))
+        let trueValue = Expression.literal(.bool(true))
 
         #expect(
             try ExpressionEvaluator.evaluate(
@@ -98,8 +98,8 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("NaN comparisons return booleans rather than expression errors")
     func nanComparisonSemantics() throws {
-        let nan = QueryIR.Expression.literal(.double(.nan))
-        let one = QueryIR.Expression.literal(.double(1))
+        let nan = Expression.literal(.double(.nan))
+        let one = Expression.literal(.double(1))
         let binding = VariableBinding()
 
         #expect(
@@ -129,11 +129,11 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("STRLEN and SUBSTR count Unicode code points")
     func unicodeCodePointStringOperations() throws {
-        let source = QueryIR.Expression.literal(.string("e\u{301}x"))
-        let length = QueryIR.Expression.function(
+        let source = Expression.literal(.string("e\u{301}x"))
+        let length = Expression.function(
             FunctionCall(name: "STRLEN", arguments: [source])
         )
-        let substring = QueryIR.Expression.function(
+        let substring = Expression.function(
             FunctionCall(
                 name: "SUBSTR",
                 arguments: [source, .literal(.int(2)), .literal(.int(1))]
@@ -152,7 +152,7 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("Case conversion preserves language annotation")
     func caseConversionPreservesLanguage() throws {
-        let expression = QueryIR.Expression.function(
+        let expression = Expression.function(
             FunctionCall(
                 name: "UCASE",
                 arguments: [
@@ -168,7 +168,7 @@ struct SPARQLExpressionSemanticsTests {
             )
                 == .rdfTerm(
                     .literal(
-                        DatabaseRDFLiteral(
+                        RDFLiteral(
                             lexicalForm: "HELLO",
                             language: .english
                         )
@@ -179,9 +179,9 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("HASLANG and HASLANGDIR return false for non-literals")
     func languagePredicatesOnIRI() throws {
-        let iri = QueryIR.Expression.literal(.iri("https://example.com/value"))
+        let iri = Expression.literal(.iri("https://example.com/value"))
         for function in ["HASLANG", "HASLANGDIR"] {
-            let expression = QueryIR.Expression.function(
+            let expression = Expression.function(
                 FunctionCall(name: function, arguments: [iri])
             )
             #expect(
@@ -195,7 +195,7 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("ENCODE_FOR_URI percent-encodes UTF-8 and preserves unreserved bytes")
     func encodeForURIUsesUTF8() throws {
-        let expression = QueryIR.Expression.function(
+        let expression = Expression.function(
             FunctionCall(
                 name: "ENCODE_FOR_URI",
                 arguments: [.literal(.string("A /雪"))]
@@ -213,7 +213,7 @@ struct SPARQLExpressionSemanticsTests {
     @Test("LANGMATCHES uses case-insensitive basic language filtering")
     func languageRangeMatching() throws {
         let binding = VariableBinding()
-        let matches = QueryIR.Expression.function(
+        let matches = Expression.function(
             FunctionCall(
                 name: "LANGMATCHES",
                 arguments: [
@@ -222,7 +222,7 @@ struct SPARQLExpressionSemanticsTests {
                 ]
             )
         )
-        let wildcardEmpty = QueryIR.Expression.function(
+        let wildcardEmpty = Expression.function(
             FunctionCall(
                 name: "LANGMATCHES",
                 arguments: [
@@ -244,14 +244,14 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("STRBEFORE and STRAFTER preserve the first argument annotation")
     func stringBeforeAfterPreserveLanguage() throws {
-        let source = QueryIR.Expression.literal(
+        let source = Expression.literal(
             .langLiteral(value: "alpha-beta", language: "en")
         )
-        let separator = QueryIR.Expression.literal(.string("-"))
-        let before = QueryIR.Expression.function(
+        let separator = Expression.literal(.string("-"))
+        let before = Expression.function(
             FunctionCall(name: "STRBEFORE", arguments: [source, separator])
         )
-        let after = QueryIR.Expression.function(
+        let after = Expression.function(
             FunctionCall(name: "STRAFTER", arguments: [source, separator])
         )
 
@@ -259,7 +259,7 @@ struct SPARQLExpressionSemanticsTests {
             try ExpressionEvaluator.evaluate(before, binding: VariableBinding())
                 == .rdfTerm(
                     .literal(
-                        DatabaseRDFLiteral(
+                        RDFLiteral(
                             lexicalForm: "alpha",
                             language: .english
                         )
@@ -270,7 +270,7 @@ struct SPARQLExpressionSemanticsTests {
             try ExpressionEvaluator.evaluate(after, binding: VariableBinding())
                 == .rdfTerm(
                     .literal(
-                        DatabaseRDFLiteral(
+                        RDFLiteral(
                             lexicalForm: "beta",
                             language: .english
                         )
@@ -281,7 +281,7 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("sameTerm tests RDF identity rather than numeric value equality")
     func sameTermUsesRDFIdentity() throws {
-        let expression = QueryIR.Expression.function(
+        let expression = Expression.function(
             FunctionCall(
                 name: "SAMETERM",
                 arguments: [
@@ -301,7 +301,7 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("STRDT and STRLANG construct canonical RDF literals")
     func stringLiteralConstructors() throws {
-        let typed = QueryIR.Expression.function(
+        let typed = Expression.function(
             FunctionCall(
                 name: "STRDT",
                 arguments: [
@@ -310,7 +310,7 @@ struct SPARQLExpressionSemanticsTests {
                 ]
             )
         )
-        let language = QueryIR.Expression.function(
+        let language = Expression.function(
             FunctionCall(
                 name: "STRLANG",
                 arguments: [
@@ -328,7 +328,7 @@ struct SPARQLExpressionSemanticsTests {
             try ExpressionEvaluator.evaluate(language, binding: VariableBinding())
                 == .rdfTerm(
                     .literal(
-                        DatabaseRDFLiteral(
+                        RDFLiteral(
                             lexicalForm: "hello",
                             language: .english
                         )
@@ -339,25 +339,25 @@ struct SPARQLExpressionSemanticsTests {
 
     @Test("XSD operand constructors cast and validate their result")
     func xsdOperandConstructors() throws {
-        let integer = QueryIR.Expression.function(
+        let integer = Expression.function(
             FunctionCall(
                 name: xsd("integer"),
                 arguments: [.literal(.string("42"))]
             )
         )
-        let boolean = QueryIR.Expression.function(
+        let boolean = Expression.function(
             FunctionCall(
                 name: xsd("boolean"),
                 arguments: [.literal(.int(0))]
             )
         )
-        let string = QueryIR.Expression.function(
+        let string = Expression.function(
             FunctionCall(
                 name: xsd("string"),
                 arguments: [.literal(.iri("did:example:value"))]
             )
         )
-        let invalidInteger = QueryIR.Expression.function(
+        let invalidInteger = Expression.function(
             FunctionCall(
                 name: xsd("integer"),
                 arguments: [.literal(.string("1.5"))]
@@ -395,7 +395,7 @@ struct SPARQLExpressionSemanticsTests {
         let binding = VariableBinding([
             "?pattern": try rdfLiteral("^a", datatype: xsd("string"))
         ])
-        let expression = QueryIR.Expression.function(
+        let expression = Expression.function(
             FunctionCall(
                 name: "REGEX",
                 arguments: [
@@ -404,7 +404,7 @@ struct SPARQLExpressionSemanticsTests {
                 ]
             )
         )
-        let invalidFlags = QueryIR.Expression.function(
+        let invalidFlags = Expression.function(
             FunctionCall(
                 name: "REGEX",
                 arguments: [
@@ -433,7 +433,7 @@ struct SPARQLExpressionSemanticsTests {
     ) throws -> FieldValue {
         .rdfTerm(
             .literal(
-                try DatabaseRDFLiteral(
+                try RDFLiteral(
                     lexicalForm: lexicalForm,
                     datatype: datatype
                 )

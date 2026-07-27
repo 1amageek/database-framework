@@ -1,7 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import Graph
+import DatabaseTypes
 import StorageKit
 
 /// Maintains the canonical RDF dataset projections for a Persistable entity.
@@ -10,13 +9,13 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
-    private let subjectField: String
-    private let predicateField: String
-    private let objectField: String
-    private let graphField: String?
+    private let subjectField: FieldIdentity
+    private let predicateField: FieldIdentity
+    private let objectField: FieldIdentity
+    private let graphField: FieldIdentity?
     private let physicalCodec: RDFQuadIndexPhysicalCodec
 
-    public init(
+    package init(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
@@ -24,14 +23,16 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
         predicateField: String,
         objectField: String,
         graphField: String?
-    ) {
+    ) throws {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
-        self.subjectField = subjectField
-        self.predicateField = predicateField
-        self.objectField = objectField
-        self.graphField = graphField
+        self.subjectField = try Self.requireField(named: subjectField)
+        self.predicateField = try Self.requireField(named: predicateField)
+        self.objectField = try Self.requireField(named: objectField)
+        self.graphField = try graphField.map {
+            try Self.requireField(named: $0)
+        }
         self.physicalCodec = RDFQuadIndexPhysicalCodec(baseSubspace: subspace)
     }
 
@@ -78,12 +79,12 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     private func buildIndexKeys(for item: Item) throws -> [Bytes] {
-        let subject = try requiredTerm(from: item, fieldName: subjectField)
-        let predicate = try requiredTerm(from: item, fieldName: predicateField)
-        let object = try requiredTerm(from: item, fieldName: objectField)
+        let subject = try requiredTerm(from: item, field: subjectField)
+        let predicate = try requiredTerm(from: item, field: predicateField)
+        let object = try requiredTerm(from: item, field: objectField)
         let graph = try graphTerm(from: item)
-        let quad = RDFQuad(
-            subject: subject,
+        let quad = try RDFQuad(
+            validatingSubject: subject,
             predicate: predicate,
             object: object,
             graph: graph
@@ -101,31 +102,55 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     private func requiredTerm(
         from item: Item,
-        fieldName: String
-    ) throws -> DatabaseRDFTerm {
-        guard let value = item[dynamicMember: fieldName] else {
+        field: FieldIdentity
+    ) throws -> RDFTerm {
+        guard let value = try item.persistedFieldValue(for: field) else {
+            throw GraphIndexError.fieldNotFound(
+                fieldName: field.name,
+                itemType: Item.persistableType
+            )
+        }
+        guard value != .null else {
             throw DataAccessError.nilValueCannotBeIndexed
         }
-        guard let term = value as? DatabaseRDFTerm else {
+        guard case .rdfTerm(let term) = value else {
             throw GraphIndexError.invalidFieldType(
-                fieldName: fieldName,
-                expectedType: "DatabaseRDFTerm",
-                actualType: String(describing: type(of: value))
+                fieldName: field.name,
+                expectedType: "RDFTerm",
+                actualType: String(describing: value)
             )
         }
         return term
     }
 
-    private func graphTerm(from item: Item) throws -> DatabaseRDFTerm? {
+    private func graphTerm(from item: Item) throws -> RDFTerm? {
         guard let graphField else { return nil }
-        guard let value = item[dynamicMember: graphField] else { return nil }
-        guard let term = value as? DatabaseRDFTerm else {
+        guard let value = try item.persistedFieldValue(for: graphField) else {
+            throw GraphIndexError.fieldNotFound(
+                fieldName: graphField.name,
+                itemType: Item.persistableType
+            )
+        }
+        guard value != .null else { return nil }
+        guard case .rdfTerm(let term) = value else {
             throw GraphIndexError.invalidFieldType(
-                fieldName: graphField,
-                expectedType: "DatabaseRDFTerm?",
-                actualType: String(describing: type(of: value))
+                fieldName: graphField.name,
+                expectedType: "RDFTerm?",
+                actualType: String(describing: value)
             )
         }
         return term
+    }
+
+    private static func requireField(
+        named fieldName: String
+    ) throws -> FieldIdentity {
+        guard let fieldNumber = Item.fieldNumber(for: fieldName) else {
+            throw GraphIndexError.fieldNotFound(
+                fieldName: fieldName,
+                itemType: Item.persistableType
+            )
+        }
+        return FieldIdentity(name: fieldName, number: fieldNumber)
     }
 }

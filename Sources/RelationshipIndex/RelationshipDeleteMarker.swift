@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 
 package enum RelationshipDeleteMarker {
@@ -7,7 +7,7 @@ package enum RelationshipDeleteMarker {
     )
 
     package static func isMarked(
-        _ identity: PersistableIdentity,
+        _ identity: EntityReference,
         transaction: any TransactionAccess
     ) async throws -> Bool {
         try await transaction.getValue(
@@ -17,20 +17,20 @@ package enum RelationshipDeleteMarker {
     }
 
     package static func mark(
-        _ identity: PersistableIdentity,
+        _ identity: EntityReference,
         transaction: any TransactionAccess
     ) throws {
         try transaction.setValue([], for: try key(identity))
     }
 
     package static func clear(
-        _ identity: PersistableIdentity,
+        _ identity: EntityReference,
         transaction: any TransactionAccess
     ) throws {
         try transaction.clear(key: try key(identity))
     }
 
-    private static func key(_ identity: PersistableIdentity) throws -> Bytes {
+    private static func key(_ identity: EntityReference) throws -> Bytes {
         root.pack(Tuple([try RelationshipIdentityCodec.encode(identity)]))
     }
 }

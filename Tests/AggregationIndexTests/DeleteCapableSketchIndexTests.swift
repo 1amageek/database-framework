@@ -1,6 +1,6 @@
 @testable import AggregationIndex
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import StorageKit
 import Testing
@@ -682,9 +682,11 @@ private func makeDistinctMaintainer(
 ) -> DistinctIndexMaintainer<SketchIndexEntity> {
     let index = Index(
         name: "distinct",
-        kind: DistinctIndexKind<SketchIndexEntity>(
-            groupBy: [\.group],
-            value: \.distinctValue,
+        kind: distinctIndexMetadata(
+            groupingFields: [
+                FieldIdentity(name: "group", number: 2)
+            ],
+            valueField: FieldIdentity(name: "distinctValue", number: 3),
             precision: precision
         ),
         rootExpression: ConcatenateKeyExpression(children: [
@@ -707,9 +709,12 @@ private func makePercentileMaintainer(
 ) -> PercentileIndexMaintainer<SketchIndexEntity> {
     let index = Index(
         name: "percentile",
-        kind: PercentileIndexKind<SketchIndexEntity, Double>(
-            groupBy: [\.group],
-            value: \.numericValue
+        kind: percentileIndexMetadata(
+            groupingFields: [
+                FieldIdentity(name: "group", number: 2)
+            ],
+            valueField: FieldIdentity(name: "numericValue", number: 4),
+            compression: 100
         ),
         rootExpression: ConcatenateKeyExpression(children: [
             FieldKeyExpression(fieldName: "group"),

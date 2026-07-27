@@ -3,10 +3,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseMath
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import Synchronization
 
 /// Query-scoped state for SPARQL functions whose result cannot be evaluated as
@@ -22,17 +22,17 @@ final class SPARQLQueryExpressionContext: Sendable {
         var identifiersByKey: [BlankNodeKey: String] = [:]
     }
 
-    private let nowTimestamp: DatabaseTimestamp
+    private let nowTimestamp: Timestamp
     private let blankNodes = Mutex(BlankNodeState())
     private let functionRegistry: SPARQLFunctionRegistry
     private let workMeter: DatabaseWorkMeter
 
     init(
-        now: DatabaseTimestamp = SPARQLQueryExpressionContext.currentTimestamp(),
+        now: Timestamp? = nil,
         functionRegistry: SPARQLFunctionRegistry,
         workMeter: DatabaseWorkMeter
-    ) {
-        self.nowTimestamp = now
+    ) throws {
+        self.nowTimestamp = try now ?? Self.currentTimestamp()
         self.functionRegistry = functionRegistry
         self.workMeter = workMeter
     }
@@ -106,7 +106,9 @@ final class SPARQLQueryExpressionContext: Sendable {
             guard arguments.isEmpty else {
                 throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
             }
-            return .rdfTerm(.iri("urn:uuid:\(Self.randomUUID())"))
+            return .rdfTerm(
+                .iri(try RDFIRI("urn:uuid:\(Self.randomUUID())"))
+            )
 
         case "STRUUID":
             guard arguments.isEmpty else {
@@ -123,7 +125,13 @@ final class SPARQLQueryExpressionContext: Sendable {
             }
             if arguments.isEmpty {
                 try workMeter.consume(at: .resultMaterialization)
-                return .rdfTerm(.blankNode(Self.randomUUID().description))
+                return .rdfTerm(
+                    .blankNode(
+                        try RDFBlankNodeIdentifier(
+                            Self.randomUUID().description
+                        )
+                    )
+                )
             }
             guard let label = Self.simpleString(arguments[0]) else {
                 throw SPARQLExpressionEvaluationError.typeError(
@@ -151,7 +159,9 @@ final class SPARQLQueryExpressionContext: Sendable {
                 state.identifiersByKey[key] = generated
                 return generated
             }
-            return .rdfTerm(.blankNode(identifier))
+            return .rdfTerm(
+                .blankNode(try RDFBlankNodeIdentifier(identifier))
+            )
 
         default:
             do {
@@ -173,28 +183,28 @@ final class SPARQLQueryExpressionContext: Sendable {
         }
     }
 
-    private static func currentTimestamp() -> DatabaseTimestamp {
+    private static func currentTimestamp() throws -> Timestamp {
         let interval = Date().timeIntervalSince1970
         let seconds = DatabaseMath.floor(interval)
         let fractional = max(0, min(interval - seconds, 0.999_999_999))
-        return DatabaseTimestamp(
+        return try Timestamp(
             secondsSinceUnixEpoch: Int64(seconds),
             nanoseconds: UInt32(fractional * 1_000_000_000)
         )
     }
 
-    private static func randomUUID() -> DatabaseUUID {
+    private static func randomUUID() -> DatabaseTypes.UUID {
         var high = UInt64.random(in: UInt64.min...UInt64.max)
         var low = UInt64.random(in: UInt64.min...UInt64.max)
         high = (high & 0xffff_ffff_ffff_0fff) | 0x0000_0000_0000_4000
         low = (low & 0x3fff_ffff_ffff_ffff) | 0x8000_0000_0000_0000
-        return DatabaseUUID(high: high, low: low)
+        return DatabaseTypes.UUID(high: high, low: low)
     }
 
     private static func simpleString(_ value: FieldValue) -> String? {
         switch value {
         case .rdfTerm(.literal(let literal))
-            where literal.datatype == "http://www.w3.org/2001/XMLSchema#string":
+            where literal.datatypeIRI == .xsdString:
             return literal.lexicalForm
         case .string(let value):
             return value

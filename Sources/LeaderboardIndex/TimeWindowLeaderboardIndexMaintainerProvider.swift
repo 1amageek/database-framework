@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -12,15 +12,23 @@ public struct TimeWindowLeaderboardIndexMaintainerProvider: IndexMaintainerProvi
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
-        let kind = try TimeWindowLeaderboardIndexKind<Item>(canonical: index.kind)
+        guard index.kind.identifier == kindIdentifier else {
+            throw IndexMaintainerProviderError.kindMismatch(
+                registered: kindIdentifier,
+                actual: index.kind.identifier
+            )
+        }
+        let configuration = try TimeWindowLeaderboardConfiguration(
+            metadata: index.kind
+        )
         return TimeWindowLeaderboardIndexMaintainer<Item>(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            window: kind.window,
-            windowCount: kind.windowCount
+            window: configuration.window,
+            windowCount: configuration.windowCount
         )
     }
 }

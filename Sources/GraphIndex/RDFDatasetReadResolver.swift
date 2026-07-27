@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 
 package struct RDFDatasetReadResolution {
     package let entity: Schema.Entity

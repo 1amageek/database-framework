@@ -56,10 +56,17 @@ import Synchronization
 /// }
 ///
 /// // 2. Create container (async - connects to DB and initializes indexes)
-/// let schema = Schema([User.self])
+/// let schema = try Schema(
+///     entities: [try User.schemaEntity],
+///     version: .init(1, 0, 0)
+/// )
+/// let runtime = try DatabaseFrameworkRuntime.configuration(
+///     persistableTypes: [User.self]
+/// )
 /// let container = try await DBContainer.open(
 ///     for: schema,
-///     configuration: DBConfiguration(backend: .custom(engine))
+///     configuration: DBConfiguration(backend: .custom(engine)),
+///     runtimeConfiguration: runtime
 /// )
 ///
 /// // 3. Use context
@@ -551,7 +558,7 @@ public final class DBContainer: Sendable {
         }
 
         let subspace = try await resolveDirectory(for: type, path: path)
-        try await ensureIndexesReady(for: type, subspace: subspace)
+        try await initializeIndexStates(for: type, subspace: subspace)
         let store = DatabaseDataStore(
             container: self,
             subspace: subspace,
@@ -574,7 +581,7 @@ public final class DBContainer: Sendable {
         }
 
         let subspace = try await resolveDirectory(for: type, path: path)
-        try await ensureIndexesReady(for: type, subspace: subspace)
+        try await initializeIndexStates(for: type, subspace: subspace)
         let store = DatabaseDataStore(
             container: self,
             subspace: subspace,
@@ -599,7 +606,7 @@ public final class DBContainer: Sendable {
             path: path,
             transaction: transaction
         )
-        try await ensureIndexesReady(
+        try await initializeIndexStates(
             for: type,
             subspace: subspace,
             transaction: transaction
@@ -613,7 +620,7 @@ public final class DBContainer: Sendable {
         )
     }
 
-    private func ensureIndexesReady(
+    private func initializeIndexStates(
         for type: any Persistable.Type,
         subspace: Subspace
     ) async throws {
@@ -621,7 +628,7 @@ public final class DBContainer: Sendable {
         guard !indexNames.isEmpty else { return }
 
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
-        try await lifecycleStore.ensureReadable(
+        try await lifecycleStore.initializeMissingStates(
             indexNames,
             entityRange: subspace
                 .subspace(SubspaceKey.items)
@@ -630,7 +637,7 @@ public final class DBContainer: Sendable {
         )
     }
 
-    private func ensureIndexesReady(
+    private func initializeIndexStates(
         for type: any Persistable.Type,
         subspace: Subspace,
         transaction: any TransactionAccess
@@ -639,7 +646,7 @@ public final class DBContainer: Sendable {
         guard !indexNames.isEmpty else { return }
 
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
-        try await lifecycleStore.ensureReadable(
+        try await lifecycleStore.initializeMissingStates(
             indexNames,
             entityRange: subspace
                 .subspace(SubspaceKey.items)
@@ -1399,7 +1406,9 @@ extension DBContainer {
     /// let stats = try await admin.collectionStatistics(User.self)
     ///
     /// // Explain query plan
-    /// let plan = try await admin.explain(Query<User>().where(\.age > 18))
+    /// let plan = try await admin.explain(
+    ///     Query<User>().where(User.fields.age > 18)
+    /// )
     /// ```
     ///
     /// - Returns: New AdminContext instance

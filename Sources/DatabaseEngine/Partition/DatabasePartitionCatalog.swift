@@ -1,5 +1,5 @@
-import DatabaseDigest
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseWire
 import StorageKit
 
@@ -8,23 +8,23 @@ package struct DatabasePartitionCatalog: Sendable {
 
     private let engine: any StorageEngine
     private let entries: Subspace
-    private let wireLimits: DatabaseWireLimits
+    private let storageLimits: StorageFrameLimits
 
     package init(
         engine: any StorageEngine,
-        wireLimits: DatabaseWireLimits = .default
+        storageLimits: StorageFrameLimits = .default
     ) async throws {
         let root = try await engine.createOrOpenDirectory(
             path: ["database-framework", "partition-catalog"]
         )
         self.engine = engine
         self.entries = root.subspace("entries")
-        self.wireLimits = wireLimits
+        self.storageLimits = storageLimits
     }
 
     package func register(
         entity: String,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws {
         try await engine.withTransaction(configuration: .batch) { transaction in
             try await register(
@@ -37,7 +37,7 @@ package struct DatabasePartitionCatalog: Sendable {
 
     package func register(
         entity: String,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws {
         try validate(entity: entity, partitions: partitions)
@@ -45,7 +45,10 @@ package struct DatabasePartitionCatalog: Sendable {
             entity: entity,
             partitions: partitions
         )
-        let bytes = try DatabaseEnvelopeCodec.encode(entry, limits: wireLimits)
+        let bytes = try StorageFrameCodec.encode(
+            entry,
+            limits: storageLimits
+        )
         let key = entryKey(entity: entity, encodedEntry: bytes)
         let storageBytes = Bytes(retaining: bytes)
 
@@ -63,7 +66,7 @@ package struct DatabasePartitionCatalog: Sendable {
 
     package func page(
         entity: String? = nil,
-        continuation: DatabaseBytes? = nil,
+        continuation: ByteString? = nil,
         limit: Int
     ) async throws -> DatabasePartitionCatalogPage {
         guard limit > 0, limit <= Self.maximumPageSize else {
@@ -87,10 +90,10 @@ package struct DatabasePartitionCatalog: Sendable {
         if let continuation {
             let decoded: DatabasePartitionCatalogContinuation
             do {
-                decoded = try DatabaseEnvelopeCodec.decode(
+                decoded = try StorageFrameCodec.decode(
                     DatabasePartitionCatalogContinuation.self,
                     from: continuation,
-                    limits: wireLimits
+                    limits: storageLimits
                 )
             } catch {
                 throw DatabasePartitionCatalogError.invalidContinuation
@@ -120,19 +123,19 @@ package struct DatabasePartitionCatalog: Sendable {
                 decodedEntries.append(
                     try decodeEntry(
                         key: row.0,
-                        bytes: DatabaseBytes(retaining: row.1)
+                        bytes: ByteString(retaining: row.1)
                     )
                 )
             }
 
-            let next: DatabaseBytes?
+            let next: ByteString?
             if rows.count > limit, let lastKey = visibleRows.last?.0 {
-                next = try DatabaseEnvelopeCodec.encode(
+                next = try StorageFrameCodec.encode(
                     DatabasePartitionCatalogContinuation(
                         entity: entity,
-                        lastKey: DatabaseBytes(retaining: lastKey)
+                        lastKey: ByteString(retaining: lastKey)
                     ),
-                    limits: wireLimits
+                    limits: storageLimits
                 )
             } else {
                 next = nil
@@ -146,13 +149,13 @@ package struct DatabasePartitionCatalog: Sendable {
 
     private func decodeEntry(
         key: Bytes,
-        bytes: DatabaseBytes
+        bytes: ByteString
     ) throws -> DatabasePartitionCatalogEntry {
         do {
-            let entry = try DatabaseEnvelopeCodec.decode(
+            let entry = try StorageFrameCodec.decode(
                 DatabasePartitionCatalogEntry.self,
                 from: bytes,
-                limits: wireLimits
+                limits: storageLimits
             )
             try validate(entity: entry.entity, partitions: entry.partitions)
             guard entryKey(entity: entry.entity, encodedEntry: bytes) == key else {
@@ -168,7 +171,7 @@ package struct DatabasePartitionCatalog: Sendable {
 
     private func validate(
         entity: String,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) throws {
         guard !entity.isEmpty else {
             throw DatabasePartitionCatalogError.invalidEntity(entity)
@@ -179,17 +182,12 @@ package struct DatabasePartitionCatalog: Sendable {
                 reason: "a dynamic partition must contain at least one field"
             )
         }
-        var names = Set<String>()
-        var numbers = Set<UInt32>()
-        for partition in partitions {
-            guard partition.number > 0,
-                  !partition.name.isEmpty,
-                  partition.value != .null,
-                  names.insert(partition.name).inserted,
-                  numbers.insert(partition.number).inserted else {
+        for partition in partitions.fields {
+            guard !partition.key.isEmpty,
+                  partition.value != .null else {
                 throw DatabasePartitionCatalogError.invalidPartitions(
                     entity: entity,
-                    reason: "partition fields must be non-null and have unique names and numbers"
+                    reason: "partition fields must have non-empty names and non-null values"
                 )
             }
         }
@@ -197,7 +195,7 @@ package struct DatabasePartitionCatalog: Sendable {
 
     private func entryKey(
         entity: String,
-        encodedEntry: DatabaseBytes
+        encodedEntry: ByteString
     ) -> Bytes {
         var hasher = SHA256Accumulator()
         hasher.update(encodedEntry)

@@ -1,6 +1,5 @@
 import DatabaseEngine
-import DatabaseWire
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 /// Persistent database-wide SQL/PGQ property graph definition catalog.
@@ -20,15 +19,15 @@ public struct CanonicalPropertyGraphDefinitionCatalog:
         ]).pack()
     )
 
-    private let codec: PropertyGraphDefinitionCatalogCodec
+    private let storage: PropertyGraphDefinitionCatalogStorage
 
     public init(
         rootSubspace: Subspace = Self.defaultRootSubspace,
-        definitionLimits: DatabaseWireLimits = .default
+        storageLimits: StorageFrameLimits = .default
     ) {
-        self.codec = PropertyGraphDefinitionCatalogCodec(
+        self.storage = PropertyGraphDefinitionCatalogStorage(
             subspace: rootSubspace.subspace(Int64(1)),
-            definitionLimits: definitionLimits
+            limits: storageLimits
         )
     }
 
@@ -37,7 +36,7 @@ public struct CanonicalPropertyGraphDefinitionCatalog:
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> CreateGraphStatement? {
-        let key = try codec.key(for: graphName)
+        let key = try storage.key(for: graphName)
         try workMeter.consume(at: .storageRow)
         guard let value = try await transaction.getValue(
             for: key,
@@ -45,7 +44,7 @@ public struct CanonicalPropertyGraphDefinitionCatalog:
         ) else {
             return nil
         }
-        return try codec.decode(value, expectedGraphName: graphName)
+        return try storage.decode(value, expectedGraphName: graphName)
     }
 
     @discardableResult
@@ -59,15 +58,15 @@ public struct CanonicalPropertyGraphDefinitionCatalog:
             vertexTables: definition.vertexTables,
             edgeTables: definition.edgeTables
         )
-        let key = try codec.key(for: definition.graphName)
-        let encodedDefinition = try codec.encode(canonicalDefinition)
+        let key = try storage.key(for: definition.graphName)
+        let encodedDefinition = try storage.encode(canonicalDefinition)
 
         try workMeter.consume(at: .storageRow)
         if let existingValue = try await transaction.getValue(
             for: key,
             snapshot: false
         ) {
-            _ = try codec.decode(
+            _ = try storage.decode(
                 existingValue,
                 expectedGraphName: definition.graphName
             )
@@ -89,7 +88,7 @@ public struct CanonicalPropertyGraphDefinitionCatalog:
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws {
-        let key = try codec.key(for: graphName)
+        let key = try storage.key(for: graphName)
         try workMeter.consume(at: .storageRow)
         guard let existingValue = try await transaction.getValue(
             for: key,
@@ -97,7 +96,7 @@ public struct CanonicalPropertyGraphDefinitionCatalog:
         ) else {
             throw PropertyGraphDefinitionCatalogError.graphNotFound(graphName)
         }
-        _ = try codec.decode(existingValue, expectedGraphName: graphName)
+        _ = try storage.decode(existingValue, expectedGraphName: graphName)
 
         try workMeter.consume(at: .storageWrite)
         try transaction.clear(key: key)

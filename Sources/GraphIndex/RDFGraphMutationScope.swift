@@ -1,4 +1,4 @@
-import Graph
+import DatabaseKit
 
 /// Graphs affected by one atomic RDF graph-store mutation.
 public enum RDFGraphMutationScope: Sendable, Hashable {

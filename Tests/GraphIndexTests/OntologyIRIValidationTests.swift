@@ -9,10 +9,10 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseRuntime
-import Graph
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -28,7 +28,7 @@ import TestSupport
 struct ValEmployee {
     #Directory<ValEmployee>("ontology_iri_validation_tests", "employee")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
 
     @OWLDataProperty("http://test.org/onto#name")
     var name: String = ""
@@ -39,7 +39,7 @@ struct ValEmployee {
 struct ValAssignment {
     #Directory<ValAssignment>("ontology_iri_validation_tests", "assignment")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var employeeID: String = ""
     var projectID: String = ""
 }
@@ -52,7 +52,7 @@ struct ValAssignment {
 struct ValBadClass {
     #Directory<ValBadClass>("ontology_iri_validation_tests", "badclass")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String = ""
 }
 
@@ -61,7 +61,7 @@ struct ValBadClass {
 struct ValBadRelation {
     #Directory<ValBadRelation>("ontology_iri_validation_tests", "badrel")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var fromID: String = ""
     var toID: String = ""
 }
@@ -72,7 +72,7 @@ struct ValBadRelation {
 struct ValDataPropAsObjectProp {
     #Directory<ValDataPropAsObjectProp>("ontology_iri_validation_tests", "typemismatch")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var srcID: String = ""
     var dstID: String = ""
 }
@@ -86,7 +86,7 @@ struct ValDataPropAsObjectProp {
 struct ValBadDataProperty {
     #Directory<ValBadDataProperty>("ontology_iri_validation_tests", "baddataprop")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
 
     @OWLDataProperty("http://test.org/onto#nonExistentDataProp")
     var nickname: String = ""
@@ -101,7 +101,7 @@ struct ValBadDataProperty {
 struct ValObjPropAsDataProp {
     #Directory<ValObjPropAsDataProp>("ontology_iri_validation_tests", "objasdata")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
 
     @OWLDataProperty("http://test.org/onto#worksOn")
     var dept: String = ""
@@ -109,7 +109,7 @@ struct ValObjPropAsDataProp {
 
 // MARK: - Tests
 
-@Suite("Ontology IRI Validation", .serialized, .heartbeat)
+@Suite("Ontology IRI Validation", .serialized, .foundationDBScenario, .heartbeat)
 struct OntologyIRIValidationTests {
 
     private static let ontologyIRI = "http://test.org/ontology-iri-validation"
@@ -122,10 +122,16 @@ struct OntologyIRIValidationTests {
         if try await database.directoryExists(path: ["ontology_iri_validation_tests"]) {
             try await database.removeDirectory(path: ["ontology_iri_validation_tests"])
         }
-        let schema = Schema(
-            [ValEmployee.self, ValAssignment.self, ValBadClass.self,
-             ValBadRelation.self, ValDataPropAsObjectProp.self,
-             ValBadDataProperty.self, ValObjPropAsDataProp.self],
+        let schema = try Schema(
+            entities: [
+                try ValEmployee.schemaEntity,
+                try ValAssignment.schemaEntity,
+                try ValBadClass.schemaEntity,
+                try ValBadRelation.schemaEntity,
+                try ValDataPropAsObjectProp.schemaEntity,
+                try ValBadDataProperty.schemaEntity,
+                try ValObjPropAsDataProp.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.open(
@@ -289,8 +295,11 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let schema = Schema(
-            [ValEmployee.self, ValAssignment.self],
+        let schema = try Schema(
+            entities: [
+                try ValEmployee.schemaEntity,
+                try ValAssignment.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -302,8 +311,8 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let schema = Schema(
-            [ValBadClass.self],
+        let schema = try Schema(
+            entities: [try ValBadClass.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -330,8 +339,8 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let schema = Schema(
-            [ValBadRelation.self],
+        let schema = try Schema(
+            entities: [try ValBadRelation.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -358,8 +367,8 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let schema = Schema(
-            [ValDataPropAsObjectProp.self],
+        let schema = try Schema(
+            entities: [try ValDataPropAsObjectProp.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -388,8 +397,11 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let schema = Schema(
-            [ValBadClass.self, ValBadRelation.self],
+        let schema = try Schema(
+            entities: [
+                try ValBadClass.schemaEntity,
+                try ValBadRelation.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -411,8 +423,8 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let schema = Schema(
-            [OntologyPersistenceEntity.self],
+        let schema = try Schema(
+            entities: [try OntologyPersistenceEntity.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -424,7 +436,7 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let schema = Schema(
+        let schema = try Schema(
             entities: [],
             version: Schema.Version(1, 0, 0)
         )
@@ -437,8 +449,8 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let schema = Schema(
-            [ValEmployee.self],
+        let schema = try Schema(
+            entities: [try ValEmployee.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -479,8 +491,8 @@ struct OntologyIRIValidationTests {
         try await loadTestOntology(context: context)
 
         // ValEmployee has @OWLDataProperty("http://test.org/onto#name") which exists
-        let schema = Schema(
-            [ValEmployee.self],
+        let schema = try Schema(
+            entities: [try ValEmployee.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -492,8 +504,8 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let schema = Schema(
-            [ValBadDataProperty.self],
+        let schema = try Schema(
+            entities: [try ValBadDataProperty.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -521,8 +533,8 @@ struct OntologyIRIValidationTests {
         let context = try await setupContext()
         try await loadTestOntology(context: context)
 
-        let schema = Schema(
-            [ValObjPropAsDataProp.self],
+        let schema = try Schema(
+            entities: [try ValObjPropAsDataProp.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -554,8 +566,11 @@ struct OntologyIRIValidationTests {
 
         // ValEmployee: @OWLClass("...#Employee") + @OWLDataProperty("...#name")
         // ValAssignment: @OWLObjectProperty("...#worksOn")
-        let schema = Schema(
-            [ValEmployee.self, ValAssignment.self],
+        let schema = try Schema(
+            entities: [
+                try ValEmployee.schemaEntity,
+                try ValAssignment.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
 

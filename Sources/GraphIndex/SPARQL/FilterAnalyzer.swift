@@ -9,8 +9,9 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import Graph
+import DatabaseTypes
+import DatabaseKit
+import DatabaseKit
 import DatabaseEngine
 
 /// Analyzes SPARQL FilterExpression to determine filter pushdown strategy

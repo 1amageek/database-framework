@@ -1,7 +1,6 @@
-import Core
-import DatabaseValue
-import DatabaseValueCodable
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKitFoundation
 
 @Persistable
 struct DatabaseGraphQueryStatement {
@@ -10,19 +9,18 @@ struct DatabaseGraphQueryStatement {
         "database-server-graph-query"
     )
 
-    var id: String = ""
-    var subject: DatabaseRDFTerm = .iri("urn:subject")
-    var predicate: DatabaseRDFTerm = .iri("urn:predicate")
-    var object: DatabaseRDFTerm = .iri("urn:object")
-    var graph: DatabaseRDFTerm? = nil
+    var id: String
+    var subject: RDFTerm
+    var predicate: RDFTerm
+    var object: RDFTerm
+    var graph: RDFTerm?
 
     #Index(
-        RDFQuadIndexKind<DatabaseGraphQueryStatement>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object,
-            graph: \.graph
-        ),
+        .rdfDataset,
+        from: \DatabaseGraphQueryStatement.subject,
+        edge: \DatabaseGraphQueryStatement.predicate,
+        to: \DatabaseGraphQueryStatement.object,
+        graph: \DatabaseGraphQueryStatement.graph,
         name: "rdf_quad"
     )
 }

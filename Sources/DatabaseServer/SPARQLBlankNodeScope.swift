@@ -1,7 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 struct SPARQLBlankNodeScope: Sendable {
     let idempotencyKey: String

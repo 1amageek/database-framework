@@ -5,7 +5,7 @@
 /// - ISO/IEC 9075:2023 (SQL)
 /// - ISO/IEC 9075-16:2023 (SQL/PGQ)
 
-import QueryIR
+import DatabaseKit
 
 /// SQL Parser for converting SQL strings to AST
 public final class SQLParser {
@@ -133,7 +133,13 @@ public final class SQLParser {
     }
 
     private func leaveStructuralNesting() {
-        structuralLedger.leaveNesting()
+        do {
+            try structuralLedger.leaveNesting()
+        } catch {
+            if structuralError == nil {
+                structuralError = error
+            }
+        }
     }
 
     private func makeStructuralNode<Value>(
@@ -547,23 +553,39 @@ extension SQLParser {
         }
 
         // LIMIT
-        var limit: Int?
+        var limit: UInt64?
         if case .keyword("LIMIT") = currentToken {
             advance()
-            if case .number(let n) = currentToken {
-                limit = Int(n)
-                advance()
+            guard case .number(let lexicalForm) = currentToken,
+                  let value = UInt64(lexicalForm) else {
+                throw ParseError.invalidSyntax(
+                    message: "LIMIT requires a non-negative UInt64 integer",
+                    position: input.distance(
+                        from: input.startIndex,
+                        to: position
+                    )
+                )
             }
+            limit = value
+            advance()
         }
 
         // OFFSET
-        var offset: Int?
+        var offset: UInt64?
         if case .keyword("OFFSET") = currentToken {
             advance()
-            if case .number(let n) = currentToken {
-                offset = Int(n)
-                advance()
+            guard case .number(let lexicalForm) = currentToken,
+                  let value = UInt64(lexicalForm) else {
+                throw ParseError.invalidSyntax(
+                    message: "OFFSET requires a non-negative UInt64 integer",
+                    position: input.distance(
+                        from: input.startIndex,
+                        to: position
+                    )
+                )
             }
+            offset = value
+            advance()
         }
 
         return try makeStructuralNode(

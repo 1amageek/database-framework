@@ -20,8 +20,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -36,12 +36,12 @@ struct WPUser {
     var id: String = UUID().uuidString
     var email: String = ""
 
-    #Index(ScalarIndexKind<WPUser>(fields: [\.email]))
+    #Index(.scalar, fields: [\WPUser.email])
 }
 
 // MARK: - Test Suite
 
-@Suite("WritePrecondition explicit-intent APIs", .serialized)
+@Suite("WritePrecondition explicit-intent APIs", .foundationDBScenario, .serialized)
 struct WritePreconditionTests {
 
     init() async throws {
@@ -85,7 +85,9 @@ struct WritePreconditionTests {
         try context.insert(user)
         try await context.save()
 
-        let hits = try await context.fetch(WPUser.self).where(\.id == user.id).execute()
+        let hits = try await context.fetch(WPUser.self)
+            .where(WPUser.fields.id == user.id)
+            .execute()
         #expect(hits.count == 1)
         #expect(hits.first?.email == user.email)
     }
@@ -112,7 +114,9 @@ struct WritePreconditionTests {
         }
 
         // Row must be unchanged: the original email still wins.
-        let hits = try await context.fetch(WPUser.self).where(\.id == user.id).execute()
+        let hits = try await context.fetch(WPUser.self)
+            .where(WPUser.fields.id == user.id)
+            .execute()
         #expect(hits.count == 1)
         #expect(hits.first?.email == user.email, "Failed create must not mutate the stored row")
     }
@@ -137,8 +141,12 @@ struct WritePreconditionTests {
         try context.update(updated)
         try await context.save()
 
-        let byOld = try await context.fetch(WPUser.self).where(\.email == oldEmail).execute()
-        let byNew = try await context.fetch(WPUser.self).where(\.email == newEmail).execute()
+        let byOld = try await context.fetch(WPUser.self)
+            .where(WPUser.fields.email == oldEmail)
+            .execute()
+        let byNew = try await context.fetch(WPUser.self)
+            .where(WPUser.fields.email == newEmail)
+            .execute()
         #expect(byOld.isEmpty, "Old scalar index entry must be cleared after update")
         #expect(byNew.count == 1)
         #expect(byNew.first?.id == user.id)
@@ -179,7 +187,9 @@ struct WritePreconditionTests {
             try await context.save()
         }
 
-        let stored = try await context.fetch(WPUser.self).where(\.id == user.id).execute()
+        let stored = try await context.fetch(WPUser.self)
+            .where(WPUser.fields.id == user.id)
+            .execute()
         #expect(stored.first?.email == firstUpdate.email)
     }
 
@@ -201,7 +211,9 @@ struct WritePreconditionTests {
             try await context.save()
         }
 
-        let hits = try await context.fetch(WPUser.self).where(\.id == ghostOld.id).execute()
+        let hits = try await context.fetch(WPUser.self)
+            .where(WPUser.fields.id == ghostOld.id)
+            .execute()
         #expect(hits.isEmpty, "Failed update must not leak the new value into storage")
     }
 
@@ -223,8 +235,8 @@ struct WritePreconditionTests {
         }
     }
 
-    @Test("delete default precondition (.none) on missing key succeeds as no-op")
-    func deleteDefaultNoneOnMissingKeyIsNoop() async throws {
+    @Test("delete defaults to .exists and rejects a missing key")
+    func deleteDefaultExistsOnMissingKeyFails() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
         let context = container.newContext()
@@ -232,11 +244,10 @@ struct WritePreconditionTests {
         var ghost = WPUser(email: uniq("ghost") + "@example.com")
         ghost.id = uniq("U")
 
-        // Legacy/source-compat behavior: default precondition is .none, so a missing-row
-        // delete must not throw. This is the compatibility contract for the existing
-        // `delete(_:)` call sites throughout the codebase.
         try context.delete(ghost)
-        try await context.save()
+        await #expect(throws: DatabaseContextError.self) {
+            try await context.save()
+        }
     }
 
     @Test("delete on existing key removes row and clears index entries")
@@ -254,7 +265,9 @@ struct WritePreconditionTests {
         try context.delete(user, precondition: .exists)
         try await context.save()
 
-        let byEmail = try await context.fetch(WPUser.self).where(\.email == email).execute()
+        let byEmail = try await context.fetch(WPUser.self)
+            .where(WPUser.fields.email == email)
+            .execute()
         #expect(byEmail.isEmpty)
     }
 
@@ -274,7 +287,9 @@ struct WritePreconditionTests {
         // First upsert → row does not exist, must succeed (blind write).
         try context.upsert(user)
         try await context.save()
-        let hits1 = try await context.fetch(WPUser.self).where(\.id == user.id).execute()
+        let hits1 = try await context.fetch(WPUser.self)
+            .where(WPUser.fields.id == user.id)
+            .execute()
         #expect(hits1.first?.email == email1)
 
         // Second upsert → row exists, must still succeed and replace the value.
@@ -283,8 +298,12 @@ struct WritePreconditionTests {
         try context.upsert(updated)
         try await context.save()
 
-        let byOld = try await context.fetch(WPUser.self).where(\.email == email1).execute()
-        let byNew = try await context.fetch(WPUser.self).where(\.email == email2).execute()
+        let byOld = try await context.fetch(WPUser.self)
+            .where(WPUser.fields.email == email1)
+            .execute()
+        let byNew = try await context.fetch(WPUser.self)
+            .where(WPUser.fields.email == email2)
+            .execute()
         #expect(byOld.isEmpty, "Upsert must update the scalar index entry")
         #expect(byNew.count == 1)
     }

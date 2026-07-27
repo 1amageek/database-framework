@@ -1,10 +1,10 @@
-import DatabaseValue
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 
 struct DatabaseExpressionEvaluator: Sendable {
-    let fields: [String: DatabaseValue]
+    let fields: [String: FieldValue]
 
-    init(fields: [String: DatabaseValue]) {
+    init(fields: [String: FieldValue]) {
         self.fields = fields
     }
 
@@ -12,7 +12,7 @@ struct DatabaseExpressionEvaluator: Sendable {
         try truth(evaluate(expression)) == .true
     }
 
-    func evaluate(_ expression: Expression) throws -> DatabaseValue {
+    func evaluate(_ expression: Expression) throws -> FieldValue {
         switch expression {
         case .literal(let literal):
             return try value(literal)
@@ -108,28 +108,32 @@ struct DatabaseExpressionEvaluator: Sendable {
         }
     }
 
-    private func value(_ literal: Literal) throws -> DatabaseValue {
+    private func value(_ literal: Literal) throws -> FieldValue {
         switch literal {
         case .null: return .null
         case .bool(let value): return .bool(value)
         case .int(let value): return .int64(value)
         case .uint(let value): return .uint64(value)
-        case .decimal(let coefficient, let scale):
-            return .decimal(coefficient: coefficient, scale: scale)
-        case .double(let value): return .double(value)
+        case .decimal(let value):
+            return .decimal(value)
+        case .double(let value): return .float64(value)
         case .string(let value): return .string(value)
         case .date(let value): return .date(value)
         case .timestamp(let value): return .timestamp(value)
         case .binary(let value): return .bytes(value)
         case .uuid(let value): return .uuid(value)
         case .array(let values): return .array(try values.map(value))
-        case .iri(let value): return .rdfTerm(.iri(value))
-        case .blankNode(let value): return .rdfTerm(.blankNode(value))
+        case .iri(let value):
+            return .rdfTerm(.iri(try RDFIRI(value)))
+        case .blankNode(let value):
+            return .rdfTerm(
+                .blankNode(try RDFBlankNodeIdentifier(value))
+            )
         case .rdfTerm(let value): return .rdfTerm(value)
         case .typedLiteral(let value, let datatype):
             do {
                 return .rdfTerm(
-                    .literal(try DatabaseRDFLiteral(
+                    .literal(try RDFLiteral(
                         lexicalForm: value,
                         datatype: datatype
                     ))
@@ -140,43 +144,43 @@ struct DatabaseExpressionEvaluator: Sendable {
                 )
             }
         case .langLiteral(let value, let language):
-            let tag: DatabaseRDFLanguageTag
+            let tag: RDFLanguageTag
             do {
-                tag = try DatabaseRDFLanguageTag(language)
+                tag = try RDFLanguageTag(language)
             } catch {
                 throw DatabaseExpressionEvaluationError.invalidRDFLiteral(
-                    datatype: DatabaseRDFIRI.rdfLanguageString.rawValue
+                    datatype: RDFIRI.rdfLanguageString.rawValue
                 )
             }
             return .rdfTerm(
                 .literal(
-                    DatabaseRDFLiteral(
+                    RDFLiteral(
                         lexicalForm: value,
                         language: tag
                     )
                 )
             )
         case .dirLangLiteral(let value, let language, let direction):
-            let tag: DatabaseRDFLanguageTag
+            let tag: RDFLanguageTag
             do {
-                tag = try DatabaseRDFLanguageTag(language)
+                tag = try RDFLanguageTag(language)
             } catch {
                 throw DatabaseExpressionEvaluationError.invalidRDFLiteral(
-                    datatype: DatabaseRDFIRI.rdfDirectionalLanguageString
+                    datatype: RDFIRI.rdfDirectionalLanguageString
                         .rawValue
                 )
             }
-            guard let baseDirection = DatabaseRDFDirection(
+            guard let baseDirection = RDFDirection(
                 rawValue: direction
             ) else {
                 throw DatabaseExpressionEvaluationError.invalidRDFLiteral(
-                    datatype: DatabaseRDFIRI.rdfDirectionalLanguageString
+                    datatype: RDFIRI.rdfDirectionalLanguageString
                         .rawValue
                 )
             }
             return .rdfTerm(
                 .literal(
-                    DatabaseRDFLiteral(
+                    RDFLiteral(
                         lexicalForm: value,
                         language: tag,
                         direction: baseDirection
@@ -190,7 +194,7 @@ struct DatabaseExpressionEvaluator: Sendable {
         _ lhs: Expression,
         _ rhs: Expression,
         expectedEqual: Bool
-    ) throws -> DatabaseValue {
+    ) throws -> FieldValue {
         guard let equal = try equalityValues(evaluate(lhs), evaluate(rhs)) else {
             return .null
         }
@@ -198,14 +202,14 @@ struct DatabaseExpressionEvaluator: Sendable {
     }
 
     private func equalityValues(
-        _ lhs: DatabaseValue,
-        _ rhs: @autoclosure () throws -> DatabaseValue
+        _ lhs: FieldValue,
+        _ rhs: @autoclosure () throws -> FieldValue
     ) throws -> Bool? {
         let rhs = try rhs()
         if lhs.isNull || rhs.isNull { return nil }
         if let ordering = exactNumericOrdering(lhs, rhs) { return ordering == .equal }
         switch (lhs, rhs) {
-        case (.double(let left), .double(let right)):
+        case (.float64(let left), .float64(let right)):
             return left == right
         default:
             return lhs == rhs
@@ -216,7 +220,7 @@ struct DatabaseExpressionEvaluator: Sendable {
         _ lhs: Expression,
         _ rhs: Expression,
         predicate: (Ordering) -> Bool
-    ) throws -> DatabaseValue {
+    ) throws -> FieldValue {
         let left = try evaluate(lhs)
         let right = try evaluate(rhs)
         if left.isNull || right.isNull { return .null }
@@ -224,12 +228,12 @@ struct DatabaseExpressionEvaluator: Sendable {
     }
 
     private func compare(
-        _ lhs: DatabaseValue,
-        _ rhs: DatabaseValue
+        _ lhs: FieldValue,
+        _ rhs: FieldValue
     ) throws -> Ordering {
         if let value = exactNumericOrdering(lhs, rhs) { return value }
         switch (lhs, rhs) {
-        case (.double(let left), .double(let right)):
+        case (.float64(let left), .float64(let right)):
             return ordering(left, right)
         case (.string(let left), .string(let right)):
             return ordering(left, right)
@@ -249,8 +253,8 @@ struct DatabaseExpressionEvaluator: Sendable {
     }
 
     private func exactNumericOrdering(
-        _ lhs: DatabaseValue,
-        _ rhs: DatabaseValue
+        _ lhs: FieldValue,
+        _ rhs: FieldValue
     ) -> Ordering? {
         guard let left = numericLiteral(lhs),
               let right = numericLiteral(rhs),
@@ -262,13 +266,49 @@ struct DatabaseExpressionEvaluator: Sendable {
         return .equal
     }
 
-    private func numericLiteral(_ value: DatabaseValue) -> Literal? {
+    private func numericLiteral(_ value: FieldValue) -> Literal? {
         switch value {
+        case .int8(let scalar): return .int(Int64(scalar))
+        case .int16(let scalar): return .int(Int64(scalar))
+        case .int32(let scalar): return .int(Int64(scalar))
         case .int64(let scalar): return .int(scalar)
+        case .uint8(let scalar): return .uint(UInt64(scalar))
+        case .uint16(let scalar): return .uint(UInt64(scalar))
+        case .uint32(let scalar): return .uint(UInt64(scalar))
         case .uint64(let scalar): return .uint(scalar)
-        case .decimal(let coefficient, let scale):
-            return .decimal(coefficient: coefficient, scale: scale)
+        case .decimal(let value):
+            return .decimal(value)
         default: return nil
+        }
+    }
+
+    private func exactDecimal(
+        _ value: FieldValue
+    ) -> ExactDecimal? {
+        switch value {
+        case .int8(let value):
+            return ExactDecimal(coefficient: Int128(value), scale: 0)
+        case .int16(let value):
+            return ExactDecimal(coefficient: Int128(value), scale: 0)
+        case .int32(let value):
+            return ExactDecimal(coefficient: Int128(value), scale: 0)
+        case .int64(let value):
+            return ExactDecimal(coefficient: Int128(value), scale: 0)
+        case .uint8(let value):
+            return ExactDecimal(coefficient: Int128(value), scale: 0)
+        case .uint16(let value):
+            return ExactDecimal(coefficient: Int128(value), scale: 0)
+        case .uint32(let value):
+            return ExactDecimal(coefficient: Int128(value), scale: 0)
+        case .uint64(let value):
+            return ExactDecimal(coefficient: Int128(value), scale: 0)
+        case .decimal(let value):
+            return value
+        case .null, .bool, .float32, .float64, .string, .bytes, .date,
+             .time, .dateTime, .timestamp, .timeSpan, .calendarPeriod,
+             .geographicPoint, .geographicPosition, .vector, .uuid,
+             .array, .object, .reference, .rdfTerm:
+            return nil
         }
     }
 
@@ -276,7 +316,7 @@ struct DatabaseExpressionEvaluator: Sendable {
         _ lhs: Expression,
         _ rhs: Expression,
         operation: ArithmeticOperation
-    ) throws -> DatabaseValue {
+    ) throws -> FieldValue {
         let left = try evaluate(lhs)
         let right = try evaluate(rhs)
         if left.isNull || right.isNull { return .null }
@@ -284,12 +324,12 @@ struct DatabaseExpressionEvaluator: Sendable {
         switch (left, right) {
         case let (left, right)
             where left.isExactDecimal || right.isExactDecimal:
-            guard let lhs = DatabaseExactDecimal(left),
-                  let rhs = DatabaseExactDecimal(right) else {
+            guard let lhs = exactDecimal(left),
+                  let rhs = exactDecimal(right) else {
                 throw DatabaseExpressionEvaluationError.numericOverflow
             }
             let result = try performExactDecimalOperation {
-                () throws(DatabaseExactDecimalError) -> DatabaseExactDecimal in
+                () throws(ExactDecimalError) -> ExactDecimal in
                 switch operation {
                 case .add: try lhs.adding(rhs)
                 case .subtract: try lhs.subtracting(rhs)
@@ -298,23 +338,23 @@ struct DatabaseExpressionEvaluator: Sendable {
                 case .modulo: try lhs.remainder(dividingBy: rhs)
                 }
             }
-            return result.databaseValue
+            return result.fieldValue
         case (.int64(let lhs), .int64(let rhs)):
             return .int64(try operation.apply(lhs, rhs))
         case (.uint64(let lhs), .uint64(let rhs)):
             return .uint64(try operation.apply(lhs, rhs))
-        case (.double(let lhs), .double(let rhs)):
+        case (.float64(let lhs), .float64(let rhs)):
             let result = try operation.apply(lhs, rhs)
             guard result.isFinite else {
                 throw DatabaseExpressionEvaluationError.numericOverflow
             }
-            return .double(result)
+            return .float64(result)
         default:
             throw DatabaseExpressionEvaluationError.typeMismatch(operation: operation.name)
         }
     }
 
-    private func negate(_ value: DatabaseValue) throws -> DatabaseValue {
+    private func negate(_ value: FieldValue) throws -> FieldValue {
         switch value {
         case .null:
             return .null
@@ -323,16 +363,16 @@ struct DatabaseExpressionEvaluator: Sendable {
                 throw DatabaseExpressionEvaluationError.numericOverflow
             }
             return .int64(-scalar)
-        case .double(let scalar):
-            return .double(-scalar)
+        case .float64(let scalar):
+            return .float64(-scalar)
         case .decimal:
-            guard let value = DatabaseExactDecimal(value) else {
+            guard let value = exactDecimal(value) else {
                 throw DatabaseExpressionEvaluationError.numericOverflow
             }
             return try performExactDecimalOperation {
-                () throws(DatabaseExactDecimalError) -> DatabaseExactDecimal in
+                () throws(ExactDecimalError) -> ExactDecimal in
                 try value.negated()
-            }.databaseValue
+            }.fieldValue
         default:
             throw DatabaseExpressionEvaluationError.typeMismatch(operation: "negation")
         }
@@ -342,7 +382,7 @@ struct DatabaseExpressionEvaluator: Sendable {
         _ nested: Expression,
         values: [Expression],
         negated: Bool
-    ) throws -> DatabaseValue {
+    ) throws -> FieldValue {
         let candidate = try evaluate(nested)
         if candidate.isNull { return .null }
         var sawUnknown = false
@@ -357,7 +397,7 @@ struct DatabaseExpressionEvaluator: Sendable {
         return .bool(negated)
     }
 
-    private func evaluate(_ function: FunctionCall) throws -> DatabaseValue {
+    private func evaluate(_ function: FunctionCall) throws -> FieldValue {
         let name = function.name.uppercased()
         switch name {
         case "LOWER", "UPPER":
@@ -396,15 +436,15 @@ struct DatabaseExpressionEvaluator: Sendable {
                 }
                 return .int64(value < 0 ? -value : value)
             case .uint64: return argument
-            case .double(let value): return .double(value.magnitude)
+            case .float64(let value): return .float64(value.magnitude)
             case .decimal:
-                guard let value = DatabaseExactDecimal(argument) else {
+                guard let value = exactDecimal(argument) else {
                     throw DatabaseExpressionEvaluationError.numericOverflow
                 }
                 return try performExactDecimalOperation {
-                    () throws(DatabaseExactDecimalError) -> DatabaseExactDecimal in
+                    () throws(ExactDecimalError) -> ExactDecimal in
                     try value.magnitude()
-                }.databaseValue
+                }.fieldValue
             default:
                 throw DatabaseExpressionEvaluationError.typeMismatch(operation: name)
             }
@@ -414,9 +454,9 @@ struct DatabaseExpressionEvaluator: Sendable {
     }
 
     private func cast(
-        _ value: DatabaseValue,
+        _ value: FieldValue,
         to target: DataType
-    ) throws -> DatabaseValue {
+    ) throws -> FieldValue {
         if value.isNull { return .null }
         switch target {
         case .boolean:
@@ -429,7 +469,7 @@ struct DatabaseExpressionEvaluator: Sendable {
             }
             throw invalidCast(target)
         case .real, .doublePrecision:
-            guard case .double = value else { throw invalidCast(target) }
+            guard case .float64 = value else { throw invalidCast(target) }
             return value
         case .char, .varchar, .text:
             guard case .string = value else { throw invalidCast(target) }
@@ -446,7 +486,7 @@ struct DatabaseExpressionEvaluator: Sendable {
         case .uuid:
             if case .uuid = value { return value }
             if case .string(let string) = value,
-               let uuid = DatabaseUUID(canonicalString: string) {
+               let uuid = DatabaseTypes.UUID(canonicalString: string) {
                 return .uuid(uuid)
             }
             throw invalidCast(target)
@@ -455,12 +495,12 @@ struct DatabaseExpressionEvaluator: Sendable {
             return value
         case .decimal:
             if case .decimal = value { return value }
-            if let exact = DatabaseExactDecimal(value) {
-                return exact.databaseValue
+            if let exact = exactDecimal(value) {
+                return exact.fieldValue
             }
             if case .string(let lexicalForm) = value,
-               case .decimal(let coefficient, let scale) = Literal.parseDecimal(lexicalForm) {
-                return .decimal(coefficient: coefficient, scale: scale)
+               case .decimal(let decimal) = Literal.parseDecimal(lexicalForm) {
+                return .decimal(decimal)
             }
             throw invalidCast(target)
         case .time, .interval, .json, .jsonb, .custom:
@@ -472,7 +512,7 @@ struct DatabaseExpressionEvaluator: Sendable {
         .invalidCast(String(describing: type))
     }
 
-    private func truth(_ value: DatabaseValue) throws -> TruthValue {
+    private func truth(_ value: FieldValue) throws -> TruthValue {
         switch value {
         case .null: return .unknown
         case .bool(true): return .true
@@ -482,7 +522,7 @@ struct DatabaseExpressionEvaluator: Sendable {
         }
     }
 
-    private func truthValue(_ value: TruthValue) -> DatabaseValue {
+    private func truthValue(_ value: TruthValue) -> FieldValue {
         switch value {
         case .true: return .bool(true)
         case .false: return .bool(false)
@@ -497,8 +537,8 @@ struct DatabaseExpressionEvaluator: Sendable {
     }
 
     private func lexicographicOrdering(
-        _ lhs: DatabaseBytes,
-        _ rhs: DatabaseBytes
+        _ lhs: ByteString,
+        _ rhs: ByteString
     ) -> Ordering {
         lhs.withUnsafeBytes { lhsBytes in
             rhs.withUnsafeBytes { rhsBytes in
@@ -540,7 +580,7 @@ struct DatabaseExpressionEvaluator: Sendable {
     }
 
     private func performExactDecimalOperation<T>(
-        _ operation: () throws(DatabaseExactDecimalError) -> T
+        _ operation: () throws(ExactDecimalError) -> T
     ) throws -> T {
         do {
             return try operation()
@@ -663,7 +703,7 @@ struct DatabaseExpressionEvaluator: Sendable {
     }
 }
 
-private extension DatabaseValue {
+private extension FieldValue {
     var isNull: Bool {
         if case .null = self { return true }
         return false

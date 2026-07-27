@@ -1,6 +1,7 @@
 #if SQLITE
 import Database
-import DatabaseValue
+import DatabaseRuntime
+import DatabaseTypes
 import Foundation
 import TestHeartbeat
 import Testing
@@ -9,20 +10,19 @@ import Testing
 private struct SQLiteRDFQuadStatement {
     #Directory<SQLiteRDFQuadStatement>("test", "rdf_quad", "statements")
     #Index(
-        RDFQuadIndexKind<SQLiteRDFQuadStatement>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object,
-            graph: \.graph
-        ),
+        .rdfDataset,
+        from: \SQLiteRDFQuadStatement.subject,
+        edge: \SQLiteRDFQuadStatement.predicate,
+        to: \SQLiteRDFQuadStatement.object,
+        graph: \SQLiteRDFQuadStatement.graph,
         name: "rdf_quad"
     )
 
     var id: String = UUID().uuidString
-    var subject: DatabaseRDFTerm = .iri("https://example.com/resource")
-    var predicate: DatabaseRDFTerm = .iri("https://example.com/predicate")
-    var object: DatabaseRDFTerm = .iri("https://example.com/object")
-    var graph: DatabaseRDFTerm? = nil
+    var subject: RDFTerm = .iri(.xsdString)
+    var predicate: RDFTerm = .iri(.xsdString)
+    var object: RDFTerm = .iri(.xsdString)
+    var graph: RDFTerm? = nil
 }
 
 @Suite("Canonical RDF quad SQLite", .serialized, .heartbeat)
@@ -37,7 +37,7 @@ struct RDFQuadSQLiteTests {
         let basic = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?subject"),
-                predicate: .value(.rdfTerm(.iri(titlePredicate))),
+                predicate: .value(.rdfTerm(try .iri(validating: titlePredicate))),
                 object: .variable("?title")
             )
         ])
@@ -55,13 +55,13 @@ struct RDFQuadSQLiteTests {
         #expect(result.count == 1)
         #expect(
             result.first?["?subject"]
-                == .rdfTerm(.iri("https://example.com/event/first"))
+                == .rdfTerm(try .iri(validating: "https://example.com/event/first"))
         )
         #expect(
             result.first?["?title"]
                 == .rdfTerm(
                     .literal(
-                        DatabaseRDFLiteral(
+                        RDFLiteral(
                             lexicalForm: "First",
                             datatype: .xsdString
                         )
@@ -76,7 +76,7 @@ struct RDFQuadSQLiteTests {
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?subject"),
-                predicate: .value(.rdfTerm(.iri(titlePredicate))),
+                predicate: .value(.rdfTerm(try .iri(validating: titlePredicate))),
                 object: .variable("?title")
             )
         ])
@@ -90,7 +90,7 @@ struct RDFQuadSQLiteTests {
         #expect(result.count == 1)
         #expect(
             result.first?["?subject"]
-                == .rdfTerm(.iri("https://example.com/event/default"))
+                == .rdfTerm(try .iri(validating: "https://example.com/event/default"))
         )
     }
 
@@ -100,7 +100,7 @@ struct RDFQuadSQLiteTests {
         let basic = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?subject"),
-                predicate: .value(.rdfTerm(.iri(titlePredicate))),
+                predicate: .value(.rdfTerm(try .iri(validating: titlePredicate))),
                 object: .variable("?title")
             )
         ])
@@ -157,12 +157,12 @@ struct RDFQuadSQLiteTests {
         event: String,
         title: String,
         graph: RDFGraphName?
-    ) -> SQLiteRDFQuadStatement {
+    ) throws -> SQLiteRDFQuadStatement {
         var statement = SQLiteRDFQuadStatement()
-        statement.subject = .iri("https://example.com/event/\(event)")
-        statement.predicate = .iri(titlePredicate)
+        statement.subject = try .iri(validating: "https://example.com/event/\(event)")
+        statement.predicate = try .iri(validating: titlePredicate)
         statement.object = .literal(
-            DatabaseRDFLiteral(
+            RDFLiteral(
                 lexicalForm: title,
                 datatype: .xsdString
             )

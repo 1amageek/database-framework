@@ -1,8 +1,10 @@
 #if SQLITE
+import Foundation
 import Testing
 import Database
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
+import DatabaseRuntime
 import StorageKit
 import TestHeartbeat
 
@@ -22,6 +24,8 @@ private enum OntologyPersistenceVocabulary {
 struct OntoOrganization: Hashable {
     #Directory<OntoOrganization>("test", "ontology", "organizations")
 
+    var id: String = Foundation.UUID().uuidString
+
     @OWLDataProperty("http://www.w3.org/2000/01/rdf-schema#label")
     var name: String = ""
 }
@@ -34,6 +38,8 @@ struct OntoOrganization: Hashable {
 )
 struct OntoPerson: Hashable {
     #Directory<OntoPerson>("test", "ontology", "persons")
+
+    var id: String = Foundation.UUID().uuidString
 
     @OWLDataProperty("http://www.w3.org/2000/01/rdf-schema#label")
     var name: String = ""
@@ -52,12 +58,13 @@ struct OntoPerson: Hashable {
 struct PlainItem: Hashable {
     #Directory<PlainItem>("test", "ontology", "plain")
 
+    var id: String = Foundation.UUID().uuidString
     var name: String = ""
 }
 
 private func containsSubsequence(
-    _ haystack: [UInt8],
-    _ needle: [UInt8]
+    _ haystack: borrowing Bytes,
+    _ needle: borrowing [UInt8]
 ) -> Bool {
     guard needle.count <= haystack.count else { return false }
     for offset in 0...(haystack.count - needle.count) {
@@ -70,9 +77,9 @@ private func containsSubsequence(
 
 private func findEntries(
     engine: any StorageEngine,
-    containing term: DatabaseRDFTerm
+    containing term: RDFTerm
 ) async throws -> [Bytes] {
-    let needle = try DatabaseRDFTermCodec.encode(term).copyBytes()
+    let needle = try RDFTermStorageFormat.encode(term).copyBytes()
     var matched: [Bytes] = []
     try await engine.withTransaction { transaction in
         for (key, _) in try await transaction.collectRange(
@@ -90,27 +97,26 @@ private func findEntries(
 @Suite("OWLClass RDF Descriptor Tests", .heartbeat)
 struct OWLClassRDFDescriptorTests {
     @Test("@OWLClass registers one canonical RDF projection")
-    func generatedDescriptor() {
-        let descriptors = OntoPerson._owlRDFDescriptors
+    func generatedDescriptor() throws {
+        let descriptors = try OntoPerson._owlRDFIndexDescriptors
         #expect(descriptors.count == 1)
 
-        let index = descriptors[0] as? IndexDescriptor
-        #expect(index?.name == "OntoPerson_owl_rdf")
-        #expect(index?.kindIdentifier == "owl_class_rdf")
+        #expect(descriptors[0].name == "OntoPerson_owl_rdf")
+        #expect(descriptors[0].kindIdentifier == "owl_class_rdf")
     }
 
     @Test("Entity and RDF descriptors are merged")
-    func descriptorsMerge() {
-        let rdfIndex = OntoPerson.indexDescriptors.first {
+    func descriptorsMerge() throws {
+        let rdfIndex = try OntoPerson.indexDescriptors.first {
             $0.kindIdentifier == "owl_class_rdf"
         }
         #expect(rdfIndex?.name == "OntoPerson_owl_rdf")
     }
 
     @Test("A plain entity does not register an RDF projection")
-    func plainEntityHasNoProjection() {
+    func plainEntityHasNoProjection() throws {
         #expect(
-            PlainItem.indexDescriptors.allSatisfy {
+            try PlainItem.indexDescriptors.allSatisfy {
                 $0.kindIdentifier != "owl_class_rdf"
             }
         )
@@ -151,19 +157,25 @@ struct OWLClassRDFIndexMaintainerTests {
     func typedTerms() throws {
         let person = OntoPerson(name: "Alice", email: "alice@example.com")
         let quads = try person.ontologyQuads()
+        let graph = try RDFGraphName(iri: OntologyPersistenceVocabulary.graph)
+        let personClass = RDFTerm.iri(
+            try RDFIRI(OntologyPersistenceVocabulary.classBase + "Person")
+        )
+        let label = try RDFPredicateIRI(OntologyPersistenceVocabulary.label)
+        let rdfType = try OWLRDFVocabulary.rdfType
 
         #expect(quads.count == 3)
-        #expect(quads.allSatisfy { $0.graph == .iri(OntologyPersistenceVocabulary.graph) })
+        #expect(quads.allSatisfy { $0.graph == graph })
         #expect(
             quads.contains {
-                $0.predicate == OWLRDFVocabulary.rdfType
-                    && $0.object == .iri(OntologyPersistenceVocabulary.classBase + "Person")
+                $0.predicate == rdfType
+                    && $0.object == personClass
             }
         )
         #expect(
             quads.contains {
-                $0.predicate == .iri(OntologyPersistenceVocabulary.label)
-                    && $0.object == OWLRDFVocabulary.literal("Alice", datatype: "string")
+                $0.predicate == label
+                    && $0.object == OWLRDFVocabulary.literal("Alice", datatype: .string)
             }
         )
     }
@@ -178,25 +190,40 @@ struct OWLClassRDFIndexMaintainerTests {
         )
         let target = try organization.ontologySubject()
         let quads = try person.ontologyQuads()
+        let memberOf = try RDFPredicateIRI(
+            OntologyPersistenceVocabulary.classBase + "memberOf"
+        )
 
         #expect(quads.count == 4)
-        #expect(
-            quads.contains {
-                $0.predicate == .iri(OntologyPersistenceVocabulary.classBase + "memberOf")
-                    && $0.object == target
-            }
-        )
+        let hasMembership = quads.contains { quad in
+            quad.predicate == memberOf && quad.object == target.term
+        }
+        #expect(hasMembership)
     }
 }
 
 @Suite("OWLClass RDF SQLite Integration Tests", .heartbeat)
 struct OWLClassRDFSQLiteIntegrationTests {
     private func makeContainer() async throws -> DBContainer {
-        let schema = Schema(
-            [OntoPerson.self, OntoOrganization.self, PlainItem.self],
+        let schema = try Schema(
+            entities: [
+                try OntoPerson.schemaEntity,
+                try OntoOrganization.schemaEntity,
+                try PlainItem.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
-        return try await DBContainer.inMemory(for: schema, security: .disabled)
+        return try await DBContainer.inMemory(
+            for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    OntoPerson.self,
+                    OntoOrganization.self,
+                    PlainItem.self,
+                ]
+            ),
+            security: .disabled
+        )
     }
 
     @Test("Saving an entity atomically creates its RDF projection")
@@ -211,7 +238,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         let subject = try person.ontologySubject()
         let entries = try await findEntries(
             engine: container.engine,
-            containing: subject
+            containing: subject.term
         )
         #expect(entries.count == 18)
     }
@@ -225,18 +252,18 @@ struct OWLClassRDFSQLiteIntegrationTests {
         try context.insert(person)
         try await context.save()
         person.name = "Alice Smith"
-        try context.insert(person)
+        try context.update(person)
         try await context.save()
 
         let entries = try await findEntries(
             engine: container.engine,
-            containing: person.ontologySubject()
+            containing: person.ontologySubject().term
         )
-        let oldLiteral = try DatabaseRDFTermCodec.encode(
-            OWLRDFVocabulary.literal("Alice", datatype: "string")
+        let oldLiteral = try RDFTermStorageFormat.encode(
+            OWLRDFVocabulary.literal("Alice", datatype: .string)
         ).copyBytes()
-        let newLiteral = try DatabaseRDFTermCodec.encode(
-            OWLRDFVocabulary.literal("Alice Smith", datatype: "string")
+        let newLiteral = try RDFTermStorageFormat.encode(
+            OWLRDFVocabulary.literal("Alice Smith", datatype: .string)
         ).copyBytes()
 
         #expect(entries.count == 18)
@@ -256,7 +283,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         #expect(
             try await !findEntries(
                 engine: container.engine,
-                containing: subject
+                containing: subject.term
             ).isEmpty
         )
 
@@ -266,7 +293,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         #expect(
             try await findEntries(
                 engine: container.engine,
-                containing: subject
+                containing: subject.term
             ).isEmpty
         )
     }

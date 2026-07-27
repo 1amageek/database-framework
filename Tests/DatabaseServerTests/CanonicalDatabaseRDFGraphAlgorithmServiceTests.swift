@@ -1,87 +1,15 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
 import GraphIndex
 import StorageKit
 import Testing
 
 @Suite("Canonical RDF graph algorithm service")
 struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
-    private struct Statement: Persistable {
-        typealias ID = String
-
-        var id: String
-        var subject: DatabaseRDFTerm
-        var predicate: DatabaseRDFTerm
-        var object: DatabaseRDFTerm
-        var graph: DatabaseRDFTerm?
-        var weight: Double
-
-        static var persistableType: String { "CanonicalRDFGraphStatement" }
-        static var allFields: [String] {
-            ["id", "subject", "predicate", "object", "graph", "weight"]
-        }
-        static var fieldSchemas: [FieldSchema] {
-            [
-                FieldSchema(name: "id", fieldNumber: 1, type: .string),
-                FieldSchema(name: "subject", fieldNumber: 2, type: .rdfTerm),
-                FieldSchema(name: "predicate", fieldNumber: 3, type: .rdfTerm),
-                FieldSchema(name: "object", fieldNumber: 4, type: .rdfTerm),
-                FieldSchema(
-                    name: "graph",
-                    fieldNumber: 5,
-                    type: .rdfTerm,
-                    isOptional: true
-                ),
-                FieldSchema(name: "weight", fieldNumber: 6, type: .double),
-            ]
-        }
-        static var indexDescriptors: [IndexDescriptor] { [] }
-
-        static func fieldNumber(for fieldName: String) -> Int? { nil }
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "subject": return subject
-            case "predicate": return predicate
-            case "object": return object
-            case "graph": return graph
-            case "weight": return weight
-            default: return nil
-            }
-        }
-
-        static func fieldName<Value>(
-            for keyPath: KeyPath<Statement, Value>
-        ) -> String {
-            fieldName(for: keyPath as AnyKeyPath)
-        }
-
-        static func fieldName(
-            for keyPath: PartialKeyPath<Statement>
-        ) -> String {
-            fieldName(for: keyPath as AnyKeyPath)
-        }
-
-        static func fieldName(for keyPath: AnyKeyPath) -> String {
-            switch keyPath {
-            case \Statement.id: return "id"
-            case \Statement.subject: return "subject"
-            case \Statement.predicate: return "predicate"
-            case \Statement.object: return "object"
-            case \Statement.graph: return "graph"
-            case \Statement.weight: return "weight"
-            default: return String(describing: keyPath)
-            }
-        }
-    }
-
     private struct FixedSourceResolver: DatabaseGraphSourceResolving {
         let source: ResolvedDatabaseGraphSource
 
@@ -95,12 +23,12 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
     private struct RDFGraphAlgorithmContext {
         let container: DBContainer
         let service: CanonicalDatabaseGraphAlgorithmService
-        let maintainer: RDFQuadIndexMaintainer<Statement>
+        let maintainer: RDFQuadIndexMaintainer<CanonicalRDFGraphStatement>
         let subspace: Subspace
     }
 
-    private let predicate = DatabaseRDFTerm.iri("urn:relation:link")
-    private let namedGraph = DatabaseRDFTerm.iri("urn:graph:named")
+    private let predicate = RDFTerm.iri(.xsdString)
+    private let namedGraph = RDFTerm.iri(.rdfLanguageString)
 
     @Test("RDF shortest and weighted paths execute from binary quad keys")
     func pathsDecodeCanonicalQuadKeys() async throws {
@@ -108,8 +36,8 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
 
         let shortest = try await execute(
             invocation: .shortestPath(
-                source: .rdf(.iri("urn:node:A")),
-                target: .rdf(.iri("urn:node:D")),
+                source: .rdf(try RDFTerm.iri(validating: "urn:node:A")),
+                target: .rdf(try RDFTerm.iri(validating: "urn:node:D")),
                 maximumDepth: 10,
                 bidirectional: true,
                 maximumNodes: 100
@@ -120,17 +48,21 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             Issue.record("Expected an RDF shortest-path response")
             return
         }
-        #expect(shortestPath.nodes == [
-            .rdf(.iri("urn:node:A")),
-            .rdf(.iri("urn:node:B")),
-            .rdf(.iri("urn:node:C")),
-            .rdf(.iri("urn:node:D")),
-        ])
+        let expectedPath: [GraphAlgorithmOperation.Term] = [
+            .rdf(try RDFTerm.iri(validating: "urn:node:A")),
+            .rdf(try RDFTerm.iri(validating: "urn:node:B")),
+            .rdf(try RDFTerm.iri(validating: "urn:node:C")),
+            .rdf(try RDFTerm.iri(validating: "urn:node:D")),
+        ]
+        #expect(
+            try shortestPath.materializedNodes(maximumCount: 4)
+                == expectedPath
+        )
 
         let weighted = try await execute(
             invocation: .weightedShortestPath(
-                source: .rdf(.iri("urn:node:A")),
-                target: .rdf(.iri("urn:node:D")),
+                source: .rdf(try RDFTerm.iri(validating: "urn:node:A")),
+                target: .rdf(try RDFTerm.iri(validating: "urn:node:D")),
                 weightProperty: "weight",
                 maximumWeight: 100,
                 maximumNodes: 100
@@ -141,14 +73,26 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             Issue.record("Expected an RDF weighted-path response")
             return
         }
-        #expect(weightedPath.nodes == shortestPath.nodes)
-        #expect(weightedPath.weights == [2, 1, 1])
+        #expect(
+            try weightedPath.materializedNodes(maximumCount: 4)
+                == expectedPath
+        )
+        #expect(
+            try weightedPath.materializedWeights(maximumCount: 3)
+                == [2, 1, 1]
+        )
         #expect(weightedPath.totalWeight == 4)
     }
 
     @Test("RDF algorithm families preserve typed terms")
     func algorithmFamiliesPreserveTerms() async throws {
         let graphContext = try await makeRDFGraphAlgorithmContext()
+        let expectedPath: [GraphAlgorithmOperation.Term] = [
+            .rdf(try RDFTerm.iri(validating: "urn:node:A")),
+            .rdf(try RDFTerm.iri(validating: "urn:node:B")),
+            .rdf(try RDFTerm.iri(validating: "urn:node:C")),
+            .rdf(try RDFTerm.iri(validating: "urn:node:D")),
+        ]
 
         let ranking = try await execute(
             invocation: .pageRank(
@@ -163,8 +107,9 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             Issue.record("Expected an RDF ranking response")
             return
         }
-        #expect(rankingPage.scores.count == 4)
-        #expect(rankingPage.scores.allSatisfy {
+        let scores = try rankingPage.materializedScores(maximumCount: 4)
+        #expect(scores.count == 4)
+        #expect(scores.allSatisfy {
             if case .rdf = $0.vertex { return true }
             return false
         })
@@ -180,7 +125,7 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             Issue.record("Expected RDF components")
             return
         }
-        #expect(componentPage.components.count == 4)
+        #expect(componentPage.componentCount == 4)
 
         let topological = try await execute(
             invocation: .topologicalSort(maximumNodes: 100),
@@ -190,18 +135,15 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             Issue.record("Expected an RDF topological response")
             return
         }
-        #expect(page.order == [
-            .rdf(.iri("urn:node:A")),
-            .rdf(.iri("urn:node:B")),
-            .rdf(.iri("urn:node:C")),
-            .rdf(.iri("urn:node:D")),
-        ])
+        #expect(try page.materializedOrder(maximumCount: 4) == expectedPath)
     }
 
     @Test("Named and default RDF graphs remain isolated")
     func graphScopesRemainIsolated() async throws {
         let graphContext = try await makeRDFGraphAlgorithmContext()
-        let source = try GraphIdentity.rdf(.iri("urn:node:A"))
+        let source = try GraphIdentity.rdf(
+            try RDFTerm.iri(validating: "urn:node:A")
+        )
         let label = try GraphIdentity.rdf(predicate)
         let scanner = GraphEdgeScanner(
             indexSubspace: graphContext.subspace,
@@ -219,7 +161,10 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             )
         }
         #expect(edges.count == 1)
-        #expect(try edges[0].target.decodeRDFTerm() == .iri("urn:node:D"))
+        #expect(
+            try edges[0].target.decodeRDFTerm()
+                == (try RDFTerm.iri(validating: "urn:node:D"))
+        )
         #expect(try edges[0].graph?.decodeRDFTerm() == namedGraph)
     }
 
@@ -234,8 +179,12 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
                         .defaultGraphDiscriminator
                 ),
                 Bytes([0x01]),
-                Bytes(retaining: try DatabaseRDFTermCodec.encode(predicate)),
-                Bytes(retaining: try DatabaseRDFTermCodec.encode(.iri("urn:node:B"))),
+                Bytes(retaining: try RDFTermStorageFormat.encode(predicate)),
+                Bytes(
+                    retaining: try RDFTermStorageFormat.encode(
+                        try RDFTerm.iri(validating: "urn:node:B")
+                    )
+                ),
             ])
         )
         try await engine.withTransaction(configuration: .default) { transaction in
@@ -289,46 +238,25 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
         let subspace = Subspace(
             prefix: Tuple("canonical-rdf-graph-service").pack()
         )
-        let kind = RDFQuadIndexKind<CanonicalRDFGraphStatement>(
-            subject: IndexField(
-                Field<CanonicalRDFGraphStatement, RDFTerm>(
-                    identity: FieldIdentity(name: "subject", number: 2),
-                    type: .rdfTerm
-                )
-            ),
-            predicate: IndexField(
-                Field<CanonicalRDFGraphStatement, RDFTerm>(
-                    identity: FieldIdentity(name: "predicate", number: 3),
-                    type: .rdfTerm
-                )
-            ),
-            object: IndexField(
-                Field<CanonicalRDFGraphStatement, RDFTerm>(
-                    identity: FieldIdentity(name: "object", number: 4),
-                    type: .rdfTerm
-                )
-            ),
-            graph: IndexField(
-                Field<CanonicalRDFGraphStatement, RDFTerm?>(
-                    identity: FieldIdentity(name: "graph", number: 5),
-                    type: .rdfTerm,
-                    isOptional: true
-                )
-            )
-        )
+        guard let descriptor =
+            try CanonicalRDFGraphStatement.indexDescriptors.first
+        else {
+            throw CanonicalRDFGraphAlgorithmSetupError
+                .missingRDFDatasetIndex
+        }
         let index = Index(
             name: "rdf-graph",
-            kind: kind,
+            kind: descriptor.kind,
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
                 FieldKeyExpression(fieldName: "predicate"),
                 FieldKeyExpression(fieldName: "object"),
                 FieldKeyExpression(fieldName: "graph"),
             ]),
-            itemTypes: [Statement.persistableType],
+            itemTypes: Set([CanonicalRDFGraphStatement.persistableType]),
             storedFieldNames: ["weight"]
         )
-        let maintainer = RDFQuadIndexMaintainer<Statement>(
+        let maintainer = try RDFQuadIndexMaintainer<CanonicalRDFGraphStatement>(
             index: index,
             subspace: subspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
@@ -338,7 +266,7 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             graphField: "graph"
         )
         let resolvedSource = ResolvedDatabaseGraphSource(
-            entityName: Statement.persistableType,
+            entityName: CanonicalRDFGraphStatement.persistableType,
             indexName: index.name,
             indexSubspace: subspace,
             storedFieldNames: index.storedFieldNames,
@@ -358,35 +286,35 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             subspace: subspace
         )
         for statement in [
-            Statement(
+            CanonicalRDFGraphStatement(
                 id: "ab",
-                subject: .iri("urn:node:A"),
+                subject: try RDFTerm.iri(validating: "urn:node:A"),
                 predicate: predicate,
-                object: .iri("urn:node:B"),
+                object: try RDFTerm.iri(validating: "urn:node:B"),
                 graph: nil,
                 weight: 2
             ),
-            Statement(
+            CanonicalRDFGraphStatement(
                 id: "bc",
-                subject: .iri("urn:node:B"),
+                subject: try RDFTerm.iri(validating: "urn:node:B"),
                 predicate: predicate,
-                object: .iri("urn:node:C"),
+                object: try RDFTerm.iri(validating: "urn:node:C"),
                 graph: nil,
                 weight: 1
             ),
-            Statement(
+            CanonicalRDFGraphStatement(
                 id: "cd",
-                subject: .iri("urn:node:C"),
+                subject: try RDFTerm.iri(validating: "urn:node:C"),
                 predicate: predicate,
-                object: .iri("urn:node:D"),
+                object: try RDFTerm.iri(validating: "urn:node:D"),
                 graph: nil,
                 weight: 1
             ),
-            Statement(
+            CanonicalRDFGraphStatement(
                 id: "named-ad",
-                subject: .iri("urn:node:A"),
+                subject: try RDFTerm.iri(validating: "urn:node:A"),
                 predicate: predicate,
-                object: .iri("urn:node:D"),
+                object: try RDFTerm.iri(validating: "urn:node:D"),
                 graph: namedGraph,
                 weight: 0.1
             ),
@@ -414,16 +342,23 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             ),
             invocation: invocation,
             page: GraphAlgorithmOperation.Page(limit: 100),
-            budget: DatabaseExecutionBudget(maximumWorkUnits: 10_000)
+            budget: ExecutionBudget(maximumWorkUnits: 10_000)
         )
         return try await graphContext.service.execute(
             request,
             context: DatabaseOperationContext(
                 container: graphContext.container,
                 requestID: 1,
-                metadata: DatabaseRequestMetadata(),
-                requestPayload: try DatabaseEnvelopeCodec.encode(request)
+                metadata: OperationRequestMetadata(),
+                requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
+                    DatabaseOperations.graphAlgorithm,
+                    request: request
+                )
             )
         )
     }
+}
+
+private enum CanonicalRDFGraphAlgorithmSetupError: Error {
+    case missingRDFDatasetIndex
 }

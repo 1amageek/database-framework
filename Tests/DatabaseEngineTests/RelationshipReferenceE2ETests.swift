@@ -1,18 +1,18 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
+import DatabaseKit
 @testable import DatabaseEngine
 import DatabaseRuntime
-import DatabaseValue
+import DatabaseTypes
 import FDBStorage
 import Foundation
-import Relationship
+import DatabaseKit
 @testable import RelationshipIndex
 import StorageKit
 import Testing
 import TestSupport
 
-@Suite("Typed relationship runtime", .serialized, .heartbeat)
+@Suite("Typed relationship runtime", .foundationDBScenario, .serialized, .heartbeat)
 struct RelationshipReferenceE2ETests {
     @Test("A target and owner may be inserted in either order in one transaction")
     func sameBatchReferenceValidation() async throws {
@@ -31,7 +31,10 @@ struct RelationshipReferenceE2ETests {
             try context.insert(target)
             try await context.save()
 
-            let loaded = try await context.related(owner, \.target)
+            let loaded = try await context.related(
+                owner,
+                RelationshipOptionalOwner.fields.target
+            )
             #expect(loaded?.id == target.id)
         }
     }
@@ -60,8 +63,18 @@ struct RelationshipReferenceE2ETests {
             try context.insert(second)
             try await context.save()
 
-            #expect(try await context.related(first, \.peer)?.id == secondID)
-            #expect(try await context.related(second, \.peer)?.id == firstID)
+            #expect(
+                try await context.related(
+                    first,
+                    RelationshipCycleNode.fields.peer
+                )?.id == secondID
+            )
+            #expect(
+                try await context.related(
+                    second,
+                    RelationshipCycleNode.fields.peer
+                )?.id == firstID
+            )
         }
     }
 
@@ -119,23 +132,27 @@ struct RelationshipReferenceE2ETests {
 
             let snapshots = try await context
                 .fetch(RelationshipOptionalOwner.self)
-                .joining(\.target)
+                .joining(RelationshipOptionalOwner.fields.target)
                 .execute()
-            let joinedIDs = Set(try snapshots.compactMap { try $0.ref(\.target)?.id })
+            let joinedIDs = Set(
+                try snapshots.compactMap {
+                    try $0.ref(RelationshipOptionalOwner.fields.target)?.id
+                }
+            )
             #expect(joinedIDs == [target.id])
 
             let resolver = context.inverseRelationshipResolver()
             let firstPage = try await resolver.referencedBy(
                 targetReference,
                 from: RelationshipOptionalOwner.self,
-                via: \.target,
+                via: RelationshipOptionalOwner.fields.target,
                 limit: 2
             )
             let continuation = try #require(firstPage.continuation)
             let secondPage = try await resolver.referencedBy(
                 targetReference,
                 from: RelationshipOptionalOwner.self,
-                via: \.target,
+                via: RelationshipOptionalOwner.fields.target,
                 limit: 2,
                 continuation: continuation
             )
@@ -146,7 +163,7 @@ struct RelationshipReferenceE2ETests {
             let thirdPage = try await resolver.referencedBy(
                 targetReference,
                 from: RelationshipOptionalOwner.self,
-                via: \.target,
+                via: RelationshipOptionalOwner.fields.target,
                 limit: 2,
                 continuation: secondContinuation
             )

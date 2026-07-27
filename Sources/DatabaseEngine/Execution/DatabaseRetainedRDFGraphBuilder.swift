@@ -1,8 +1,9 @@
 import DatabaseWire
+import DatabaseKit
 
 /// Public admitted builder for custom SPARQL runtime implementations.
 public struct DatabaseRetainedRDFGraphBuilder: ~Copyable {
-    private var storage: DatabaseRetainedArrayBuilder<DatabaseRDFQuad>
+    private var storage: DatabaseRetainedArrayBuilder<RDFQuad>
     private let footprintMeter: DatabaseRDFQuadFootprintMeter
     private let workMeter: DatabaseWorkMeter
 
@@ -35,7 +36,7 @@ public struct DatabaseRetainedRDFGraphBuilder: ~Copyable {
     }
 
     public mutating func append(
-        _ quad: consuming DatabaseRDFQuad
+        _ quad: consuming RDFQuad
     ) throws {
         try workMeter.consume(at: .resultMaterialization)
         let footprint = try footprintMeter.footprint(of: quad)

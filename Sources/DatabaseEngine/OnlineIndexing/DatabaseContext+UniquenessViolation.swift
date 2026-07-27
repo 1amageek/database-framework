@@ -10,7 +10,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import StorageKit
 
 // MARK: - Uniqueness Violation API

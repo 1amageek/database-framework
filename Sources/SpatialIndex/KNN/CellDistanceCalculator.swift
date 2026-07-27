@@ -10,9 +10,9 @@ import Foundation
 #endif
 import DatabaseEngine
 import DatabaseMath
-import Core
+import DatabaseKit
 import StorageKit
-import Geospatial
+import DatabaseKit
 
 /// Calculator for cell-to-point distances
 ///

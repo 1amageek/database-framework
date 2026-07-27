@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import GraphIndex
 
 extension CanonicalDatabaseGraphAlgorithmService {
@@ -9,7 +9,7 @@ extension CanonicalDatabaseGraphAlgorithmService {
         source: ResolvedDatabaseGraphSource,
         snapshot: GraphReadSnapshot,
         workBudget: GraphAlgorithmWorkBudget,
-        requestFingerprint: DatabaseBytes
+        requestFingerprint: ByteString
     ) async throws -> GraphAlgorithmOperation.Response {
         switch invocation {
         case .shortestPath(
@@ -247,7 +247,9 @@ extension CanonicalDatabaseGraphAlgorithmService {
             )
             let result = try await detector.findCycles(edgeLabel: source.edgeLabel)
             let cycles = try canonicalCycles(result.cycles).map { cycle in
-                try cycle.map(source.decodeVertex)
+                GraphAlgorithmOperation.Cycle(
+                    terms: try cycle.map(source.decodeVertex)
+                )
             }
             let backEdges = try result.backEdges
                 .sorted {
@@ -297,7 +299,9 @@ extension CanonicalDatabaseGraphAlgorithmService {
             )
             let result = try await finder.findSCCs(edgeLabel: source.edgeLabel)
             let components = try canonicalComponents(result.components).map { component in
-                try component.map(source.decodeVertex)
+                GraphAlgorithmOperation.Component(
+                    terms: try component.map(source.decodeVertex)
+                )
             }
             return .components(
                 GraphAlgorithmOperation.ComponentPage(

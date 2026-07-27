@@ -1,12 +1,12 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 @Persistable
 struct RelationshipPlannerPartitionedTarget {
     #Directory<RelationshipPlannerPartitionedTarget>(
         "tests",
         "relationship-planner",
-        Field<RelationshipPlannerPartitionedTarget>(\.runID),
+        \RelationshipPlannerPartitionedTarget.runID,
         "targets"
     )
 

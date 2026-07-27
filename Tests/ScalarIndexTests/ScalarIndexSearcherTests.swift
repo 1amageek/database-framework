@@ -1,6 +1,6 @@
 import Synchronization
 import Testing
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 @testable import ScalarIndex

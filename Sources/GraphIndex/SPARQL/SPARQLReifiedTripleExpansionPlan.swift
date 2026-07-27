@@ -1,13 +1,13 @@
-import QueryIR
+import DatabaseKit
 
 struct SPARQLReifiedTripleExpansionPlan: Sendable, Equatable {
     let supplementalTripleCount: Int
     let totalTripleCount: Int
 
     static func basicGraphPattern(
-        _ pattern: borrowing QueryIR.BasicGraphPattern
+        _ pattern: borrowing BasicGraphPattern
     ) throws -> SPARQLReifiedTripleExpansionPlan {
-        var terms: [QueryIR.SPARQLTerm] = []
+        var terms: [SPARQLTerm] = []
         terms.reserveCapacity(64)
         var supplementalTripleCount = 0
         var sourceTripleCount = 0
@@ -42,7 +42,7 @@ struct SPARQLReifiedTripleExpansionPlan: Sendable, Equatable {
     }
 
     private static func consumeTerms(
-        _ terms: inout [QueryIR.SPARQLTerm],
+        _ terms: inout [SPARQLTerm],
         supplementalTripleCount: inout Int
     ) throws {
         while let term = terms.popLast() {

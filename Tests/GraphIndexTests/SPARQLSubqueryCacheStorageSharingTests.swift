@@ -1,8 +1,8 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import StorageKit
 import Synchronization
 import Testing
@@ -20,7 +20,7 @@ struct SPARQLSubqueryCacheStorageSharingTests {
             let key = makeKey(occurrenceIdentifier: 1)
             let original = try makeRetainedBindings(
                 VariableBinding([
-                    "?payload": .data(DatabaseBytes(retaining: owner)),
+                    "?payload": .bytes(ByteString(retaining: owner)),
                 ]),
                 workMeter: meter
             )
@@ -33,23 +33,24 @@ struct SPARQLSubqueryCacheStorageSharingTests {
                 return
             }
             let cachedAddress = bindingBufferAddress(cached)
-            let retainedOriginalByteOwner = cached.withElement(at: 0) {
+            let originalByteAddress = owner.bufferAddress
+            let retainedOriginalByteBuffer = cached.withElement(at: 0) {
                 binding in
-                guard case .data(let cachedBytes) = binding["?payload"],
-                      case .owner(let cachedOwner, let range) =
-                        cachedBytes.sharedStorage else {
+                guard case .bytes(let cachedBytes) = binding["?payload"] else {
                     return false
                 }
-                return ObjectIdentifier(cachedOwner as AnyObject)
-                    == ObjectIdentifier(owner)
-                    && range == 0..<4
+                return cachedBytes.withUnsafeBytes { bytes in
+                    bytes.baseAddress.map { UInt(bitPattern: $0) }
+                        == originalByteAddress
+                        && bytes.count == 4
+                }
             }
 
             #expect(originalAddress != nil)
             #expect(currentAddress == originalAddress)
             #expect(cachedAddress == originalAddress)
-            #expect(retainedOriginalByteOwner)
-            #expect(owner.borrowCount == 0)
+            #expect(retainedOriginalByteBuffer)
+            #expect(owner.borrowCount == 1)
             #expect(meter.retainedIntermediateRows == 1)
 
             let retainedBytes = meter.retainedIntermediateBytes
@@ -258,7 +259,7 @@ private func makeMeter(
     maximumIntermediateBytes: UInt64
 ) -> DatabaseWorkMeter {
     DatabaseWorkMeter(
-        budget: DatabaseExecutionBudget(
+        budget: ExecutionBudget(
             maximumRows: 10,
             maximumWorkUnits: 100,
             maximumIntermediateRows: 10,
@@ -317,7 +318,7 @@ private func bindingBufferAddress(
     }
 }
 
-private final class CountingSubqueryByteOwner: DatabaseByteOwner, Sendable {
+private final class CountingSubqueryByteOwner: ByteStringOwner, Sendable {
     private let bytes: [UInt8]
     private let borrowState = Mutex(0)
 
@@ -329,6 +330,12 @@ private final class CountingSubqueryByteOwner: DatabaseByteOwner, Sendable {
 
     var borrowCount: Int {
         borrowState.withLock { $0 }
+    }
+
+    var bufferAddress: UInt? {
+        bytes.withUnsafeBytes {
+            $0.baseAddress.map { UInt(bitPattern: $0) }
+        }
     }
 
     func borrowBytes(

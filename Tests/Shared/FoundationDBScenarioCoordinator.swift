@@ -38,6 +38,7 @@ public enum FoundationDBScenarioInitializationError: Error, LocalizedError {
 /// ```
 public actor FoundationDBScenarioCoordinator {
     public static let shared = FoundationDBScenarioCoordinator()
+    @TaskLocal private static var holdsSerializedAccess = false
     private static let transactionTimeoutMs = 30_000
     private static let transactionRetryLimit = 20
     private static let transactionMaxRetryDelayMs = 1_000
@@ -237,7 +238,6 @@ public actor FoundationDBScenarioCoordinator {
 
             do {
                 _ = try await createHealthyEngine()
-                try await resetDatabaseConsistencyDomain()
                 if case .initializing(let continuations) = initializationState {
                     initializationState = .initialized
                     for continuation in continuations {
@@ -293,7 +293,15 @@ public actor FoundationDBScenarioCoordinator {
         _ operation: @Sendable () async throws -> T
     ) async throws -> T {
         try await initialize()
-        return try await serializedAccess.withAccess(operation)
+        if Self.holdsSerializedAccess {
+            return try await operation()
+        }
+        return try await serializedAccess.withAccess {
+            try await self.resetDatabaseConsistencyDomain()
+            return try await Self.$holdsSerializedAccess.withValue(true) {
+                try await operation()
+            }
+        }
     }
 }
 #endif

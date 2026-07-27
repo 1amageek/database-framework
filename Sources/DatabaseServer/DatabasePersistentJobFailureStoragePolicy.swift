@@ -1,5 +1,5 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 struct DatabasePersistentJobFailureStoragePolicy: Sendable {
     private static let storageBudgetFailureCode =
@@ -28,8 +28,8 @@ struct DatabasePersistentJobFailureStoragePolicy: Sendable {
     }
 
     func storableFailure(
-        for remoteError: DatabaseRemoteError
-    ) throws(DatabaseWireError) -> DatabaseRemoteError {
+        for remoteError: RemoteOperationError
+    ) throws(DatabaseWireError) -> RemoteOperationError {
         do {
             try Self.validateEncodedSize(
                 of: .failed(remoteError),
@@ -37,14 +37,14 @@ struct DatabasePersistentJobFailureStoragePolicy: Sendable {
             )
             return remoteError
         } catch let wireError {
-            let replacement: DatabaseRemoteError
+            let replacement: RemoteOperationError
             if wireError.exceedsPersistentOutcomeResourceLimits {
-                replacement = Self.storageBudgetFailure(
+                replacement = try Self.storageBudgetFailure(
                     replacing: remoteError,
                     maximumOriginalCodeBytes: maximumOriginalCodeBytes
                 )
             } else {
-                replacement = Self.encodingFailure(
+                replacement = try Self.encodingFailure(
                     replacing: remoteError,
                     maximumOriginalCodeBytes: maximumOriginalCodeBytes
                 )
@@ -61,23 +61,28 @@ struct DatabasePersistentJobFailureStoragePolicy: Sendable {
         of outcome: DatabaseJobUnsuccessfulOutcome,
         limits: DatabaseWireLimits
     ) throws(DatabaseWireError) {
-        _ = try DatabaseWireWriter.encodedByteCount(limits: limits) {
-            (writer: inout DatabaseWireWriter)
-                throws(DatabaseWireError) -> Void in
-            try outcome.encode(into: &writer)
+        do {
+            _ = try PersistentJobPayloadStorage.encodedByteCount(
+                outcome,
+                limits: limits
+            )
+        } catch let error as DatabaseWireError {
+            throw error
+        } catch {
+            throw .invalidResultPayload(0)
         }
     }
 
     private static func storageBudgetFailure(
-        replacing error: DatabaseRemoteError,
+        replacing error: RemoteOperationError,
         maximumOriginalCodeBytes: Int
-    ) -> DatabaseRemoteError {
-        DatabaseRemoteError(
+    ) throws(DatabaseWireError) -> RemoteOperationError {
+        RemoteOperationError(
             category: error.category,
             code: storageBudgetFailureCode,
             message: storageBudgetFailureMessage,
             retryability: error.retryability,
-            details: originalCodeDetails(
+            details: try originalCodeDetails(
                 for: error,
                 maximumBytes: maximumOriginalCodeBytes
             )
@@ -85,15 +90,15 @@ struct DatabasePersistentJobFailureStoragePolicy: Sendable {
     }
 
     private static func encodingFailure(
-        replacing error: DatabaseRemoteError,
+        replacing error: RemoteOperationError,
         maximumOriginalCodeBytes: Int
-    ) -> DatabaseRemoteError {
-        DatabaseRemoteError(
+    ) throws(DatabaseWireError) -> RemoteOperationError {
+        RemoteOperationError(
             category: .internalFailure,
             code: encodingFailureCode,
             message: encodingFailureMessage,
             retryability: .never,
-            details: originalCodeDetails(
+            details: try originalCodeDetails(
                 for: error,
                 maximumBytes: maximumOriginalCodeBytes
             )
@@ -101,19 +106,22 @@ struct DatabasePersistentJobFailureStoragePolicy: Sendable {
     }
 
     private static func originalCodeDetails(
-        for error: DatabaseRemoteError,
+        for error: RemoteOperationError,
         maximumBytes: Int
-    ) -> [DatabaseObjectField] {
-        [
-            DatabaseObjectField(
-                number: 1,
-                name: "originalCode",
-                value: .string(stringPrefix(
-                    error.code,
-                    maximumBytes: maximumBytes
-                ))
-            ),
-        ]
+    ) throws(DatabaseWireError) -> FieldObject {
+        do {
+            return try FieldObject([
+                (
+                    key: "originalCode",
+                    value: .string(stringPrefix(
+                        error.code,
+                        maximumBytes: maximumBytes
+                    ))
+                ),
+            ])
+        } catch {
+            throw .invalidFieldObject(error)
+        }
     }
 
     private static func maximumStorableOriginalCodeBytes(
@@ -158,21 +166,21 @@ struct DatabasePersistentJobFailureStoragePolicy: Sendable {
         originalCodeBytes: Int,
         limits: DatabaseWireLimits
     ) throws(DatabaseWireError) {
-        let validationFailure = DatabaseRemoteError(
+        let validationFailure = RemoteOperationError(
             category: .internalFailure,
             code: String(repeating: "X", count: originalCodeBytes),
             message: "Server failure",
             retryability: .never
         )
         try validateEncodedSize(
-            of: .failed(storageBudgetFailure(
+            of: .failed(try storageBudgetFailure(
                 replacing: validationFailure,
                 maximumOriginalCodeBytes: originalCodeBytes
             )),
             limits: limits
         )
         try validateEncodedSize(
-            of: .failed(encodingFailure(
+            of: .failed(try encodingFailure(
                 replacing: validationFailure,
                 maximumOriginalCodeBytes: originalCodeBytes
             )),

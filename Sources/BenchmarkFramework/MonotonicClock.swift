@@ -13,7 +13,8 @@ internal enum MonotonicClock {
     fileprivate static let epoch = clock.now
 
     static func now() -> MonotonicTimestamp {
-        MonotonicTimestamp(instant: clock.now)
+        _ = epoch
+        return MonotonicTimestamp(instant: clock.now)
     }
 
     fileprivate static func nanoseconds(

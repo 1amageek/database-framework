@@ -8,11 +8,9 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseValue
-import Graph
-import QueryIR
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -27,20 +25,21 @@ typealias PropertyPath = GraphIndex.ExecutionPropertyPath
 struct AdvancedPathEdge {
     #Directory<AdvancedPathEdge>("property_path_advanced", "edges")
     var id: String = UUID().uuidString
-    var from: DatabaseRDFTerm = .iri("https://example.invalid/node/default-from")
-    var relationship: DatabaseRDFTerm = .iri("https://example.invalid/property/default")
-    var to: DatabaseRDFTerm = .iri("https://example.invalid/node/default-to")
+    var from: RDFTerm = .iri(.xsdString)
+    var relationship: RDFTerm = .iri(.xsdString)
+    var to: RDFTerm = .iri(.xsdString)
 
-    #Index(RDFQuadIndexKind<AdvancedPathEdge>(
-        subject: \.from,
-        predicate: \.relationship,
-        object: \.to
-    ))
+    #Index(
+        .rdfDataset,
+        from: \AdvancedPathEdge.from,
+        edge: \AdvancedPathEdge.relationship,
+        to: \AdvancedPathEdge.to
+    )
 }
 
 // MARK: - Test Suite
 
-@Suite("Property Path Advanced Tests", .serialized, .heartbeat)
+@Suite("Property Path Advanced Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct PropertyPathAdvancedTests {
 
     init() async throws {
@@ -53,19 +52,22 @@ struct PropertyPathAdvancedTests {
         "https://example.invalid/node/\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func predicateIRI(_ localName: String) throws -> DatabaseRDFPredicateIRI {
-        try DatabaseRDFPredicateIRI("https://example.invalid/property/\(localName)")
+    private func predicateIRI(_ localName: String) throws -> RDFPredicateIRI {
+        try RDFPredicateIRI("https://example.invalid/property/\(localName)")
     }
 
-    private func uniquePredicate(_ prefix: String) throws -> DatabaseRDFPredicateIRI {
-        try DatabaseRDFPredicateIRI(
+    private func uniquePredicate(_ prefix: String) throws -> RDFPredicateIRI {
+        try RDFPredicateIRI(
             "https://example.invalid/property/\(prefix)-\(UUID().uuidString.prefix(8))"
         )
     }
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([AdvancedPathEdge.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try AdvancedPathEdge.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
@@ -83,18 +85,18 @@ struct PropertyPathAdvancedTests {
 
     private func makeEdge(
         from: String,
-        relationship: DatabaseRDFPredicateIRI,
+        relationship: RDFPredicateIRI,
         to: String
-    ) -> AdvancedPathEdge {
+    ) throws -> AdvancedPathEdge {
         var edge = AdvancedPathEdge()
-        edge.from = .iri(from)
+        edge.from = try .iri(validating: from)
         edge.relationship = relationship.term
-        edge.to = .iri(to)
+        edge.to = try .iri(validating: to)
         return edge
     }
 
-    private func iriTerm(_ value: String) -> ExecutionTerm {
-        .value(.rdfTerm(.iri(value)))
+    private func iriTerm(_ value: String) throws -> ExecutionTerm {
+        .value(.rdfTerm(try .iri(validating: value)))
     }
 
     private func iriValue(
@@ -104,7 +106,7 @@ struct PropertyPathAdvancedTests {
         guard case .rdfTerm(.iri(let value)) = binding[variable] else {
             return nil
         }
-        return value
+        return value.rawValue
     }
 
     private func makeExecutor(
@@ -156,10 +158,10 @@ struct PropertyPathAdvancedTests {
         let worksPred = try uniquePredicate("worksWith")
 
         let edges = [
-            makeEdge(from: alice, relationship: knowsPred, to: bob),
-            makeEdge(from: alice, relationship: hatesPred, to: carol),
-            makeEdge(from: alice, relationship: likesPred, to: dave),
-            makeEdge(from: alice, relationship: worksPred, to: bob),
+            try makeEdge(from: alice, relationship: knowsPred, to: bob),
+            try makeEdge(from: alice, relationship: hatesPred, to: carol),
+            try makeEdge(from: alice, relationship: likesPred, to: dave),
+            try makeEdge(from: alice, relationship: worksPred, to: bob),
         ]
 
         try await insertEdges(edges, context: context)
@@ -168,7 +170,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(alice),
+                try iriTerm(alice),
                 path: .negatedPropertySet(
                     try PropertyPathNegatedSet(forward: [knowsPred, hatesPred])
                 ),
@@ -195,8 +197,8 @@ struct PropertyPathAdvancedTests {
         let likesPred = try uniquePredicate("likes")
 
         let edges = [
-            makeEdge(from: alice, relationship: knowsPred, to: bob),
-            makeEdge(from: alice, relationship: likesPred, to: bob),
+            try makeEdge(from: alice, relationship: knowsPred, to: bob),
+            try makeEdge(from: alice, relationship: likesPred, to: bob),
         ]
 
         try await insertEdges(edges, context: context)
@@ -205,7 +207,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(alice),
+                try iriTerm(alice),
                 path: .negatedPropertySet(
                     try PropertyPathNegatedSet(forward: [knowsPred, likesPred])
                 ),
@@ -235,8 +237,8 @@ struct PropertyPathAdvancedTests {
         let parentPred = try uniquePredicate("parent")
 
         let edges = [
-            makeEdge(from: alice, relationship: parentPred, to: bob),
-            makeEdge(from: bob, relationship: parentPred, to: carol),
+            try makeEdge(from: alice, relationship: parentPred, to: bob),
+            try makeEdge(from: bob, relationship: parentPred, to: carol),
         ]
 
         try await insertEdges(edges, context: context)
@@ -245,7 +247,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(alice),
+                try iriTerm(alice),
                 path: .oneOrMore(.iri(parentPred)),
                 .variable("?ancestor")
             )
@@ -279,9 +281,9 @@ struct PropertyPathAdvancedTests {
 
         // N1 -a-> N2 -b-> N3 -b-> N4
         let edges = [
-            makeEdge(from: n1, relationship: predA, to: n2),
-            makeEdge(from: n2, relationship: predB, to: n3),
-            makeEdge(from: n3, relationship: predB, to: n4),
+            try makeEdge(from: n1, relationship: predA, to: n2),
+            try makeEdge(from: n2, relationship: predB, to: n3),
+            try makeEdge(from: n3, relationship: predB, to: n4),
         ]
 
         try await insertEdges(edges, context: context)
@@ -292,7 +294,7 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(iriTerm(n1), path: complexPath, .variable("?target"))
+            .wherePath(try iriTerm(n1), path: complexPath, .variable("?target"))
             .execute()
 
         // Zero-or-more includes N1 itself (zero repetitions)
@@ -319,11 +321,11 @@ struct PropertyPathAdvancedTests {
 
         // Linear chain: N0 -> N1 -> N2 -> N3 -> N4 -> N5
         let edges = [
-            makeEdge(from: n0, relationship: linkPred, to: n1),
-            makeEdge(from: n1, relationship: linkPred, to: n2),
-            makeEdge(from: n2, relationship: linkPred, to: n3),
-            makeEdge(from: n3, relationship: linkPred, to: n4),
-            makeEdge(from: n4, relationship: linkPred, to: n5),
+            try makeEdge(from: n0, relationship: linkPred, to: n1),
+            try makeEdge(from: n1, relationship: linkPred, to: n2),
+            try makeEdge(from: n2, relationship: linkPred, to: n3),
+            try makeEdge(from: n3, relationship: linkPred, to: n4),
+            try makeEdge(from: n4, relationship: linkPred, to: n5),
         ]
 
         try await insertEdges(edges, context: context)
@@ -332,7 +334,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(n0),
+                try iriTerm(n0),
                 path: .oneOrMore(.iri(linkPred)),
                 .variable("?target")
             )
@@ -366,9 +368,9 @@ struct PropertyPathAdvancedTests {
 
         // Create a cycle: N1 -> N2 -> N3 -> N1
         let edges = [
-            makeEdge(from: n1, relationship: linkPred, to: n2),
-            makeEdge(from: n2, relationship: linkPred, to: n3),
-            makeEdge(from: n3, relationship: linkPred, to: n1),
+            try makeEdge(from: n1, relationship: linkPred, to: n2),
+            try makeEdge(from: n2, relationship: linkPred, to: n3),
+            try makeEdge(from: n3, relationship: linkPred, to: n1),
         ]
 
         try await insertEdges(edges, context: context)
@@ -377,7 +379,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(n1),
+                try iriTerm(n1),
                 path: .oneOrMore(.iri(linkPred)),
                 .variable("?target")
             )
@@ -404,7 +406,7 @@ struct PropertyPathAdvancedTests {
         // Create a linear chain of 20 nodes
         var edges: [AdvancedPathEdge] = []
         for i in 0..<20 {
-            edges.append(makeEdge(from: "\(basePrefix)-\(i)", relationship: linkPred, to: "\(basePrefix)-\(i+1)"))
+            edges.append(try makeEdge(from: "\(basePrefix)-\(i)", relationship: linkPred, to: "\(basePrefix)-\(i+1)"))
         }
 
         try await insertEdges(edges, context: context)
@@ -413,7 +415,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm("\(basePrefix)-0"),
+                try iriTerm("\(basePrefix)-0"),
                 path: .oneOrMore(.iri(linkPred)),
                 .variable("?target")
             )
@@ -431,7 +433,7 @@ struct PropertyPathAdvancedTests {
         let target = uniqueID("ExpressionDepthTarget")
         let predicate = try uniquePredicate("expression-depth")
         try await insertEdges(
-            [makeEdge(from: start, relationship: predicate, to: target)],
+            [try makeEdge(from: start, relationship: predicate, to: target)],
             context: context
         )
 
@@ -445,7 +447,7 @@ struct PropertyPathAdvancedTests {
             )
         )
         let pattern = ExecutionPattern.propertyPath(
-            subject: iriTerm(start),
+            subject: try iriTerm(start),
             path: .oneOrMore(.inverse(.inverse(.iri(predicate)))),
             object: .variable("?target")
         )
@@ -479,8 +481,8 @@ struct PropertyPathAdvancedTests {
         let predicate = try uniquePredicate("traversal-depth")
         try await insertEdges(
             [
-                makeEdge(from: start, relationship: predicate, to: middle),
-                makeEdge(from: middle, relationship: predicate, to: end),
+                try makeEdge(from: start, relationship: predicate, to: middle),
+                try makeEdge(from: middle, relationship: predicate, to: end),
             ],
             context: context
         )
@@ -495,7 +497,7 @@ struct PropertyPathAdvancedTests {
             )
         )
         let pattern = ExecutionPattern.propertyPath(
-            subject: iriTerm(start),
+            subject: try iriTerm(start),
             path: .oneOrMore(.iri(predicate)),
             object: .variable("?target")
         )
@@ -529,8 +531,8 @@ struct PropertyPathAdvancedTests {
         let predicate = try uniquePredicate("result-limit")
         try await insertEdges(
             [
-                makeEdge(from: start, relationship: predicate, to: first),
-                makeEdge(from: start, relationship: predicate, to: second),
+                try makeEdge(from: start, relationship: predicate, to: first),
+                try makeEdge(from: start, relationship: predicate, to: second),
             ],
             context: context
         )
@@ -545,7 +547,7 @@ struct PropertyPathAdvancedTests {
             )
         )
         let pattern = ExecutionPattern.propertyPath(
-            subject: iriTerm(start),
+            subject: try iriTerm(start),
             path: .oneOrMore(.iri(predicate)),
             object: .variable("?target")
         )
@@ -588,9 +590,9 @@ struct PropertyPathAdvancedTests {
 
         // Edges represent "X parent Y" (X is child of Y)
         let edges = [
-            makeEdge(from: child1, relationship: parentPred, to: root),
-            makeEdge(from: child2, relationship: parentPred, to: root),
-            makeEdge(from: grandchild, relationship: parentPred, to: child1),
+            try makeEdge(from: child1, relationship: parentPred, to: root),
+            try makeEdge(from: child2, relationship: parentPred, to: root),
+            try makeEdge(from: grandchild, relationship: parentPred, to: child1),
         ]
 
         try await insertEdges(edges, context: context)
@@ -600,7 +602,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(root),
+                try iriTerm(root),
                 path: .inverse(.oneOrMore(.iri(parentPred))),
                 .variable("?descendant")
             )
@@ -625,8 +627,8 @@ struct PropertyPathAdvancedTests {
 
         // Bob knows Alice, Carol knows Bob
         let edges = [
-            makeEdge(from: bob, relationship: knowsPred, to: alice),
-            makeEdge(from: carol, relationship: knowsPred, to: bob),
+            try makeEdge(from: bob, relationship: knowsPred, to: alice),
+            try makeEdge(from: carol, relationship: knowsPred, to: bob),
         ]
 
         try await insertEdges(edges, context: context)
@@ -635,7 +637,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(alice),
+                try iriTerm(alice),
                 path: .inverse(.zeroOrMore(.iri(knowsPred))),
                 .variable("?person")
             )
@@ -671,10 +673,10 @@ struct PropertyPathAdvancedTests {
         let predD = try uniquePredicate("d")
 
         let edges = [
-            makeEdge(from: start, relationship: predA, to: mid1),
-            makeEdge(from: start, relationship: predB, to: mid2),
-            makeEdge(from: mid1, relationship: predC, to: end1),
-            makeEdge(from: mid2, relationship: predD, to: end2),
+            try makeEdge(from: start, relationship: predA, to: mid1),
+            try makeEdge(from: start, relationship: predB, to: mid2),
+            try makeEdge(from: mid1, relationship: predC, to: end1),
+            try makeEdge(from: mid2, relationship: predD, to: end2),
         ]
 
         try await insertEdges(edges, context: context)
@@ -687,7 +689,7 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(iriTerm(start), path: path, .variable("?end"))
+            .wherePath(try iriTerm(start), path: path, .variable("?end"))
             .execute()
 
         let ends = result.bindings.compactMap { iriValue($0, for: "?end") }
@@ -714,10 +716,10 @@ struct PropertyPathAdvancedTests {
         let predD = try uniquePredicate("d")
 
         let edges = [
-            makeEdge(from: start, relationship: predA, to: mid1),
-            makeEdge(from: mid1, relationship: predB, to: end1),
-            makeEdge(from: start, relationship: predC, to: mid2),
-            makeEdge(from: mid2, relationship: predD, to: end2),
+            try makeEdge(from: start, relationship: predA, to: mid1),
+            try makeEdge(from: mid1, relationship: predB, to: end1),
+            try makeEdge(from: start, relationship: predC, to: mid2),
+            try makeEdge(from: mid2, relationship: predD, to: end2),
         ]
 
         try await insertEdges(edges, context: context)
@@ -730,7 +732,7 @@ struct PropertyPathAdvancedTests {
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
-            .wherePath(iriTerm(start), path: path, .variable("?end"))
+            .wherePath(try iriTerm(start), path: path, .variable("?end"))
             .execute()
 
         let ends = result.bindings.compactMap { iriValue($0, for: "?end") }
@@ -757,7 +759,7 @@ struct PropertyPathAdvancedTests {
 
         try await insertEdges(
             [
-                makeEdge(
+                try makeEdge(
                     from: node,
                     relationship: unrelatedPred,
                     to: unrelatedTarget
@@ -769,7 +771,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(node),
+                try iriTerm(node),
                 path: .zeroOrMore(.iri(linkPred)),
                 .variable("?target")
             )
@@ -791,7 +793,7 @@ struct PropertyPathAdvancedTests {
         let linkPred = try uniquePredicate("link")
 
         let edges = [
-            makeEdge(from: node, relationship: linkPred, to: target),
+            try makeEdge(from: node, relationship: linkPred, to: target),
         ]
 
         try await insertEdges(edges, context: context)
@@ -799,7 +801,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(node),
+                try iriTerm(node),
                 path: .zeroOrMore(.iri(linkPred)),
                 .variable("?x")
             )
@@ -828,8 +830,8 @@ struct PropertyPathAdvancedTests {
             let parent = "\(prefix)-\(i)"
             let child1 = "\(prefix)-\(2*i + 1)"
             let child2 = "\(prefix)-\(2*i + 2)"
-            edges.append(makeEdge(from: parent, relationship: linkPred, to: child1))
-            edges.append(makeEdge(from: parent, relationship: linkPred, to: child2))
+            edges.append(try makeEdge(from: parent, relationship: linkPred, to: child1))
+            edges.append(try makeEdge(from: parent, relationship: linkPred, to: child2))
         }
 
         try await insertEdges(edges, context: context)
@@ -840,7 +842,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm("\(prefix)-0"),
+                try iriTerm("\(prefix)-0"),
                 path: .oneOrMore(.iri(linkPred)),
                 .variable("?descendant")
             )
@@ -873,11 +875,11 @@ struct PropertyPathAdvancedTests {
 
         for i in 0..<10 {
             let level1 = "\(prefix)-L1-\(i)"
-            edges.append(makeEdge(from: root, relationship: linkPred, to: level1))
+            edges.append(try makeEdge(from: root, relationship: linkPred, to: level1))
 
             for j in 0..<5 {
                 let level2 = "\(prefix)-L2-\(i)-\(j)"
-                edges.append(makeEdge(from: level1, relationship: linkPred, to: level2))
+                edges.append(try makeEdge(from: level1, relationship: linkPred, to: level2))
             }
         }
 
@@ -886,7 +888,7 @@ struct PropertyPathAdvancedTests {
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(root),
+                try iriTerm(root),
                 path: .oneOrMore(.iri(linkPred)),
                 .variable("?target")
             )
@@ -1091,8 +1093,8 @@ struct PropertyPathAdvancedTests {
         let link = try uniquePredicate("link")
 
         let edges = [
-            makeEdge(from: a, relationship: link, to: b),
-            makeEdge(from: b, relationship: link, to: c),
+            try makeEdge(from: a, relationship: link, to: b),
+            try makeEdge(from: b, relationship: link, to: c),
         ]
         try await insertEdges(edges, context: context)
 
@@ -1101,7 +1103,7 @@ struct PropertyPathAdvancedTests {
             .wherePath(
                 .variable("?person"),
                 path: .oneOrMore(.iri(link)),
-                iriTerm(c)
+                try iriTerm(c)
             )
             .execute()
 
@@ -1128,9 +1130,9 @@ struct PropertyPathAdvancedTests {
         let link = try uniquePredicate("link")
 
         let edges = [
-            makeEdge(from: a, relationship: link, to: b),
-            makeEdge(from: b, relationship: link, to: d),
-            makeEdge(from: c, relationship: link, to: d),
+            try makeEdge(from: a, relationship: link, to: b),
+            try makeEdge(from: b, relationship: link, to: d),
+            try makeEdge(from: c, relationship: link, to: d),
         ]
         try await insertEdges(edges, context: context)
 
@@ -1139,7 +1141,7 @@ struct PropertyPathAdvancedTests {
             .wherePath(
                 .variable("?x"),
                 path: .oneOrMore(.iri(link)),
-                iriTerm(d)
+                try iriTerm(d)
             )
             .execute()
 
@@ -1165,15 +1167,15 @@ struct PropertyPathAdvancedTests {
         let link = try uniquePredicate("link")
 
         let edges = [
-            makeEdge(from: a, relationship: link, to: b),
-            makeEdge(from: b, relationship: link, to: c),
+            try makeEdge(from: a, relationship: link, to: b),
+            try makeEdge(from: b, relationship: link, to: c),
         ]
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(a),
+                try iriTerm(a),
                 path: .oneOrMore(.iri(link)),
                 .variable("?target")
             )
@@ -1203,8 +1205,8 @@ struct PropertyPathAdvancedTests {
         let link = try uniquePredicate("link")
 
         let edges = [
-            makeEdge(from: a, relationship: link, to: b),
-            makeEdge(from: b, relationship: link, to: c),
+            try makeEdge(from: a, relationship: link, to: b),
+            try makeEdge(from: b, relationship: link, to: c),
         ]
         try await insertEdges(edges, context: context)
 
@@ -1256,10 +1258,10 @@ struct PropertyPathAdvancedTests {
         let link = try uniquePredicate("link")
 
         let edges = [
-            makeEdge(from: a, relationship: link, to: b),
-            makeEdge(from: a, relationship: link, to: c),
-            makeEdge(from: b, relationship: link, to: d),
-            makeEdge(from: c, relationship: link, to: d),
+            try makeEdge(from: a, relationship: link, to: b),
+            try makeEdge(from: a, relationship: link, to: c),
+            try makeEdge(from: b, relationship: link, to: d),
+            try makeEdge(from: c, relationship: link, to: d),
         ]
         try await insertEdges(edges, context: context)
 
@@ -1310,17 +1312,17 @@ struct PropertyPathAdvancedTests {
         let link = try uniquePredicate("link")
 
         let edges = [
-            makeEdge(from: a, relationship: link, to: b),
-            makeEdge(from: b, relationship: link, to: c),
+            try makeEdge(from: a, relationship: link, to: b),
+            try makeEdge(from: b, relationship: link, to: c),
         ]
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
             .wherePath(
-                iriTerm(a),
+                try iriTerm(a),
                 path: .oneOrMore(.iri(link)),
-                iriTerm(c)
+                try iriTerm(c)
             )
             .execute()
 

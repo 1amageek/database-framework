@@ -3,11 +3,11 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 extension SPARQLQueryExecutor {
@@ -23,7 +23,7 @@ extension SPARQLQueryExecutor {
         )
     }
 
-    func requestScoped(by workMeter: DatabaseWorkMeter) -> Self {
+    func requestScoped(by workMeter: DatabaseWorkMeter) throws -> Self {
         Self(
             database: database,
             datasetScanner: datasetScanner,
@@ -33,7 +33,7 @@ extension SPARQLQueryExecutor {
             ontologyContext: ontologyContext,
             propertyPathConfiguration: propertyPathConfiguration,
             workMeter: workMeter,
-            expressionContext: SPARQLQueryExpressionContext(
+            expressionContext: try SPARQLQueryExpressionContext(
                 functionRegistry: functionRegistry,
                 workMeter: workMeter
             ),

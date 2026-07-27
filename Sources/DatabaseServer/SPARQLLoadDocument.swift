@@ -1,4 +1,4 @@
-import Graph
+import DatabaseKit
 
 public struct SPARQLLoadDocument: Sendable {
     public let byteCount: UInt64

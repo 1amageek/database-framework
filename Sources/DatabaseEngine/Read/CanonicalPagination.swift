@@ -1,7 +1,6 @@
-import DatabaseDigest
-import DatabaseValue
 import DatabaseWire
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 
 public struct CanonicalPageWindow<Item: Sendable>: Sendable {
     public let items: [Item]
@@ -18,24 +17,35 @@ public enum CanonicalQueryPagination {
     private static let fingerprintByteCount = SHA256Accumulator.digestByteCount
 
     private struct Cursor: Sendable {
-        let queryFingerprint: DatabaseBytes
-        let resultFingerprint: DatabaseBytes
+        let queryFingerprint: ByteString
+        let resultFingerprint: ByteString
         let offset: UInt64
 
         func encode() throws -> QueryContinuation {
-            var writer = DatabaseWireWriter()
-            writer.writeUInt32(CanonicalQueryPagination.cursorMarker)
-            try writer.writeBytes(queryFingerprint)
-            try writer.writeBytes(resultFingerprint)
-            writer.writeUInt64(offset)
-            return QueryContinuation(DatabaseBytes(writer.bytes))
+            let bytes = try StorageFrameEncoder.encode(
+                limits: try CanonicalQueryPagination.cursorLimits()
+            ) {
+                (writer: inout StorageFrameEncoder) throws(
+                    StorageFrameError
+                ) in
+                writer.writeUInt32(
+                    CanonicalQueryPagination.cursorMarker
+                )
+                try writer.writeBytes(queryFingerprint)
+                try writer.writeBytes(resultFingerprint)
+                writer.writeUInt64(offset)
+            }
+            return QueryContinuation(bytes)
         }
 
         static func decode(
             _ continuation: QueryContinuation
         ) throws -> Cursor {
             do {
-                var reader = DatabaseWireReader(continuation.bytes)
+                var reader = try StorageFrameDecoder(
+                    continuation.bytes,
+                    limits: try CanonicalQueryPagination.cursorLimits()
+                )
                 guard try reader.readUInt32()
                         == CanonicalQueryPagination.cursorMarker else {
                     throw CanonicalReadError.invalidContinuation
@@ -75,13 +85,28 @@ public enum CanonicalQueryPagination {
             selectQuery,
             limits: options.queryStructuralLimits
         )
-        let queryOffset = selectQuery.offset ?? 0
-        let requestedPageSize = try options.resolvePageSize()
-        guard queryOffset >= 0,
-              selectQuery.limit.map({ $0 >= 0 }) ?? true,
-              requestedPageSize.map({ $0 > 0 }) ?? true else {
+        guard let queryOffset = Int(
+            exactly: selectQuery.offset ?? 0
+        ) else {
             throw CanonicalReadError.unsupportedSelectQuery(
-                "Pagination limit and offset must be non-negative, and page size must be positive"
+                "Pagination offset exceeds the platform integer range"
+            )
+        }
+        let logicalLimit: Int?
+        if let limit = selectQuery.limit {
+            guard let limit = Int(exactly: limit) else {
+                throw CanonicalReadError.unsupportedSelectQuery(
+                    "Pagination limit exceeds the platform integer range"
+                )
+            }
+            logicalLimit = limit
+        } else {
+            logicalLimit = nil
+        }
+        let requestedPageSize = try options.resolvePageSize()
+        guard requestedPageSize.map({ $0 > 0 }) ?? true else {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "Pagination page size must be positive"
             )
         }
 
@@ -113,7 +138,7 @@ public enum CanonicalQueryPagination {
             throw CanonicalReadError.invalidContinuation
         }
 
-        let remainingLimit = selectQuery.limit.map {
+        let remainingLimit = logicalLimit.map {
             continuationOffset >= $0 ? 0 : $0 - continuationOffset
         }
         guard remainingLimit != 0 else {
@@ -158,7 +183,7 @@ public enum CanonicalQueryPagination {
         guard !nextOffsetOverflow else {
             throw CanonicalReadError.invalidContinuation
         }
-        let withinLogicalLimit = selectQuery.limit.map {
+        let withinLogicalLimit = logicalLimit.map {
             nextOffset < $0
         } ?? true
         let hasMore = inspectedCount > effectivePageSize
@@ -221,9 +246,9 @@ public enum CanonicalQueryPagination {
 
     private static func queryFingerprint(
         _ selectQuery: SelectQuery,
-        scope: DatabaseBytes,
+        scope: ByteString,
         workMeter: DatabaseWorkMeter
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         var hasher = SHA256Accumulator()
         let maximumIntermediateBytes = workMeter.budget.maximumIntermediateBytes
         let maximumFrameBytes = Int(
@@ -233,13 +258,15 @@ public enum CanonicalQueryPagination {
             maximumFrameBytes: maximumFrameBytes,
             maximumStringBytes: maximumFrameBytes,
             maximumByteStringBytes: maximumFrameBytes,
-            maximumCollectionCount: maximumFrameBytes,
+            maximumCollectionCount:
+                DatabaseWireLimits.default.maximumCollectionCount,
             maximumNestingDepth:
                 DatabaseWireLimits.maximumSupportedNestingDepth,
-            maximumObjectCount: maximumFrameBytes
+            maximumObjectCount:
+                DatabaseWireLimits.default.maximumObjectCount
         )
         do {
-            try QueryIRWireCodec.emitCanonicalEncoding(
+            try QueryIRWireFormat.emitCanonicalEncoding(
                 .select(selectQuery),
                 limits: limits,
                 prepare: { queryByteCount in
@@ -255,30 +282,45 @@ public enum CanonicalQueryPagination {
                     hasher.update(bytes)
                 }
             )
-        } catch let wireError as DatabaseWireError {
-            switch wireError {
-            case .frameTooLarge(let actual, _),
-                 .stringTooLarge(let actual, _),
-                 .byteStringTooLarge(let actual, _):
-                throw DatabaseWorkLimitError.maximumIntermediateBytes(
-                    stage: .resultMaterialization,
-                    consumed: 0,
-                    requested: UInt64(actual),
-                    maximum: maximumIntermediateBytes
-                )
-            case .byteCountOverflow:
-                throw DatabaseWorkLimitError.maximumIntermediateBytes(
-                    stage: .resultMaterialization,
-                    consumed: 0,
-                    requested: UInt64.max,
-                    maximum: maximumIntermediateBytes
-                )
-            default:
-                throw wireError
+        } catch let emissionError {
+            switch emissionError {
+            case .encoding(let wireError):
+                switch wireError {
+                case .frameTooLarge(let actual, _),
+                     .stringTooLarge(let actual, _),
+                     .byteStringTooLarge(let actual, _):
+                    throw DatabaseWorkLimitError.maximumIntermediateBytes(
+                        stage: .resultMaterialization,
+                        consumed: 0,
+                        requested: UInt64(actual),
+                        maximum: maximumIntermediateBytes
+                    )
+                case .byteCountOverflow:
+                    throw DatabaseWorkLimitError.maximumIntermediateBytes(
+                        stage: .resultMaterialization,
+                        consumed: 0,
+                        requested: UInt64.max,
+                        maximum: maximumIntermediateBytes
+                    )
+                default:
+                    throw wireError
+                }
+            case .destination(let destinationError):
+                throw destinationError
             }
         }
         append(scope, to: &hasher)
         return hasher.finalize()
+    }
+
+    private static func cursorLimits() throws -> StorageFrameLimits {
+        try StorageFrameLimits(
+            maximumFrameBytes: 256,
+            maximumStringBytes: 0,
+            maximumByteStringBytes: fingerprintByteCount,
+            maximumCollectionCount: 0,
+            maximumNestingDepth: 0
+        )
     }
 
     private static func claimFingerprintBytes(
@@ -306,7 +348,7 @@ public enum CanonicalQueryPagination {
     private static func resultFingerprint(
         _ rows: [QueryRow],
         workMeter: DatabaseWorkMeter
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         var hasher = SHA256Accumulator()
         updateDomain(0x0150_4244, hasher: &hasher)
         for row in rows {
@@ -320,7 +362,7 @@ public enum CanonicalQueryPagination {
     }
 
     private static func append(
-        _ bytes: DatabaseBytes,
+        _ bytes: ByteString,
         to hasher: inout SHA256Accumulator
     ) {
         appendLength(bytes.count, to: &hasher)

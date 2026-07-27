@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 /// Type-erased ontology service for runtime composition.
 public final class AnyDatabaseOntologyService:

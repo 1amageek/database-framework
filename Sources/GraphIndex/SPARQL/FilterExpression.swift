@@ -8,10 +8,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 
 /// Filter expression for FILTER clauses
 ///
@@ -123,7 +123,7 @@ public indirect enum FilterExpression: Sendable {
     ///
     /// Stores the referenced variables alongside the closure, enabling proper
     /// filter pushdown optimization. This is the preferred form when converting
-    /// from QueryIR.Expression.
+    /// from Expression.
     case customWithVariables(
         @Sendable (VariableBinding) throws -> Bool,
         variables: Set<String>
@@ -213,7 +213,7 @@ public indirect enum FilterExpression: Sendable {
 
         case .contains(let variable, let substring):
             guard let value = binding.string(variable) else { return false }
-            return DatabaseText.contains(substring, in: value)
+            return TextSearch.contains(substring, in: value)
 
         case .startsWith(let variable, let prefix):
             guard let value = binding.string(variable) else { return false }
@@ -326,7 +326,16 @@ public indirect enum FilterExpression: Sendable {
             }
             return comparison
         }
-        return left.compare(to: right)
+        switch left.compare(to: right) {
+        case .lessThan:
+            return .orderedAscending
+        case .equal:
+            return .orderedSame
+        case .greaterThan:
+            return .orderedDescending
+        case nil:
+            return nil
+        }
     }
 
     // MARK: - Helpers

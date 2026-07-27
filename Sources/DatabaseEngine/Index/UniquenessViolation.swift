@@ -10,7 +10,8 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Core
+import DatabaseKit
+import DatabaseTypes
 import Synchronization
 
 // MARK: - UniquenessViolation
@@ -142,8 +143,8 @@ public struct UniquenessViolationError: Error, Sendable, CustomStringConvertible
     /// Type name of the affected Persistable
     public let persistableType: String
 
-    /// The duplicate value (as string descriptions)
-    public let conflictingValues: [String]
+    /// Canonical values that conflict with an existing index entry.
+    public let conflictingValues: [FieldValue]
 
     /// Primary key of the existing entity
     public let existingPrimaryKey: Tuple
@@ -154,7 +155,7 @@ public struct UniquenessViolationError: Error, Sendable, CustomStringConvertible
     public init(
         indexName: String,
         persistableType: String,
-        conflictingValues: [String],
+        conflictingValues: [FieldValue],
         existingPrimaryKey: Tuple,
         newPrimaryKey: Tuple
     ) {
@@ -167,7 +168,13 @@ public struct UniquenessViolationError: Error, Sendable, CustomStringConvertible
 
     /// Human-readable description of the duplicate value
     public var valueDescription: String {
-        conflictingValues.joined(separator: ", ")
+        conflictingValues.map { value in
+            if case .string(let text) = value {
+                return text
+            }
+            return String(describing: value)
+        }
+            .joined(separator: ", ")
     }
 
     public var description: String {

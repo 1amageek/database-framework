@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 import GraphIndex
 import StorageKit
 import Synchronization
@@ -42,9 +42,9 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     }
 
     func scan(
-        subject: DatabaseRDFTerm?,
-        predicate: DatabaseRDFTerm?,
-        object: DatabaseRDFTerm?,
+        subject: RDFTerm?,
+        predicate: RDFTerm?,
+        object: RDFTerm?,
         graphScope: RDFGraphScanScope,
         limit: Int?,
         readMode: RDFDatasetReadMode,

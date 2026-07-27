@@ -1,8 +1,8 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 extension SPARQLQueryExecutor {
@@ -173,14 +173,7 @@ extension SPARQLQueryExecutor {
                 )
             }
             for row in scan {
-                try output.append(
-                    try DatabaseRDFQuad(
-                        subject: row.subject,
-                        predicate: row.predicate,
-                        object: row.object,
-                        graph: row.graph
-                    )
-                )
+                try output.append(row.quad)
             }
         }
         return output.finish()
@@ -193,7 +186,10 @@ extension SPARQLQueryExecutor {
     ) throws {
         guard case .iri(let value) = term else { return }
         try workMeter.consume(at: .projection)
-        try resources.insert(.iri(value), workMeter: workMeter)
+        try resources.insert(
+            .iri(try RDFIRI(value)),
+            workMeter: workMeter
+        )
     }
 
     private func collectBoundDescribeResource(
@@ -229,7 +225,7 @@ extension SPARQLQueryExecutor {
 
     private func describeResource(
         from value: FieldValue
-    ) -> DatabaseRDFTerm? {
+    ) -> RDFTerm? {
         guard case .rdfTerm(let term) = value else { return nil }
         switch term {
         case .iri, .blankNode:

@@ -8,11 +8,12 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
-import Graph
-import QueryIR
+import DatabaseKit
+import DatabaseKit
 
 /// Builder for SPARQL GROUP BY queries with aggregation
 ///
@@ -206,7 +207,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         })
     }
 
-    /// HAVING with a QueryIR.Expression
+    /// HAVING with a DatabaseKit.Expression
     ///
     /// Evaluates the expression against each grouped binding using ExpressionEvaluator.
     /// Follows SPARQL §17.2 semantics: evaluation errors yield `false`.
@@ -215,7 +216,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
     /// ```swift
     /// .having(.greaterThan(.var("friendCount"), .int(5)))
     /// ```
-    public func having(_ expression: QueryIR.Expression) -> Self {
+    public func having(_ expression: DatabaseKit.Expression) -> Self {
         having(.custom { binding in
             try ExpressionEvaluator.evaluateAsBoolean(
                 expression,
@@ -295,7 +296,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
     /// 4. DISTINCT
     /// 5. OFFSET / LIMIT (Slice)
     public func execute(
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLGroupedResult {
         guard offsetCount >= 0, limitCount.map({ $0 >= 0 }) ?? true else {
             throw SPARQLQueryError.invalidPagination
@@ -409,7 +410,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
 
     /// Execute and return just the first result (or nil)
     public func first(
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> VariableBinding? {
         try await limit(1).execute(budget: budget).bindings.first
     }
@@ -468,8 +469,10 @@ public struct SPARQLGroupedResult: Sendable {
     /// Get numeric aggregate from first result
     public func firstNumericAggregate(_ alias: String) -> Int? {
         guard let value = firstAggregate(alias) else { return nil }
-        if let i = value.int64Value { return Int(i) }
-        return nil
+        guard let integer = SPARQLNumericValue(value)?.exactInteger else {
+            return nil
+        }
+        return Int(exactly: integer)
     }
 }
 

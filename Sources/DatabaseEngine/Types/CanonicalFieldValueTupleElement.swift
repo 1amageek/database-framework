@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import StorageKit
 
 package struct CanonicalFieldValueTupleElement: TupleElement {

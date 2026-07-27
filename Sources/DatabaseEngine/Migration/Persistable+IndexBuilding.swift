@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import StorageKit
 
 extension Persistable {
@@ -8,7 +8,7 @@ extension Persistable {
         index: Index,
         indexLifecycleStore: IndexLifecycleStore,
         batchSize: Int,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) async throws {
         let indexSubspace = storeSubspace
             .subspace(SubspaceKey.indexes)
@@ -19,7 +19,7 @@ extension Persistable {
             providers: container.runtimeConfiguration.indexMaintainerProviders,
             configurations: configurations
         )
-        let indexer = OnlineIndexer<Self>(
+        let indexer = try OnlineIndexer<Self>(
             container: container,
             storeSubspace: storeSubspace,
             itemType: Self.persistableType,
@@ -35,7 +35,7 @@ extension Persistable {
         for index: Index,
         indexSubspace: Subspace,
         providers: IndexMaintainerProviderRegistry,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Self> {
         try providers.makeIndexMaintainer(
             index: index,

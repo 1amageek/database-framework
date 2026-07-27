@@ -1,8 +1,8 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 @testable import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import StorageKit
 import Synchronization
@@ -131,19 +131,18 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         let nestedRequest = migrationRequest()
         let startRequest = JobStartOperation.Request(
-            operation: try DatabaseMaintenanceJobDescriptor
-                .jobOperationIdentifier(),
-            requestPayload: try DatabaseEnvelopeCodec.encode(nestedRequest),
+            operation: JobOperations.maintenance.identifier,
+            requestPayload: try encodeMaintenanceRequest(nestedRequest),
             maximumSliceWorkUnits: 1
         )
         let context = DatabaseOperationContext(
             container: target,
             requestID: 45,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 traceID: "migration-job",
                 idempotencyKey: "migration-job"
             ),
-            requestPayload: try DatabaseEnvelopeCodec.encode(startRequest)
+            requestPayload: try encodeJobStartRequest(startRequest)
         )
         let started = try await service.start(
             startRequest,
@@ -175,10 +174,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             return
         }
         #expect(continuation == nil)
-        let response = try DatabaseEnvelopeCodec.decode(
-            MaintenanceExecuteOperation.Response.self,
-            from: responsePayloadPage
-        )
+        let response = try decodeMaintenanceResponse(responsePayloadPage)
         let execution = try executionResult(response)
         #expect(execution.kind == .migrations)
         #expect(execution.completedWorkUnits == 2)
@@ -206,7 +202,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             context: maintenanceContext.serviceContext,
             identifierGenerator: FixedIdentifierGenerator()
         )
-        let budget = DatabaseExecutionBudget(
+        let budget = ExecutionBudget(
             maximumRows: 1,
             maximumWorkUnits: 1,
             timeoutMilliseconds: 1_000
@@ -216,7 +212,7 @@ struct DatabaseMaintenanceOperationServiceTests {
                 invocation: .indexStatus(
                     entity: nil,
                     index: nil,
-                    partitions: []
+                    partitions: FieldObject()
                 ),
                 budget: budget
             ),
@@ -226,7 +222,8 @@ struct DatabaseMaintenanceOperationServiceTests {
             Issue.record("Expected an index status page")
             return
         }
-        #expect(firstPage.indexes.count == 1)
+        let firstIndexes = try firstPage.materializedIndexes(maximumCount: 1)
+        #expect(firstIndexes.count == 1)
         let continuation = try #require(firstPage.continuation)
 
         let second = try await service.execute(
@@ -234,7 +231,7 @@ struct DatabaseMaintenanceOperationServiceTests {
                 invocation: .indexStatus(
                     entity: nil,
                     index: nil,
-                    partitions: []
+                    partitions: FieldObject()
                 ),
                 continuation: continuation,
                 budget: budget
@@ -245,13 +242,16 @@ struct DatabaseMaintenanceOperationServiceTests {
             Issue.record("Expected a second index status page")
             return
         }
-        #expect(secondPage.indexes.count == 1)
+        let secondIndexes = try secondPage.materializedIndexes(maximumCount: 1)
+        #expect(secondIndexes.count == 1)
         #expect(secondPage.continuation == nil)
-        let allPartitions = firstPage.indexes[0].partitions
-            + secondPage.indexes[0].partitions
-        #expect(Set(allPartitions.map(\.value)) == [
-            DatabaseValue.string("tenant-a"),
-            DatabaseValue.string("tenant-b"),
+        let allPartitions = [
+            firstIndexes[0].partitions,
+            secondIndexes[0].partitions,
+        ]
+        #expect(Set(allPartitions.compactMap { $0["tenantID"] }) == [
+            FieldValue.string("tenant-a"),
+            FieldValue.string("tenant-b"),
         ])
     }
 
@@ -274,7 +274,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             context: maintenanceContext.serviceContext,
             identifierGenerator: FixedIdentifierGenerator()
         )
-        let budget = DatabaseExecutionBudget(
+        let budget = ExecutionBudget(
             maximumRows: 1,
             maximumWorkUnits: 1,
             timeoutMilliseconds: 1_000
@@ -284,7 +284,7 @@ struct DatabaseMaintenanceOperationServiceTests {
                 invocation: .indexStatus(
                     entity: CatalogPartitionedEntity.persistableType,
                     index: nil,
-                    partitions: []
+                    partitions: FieldObject()
                 ),
                 budget: budget
             ),
@@ -302,7 +302,7 @@ struct DatabaseMaintenanceOperationServiceTests {
                     invocation: .indexStatus(
                         entity: CatalogPartitionedEntity.persistableType,
                         index: "catalog_value",
-                        partitions: []
+                        partitions: FieldObject()
                     ),
                     continuation: continuation,
                     budget: budget
@@ -317,7 +317,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         let engine = InMemoryEngine()
         let initialMaintenanceContext = try await makeMaintenanceServiceContext(engine: engine)
         try await insertEntities(into: initialMaintenanceContext.container)
-        let partitions = [try tenantPartition("tenant-a")]
+        let partitions = try tenantPartition("tenant-a")
         let identifiers = FixedIdentifierGenerator()
         let firstService = DatabaseMaintenanceOperationService(
             context: initialMaintenanceContext.serviceContext,
@@ -385,9 +385,9 @@ struct DatabaseMaintenanceOperationServiceTests {
         let engine = InMemoryEngine()
         let maintenanceContext = try await makeMaintenanceServiceContext(engine: engine)
         try await insertEntities(into: maintenanceContext.container)
-        let partitions = [try tenantPartition("tenant-a")]
+        let partitions = try tenantPartition("tenant-a")
         let nestedRequest = rebuildRequest(partitions: partitions)
-        let nestedPayload = try DatabaseEnvelopeCodec.encode(nestedRequest)
+        let nestedPayload = try encodeMaintenanceRequest(nestedRequest)
         let scheduler = RecordingScheduler()
         let identifiers = FixedIdentifierGenerator()
         let registry = try DatabaseResumableOperationRegistry(
@@ -400,7 +400,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         let factory = try DatabasePersistentJobServiceFactory(
             registry: registry,
             scheduler: scheduler,
-            clock: FixedClock(),
+            clock: try FixedClock(),
             identifierGenerator: identifiers,
             storageLimits: maintenanceJobTestStorageLimits
         )
@@ -408,19 +408,18 @@ struct DatabaseMaintenanceOperationServiceTests {
             context: maintenanceContext.serviceContext
         )
         let startRequest = JobStartOperation.Request(
-            operation: try DatabaseMaintenanceJobDescriptor
-                .jobOperationIdentifier(),
+            operation: JobOperations.maintenance.identifier,
             requestPayload: nestedPayload,
             maximumSliceWorkUnits: 1
         )
         let startContext = DatabaseOperationContext(
             container: maintenanceContext.container,
             requestID: 41,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 traceID: "maintenance-job",
                 idempotencyKey: "maintenance-job"
             ),
-            requestPayload: try DatabaseEnvelopeCodec.encode(startRequest)
+            requestPayload: try encodeJobStartRequest(startRequest)
         )
 
         let started = try await firstService.start(
@@ -456,10 +455,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         #expect(job == started.response.job)
         #expect(totalResponseBytes == UInt64(responsePayloadPage.count))
         #expect(continuation == nil)
-        let response = try DatabaseEnvelopeCodec.decode(
-            MaintenanceExecuteOperation.Response.self,
-            from: responsePayloadPage
-        )
+        let response = try decodeMaintenanceResponse(responsePayloadPage)
         let execution = try executionResult(response)
         #expect(execution.kind == .indexRebuild)
         #expect(execution.completedWorkUnits == 2)
@@ -515,19 +511,18 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         let nestedRequest = compactionRequest()
         let startRequest = JobStartOperation.Request(
-            operation: try DatabaseMaintenanceJobDescriptor
-                .jobOperationIdentifier(),
-            requestPayload: try DatabaseEnvelopeCodec.encode(nestedRequest),
+            operation: JobOperations.maintenance.identifier,
+            requestPayload: try encodeMaintenanceRequest(nestedRequest),
             maximumSliceWorkUnits: 1
         )
         let context = DatabaseOperationContext(
             container: maintenanceContext.container,
             requestID: 44,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 traceID: "compaction-job",
                 idempotencyKey: "compaction-job"
             ),
-            requestPayload: try DatabaseEnvelopeCodec.encode(startRequest)
+            requestPayload: try encodeJobStartRequest(startRequest)
         )
         let started = try await service.start(
             startRequest,
@@ -568,10 +563,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         }
         #expect(totalResponseBytes == UInt64(responsePayloadPage.count))
         #expect(continuation == nil)
-        let response = try DatabaseEnvelopeCodec.decode(
-            MaintenanceExecuteOperation.Response.self,
-            from: responsePayloadPage
-        )
+        let response = try decodeMaintenanceResponse(responsePayloadPage)
         let execution = try executionResult(response)
         let finalMarker = try await maintenanceContext.container.engine.withTransaction(
             configuration: .readOnly
@@ -620,13 +612,12 @@ struct DatabaseMaintenanceOperationServiceTests {
             )
         )
         let nestedRequest = compactionRequest()
-        let nestedPayload = try DatabaseEnvelopeCodec.encode(
+        let nestedPayload = try encodeMaintenanceRequest(
             nestedRequest,
             limits: limits
         )
         let startRequest = JobStartOperation.Request(
-            operation: try DatabaseMaintenanceJobDescriptor
-                .jobOperationIdentifier(),
+            operation: JobOperations.maintenance.identifier,
             requestPayload: nestedPayload,
             maximumSliceWorkUnits: 1,
             retryPolicy: .init(
@@ -638,11 +629,11 @@ struct DatabaseMaintenanceOperationServiceTests {
         let context = DatabaseOperationContext(
             container: maintenanceContext.container,
             requestID: 45,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 traceID: "compaction-rollback",
                 idempotencyKey: "compaction-rollback"
             ),
-            requestPayload: try DatabaseEnvelopeCodec.encode(
+            requestPayload: try encodeJobStartRequest(
                 startRequest,
                 limits: limits
             )
@@ -683,8 +674,8 @@ struct DatabaseMaintenanceOperationServiceTests {
     func cancellationMarksPartialRebuildFailed() async throws {
         let maintenanceContext = try await makeMaintenanceServiceContext(engine: InMemoryEngine())
         try await insertEntities(into: maintenanceContext.container)
-        let partitions = [try tenantPartition("tenant-a")]
-        let nestedPayload = try DatabaseEnvelopeCodec.encode(
+        let partitions = try tenantPartition("tenant-a")
+        let nestedPayload = try encodeMaintenanceRequest(
             rebuildRequest(partitions: partitions)
         )
         let identifiers = FixedIdentifierGenerator()
@@ -698,7 +689,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         let factory = try DatabasePersistentJobServiceFactory(
             registry: registry,
             scheduler: RecordingScheduler(),
-            clock: FixedClock(),
+            clock: try FixedClock(),
             identifierGenerator: identifiers,
             storageLimits: maintenanceJobTestStorageLimits
         )
@@ -706,19 +697,18 @@ struct DatabaseMaintenanceOperationServiceTests {
             context: maintenanceContext.serviceContext
         )
         let startRequest = JobStartOperation.Request(
-            operation: try DatabaseMaintenanceJobDescriptor
-                .jobOperationIdentifier(),
+            operation: JobOperations.maintenance.identifier,
             requestPayload: nestedPayload,
             maximumSliceWorkUnits: 1
         )
         let context = DatabaseOperationContext(
             container: maintenanceContext.container,
             requestID: 42,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 traceID: "maintenance-cancel",
                 idempotencyKey: "maintenance-cancel"
             ),
-            requestPayload: try DatabaseEnvelopeCodec.encode(startRequest)
+            requestPayload: try encodeJobStartRequest(startRequest)
         )
         let started = try await service.start(startRequest, context: context)
         try await service.runScheduledWork()
@@ -729,11 +719,11 @@ struct DatabaseMaintenanceOperationServiceTests {
         let cancelContext = DatabaseOperationContext(
             container: maintenanceContext.container,
             requestID: 43,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 traceID: "maintenance-cancel",
                 idempotencyKey: "maintenance-cancel-request"
             ),
-            requestPayload: try DatabaseEnvelopeCodec.encode(cancelRequest)
+            requestPayload: try encodeJobCancelRequest(cancelRequest)
         )
         let cancelled = try await service.cancel(
             cancelRequest,
@@ -815,7 +805,8 @@ struct DatabaseMaintenanceOperationServiceTests {
             operations: [
                 AnyDatabaseResumableOperation(
                     DatabaseMaintenanceResumableOperation(
-                        wireLimits: maintenanceContext.serviceContext.wireLimits
+                        runtimeLimits:
+                            maintenanceContext.serviceContext.runtimeLimits
                     )
                 ),
             ]
@@ -823,7 +814,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         let factory = try DatabasePersistentJobServiceFactory(
             registry: registry,
             scheduler: scheduler,
-            clock: FixedClock(),
+            clock: try FixedClock(),
             identifierGenerator: identifiers,
             storageLimits: storageLimits
         )
@@ -863,7 +854,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     }
 
     private func rebuildRequest(
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) -> MaintenanceExecuteOperation.Request {
         MaintenanceExecuteOperation.Request(
             invocation: .rebuildIndex(
@@ -872,7 +863,7 @@ struct DatabaseMaintenanceOperationServiceTests {
                 partitions: partitions,
                 batchSize: 1
             ),
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 10,
                 maximumWorkUnits: 1,
                 timeoutMilliseconds: 1_000
@@ -883,7 +874,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     private func compactionRequest() -> MaintenanceExecuteOperation.Request {
         MaintenanceExecuteOperation.Request(
             invocation: .compact,
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: 1,
                 timeoutMilliseconds: 1_000
@@ -896,7 +887,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             invocation: .runMigrations(
                 targetVersion: Schema.Version(3, 0, 0)
             ),
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: 1,
                 timeoutMilliseconds: 1_000
@@ -906,16 +897,10 @@ struct DatabaseMaintenanceOperationServiceTests {
 
     private func tenantPartition(
         _ tenant: String
-    ) throws -> DatabaseObjectField {
-        let schema = try #require(CatalogPartitionedEntity.fieldSchemas.first {
-            $0.name == "tenantID"
-        })
-        let number = try #require(UInt32(exactly: schema.fieldNumber))
-        return DatabaseObjectField(
-            number: number,
-            name: "tenantID",
-            value: .string(tenant)
-        )
+    ) throws -> FieldObject {
+        try FieldObject([
+            (key: "tenantID", value: .string(tenant)),
+        ])
     }
 
     private func operationContext(
@@ -924,7 +909,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         DatabaseOperationContext(
             container: container,
             requestID: 40,
-            metadata: DatabaseRequestMetadata(traceID: "maintenance-direct"),
+            metadata: OperationRequestMetadata(traceID: "maintenance-direct"),
             requestPayload: []
         )
     }
@@ -937,11 +922,51 @@ struct DatabaseMaintenanceOperationServiceTests {
         DatabaseOperationContext(
             container: container,
             requestID: 40,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 traceID: "maintenance-direct",
                 idempotencyKey: idempotencyKey
             ),
-            requestPayload: try DatabaseEnvelopeCodec.encode(request)
+            requestPayload: try encodeMaintenanceRequest(request)
+        )
+    }
+
+    private func encodeMaintenanceRequest(
+        _ request: MaintenanceExecuteOperation.Request,
+        limits: DatabaseWireLimits = .default
+    ) throws -> ByteString {
+        try DatabaseWireEncoder(limits: limits).encodeRequestPayload(
+            DatabaseOperations.maintenanceExecute,
+            request: request
+        )
+    }
+
+    private func decodeMaintenanceResponse(
+        _ payload: ByteString,
+        limits: DatabaseWireLimits = .default
+    ) throws -> MaintenanceExecuteOperation.Response {
+        try DatabaseWireDecoder(limits: limits).decodeResponsePayload(
+            DatabaseOperations.maintenanceExecute,
+            from: payload
+        )
+    }
+
+    private func encodeJobStartRequest(
+        _ request: JobStartOperation.Request,
+        limits: DatabaseWireLimits = .default
+    ) throws -> ByteString {
+        try DatabaseWireEncoder(limits: limits).encodeRequestPayload(
+            DatabaseOperations.jobStart,
+            request: request
+        )
+    }
+
+    private func encodeJobCancelRequest(
+        _ request: JobCancelOperation.Request,
+        limits: DatabaseWireLimits = .default
+    ) throws -> ByteString {
+        try DatabaseWireEncoder(limits: limits).encodeRequestPayload(
+            DatabaseOperations.jobCancel,
+            request: request
         )
     }
 
@@ -957,7 +982,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     private func indexStatus(
         service: DatabaseMaintenanceOperationService,
         container: DBContainer,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> MaintenanceExecuteOperation.IndexStatus {
         let response = try await service.execute(
             MaintenanceExecuteOperation.Request(
@@ -966,7 +991,7 @@ struct DatabaseMaintenanceOperationServiceTests {
                     index: "catalog_value",
                     partitions: partitions
                 ),
-                budget: DatabaseExecutionBudget(
+                budget: ExecutionBudget(
                     maximumRows: 10,
                     maximumWorkUnits: 10,
                     timeoutMilliseconds: 1_000
@@ -974,9 +999,11 @@ struct DatabaseMaintenanceOperationServiceTests {
             ),
             context: operationContext(container: container)
         ).response
-        guard case .indexStatus(let page) = response,
-              page.indexes.count == 1,
-              let status = page.indexes.first else {
+        guard case .indexStatus(let page) = response else {
+            throw MaintenanceScenarioError.unexpectedResponse
+        }
+        let indexes = try page.materializedIndexes(maximumCount: 1)
+        guard indexes.count == 1, let status = indexes.first else {
             throw MaintenanceScenarioError.unexpectedResponse
         }
         return status
@@ -988,16 +1015,22 @@ struct DatabaseMaintenanceOperationServiceTests {
     }
 
     private final class FixedClock: DatabaseWallClock, Sendable {
-        func now() -> DatabaseTimestamp {
-            DatabaseTimestamp(secondsSinceUnixEpoch: 1_000)
+        private let value: Timestamp
+
+        init() throws {
+            value = try Timestamp(secondsSinceUnixEpoch: 1_000)
+        }
+
+        func now() -> Timestamp {
+            value
         }
     }
 
     private actor RecordingScheduler: DatabaseJobScheduler {
-        private var timestamps: [DatabaseTimestamp] = []
+        private var timestamps: [Timestamp] = []
 
         func ensureWakeUp(
-            noLaterThan timestamp: DatabaseTimestamp
+            noLaterThan timestamp: Timestamp
         ) async throws {
             timestamps.append(timestamp)
         }
@@ -1010,10 +1043,10 @@ struct DatabaseMaintenanceOperationServiceTests {
     private final class FixedIdentifierGenerator: DatabaseUUIDGenerator, Sendable {
         private let value = Mutex<UInt64>(1)
 
-        func generate() -> DatabaseUUID {
+        func generate() -> DatabaseTypes.UUID {
             value.withLock { current in
                 defer { current += 1 }
-                return DatabaseUUID(high: 0, low: current)
+                return DatabaseTypes.UUID(high: 0, low: current)
             }
         }
     }
@@ -1025,23 +1058,29 @@ struct DatabaseMaintenanceOperationServiceTests {
 
 private enum MaintenanceSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [
-        CatalogPartitionedEntity.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try CatalogPartitionedEntity.schemaEntity]
+        }
+    }
 }
 
 private enum MaintenanceSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [
-        CatalogPartitionedEntity.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try CatalogPartitionedEntity.schemaEntity]
+        }
+    }
 }
 
 private enum MaintenanceSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [
-        CatalogPartitionedEntity.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try CatalogPartitionedEntity.schemaEntity]
+        }
+    }
 }
 
 private enum MaintenanceInitialMigrationPlan: SchemaMigrationPlan {

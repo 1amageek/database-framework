@@ -1,7 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import Relationship
+import DatabaseTypes
 
 /// Executes a model query and typed relationship joins in one transaction.
 public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
@@ -27,19 +26,19 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
     }
 
     public func orderBy<Value: Comparable & Sendable>(
-        _ keyPath: KeyPath<Model, Value> & Sendable
+        _ field: Field<Model, Value>
     ) -> RelationshipQueryExecutor<Model> {
         var copy = self
-        copy.query = query.orderBy(keyPath)
+        copy.query = query.orderBy(field)
         return copy
     }
 
     public func orderBy<Value: Comparable & Sendable>(
-        _ keyPath: KeyPath<Model, Value> & Sendable,
+        _ field: Field<Model, Value>,
         _ order: DatabaseEngine.SortOrder
     ) -> RelationshipQueryExecutor<Model> {
         var copy = self
-        copy.query = query.orderBy(keyPath, order)
+        copy.query = query.orderBy(field, order)
         return copy
     }
 
@@ -63,20 +62,20 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
         return copy
     }
 
-    public func partition<Value: Sendable & Equatable & FieldValueConvertible>(
-        _ keyPath: KeyPath<Model, Value> & Sendable,
+    public func partition<Value: Sendable & Equatable & FieldValueRepresentable>(
+        _ field: Field<Model, Value>,
         equals value: Value
     ) -> RelationshipQueryExecutor<Model> {
         var copy = self
-        copy.query = query.partition(keyPath, equals: value)
+        copy.query = query.partition(field, equals: value)
         return copy
     }
 
     public func joining<Related: Persistable>(
-        _ keyPath: KeyPath<Model, DatabaseReference<Related>?>
+        _ field: Field<Model, PersistableReference<Related>?>
     ) throws -> RelationshipQueryExecutor<Model> {
         try appendingJoin(
-            fieldName: Model.fieldName(for: keyPath),
+            fieldName: field.name,
             relatedType: Related.self,
             cardinality: .optionalToOne
         ) { models in
@@ -86,10 +85,10 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
     }
 
     public func joining<Related: Persistable>(
-        _ keyPath: KeyPath<Model, DatabaseReference<Related>>
+        _ field: Field<Model, PersistableReference<Related>>
     ) throws -> RelationshipQueryExecutor<Model> {
         try appendingJoin(
-            fieldName: Model.fieldName(for: keyPath),
+            fieldName: field.name,
             relatedType: Related.self,
             cardinality: .requiredToOne
         ) { models in
@@ -99,10 +98,10 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
     }
 
     public func joining<Related: Persistable>(
-        _ keyPath: KeyPath<Model, [DatabaseReference<Related>]>
+        _ field: Field<Model, [PersistableReference<Related>]>
     ) throws -> RelationshipQueryExecutor<Model> {
         try appendingJoin(
-            fieldName: Model.fieldName(for: keyPath),
+            fieldName: field.name,
             relatedType: Related.self,
             cardinality: .toMany
         ) { models in
@@ -132,13 +131,13 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
             }
 
             let resolver = RelationshipReferenceResolver(schema: container.schema)
-            var referencesByModel: [[[PersistableIdentity]]] = []
+            var referencesByModel: [[[EntityReference]]] = []
             referencesByModel.reserveCapacity(models.count)
-            var orderedIdentities: [PersistableIdentity] = []
-            var seenIdentities = Set<PersistableIdentity>()
+            var orderedIdentities: [EntityReference] = []
+            var seenIdentities = Set<EntityReference>()
 
             for model in models {
-                var modelReferences: [[PersistableIdentity]] = []
+                var modelReferences: [[EntityReference]] = []
                 modelReferences.reserveCapacity(joins.count)
                 for join in joins {
                     let references = try resolver.orderedReferences(
@@ -153,7 +152,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
                 referencesByModel.append(modelReferences)
             }
 
-            var loadedByIdentity: [PersistableIdentity: any Persistable] = [:]
+            var loadedByIdentity: [EntityReference: any Persistable] = [:]
             loadedByIdentity.reserveCapacity(orderedIdentities.count)
             for identity in orderedIdentities {
                 if let loaded = try await transaction.fetchPersistedModel(
@@ -197,7 +196,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
         fieldName: String,
         relatedType: Related.Type,
         cardinality: RelationshipCardinality,
-        assemble: @escaping @Sendable ([any Persistable]) throws -> (any Sendable)?
+        assemble: @escaping @Sendable ([any Persistable]) throws -> LoadedRelationship
     ) throws -> RelationshipQueryExecutor<Model> {
         let matching = Model.relationshipDescriptors.filter {
             $0.propertyName == fieldName
@@ -235,7 +234,7 @@ private struct RelationshipJoin<Model: Persistable>: Sendable {
 private func castToOne<Related: Persistable>(
     _ models: [any Persistable],
     as relatedType: Related.Type
-) throws -> (any Sendable)? {
+) throws -> Related? {
     guard let first = models.first else {
         return nil
     }
@@ -250,23 +249,23 @@ private func castToOne<Related: Persistable>(
 
 extension QueryExecutor {
     public func joining<Related: Persistable>(
-        _ keyPath: KeyPath<T, DatabaseReference<Related>?>
+        _ field: Field<T, PersistableReference<Related>?>
     ) throws -> RelationshipQueryExecutor<T> {
         try RelationshipQueryExecutor(context: context, query: query)
-            .joining(keyPath)
+            .joining(field)
     }
 
     public func joining<Related: Persistable>(
-        _ keyPath: KeyPath<T, DatabaseReference<Related>>
+        _ field: Field<T, PersistableReference<Related>>
     ) throws -> RelationshipQueryExecutor<T> {
         try RelationshipQueryExecutor(context: context, query: query)
-            .joining(keyPath)
+            .joining(field)
     }
 
     public func joining<Related: Persistable>(
-        _ keyPath: KeyPath<T, [DatabaseReference<Related>]>
+        _ field: Field<T, [PersistableReference<Related>]>
     ) throws -> RelationshipQueryExecutor<T> {
         try RelationshipQueryExecutor(context: context, query: query)
-            .joining(keyPath)
+            .joining(field)
     }
 }

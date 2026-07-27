@@ -22,7 +22,7 @@ import DatabaseTypes
 /// ```swift
 /// // First page
 /// let result = try await context.cursor(User.self)
-///     .where(\.isActive == true)
+///     .where(User.fields.isActive == true)
 ///     .limit(20)
 ///     .next()
 ///

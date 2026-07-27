@@ -64,7 +64,7 @@ struct RDFQuadSQLiteIntegrationTests {
                     .rdfTerm(.iri("https://example.com/node/root"))
                 ),
                 path: .oneOrMore(
-                    .iri(try DatabaseRDFPredicateIRI(parentPredicate))
+                    .iri(try RDFPredicateIRI(parentPredicate))
                 ),
                 object: .variable("?node")
             )
@@ -173,7 +173,7 @@ struct RDFQuadSQLiteIntegrationTests {
     @Test("Bounded property paths preserve exact repetition depth")
     func boundedPropertyPathPreservesExactDepth() async throws {
         let context = try await seededContext()
-        let predicate = try DatabaseRDFPredicateIRI(parentPredicate)
+        let predicate = try RDFPredicateIRI(parentPredicate)
         let bounds = try PropertyPathRange(minimum: 2, maximum: 2)
         let pattern = ExecutionPattern.propertyPath(
             subject: .value(
@@ -201,10 +201,10 @@ struct RDFQuadSQLiteIntegrationTests {
         let context = try await seededContext()
         let exclusions = try PropertyPathNegatedSet(
             forward: Set([
-                try DatabaseRDFPredicateIRI(excludedForwardPredicate),
+                try RDFPredicateIRI(excludedForwardPredicate),
             ]),
             inverse: Set([
-                try DatabaseRDFPredicateIRI(excludedInversePredicate),
+                try RDFPredicateIRI(excludedInversePredicate),
             ])
         )
         let pattern = ExecutionPattern.propertyPath(
@@ -443,7 +443,7 @@ struct RDFQuadSQLiteIntegrationTests {
 
     private func titleTerm(_ lexicalForm: String) -> DatabaseRDFTerm {
         .literal(
-            DatabaseRDFLiteral(
+            RDFLiteral(
                 lexicalForm: lexicalForm,
                 datatype: .xsdString
             )

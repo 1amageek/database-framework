@@ -7,7 +7,7 @@
 // Security: DataStore uses DataStoreSecurityDelegate for access control.
 // Auth context is obtained via TaskLocal (AuthContextKey.current).
 
-import Core
+import DatabaseKit
 
 /// Model persistence service contract.
 ///

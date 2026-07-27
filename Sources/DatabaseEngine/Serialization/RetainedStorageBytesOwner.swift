@@ -1,8 +1,8 @@
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 
-/// Keeps a StorageKit byte value alive while DatabaseWire borrows it.
-struct RetainedStorageBytesOwner: DatabaseByteOwner {
+/// Keeps a StorageKit byte value alive while DatabaseTypes borrows it.
+struct RetainedStorageBytesOwner: ByteStringOwner {
     let bytes: Bytes
 
     var count: Int {

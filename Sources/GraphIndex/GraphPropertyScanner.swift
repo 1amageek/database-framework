@@ -1,7 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 /// A graph edge and its covering-index properties.
@@ -10,14 +10,14 @@ public struct GraphEdgeWithProperties: Sendable, Equatable {
     public let target: GraphIdentity
     public let edgeLabel: GraphIdentity
     public let graph: GraphIdentity?
-    public let properties: [String: DatabaseValue]
+    public let properties: [String: FieldValue]
 
     public init(
         source: GraphIdentity,
         target: GraphIdentity,
         edgeLabel: GraphIdentity,
         graph: GraphIdentity?,
-        properties: [String: DatabaseValue]
+        properties: [String: FieldValue]
     ) {
         self.source = source
         self.target = target
@@ -54,7 +54,7 @@ public struct PropertyFilter: Sendable {
         self.value = value
     }
 
-    public func evaluate(on rawValue: DatabaseValue?) throws -> Bool {
+    public func evaluate(on rawValue: FieldValue?) throws -> Bool {
         guard let rawValue else {
             throw GraphPropertyFilterError.fieldNotStored(fieldName)
         }
@@ -66,12 +66,7 @@ public struct PropertyFilter: Sendable {
         default:
             break
         }
-        guard let fieldValue = FieldValue(databaseValue: rawValue) else {
-            throw GraphPropertyFilterError.unsupportedPropertyValue(
-                field: fieldName,
-                value: rawValue
-            )
-        }
+        let fieldValue = rawValue
         if fieldValue.isNull { return false }
 
         switch op {
@@ -97,7 +92,7 @@ public struct PropertyFilter: Sendable {
                     operation: op
                 )
             }
-            return DatabaseText.contains(substring, in: string)
+            return TextSearch.contains(substring, in: string)
         case .in, .notIn:
             guard case .array(let values) = value else {
                 throw GraphPropertyFilterError.operatorTypeMismatch(
@@ -202,7 +197,7 @@ public struct GraphPropertyScanner: Sendable {
 
     package func decodeProperties(
         _ value: Bytes
-    ) throws -> [String: DatabaseValue] {
+    ) throws -> [String: FieldValue] {
         guard !storedFieldNames.isEmpty else { return [:] }
         return try CoveringValueBuilder.decode(
             value,
@@ -211,7 +206,7 @@ public struct GraphPropertyScanner: Sendable {
     }
 
     package func matches(
-        _ properties: [String: DatabaseValue],
+        _ properties: [String: FieldValue],
         filters: [PropertyFilter]?
     ) throws -> Bool {
         guard let filters, !filters.isEmpty else { return true }
@@ -226,7 +221,7 @@ public struct GraphPropertyScanner: Sendable {
 
 public enum GraphPropertyFilterError: Error, Sendable, Equatable {
     case fieldNotStored(String)
-    case unsupportedPropertyValue(field: String, value: DatabaseValue)
+    case unsupportedPropertyValue(field: String, value: FieldValue)
     case operatorTypeMismatch(field: String, operation: ComparisonOperator)
 }
 

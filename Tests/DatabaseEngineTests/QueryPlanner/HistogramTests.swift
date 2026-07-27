@@ -156,8 +156,8 @@ struct HistogramTests {
             let histogram = Histogram(
                 buckets: [
                     Histogram.Bucket(
-                        lowerBound: .double(0.0),
-                        upperBound: .double(1.0),
+                        lowerBound: .float64(0.0),
+                        upperBound: .float64(1.0),
                         count: 1000,
                         distinctCount: 1000
                     )
@@ -168,8 +168,8 @@ struct HistogramTests {
 
             // Query 0.1 to 0.3 should be 20%
             let selectivity = histogram.estimateRangeSelectivity(
-                min: .double(0.1),
-                max: .double(0.3),
+                min: .float64(0.1),
+                max: .float64(0.3),
                 minInclusive: true,
                 maxInclusive: true
             )
@@ -186,8 +186,8 @@ struct HistogramTests {
             let histogram = Histogram(
                 buckets: [
                     Histogram.Bucket(
-                        lowerBound: .double(startTimestamp),
-                        upperBound: .double(endTimestamp),
+                        lowerBound: .float64(startTimestamp),
+                        upperBound: .float64(endTimestamp),
                         count: 100,
                         distinctCount: 100
                     )
@@ -199,8 +199,8 @@ struct HistogramTests {
             // Query for first 50 days
             let midTimestamp: Double = 86400 * 50
             let selectivity = histogram.estimateRangeSelectivity(
-                min: .double(startTimestamp),
-                max: .double(midTimestamp),
+                min: .float64(startTimestamp),
+                max: .float64(midTimestamp),
                 minInclusive: true,
                 maxInclusive: true
             )

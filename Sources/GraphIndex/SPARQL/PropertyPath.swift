@@ -4,8 +4,8 @@
 // Represents property path expressions for SPARQL 1.1.
 // Reference: W3C SPARQL 1.1 Property Paths (https://www.w3.org/TR/sparql11-property-paths/)
 
-import DatabaseValue
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 
 /// Property path expression for SPARQL queries
 ///
@@ -15,14 +15,14 @@ import QueryIR
 /// **Usage**:
 /// ```swift
 /// // Simple IRI path
-/// let knowsIRI = try DatabaseRDFPredicateIRI("https://example.com/knows")
+/// let knowsIRI = try RDFPredicateIRI("https://example.com/knows")
 /// let knows = ExecutionPropertyPath.iri(knowsIRI)
 ///
 /// // Inverse path: ^knows
 /// let knownBy = ExecutionPropertyPath.inverse(knows)
 ///
 /// // Sequence path: knows/worksAt
-/// let worksAtIRI = try DatabaseRDFPredicateIRI("https://example.com/worksAt")
+/// let worksAtIRI = try RDFPredicateIRI("https://example.com/worksAt")
 /// let colleagues = ExecutionPropertyPath.sequence(knows, .iri(worksAtIRI))
 ///
 /// // Transitive closure: knows+
@@ -32,7 +32,7 @@ import QueryIR
 /// let maybeKnows = ExecutionPropertyPath.zeroOrOne(knows)
 ///
 /// // Alternative: knows|friendOf
-/// let friendOfIRI = try DatabaseRDFPredicateIRI("https://example.com/friendOf")
+/// let friendOfIRI = try RDFPredicateIRI("https://example.com/friendOf")
 /// let related = ExecutionPropertyPath.alternative(knows, .iri(friendOfIRI))
 /// ```
 ///
@@ -53,7 +53,7 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
     /// ```sparql
     /// ?s ex:knows ?o
     /// ```
-    case iri(DatabaseRDFPredicateIRI)
+    case iri(RDFPredicateIRI)
 
     /// Negated property set
     ///
@@ -174,13 +174,13 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
     }
 
     /// Get the IRI if this is a simple path
-    public var simpleIRI: DatabaseRDFPredicateIRI? {
+    public var simpleIRI: RDFPredicateIRI? {
         if case .iri(let value) = self { return value }
         return nil
     }
 
     /// All IRIs used in this path
-    public var allIRIs: Set<DatabaseRDFPredicateIRI> {
+    public var allIRIs: Set<RDFPredicateIRI> {
         switch self {
         case .empty:
             return []

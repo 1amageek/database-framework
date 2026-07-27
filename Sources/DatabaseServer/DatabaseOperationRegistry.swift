@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseOperationRegistry: Sendable {
     private let handlers: [AnyDatabaseOperationHandler]

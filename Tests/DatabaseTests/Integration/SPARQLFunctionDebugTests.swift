@@ -6,11 +6,10 @@ import Testing
 import Foundation
 @testable import Database
 @testable import DatabaseEngine
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseValue
-import DatabaseValueCodable
-import Graph
+import DatabaseTypes
+import DatabaseKitFoundation
 import StorageKit
 import FDBStorage
 import TestSupport
@@ -33,20 +32,25 @@ struct SPARQLFunctionDebugTests {
     struct SPARQLDebugTriple {
         #Directory<SPARQLDebugTriple>("sparql_debug_functions", "rdf")
         var id: String = UUID().uuidString
-        var subject: DatabaseRDFTerm = .iri("urn:subject")
-        var predicate: DatabaseRDFTerm = .iri("urn:predicate")
-        var object: DatabaseRDFTerm = .iri("urn:object")
+        var subject: RDFTerm
+        var predicate: RDFTerm
+        var object: RDFTerm
 
-        #Index(RDFQuadIndexKind<SPARQLDebugTriple>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object
-        ))
+        #Index(
+            .rdfDataset,
+            from: \SPARQLDebugTriple.subject,
+            edge: \SPARQLDebugTriple.predicate,
+            to: \SPARQLDebugTriple.object
+        )
 
-        init(subject: String, predicate: String, object: String) {
-            self.subject = .iri(subject)
-            self.predicate = .iri(predicate)
-            self.object = .iri(object)
+        init(
+            subject: String,
+            predicate: String,
+            object: String
+        ) throws {
+            self.subject = try .iri(validating: subject)
+            self.predicate = try .iri(validating: predicate)
+            self.object = try .iri(validating: object)
         }
     }
 
@@ -56,7 +60,13 @@ struct SPARQLFunctionDebugTests {
             try await database.removeDirectory(path: ["sparql_debug_functions"])
         }
 
-        let schema = Schema([SPARQLDebugUser.self, SPARQLDebugTriple.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try SPARQLDebugUser.schemaEntity,
+                try SPARQLDebugTriple.schemaEntity,
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
@@ -80,7 +90,7 @@ struct SPARQLFunctionDebugTests {
         try await context.save()
 
         // Insert triple
-        var triple = SPARQLDebugTriple(
+        var triple = try SPARQLDebugTriple(
             subject: "urn:user:alice-001",
             predicate: "urn:predicate:knows",
             object: "urn:user:bob-001"
@@ -107,11 +117,23 @@ struct SPARQLFunctionDebugTests {
 
         // Try direct SPARQL query using QueryBuilder with KeyPath
         let result = try await context.sparql(SPARQLDebugTriple.self)
-            .index(\.subject, \.predicate, \.object)
+            .index(
+                SPARQLDebugTriple.fields.subject,
+                SPARQLDebugTriple.fields.predicate,
+                SPARQLDebugTriple.fields.object
+            )
             .where(
                 .var("s"),
-                .value(.rdfTerm(.iri("urn:predicate:knows"))),
-                .value(.rdfTerm(.iri("urn:user:bob-001")))
+                .value(
+                    .rdfTerm(
+                        try .iri(validating: "urn:predicate:knows")
+                    )
+                ),
+                .value(
+                    .rdfTerm(
+                        try .iri(validating: "urn:user:bob-001")
+                    )
+                )
             )
             .execute()
 
@@ -126,7 +148,7 @@ struct SPARQLFunctionDebugTests {
         let context = container.newContext()
 
         // Insert triple
-        var triple = SPARQLDebugTriple(
+        var triple = try SPARQLDebugTriple(
             subject: "urn:user:alice-002",
             predicate: "urn:predicate:knows",
             object: "urn:user:bob-002"

@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 /// Holds the typed field values required to resolve a compiled directory path.
 public struct DirectoryPath<T: Persistable>: Sendable {
@@ -7,20 +7,32 @@ public struct DirectoryPath<T: Persistable>: Sendable {
 
     public init() {}
 
-    public mutating func set<V: Sendable>(_ keyPath: KeyPath<T, V>, to value: V) {
-        let name = T.fieldName(for: keyPath)
-        fieldValues.removeAll { $0.name == name }
-        fieldValues.append(DirectoryFieldBinding(name: name, value: value))
+    public mutating func set<V: FieldValueRepresentable>(
+        _ field: Field<T, V>,
+        to value: V
+    ) {
+        fieldValues.removeAll { $0.field == field.identity }
+        fieldValues.append(
+            DirectoryFieldBinding(
+                field: field.identity,
+                value: value.fieldValue
+            )
+        )
     }
 
-    public func hasValue(for keyPath: PartialKeyPath<T>) -> Bool {
-        let name = T.fieldName(for: keyPath)
-        return fieldValues.contains { $0.name == name }
+    public func hasValue<V>(for field: Field<T, V>) -> Bool {
+        fieldValues.contains { $0.field == field.identity }
     }
 
-    public func value<V>(for keyPath: KeyPath<T, V>) -> V? {
-        let name = T.fieldName(for: keyPath)
-        return fieldValues.first { $0.name == name }?.value as? V
+    public func value<V: FieldValueDecodable>(
+        for field: Field<T, V>
+    ) throws(PersistableDecodingError) -> V? {
+        guard let value = fieldValues.first(where: {
+            $0.field == field.identity
+        })?.value else {
+            return nil
+        }
+        return try V.decodeFieldValue(value, field: field.name)
     }
 
     public func validate() throws {
@@ -53,9 +65,6 @@ public struct DirectoryPath<T: Persistable>: Sendable {
 
     internal func resolve() throws -> [String] {
         let partitions = try canonicalPartitions()
-        let partitionsByName = Dictionary(
-            uniqueKeysWithValues: partitions.map { ($0.name, $0.value) }
-        )
         var path: [String] = []
         path.reserveCapacity(T.directoryPathComponents.count)
 
@@ -64,7 +73,7 @@ public struct DirectoryPath<T: Persistable>: Sendable {
             case .staticPath(let value):
                 path.append(value)
             case .dynamicField(let name):
-                guard let value = partitionsByName[name] else {
+                guard let value = partitions[name] else {
                     throw DirectoryPathError.missingFields([name])
                 }
                 path.append(try CanonicalDirectoryPartitionCodec.encode(value))
@@ -73,9 +82,10 @@ public struct DirectoryPath<T: Persistable>: Sendable {
         return path
     }
 
-    internal func canonicalPartitions() throws -> [DatabaseObjectField] {
+    internal func canonicalPartitions() throws -> FieldObject {
         try validate()
-        var partitions: [DatabaseObjectField] = []
+        var partitions: [(key: String, value: FieldValue)] = []
+        partitions.reserveCapacity(T.directoryFieldNames.count)
         var seenNames = Set<String>()
 
         for name in T.directoryFieldNames {
@@ -89,13 +99,13 @@ public struct DirectoryPath<T: Persistable>: Sendable {
             guard let binding = fieldValues.first(where: { $0.name == name }) else {
                 throw DirectoryPathError.missingFields([name])
             }
-            guard let schema = T.fieldSchemas.first(where: { $0.name == name }),
-                  schema.fieldNumber > 0,
-                  let number = UInt32(exactly: schema.fieldNumber) else {
+            guard let schema = T.fieldSchemas.first(where: {
+                $0.name == name && $0.fieldNumber == binding.field.number
+            }), schema.fieldNumber > 0 else {
                 throw DirectoryPathError.invalidField(
                     typeName: T.persistableType,
                     field: name,
-                    reason: "the field is missing from the compiled schema"
+                    reason: "the field identity does not match the compiled schema"
                 )
             }
             guard !schema.isOptional, !schema.isArray, schema.type != .nested else {
@@ -105,11 +115,7 @@ public struct DirectoryPath<T: Persistable>: Sendable {
                     reason: "partition fields must be required scalar values"
                 )
             }
-            let value = try PersistableFieldEncoder.encodeValue(
-                binding.value,
-                schema: schema,
-                entity: T.persistableType
-            )
+            let value = binding.value
             guard value != .null else {
                 throw DirectoryPathError.invalidField(
                     typeName: T.persistableType,
@@ -117,28 +123,67 @@ public struct DirectoryPath<T: Persistable>: Sendable {
                     reason: "partition fields cannot be null"
                 )
             }
-            partitions.append(
-                DatabaseObjectField(number: number, name: name, value: value)
+            guard FieldSchemaValueValidator.accepts(
+                value,
+                as: schema.type
+            ) else {
+                throw DirectoryPathError.invalidField(
+                    typeName: T.persistableType,
+                    field: name,
+                    reason: "the value does not match the compiled field type"
+                )
+            }
+            partitions.append((key: name, value: value))
+        }
+        do {
+            return try FieldObject(partitions)
+        } catch FieldObjectError.duplicateKey(let key) {
+            throw DirectoryPathError.invalidField(
+                typeName: T.persistableType,
+                field: key,
+                reason: "the field occurs more than once in the compiled directory"
             )
         }
-        return partitions
     }
 
-    public static func from(_ model: T) -> DirectoryPath<T> {
+    public static func from(
+        _ model: borrowing T
+    ) throws(PersistableEncodingError) -> DirectoryPath<T> {
         var path = DirectoryPath<T>()
         for name in T.directoryFieldNames {
-            if let value = model[dynamicMember: name] {
-                path.fieldValues.append(DirectoryFieldBinding(name: name, value: value))
+            guard let schema = T.fieldSchemas.first(where: {
+                $0.name == name && $0.fieldNumber > 0
+            }) else {
+                throw .invalidSchema(
+                    entity: T.persistableType,
+                    reason: "directory field '\(name)' is missing from the compiled schema"
+                )
             }
+            let identity = FieldIdentity(
+                name: schema.name,
+                number: schema.fieldNumber
+            )
+            guard let value = try model.persistedFieldValue(
+                for: identity
+            ) else {
+                throw .invalidSchema(
+                    entity: T.persistableType,
+                    reason: "directory field '\(name)' was not emitted by the compiled model adapter"
+                )
+            }
+            path.fieldValues.append(
+                DirectoryFieldBinding(field: identity, value: value)
+            )
         }
         return path
     }
+
 }
 
 /// Eager, type-erased representation of a validated directory path.
 public struct AnyDirectoryPath: Sendable {
     private let components: [String]
-    private let partitions: [DatabaseObjectField]
+    private let partitions: FieldObject
 
     public init<T: Persistable>(_ path: DirectoryPath<T>) throws {
         self.components = try path.resolve()
@@ -167,17 +212,32 @@ public struct AnyDirectoryPath: Sendable {
             }
         }
         self.components = resolved
-        self.partitions = []
+        self.partitions = FieldObject()
     }
 
     package init(
-        fieldValues: [(name: String, value: any Sendable)],
+        fieldValues: [(name: String, value: FieldValue)],
         type: any Persistable.Type
     ) throws {
         func bind<T: Persistable>(_ concreteType: T.Type) throws -> AnyDirectoryPath {
             var path = DirectoryPath<T>()
-            path.fieldValues = fieldValues.map {
-                DirectoryFieldBinding(name: $0.name, value: $0.value)
+            path.fieldValues = try fieldValues.map { binding in
+                guard let schema = T.fieldSchemas.first(where: {
+                    $0.name == binding.name && $0.fieldNumber > 0
+                }) else {
+                    throw DirectoryPathError.invalidField(
+                        typeName: T.persistableType,
+                        field: binding.name,
+                        reason: "the field is missing from the compiled schema"
+                    )
+                }
+                return DirectoryFieldBinding(
+                    field: FieldIdentity(
+                        name: schema.name,
+                        number: schema.fieldNumber
+                    ),
+                    value: binding.value
+                )
             }
             return try AnyDirectoryPath(path)
         }
@@ -190,7 +250,7 @@ public struct AnyDirectoryPath: Sendable {
 
     public func validate() throws {}
 
-    public func canonicalPartitions() -> [DatabaseObjectField] {
+    public func canonicalPartitions() -> FieldObject {
         partitions
     }
 }

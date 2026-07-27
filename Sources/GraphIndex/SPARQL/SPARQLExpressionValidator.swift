@@ -1,5 +1,5 @@
-import DatabaseValue
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 
 /// Fail-closed validator for the SPARQL subset of the shared QueryIR model.
 /// SQL-only nodes and resource-exhausting in-memory expressions are rejected
@@ -481,23 +481,65 @@ public enum SPARQLExpressionValidator {
             }
         }
 
-        func checkRDFTerm(_ term: DatabaseRDFTerm) throws {
-            let plan: DatabaseRDFTermEncodingPlan
+        func checkRDFTerm(_ term: RDFTerm) throws {
             do {
-                plan = try DatabaseRDFTermCodec.encodingPlan(term)
+                try RDFTermValidation.validate(term)
             } catch {
                 throw SPARQLExpressionCompilationError.unsupportedExpression(
                     "invalid canonical RDF term: \(error)"
                 )
             }
+
+            var pending = [term]
+            var utf8Count = 0
+            while let current = pending.popLast() {
+                switch current {
+                case .iri(let iri):
+                    try addRDFString(iri.rawValue, to: &utf8Count)
+                case .blankNode(let identifier):
+                    try addRDFString(identifier.rawValue, to: &utf8Count)
+                case .literal(let literal):
+                    try addRDFString(literal.lexicalForm, to: &utf8Count)
+                    switch literal.annotation {
+                    case .typed(let datatype):
+                        try addRDFString(
+                            datatype.iri.rawValue,
+                            to: &utf8Count
+                        )
+                    case .languageTagged(let language):
+                        try addRDFString(language.rawValue, to: &utf8Count)
+                    case .directionalLanguageTagged(
+                        let language,
+                        let direction
+                    ):
+                        try addRDFString(language.rawValue, to: &utf8Count)
+                        try addRDFString(direction.rawValue, to: &utf8Count)
+                    }
+                case .tripleTerm(let subject, let predicate, let object):
+                    pending.append(object)
+                    pending.append(predicate.term)
+                    pending.append(subject.term)
+                }
+            }
+        }
+
+        private func addRDFString(
+            _ value: String,
+            to count: inout Int
+        ) throws {
+            let (next, overflow) = count.addingReportingOverflow(
+                value.utf8.count
+            )
             guard limits.maximumStringUTF8Count >= 0,
-                  plan.byteCount <= limits.maximumStringUTF8Count else {
+                  !overflow,
+                  next <= limits.maximumStringUTF8Count else {
                 throw SPARQLExpressionCompilationError.resourceLimitExceeded(
-                    resource: "expressionRDFTermBytes",
-                    actual: plan.byteCount,
+                    resource: "expressionRDFTermUTF8",
+                    actual: overflow ? Int.max : next,
                     maximum: limits.maximumStringUTF8Count
                 )
             }
+            count = next
         }
     }
 }

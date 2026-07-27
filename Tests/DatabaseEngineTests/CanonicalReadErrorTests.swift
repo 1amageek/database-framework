@@ -1,9 +1,8 @@
 #if !os(WASI)
 import Testing
 import Foundation
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 
@@ -32,13 +31,12 @@ struct CanonicalReadErrorTests {
         #expect(throws: CanonicalReadError.self) {
             _ = try CanonicalPartitionBinding.makeBinding(
                 for: TenantOrder.self,
-                partitions: [
-                    DatabaseObjectField(
-                        number: 99,
-                        name: "nonexistentField",
+                partitions: try FieldObject([
+                    (
+                        key: "nonexistentField",
                         value: .string("value")
                     ),
-                ]
+                ])
             )
         }
     }
@@ -50,13 +48,12 @@ struct CanonicalReadErrorTests {
         )
         let binding = try CanonicalPartitionBinding.makeBinding(
             for: TenantOrder.self,
-            partitions: [
-                DatabaseObjectField(
-                    number: UInt32(field.fieldNumber),
-                    name: field.name,
+            partitions: try FieldObject([
+                (
+                    key: field.name,
                     value: .string("tenant-1")
                 ),
-            ]
+            ])
         )
         #expect(binding != nil)
     }
@@ -69,13 +66,12 @@ struct CanonicalReadErrorTests {
         #expect(throws: CanonicalReadError.self) {
             _ = try CanonicalPartitionBinding.makeBinding(
                 for: TenantOrder.self,
-                partitions: [
-                    DatabaseObjectField(
-                        number: UInt32(field.fieldNumber),
-                        name: field.name,
+                partitions: try FieldObject([
+                    (
+                        key: field.name,
                         value: .int64(1)
                     ),
-                ]
+                ])
             )
         }
     }
@@ -84,7 +80,7 @@ struct CanonicalReadErrorTests {
     func staticDirectoryWithEmptyBinding() throws {
         let binding = try CanonicalPartitionBinding.makeBinding(
             for: StaticModel.self,
-            partitions: []
+            partitions: FieldObject()
         )
         #expect(binding == nil)
     }

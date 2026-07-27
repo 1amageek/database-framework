@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 
 public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
     case emptyMutation
@@ -15,19 +15,19 @@ public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
     case invalidPartition(entity: String, reason: String)
     case invalidGraphPartitions(String)
     case entityTypeMismatch(expected: String, actual: String)
-    case persistableIdentityMismatch(PersistableIdentity)
-    case duplicateChange(PersistableIdentity)
-    case duplicatePrecondition(PersistableIdentity)
-    case incompatiblePreconditions(PersistableIdentity)
-    case entityAlreadyExists(PersistableIdentity)
-    case entityNotFound(PersistableIdentity)
-    case entityVersionMismatch(PersistableIdentity)
+    case persistableIdentityMismatch(EntityReference)
+    case duplicateChange(EntityReference)
+    case duplicatePrecondition(EntityReference)
+    case incompatiblePreconditions(EntityReference)
+    case entityAlreadyExists(EntityReference)
+    case entityNotFound(EntityReference)
+    case entityVersionMismatch(EntityReference)
     case identifierNotRepresentable(String)
     case fieldNotRepresentable(entity: String, field: String)
     case invalidCompiledSchema(entity: String, reason: String)
     case unsupportedStatement(String)
-    case fieldsRequired(PersistableIdentity)
-    case fieldsMustBeEmptyForDelete(PersistableIdentity)
+    case fieldsRequired(EntityReference)
+    case fieldsMustBeEmptyForDelete(EntityReference)
     case stateStoreContainerMismatch
 
     public var description: String {
@@ -91,3 +91,4 @@ public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
         }
     }
 }
+import DatabaseKit

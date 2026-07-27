@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -91,9 +91,12 @@ private struct PercentileIndexContext {
         // Expression: endpoint + latencyMs (grouping + percentile value)
         let index = Index(
             name: indexName,
-            kind: PercentileIndexKind<EndpointRequest, Double>(
-                groupBy: [\.endpoint],
-                value: \.latencyMs
+            kind: percentileIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "endpoint", number: 2)
+                ],
+                valueField: FieldIdentity(name: "latencyMs", number: 3),
+                compression: 100
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "endpoint"),

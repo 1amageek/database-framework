@@ -6,29 +6,119 @@
 import Testing
 import TestHeartbeat
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 
 // MARK: - Test Structures
 
 /// Test address structure (nested type)
-struct MailingAddress: Sendable, Codable {
+struct MailingAddress:
+    Sendable,
+    FieldValueEncodable,
+    FieldValueDecodable
+{
     var street: String
     var city: String
     var zipCode: String
+
+    static var fieldSchemaType: FieldSchemaType { .nested }
+
+    func encodeFieldValue() throws(PersistableEncodingError) -> FieldValue {
+        .object(
+            try nestedFieldObject(
+                entity: "MailingAddress",
+                fields: [
+                    (key: "street", value: .string(street)),
+                    (key: "city", value: .string(city)),
+                    (key: "zipCode", value: .string(zipCode)),
+                ]
+            )
+        )
+    }
+
+    static func decodeFieldValue(
+        _ value: FieldValue,
+        field: String
+    ) throws(PersistableDecodingError) -> MailingAddress {
+        guard case .object(let object) = value,
+              case .string(let street) = object["street"],
+              case .string(let city) = object["city"],
+              case .string(let zipCode) = object["zipCode"] else {
+            throw .invalidValue(
+                field: field,
+                expected: "a mailing address object"
+            )
+        }
+        return MailingAddress(
+            street: street,
+            city: city,
+            zipCode: zipCode
+        )
+    }
 }
 
 /// Test profile structure (deeply nested)
-struct UserProfile: Sendable, Codable {
+struct UserProfile:
+    Sendable,
+    FieldValueEncodable,
+    FieldValueDecodable
+{
     var bio: String
     var website: String
+
+    static var fieldSchemaType: FieldSchemaType { .nested }
+
+    func encodeFieldValue() throws(PersistableEncodingError) -> FieldValue {
+        .object(
+            try nestedFieldObject(
+                entity: "UserProfile",
+                fields: [
+                    (key: "bio", value: .string(bio)),
+                    (key: "website", value: .string(website)),
+                ]
+            )
+        )
+    }
+
+    static func decodeFieldValue(
+        _ value: FieldValue,
+        field: String
+    ) throws(PersistableDecodingError) -> UserProfile {
+        guard case .object(let object) = value,
+              case .string(let bio) = object["bio"],
+              case .string(let website) = object["website"] else {
+            throw .invalidValue(
+                field: field,
+                expected: "a user profile object"
+            )
+        }
+        return UserProfile(bio: bio, website: website)
+    }
+}
+
+private func nestedFieldObject(
+    entity: String,
+    fields: consuming [(key: String, value: FieldValue)]
+) throws(PersistableEncodingError) -> FieldObject {
+    do {
+        return try FieldObject(fields)
+    } catch let error {
+        switch error {
+        case .duplicateKey(let name):
+            throw .invalidSchema(
+                entity: entity,
+                reason: "field '\(name)' is declared more than once"
+            )
+        }
+    }
 }
 
 /// Test user with nested address
 @Persistable
 struct UserWithAddress {
+    var id: String = ""
     var email: String
     var name: String
     var address: MailingAddress
@@ -37,6 +127,7 @@ struct UserWithAddress {
 /// Test user with deeply nested profile
 @Persistable
 struct UserWithProfile {
+    var id: String = ""
     var email: String
     var name: String
     var profile: UserProfile
@@ -46,6 +137,7 @@ struct UserWithProfile {
 /// Simple test user without nested fields
 @Persistable
 struct SimpleUser {
+    var id: String = ""
     var email: String
     var name: String
     var age: Int64
@@ -65,7 +157,7 @@ struct DataAccessTests {
         let values = try DataAccess.extractField(from: user, keyPath: "email")
 
         #expect(values.count == 1)
-        #expect((values[0] as? String) == "test@example.com")
+        #expect(try TupleDecoder.decodeString(values[0]) == "test@example.com")
     }
 
     @Test("extractField extracts simple integer field")
@@ -75,7 +167,7 @@ struct DataAccessTests {
         let values = try DataAccess.extractField(from: user, keyPath: "age")
 
         #expect(values.count == 1)
-        #expect((values[0] as? Int64) == 30)
+        #expect(try TupleDecoder.decodeInt64(values[0]) == 30)
     }
 
     @Test("extractField throws for non-existent field")
@@ -97,7 +189,7 @@ struct DataAccessTests {
         let values = try DataAccess.extractField(from: user, keyPath: "address.city")
 
         #expect(values.count == 1)
-        #expect((values[0] as? String) == "San Francisco")
+        #expect(try TupleDecoder.decodeString(values[0]) == "San Francisco")
     }
 
     @Test("extractField extracts all nested fields")
@@ -109,9 +201,9 @@ struct DataAccessTests {
         let cityValues = try DataAccess.extractField(from: user, keyPath: "address.city")
         let zipValues = try DataAccess.extractField(from: user, keyPath: "address.zipCode")
 
-        #expect((streetValues[0] as? String) == "123 Main St")
-        #expect((cityValues[0] as? String) == "San Francisco")
-        #expect((zipValues[0] as? String) == "94102")
+        #expect(try TupleDecoder.decodeString(streetValues[0]) == "123 Main St")
+        #expect(try TupleDecoder.decodeString(cityValues[0]) == "San Francisco")
+        #expect(try TupleDecoder.decodeString(zipValues[0]) == "94102")
     }
 
     @Test("extractField throws for non-existent nested field")
@@ -144,7 +236,7 @@ struct DataAccessTests {
         let values = try DataAccess.evaluate(item: user, expression: expr)
 
         #expect(values.count == 1)
-        #expect((values[0] as? String) == "test@example.com")
+        #expect(try TupleDecoder.decodeString(values[0]) == "test@example.com")
     }
 
     @Test("evaluate NestExpression for nested field")
@@ -159,7 +251,7 @@ struct DataAccessTests {
         let values = try DataAccess.evaluate(item: user, expression: nestExpr)
 
         #expect(values.count == 1)
-        #expect((values[0] as? String) == "San Francisco")
+        #expect(try TupleDecoder.decodeString(values[0]) == "San Francisco")
     }
 
     @Test("evaluate ConcatenateKeyExpression with nested field")
@@ -178,8 +270,8 @@ struct DataAccessTests {
         let values = try DataAccess.evaluate(item: user, expression: concatExpr)
 
         #expect(values.count == 2)
-        #expect((values[0] as? String) == "test@example.com")
-        #expect((values[1] as? String) == "San Francisco")
+        #expect(try TupleDecoder.decodeString(values[0]) == "test@example.com")
+        #expect(try TupleDecoder.decodeString(values[1]) == "San Francisco")
     }
 
     @Test("evaluate KeyExpression created from factory")
@@ -193,7 +285,7 @@ struct DataAccessTests {
         let values = try DataAccess.evaluate(item: user, expression: expr)
 
         #expect(values.count == 1)
-        #expect((values[0] as? String) == "San Francisco")
+        #expect(try TupleDecoder.decodeString(values[0]) == "San Francisco")
     }
 
     @Test("evaluate composite index expression with nested fields")
@@ -207,8 +299,8 @@ struct DataAccessTests {
         let values = try DataAccess.evaluate(item: user, expression: expr)
 
         #expect(values.count == 2)
-        #expect((values[0] as? String) == "San Francisco")
-        #expect((values[1] as? String) == "94102")
+        #expect(try TupleDecoder.decodeString(values[0]) == "San Francisco")
+        #expect(try TupleDecoder.decodeString(values[1]) == "94102")
     }
 }
 #endif

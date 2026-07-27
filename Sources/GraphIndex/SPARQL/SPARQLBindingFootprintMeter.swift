@@ -1,6 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 
 /// Reusable, request-admitted retained-footprint traversal for SPARQL rows.
 ///
@@ -10,14 +10,19 @@ final class SPARQLBindingFootprintMeter {
     private enum WorkItem {
         case field(FieldValue)
         case fieldArray([FieldValue], nextIndex: Int)
-        case rdf(DatabaseRDFTerm)
+        case objectFields(
+            [(key: String, value: FieldValue)],
+            nextIndex: Int
+        )
+        case identity(EntityReference)
+        case identifier(ReferenceIdentifier)
+        case identifierArray([ReferenceIdentifier], nextIndex: Int)
         case fieldComparison(FieldValue, FieldValue)
         case fieldArrayComparison(
             [FieldValue],
             [FieldValue],
             nextIndex: Int
         )
-        case rdfComparison(DatabaseRDFTerm, DatabaseRDFTerm)
     }
 
     // Fixed v1 admission constants. They are protocol/runtime budget units and
@@ -30,9 +35,13 @@ final class SPARQLBindingFootprintMeter {
     private static let stringStorageByteCount: UInt64 = 16
     private static let arrayStorageByteCount: UInt64 = 64
     private static let arrayElementSlotByteCount: UInt64 = 32
+    private static let objectStorageByteCount: UInt64 = 64
+    private static let objectFieldSlotByteCount: UInt64 = 64
+    private static let identityStorageByteCount: UInt64 = 64
+    private static let identifierArrayStorageByteCount: UInt64 = 64
+    private static let identifierElementSlotByteCount: UInt64 = 32
     private static let bytesStorageOwnerByteCount: UInt64 = 16
-    private static let rdfTermNodeByteCount: UInt64 = 32
-    private static let rdfLiteralByteCount: UInt64 = 24
+    private static let vectorStorageOwnerByteCount: UInt64 = 64
     private static let geometricCapacityMultiplier: UInt64 = 2
 
     static func retainedArrayLayout() throws -> DatabaseRetainedArrayLayout {
@@ -371,23 +380,40 @@ final class SPARQLBindingFootprintMeter {
             switch item {
             case .field(let value):
                 switch value {
-                case .int64, .uint64, .double, .bool, .null:
+                case .null, .bool,
+                     .int8, .int16, .int32, .int64,
+                     .uint8, .uint16, .uint32, .uint64,
+                     .float32, .float64, .decimal,
+                     .date, .time, .dateTime, .timestamp,
+                     .timeSpan, .calendarPeriod,
+                     .geographicPoint, .geographicPosition, .uuid:
                     break
                 case .string(let value):
                     footprint = try footprint.adding(
                         try Self.stringFootprint(value)
                     )
-                case .data(let value):
+                case .bytes(let value):
                     footprint = try footprint.adding(
                         DatabaseIntermediateFootprint(
                             bytes: try Self.checkedAdd(
                                 Self.bytesStorageOwnerByteCount,
-                                Self.retainedStorageByteCount(of: value)
+                                try Self.retainedByteCount(of: value)
+                            )
+                        )
+                    )
+                case .vector(let value):
+                    footprint = try footprint.adding(
+                        DatabaseIntermediateFootprint(
+                            bytes: try Self.checkedAdd(
+                                Self.vectorStorageOwnerByteCount,
+                                try Self.retainedByteCount(of: value)
                             )
                         )
                     )
                 case .rdfTerm(let term):
-                    try append(.rdf(term))
+                    footprint = try footprint.adding(
+                        RDFTermRetainedFootprint.measure(term)
+                    )
                 case .array(let values):
                     let slots = try DatabaseIntermediateFootprint(
                         bytes: Self.arrayElementSlotByteCount
@@ -402,6 +428,29 @@ final class SPARQLBindingFootprintMeter {
                     if !values.isEmpty {
                         try append(.fieldArray(values, nextIndex: 0))
                     }
+                case .object(let fields):
+                    let slots = try DatabaseIntermediateFootprint(
+                        bytes: Self.objectFieldSlotByteCount
+                    ).multiplied(
+                        by: try Self.checkedCapacity(for: fields.count)
+                    )
+                    footprint = try footprint.adding(
+                        DatabaseIntermediateFootprint(
+                            bytes: Self.objectStorageByteCount
+                        )
+                    ).adding(slots)
+                    if !fields.isEmpty {
+                        try append(
+                            .objectFields(fields.fields, nextIndex: 0)
+                        )
+                    }
+                case .reference(let identity):
+                    footprint = try footprint.adding(
+                        DatabaseIntermediateFootprint(
+                            bytes: Self.identityStorageByteCount
+                        )
+                    )
+                    try append(.identity(identity))
                 }
 
             case .fieldArray(let values, let nextIndex):
@@ -413,43 +462,87 @@ final class SPARQLBindingFootprintMeter {
                 }
                 try append(.field(values[nextIndex]))
 
-            case .rdf(let term):
+            case .objectFields(let fields, let nextIndex):
+                let followingIndex = nextIndex + 1
+                if followingIndex < fields.count {
+                    try append(
+                        .objectFields(fields, nextIndex: followingIndex)
+                    )
+                }
+                let field = fields[nextIndex]
+                footprint = try footprint.adding(
+                    try Self.stringFootprint(field.key)
+                )
+                try append(.field(field.value))
+
+            case .identity(let identity):
+                footprint = try footprint.adding(
+                    try Self.stringFootprint(identity.entity)
+                )
+                try append(.identifier(identity.id))
+                let partitions = identity.partitions
+                let slots = try DatabaseIntermediateFootprint(
+                    bytes: Self.objectFieldSlotByteCount
+                ).multiplied(
+                    by: try Self.checkedCapacity(for: partitions.count)
+                )
                 footprint = try footprint.adding(
                     DatabaseIntermediateFootprint(
-                        bytes: Self.rdfTermNodeByteCount
+                        bytes: Self.objectStorageByteCount
                     )
-                )
-                switch term {
-                case .iri(let value), .blankNode(let value):
+                ).adding(slots)
+                if !partitions.isEmpty {
+                    try append(
+                        .objectFields(partitions.fields, nextIndex: 0)
+                    )
+                }
+
+            case .identifier(let identifier):
+                switch identifier {
+                case .bool,
+                     .int8, .int16, .int32, .int64,
+                     .uint8, .uint16, .uint32, .uint64,
+                     .uuid:
+                    break
+                case .string(let value):
                     footprint = try footprint.adding(
                         try Self.stringFootprint(value)
                     )
-                case .literal(let literal):
+                case .bytes(let value):
                     footprint = try footprint.adding(
                         DatabaseIntermediateFootprint(
-                            bytes: Self.rdfLiteralByteCount
+                            bytes: try Self.checkedAdd(
+                                Self.bytesStorageOwnerByteCount,
+                                try Self.retainedByteCount(of: value)
+                            )
                         )
-                    ).adding(
-                        try Self.stringFootprint(literal.lexicalForm)
                     )
-                    switch literal.annotation {
-                    case .typed(let datatype):
-                        footprint = try footprint.adding(
-                            try Self.stringFootprint(datatype.rawValue)
+                case .composite(let values):
+                    let slots = try DatabaseIntermediateFootprint(
+                        bytes: Self.identifierElementSlotByteCount
+                    ).multiplied(
+                        by: try Self.checkedCapacity(for: values.count)
+                    )
+                    footprint = try footprint.adding(
+                        DatabaseIntermediateFootprint(
+                            bytes: Self.identifierArrayStorageByteCount
                         )
-                    case .languageTagged(let language),
-                         .directionalLanguageTagged(let language, _):
-                        footprint = try footprint.adding(
-                            try Self.stringFootprint(language.rawValue)
-                        )
+                    ).adding(slots)
+                    if !values.isEmpty {
+                        try append(.identifierArray(values, nextIndex: 0))
                     }
-                case .tripleTerm(let subject, let predicate, let object):
-                    try append(.rdf(object))
-                    try append(.rdf(predicate))
-                    try append(.rdf(subject))
                 }
 
-            case .fieldComparison, .fieldArrayComparison, .rdfComparison:
+            case .identifierArray(let values, let nextIndex):
+                let followingIndex = nextIndex + 1
+                if followingIndex < values.count {
+                    try append(
+                        .identifierArray(values, nextIndex: followingIndex)
+                    )
+                }
+                try append(.identifier(values[nextIndex]))
+
+            case .fieldComparison, .fieldArrayComparison:
                 preconditionFailure(
                     "Comparison work item reached footprint traversal"
                 )
@@ -497,7 +590,10 @@ final class SPARQLBindingFootprintMeter {
                         )
                     }
                 case (.rdfTerm(let leftTerm), .rdfTerm(let rightTerm)):
-                    try append(.rdfComparison(leftTerm, rightTerm))
+                    guard rdfTermsEqual(leftTerm, rightTerm) else {
+                        worklist.removeAll(keepingCapacity: true)
+                        return false
+                    }
                 default:
                     guard left == right else {
                         worklist.removeAll(keepingCapacity: true)
@@ -527,46 +623,55 @@ final class SPARQLBindingFootprintMeter {
                     )
                 )
 
-            case .rdfComparison(let left, let right):
-                switch (left, right) {
-                case (.iri(let leftValue), .iri(let rightValue)),
-                     (.blankNode(let leftValue), .blankNode(let rightValue)):
-                    guard leftValue == rightValue else {
-                        worklist.removeAll(keepingCapacity: true)
-                        return false
-                    }
-                case (.literal(let leftValue), .literal(let rightValue)):
-                    guard leftValue == rightValue else {
-                        worklist.removeAll(keepingCapacity: true)
-                        return false
-                    }
-                case (
-                    .tripleTerm(
-                        let leftSubject,
-                        let leftPredicate,
-                        let leftObject
-                    ),
-                    .tripleTerm(
-                        let rightSubject,
-                        let rightPredicate,
-                        let rightObject
-                    )
-                ):
-                    try append(.rdfComparison(leftObject, rightObject))
-                    try append(.rdfComparison(leftPredicate, rightPredicate))
-                    try append(.rdfComparison(leftSubject, rightSubject))
-                default:
-                    worklist.removeAll(keepingCapacity: true)
-                    return false
-                }
-
-            case .field, .fieldArray, .rdf:
+            case .field, .fieldArray, .objectFields, .identity, .identifier,
+                 .identifierArray:
                 preconditionFailure(
                     "Footprint work item reached comparison traversal"
                 )
             }
         }
         return true
+    }
+
+    private func rdfTermsEqual(
+        _ left: RDFTerm,
+        _ right: RDFTerm
+    ) -> Bool {
+        var leftCursor = left
+        var rightCursor = right
+        while true {
+            switch (leftCursor, rightCursor) {
+            case (.iri(let leftValue), .iri(let rightValue)):
+                return leftValue == rightValue
+            case (
+                .blankNode(let leftValue),
+                .blankNode(let rightValue)
+            ):
+                return leftValue == rightValue
+            case (.literal(let leftValue), .literal(let rightValue)):
+                return leftValue == rightValue
+            case (
+                .tripleTerm(
+                    let leftSubject,
+                    let leftPredicate,
+                    let leftObject
+                ),
+                .tripleTerm(
+                    let rightSubject,
+                    let rightPredicate,
+                    let rightObject
+                )
+            ):
+                guard leftSubject == rightSubject,
+                      leftPredicate == rightPredicate else {
+                    return false
+                }
+                leftCursor = leftObject
+                rightCursor = rightObject
+            default:
+                return false
+            }
+        }
     }
 
     private func append(_ item: WorkItem) throws {
@@ -654,17 +759,23 @@ final class SPARQLBindingFootprintMeter {
         )
     }
 
-    private static func retainedStorageByteCount(
-        of bytes: DatabaseBytes
-    ) -> UInt64 {
-        switch bytes.sharedStorage {
-        case .array(let storage, _):
-            UInt64(storage.count)
-        case .allocation(let allocation, _):
-            UInt64(allocation.count)
-        case .owner(let owner, _):
-            UInt64(owner.count)
+    private static func retainedByteCount(
+        of bytes: ByteString
+    ) throws -> UInt64 {
+        guard let retainedByteCount = bytes.retainedByteCount else {
+            throw SPARQLBindingFootprintError
+                .unknownByteStringRetainedSize
         }
+        return UInt64(retainedByteCount)
+    }
+
+    private static func retainedByteCount(
+        of vector: Vector
+    ) throws -> UInt64 {
+        guard let retainedByteCount = vector.retainedByteCount else {
+            throw SPARQLBindingFootprintError.unknownVectorRetainedSize
+        }
+        return UInt64(retainedByteCount)
     }
 
     private static func checkedAdd(

@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 
 public struct DatabaseRDFDocumentStore: Sendable {
@@ -77,7 +77,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
     public func replace(
         identifier: String,
         auxiliaryIdentifiers: [String],
-        quads: [DatabaseRDFQuad],
+        quads: [RDFQuad],
         expectedRevision: UInt64?,
         transaction: any TransactionAccess
     ) async throws -> UInt64 {
@@ -174,7 +174,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
             return nil
         }
         var reader = DatabaseWireReader(
-            DatabaseBytes(retaining: bytes),
+            ByteString(retaining: bytes),
             limits: wireLimits
         )
         guard try reader.readUInt16() == Self.metadataFormatVersion else {
@@ -229,7 +229,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         limit: Int,
         totalCount: Int,
         transaction: any TransactionAccess
-    ) async throws -> [DatabaseRDFQuad] {
+    ) async throws -> [RDFQuad] {
         guard offset < totalCount else { return [] }
         guard let encodedOffset = Int64(exactly: offset) else {
             throw DatabaseRDFDocumentStoreError.invalidPage(
@@ -239,7 +239,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         }
         let quads = documentSubspace(identifier).subspace("quads")
         let end = quads.range().end
-        var values: [DatabaseRDFQuad] = []
+        var values: [RDFQuad] = []
         values.reserveCapacity(min(limit, totalCount - offset))
         let rows = try await transaction.collectRange(
             begin: quads.pack(Tuple(encodedOffset)),
@@ -248,9 +248,9 @@ public struct DatabaseRDFDocumentStore: Sendable {
         )
         for (_, bytes) in rows {
             values.append(
-                try DatabaseEnvelopeCodec.decode(
-                    DatabaseRDFQuad.self,
-                    from: DatabaseBytes(retaining: bytes),
+                try ServerPayloadDecoder.decode(
+                    RDFQuad.self,
+                    from: ByteString(retaining: bytes),
                     limits: wireLimits
                 )
             )
@@ -266,13 +266,13 @@ public struct DatabaseRDFDocumentStore: Sendable {
     }
 
     private func canonicalize(
-        _ quads: [DatabaseRDFQuad]
-    ) throws -> [DatabaseBytes] {
-        var unique = Set<DatabaseBytes>()
+        _ quads: [RDFQuad]
+    ) throws -> [ByteString] {
+        var unique = Set<ByteString>()
         unique.reserveCapacity(quads.count)
         for quad in quads {
             unique.insert(
-                try DatabaseEnvelopeCodec.encode(quad, limits: wireLimits)
+                try ServerPayloadEncoder.encode(quad, limits: wireLimits)
             )
         }
         return unique.sorted { left, right in
@@ -309,7 +309,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         return current + 1
     }
 
-    private func encode(_ metadata: Metadata) throws -> DatabaseBytes {
+    private func encode(_ metadata: Metadata) throws -> ByteString {
         try DatabaseWireWriter.encode(limits: wireLimits) {
             (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
             writer.writeUInt16(Self.metadataFormatVersion)
@@ -345,3 +345,4 @@ public struct DatabaseRDFDocumentStore: Sendable {
         let quadCount: UInt64
     }
 }
+import DatabaseKit

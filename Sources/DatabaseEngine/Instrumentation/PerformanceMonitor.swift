@@ -12,14 +12,14 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import Synchronization
 
 // MARK: - SlowQueryEntry
 
-/// スロークエリログエントリ
+/// A recorded slow database operation.
 ///
-/// 閾値を超えた遅いトランザクションの情報を記録する。
+/// Captures a transaction whose execution exceeded the configured threshold.
 ///
 /// **Usage**:
 /// ```swift
@@ -29,19 +29,19 @@ import Synchronization
 /// }
 /// ```
 public struct SlowQueryEntry: Sendable {
-    /// 記録された時刻
+    /// Time at which the operation was recorded.
     public let timestamp: Date
 
-    /// クエリ/トランザクションの説明
+    /// Query or transaction description.
     public let queryDescription: String
 
-    /// 対象の型名（わかる場合）
+    /// Persistable type name, when known.
     public let typeName: String?
 
-    /// 実行時間（秒）
+    /// Execution time in seconds.
     public let executionTime: TimeInterval
 
-    /// トランザクションID（あれば）
+    /// Transaction identifier, when available.
     public let transactionID: String?
 
     public init(
@@ -69,9 +69,9 @@ extension SlowQueryEntry: CustomStringConvertible {
 
 // MARK: - DatabaseMetrics
 
-/// データベースメトリクス
+/// Current database performance metrics.
 ///
-/// 現在のパフォーマンス状況を表すメトリクス。
+/// Represents a point-in-time performance snapshot.
 ///
 /// **Usage**:
 /// ```swift
@@ -80,39 +80,39 @@ extension SlowQueryEntry: CustomStringConvertible {
 /// print("QPS: \(metrics.queriesPerSecond)")
 /// ```
 public struct DatabaseMetrics: Sendable {
-    /// メトリクス取得時刻
+    /// Snapshot timestamp.
     public let timestamp: Date
 
-    /// アクティブなトランザクション数
+    /// Number of active transactions.
     public let activeTransactions: Int
 
-    /// レイテンシP50（秒）
+    /// P50 latency in seconds.
     public let latencyP50: TimeInterval
 
-    /// レイテンシP99（秒）
+    /// P99 latency in seconds.
     public let latencyP99: TimeInterval
 
-    /// 秒間クエリ数
+    /// Queries per second.
     public let queriesPerSecond: Double
 
-    /// 総トランザクション数
+    /// Total transaction count.
     public let totalTransactions: Int64
 
-    /// 成功したトランザクション数
+    /// Successful transaction count.
     public let successfulTransactions: Int64
 
-    /// 成功率 (0.0-1.0)
+    /// Success ratio from 0.0 through 1.0.
     public var successRate: Double {
         guard totalTransactions > 0 else { return 0 }
         return Double(successfulTransactions) / Double(totalTransactions)
     }
 
-    /// レイテンシP50（ミリ秒）
+    /// P50 latency in milliseconds.
     public var latencyP50Ms: Double {
         latencyP50 * 1000
     }
 
-    /// レイテンシP99（ミリ秒）
+    /// P99 latency in milliseconds.
     public var latencyP99Ms: Double {
         latencyP99 * 1000
     }
@@ -150,49 +150,49 @@ extension DatabaseMetrics: CustomStringConvertible {
 
 // MARK: - PerformanceMonitorProtocol
 
-/// パフォーマンス監視プロトコル
+/// Database performance monitoring contract.
 ///
-/// データベースのパフォーマンス監視機能を提供する。
+/// Provides slow-operation logging and current metrics.
 public protocol PerformanceMonitorProtocol: Sendable {
-    /// スロークエリログを有効化
+    /// Enables slow-operation logging.
     ///
-    /// - Parameter threshold: スロークエリとみなす閾値（秒）
+    /// - Parameter threshold: Slow-operation threshold in seconds.
     func enableSlowQueryLog(threshold: TimeInterval)
 
-    /// スロークエリログを無効化
+    /// Disables slow-operation logging.
     func disableSlowQueryLog()
 
-    /// スロークエリを取得
+    /// Returns recorded slow operations.
     ///
-    /// - Parameter limit: 取得する最大件数
-    /// - Returns: スロークエリエントリの配列（新しい順）
+    /// - Parameter limit: Maximum number of entries.
+    /// - Returns: Entries ordered from newest to oldest.
     func getSlowQueries(limit: Int) -> [SlowQueryEntry]
 
-    /// スロークエリログをクリア
+    /// Clears recorded slow operations.
     func clearSlowQueries()
 
-    /// 現在のメトリクスを取得
+    /// Returns current metrics.
     func currentMetrics() -> DatabaseMetrics
 
-    /// 全てのメトリクスをリセット
+    /// Resets all metrics.
     func reset()
 }
 
 // MARK: - PerformanceMonitor
 
-/// パフォーマンス監視クラス
+/// Default database performance monitor.
 ///
-/// `TransactionListener`を実装し、トランザクションイベントからメトリクスを収集する。
+/// Collects metrics from TransactionListener events.
 ///
 /// **Usage**:
 /// ```swift
 /// let monitor = PerformanceMonitor()
 /// container.addTransactionListener(monitor)
 ///
-/// // スロークエリログを有効化 (100ms以上)
+/// // Record operations taking at least 100 milliseconds.
 /// monitor.enableSlowQueryLog(threshold: 0.1)
 ///
-/// // ... トランザクション実行 ...
+/// // Execute transactions.
 ///
 /// let metrics = monitor.currentMetrics()
 /// print("P50 latency: \(metrics.latencyP50Ms)ms")
@@ -206,30 +206,30 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
 
     // MARK: - Configuration
 
-    /// スロークエリ閾値（nil = 無効）
+    /// Slow-operation threshold; nil disables logging.
     private let slowQueryThreshold: Mutex<TimeInterval?>
 
-    /// スロークエリログの最大件数
+    /// Maximum number of retained slow operations.
     private let maxSlowQueries: Int
 
-    /// レイテンシサンプルの最大数
+    /// Maximum number of retained latency samples.
     private let maxLatencySamples: Int
 
-    /// QPS計算のウィンドウ（秒）
+    /// Query-rate measurement window in seconds.
     private let qpsWindow: TimeInterval
 
     // MARK: - State
 
-    /// スロークエリログ（循環バッファ）
+    /// Bounded slow-operation log.
     private let slowQueries: Mutex<[SlowQueryEntry]>
 
-    /// レイテンシサンプル（Reservoir Sampling用）
+    /// Latency samples maintained through reservoir sampling.
     private let latencySamples: Mutex<LatencySampleState>
 
-    /// トランザクションカウンタ
+    /// Transaction counters.
     private let counters: Mutex<TransactionCounters>
 
-    /// クエリタイムスタンプ（QPS計算用）
+    /// Query timestamps used to calculate query rate.
     private let queryTimestamps: Mutex<[Date]>
 
     // MARK: - Internal Types
@@ -247,12 +247,12 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
 
     // MARK: - Initialization
 
-    /// パフォーマンスモニターを作成
+    /// Creates a performance monitor.
     ///
     /// - Parameters:
-    ///   - maxSlowQueries: スロークエリログの最大件数（デフォルト: 100）
-    ///   - maxLatencySamples: レイテンシサンプルの最大数（デフォルト: 1000）
-    ///   - qpsWindow: QPS計算のウィンドウ秒数（デフォルト: 60）
+    ///   - maxSlowQueries: Maximum slow-operation entries. Defaults to 100.
+    ///   - maxLatencySamples: Maximum latency samples. Defaults to 1,000.
+    ///   - qpsWindow: Query-rate window in seconds. Defaults to 60.
     public init(
         maxSlowQueries: Int = 100,
         maxLatencySamples: Int = 1000,
@@ -350,16 +350,16 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
 
     // MARK: - Private Methods
 
-    /// レイテンシを記録（Reservoir Sampling）
+    /// Records latency using reservoir sampling.
     private func recordLatency(_ duration: TimeInterval) {
         latencySamples.withLock { state in
             state.totalCount += 1
 
             if state.samples.count < maxLatencySamples {
-                // バッファに空きがあれば追加
+                // Fill the reservoir before replacing samples.
                 state.samples.append(duration)
             } else {
-                // Reservoir Sampling: 確率的に置換
+                // Replace an existing sample with reservoir probability.
                 let index = Int.random(in: 0..<state.totalCount)
                 if index < maxLatencySamples {
                     state.samples[index] = duration
@@ -368,19 +368,19 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
         }
     }
 
-    /// クエリタイムスタンプを記録（QPS計算用）
+    /// Records a query timestamp for rate calculation.
     private func recordQueryTimestamp() {
         let now = Date()
         let cutoff = now.addingTimeInterval(-qpsWindow)
 
         queryTimestamps.withLock { timestamps in
-            // 古いタイムスタンプを削除
+            // Remove timestamps outside the measurement window.
             timestamps.removeAll { $0 < cutoff }
             timestamps.append(now)
         }
     }
 
-    /// スロークエリをチェックして記録
+    /// Records the operation when it exceeds the slow threshold.
     private func checkSlowQuery(duration: TimeInterval, transactionID: String?, failed: Bool = false) {
         guard let threshold = slowQueryThreshold.withLock({ $0 }) else { return }
         guard duration >= threshold else { return }
@@ -393,14 +393,14 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
 
         slowQueries.withLock { queries in
             queries.append(entry)
-            // 最大件数を超えたら古いものを削除
+            // Discard the oldest entry when capacity is exceeded.
             if queries.count > maxSlowQueries {
                 queries.removeFirst(queries.count - maxSlowQueries)
             }
         }
     }
 
-    /// パーセンタイルを計算
+    /// Calculates a percentile from retained samples.
     private func calculatePercentiles() -> (p50: TimeInterval, p99: TimeInterval) {
         let samples = latencySamples.withLock { $0.samples }
 
@@ -417,7 +417,7 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
         return (sorted[p50Index], sorted[p99Index])
     }
 
-    /// QPSを計算
+    /// Calculates queries per second.
     private func calculateQPS() -> Double {
         let timestamps = queryTimestamps.withLock { $0 }
         guard !timestamps.isEmpty else { return 0 }
@@ -433,14 +433,14 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
 // MARK: - PerformanceMonitor Extensions
 
 extension PerformanceMonitor {
-    /// 手動でスロークエリを記録
+    /// Records a slow operation explicitly.
     ///
-    /// クエリ実行時に直接呼び出して記録する場合に使用。
+    /// Use this when the caller measures an operation outside listener events.
     ///
     /// - Parameters:
-    ///   - description: クエリの説明
-    ///   - typeName: 対象の型名
-    ///   - executionTime: 実行時間（秒）
+    ///   - description: Operation description.
+    ///   - typeName: Persistable type name, when known.
+    ///   - executionTime: Execution time in seconds.
     public func recordSlowQuery(
         description: String,
         typeName: String? = nil,
@@ -463,22 +463,22 @@ extension PerformanceMonitor {
         }
     }
 
-    /// 現在のスロークエリ閾値を取得
+    /// Current slow-operation threshold.
     public var currentThreshold: TimeInterval? {
         slowQueryThreshold.withLock { $0 }
     }
 
-    /// スロークエリログが有効かどうか
+    /// Whether slow-operation logging is enabled.
     public var isSlowQueryLogEnabled: Bool {
         currentThreshold != nil
     }
 
-    /// 記録されているスロークエリ数
+    /// Number of retained slow operations.
     public var slowQueryCount: Int {
         slowQueries.withLock { $0.count }
     }
 
-    /// サンプル数
+    /// Number of retained latency samples.
     public var sampleCount: Int {
         latencySamples.withLock { $0.samples.count }
     }

@@ -1,12 +1,11 @@
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
 import OntologyIndex
 
 /// Evaluates the constructor functions imported by SPARQL from XPath.
 enum SPARQLDatatypeConstructor {
     static func evaluate(
-        identifier: DatabaseRDFIRI,
+        identifier: RDFIRI,
         argument: FieldValue
     ) throws -> FieldValue {
         let localName = identifier.rawValue.dropFirst(
@@ -60,10 +59,13 @@ enum SPARQLDatatypeConstructor {
     ) throws -> String {
         switch argument {
         case .rdfTerm(.iri(let iri)):
-            return iri
+            return iri.rawValue
         case .rdfTerm(.literal(let literal)):
-            guard literal.language == nil, literal.direction == nil,
-                  isSPARQLOperandDatatype(literal.datatype) else {
+            guard literal.languageTag == nil,
+                  literal.baseDirection == nil,
+                  isSPARQLOperandDatatype(
+                    literal.datatypeIRI.rawValue
+                  ) else {
                 throw typeError("xsd:string cannot cast this RDF literal")
             }
             return literal.lexicalForm
@@ -71,13 +73,38 @@ enum SPARQLDatatypeConstructor {
             return value
         case .bool(let value):
             return value ? "true" : "false"
+        case .int8(let value):
+            return String(value)
+        case .int16(let value):
+            return String(value)
+        case .int32(let value):
+            return String(value)
         case .int64(let value):
+            return String(value)
+        case .uint8(let value):
+            return String(value)
+        case .uint16(let value):
+            return String(value)
+        case .uint32(let value):
             return String(value)
         case .uint64(let value):
             return String(value)
-        case .double(let value):
+        case .float32(let value):
+            return floatingLexicalForm(Double(value))
+        case .float64(let value):
             return floatingLexicalForm(value)
-        case .data, .rdfTerm, .null, .array:
+        case .decimal:
+            guard let numeric = SPARQLNumericValue(argument),
+                  let lexicalForm =
+                    try numeric.decimalConstructorLexicalForm() else {
+                throw typeError("xsd:string received an invalid decimal")
+            }
+            return lexicalForm
+        case .bytes,
+             .date, .time, .dateTime, .timestamp,
+             .timeSpan, .calendarPeriod,
+             .geographicPoint, .geographicPosition, .vector,
+             .uuid, .object, .reference, .rdfTerm, .null, .array:
             throw typeError("xsd:string requires an IRI or SPARQL operand literal")
         }
     }
@@ -92,7 +119,7 @@ enum SPARQLDatatypeConstructor {
         case .bool(let value):
             return value ? "true" : "false"
         case .rdfTerm(.literal(let literal))
-            where literal.datatype == xsd("boolean"):
+            where literal.datatypeIRI.rawValue == xsd("boolean"):
             switch literal.lexicalForm {
             case "true", "1": return "true"
             case "false", "0": return "false"
@@ -170,7 +197,7 @@ enum SPARQLDatatypeConstructor {
     ) throws -> String {
         switch argument {
         case .rdfTerm(.literal(let literal))
-            where literal.datatype == xsd("dateTime"):
+            where literal.datatypeIRI.rawValue == xsd("dateTime"):
             return literal.lexicalForm
         default:
             return try stringInput(argument, target: "xsd:dateTime")
@@ -185,9 +212,9 @@ enum SPARQLDatatypeConstructor {
         case .string(let value):
             return value
         case .rdfTerm(.literal(let literal))
-            where literal.language == nil
-                && literal.direction == nil
-                && literal.datatype == xsd("string"):
+            where literal.languageTag == nil
+                && literal.baseDirection == nil
+                && literal.datatypeIRI.rawValue == xsd("string"):
             return literal.lexicalForm
         default:
             throw typeError("\(target) requires a compatible numeric, boolean, or string literal")
@@ -199,7 +226,7 @@ enum SPARQLDatatypeConstructor {
         case .bool(let value):
             return value
         case .rdfTerm(.literal(let literal))
-            where literal.datatype == xsd("boolean"):
+            where literal.datatypeIRI.rawValue == xsd("boolean"):
             switch literal.lexicalForm {
             case "true", "1": return true
             case "false", "0": return false
@@ -214,9 +241,9 @@ enum SPARQLDatatypeConstructor {
         datatype: String,
         lexicalForm: String
     ) throws -> FieldValue {
-        let literal: DatabaseRDFLiteral
+        let literal: RDFLiteral
         do {
-            literal = try DatabaseRDFLiteral(
+            literal = try RDFLiteral(
                 lexicalForm: lexicalForm,
                 datatype: datatype
             )

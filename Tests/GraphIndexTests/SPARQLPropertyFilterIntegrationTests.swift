@@ -4,10 +4,9 @@
 
 import Testing
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseRuntime
-import Graph
 import DatabaseEngine
 import StorageKit
 import FDBStorage
@@ -19,45 +18,46 @@ fileprivate struct SocialConnection {
     #Directory<SocialConnection>("test", "sparql_property")
 
     var id: String = UUID().uuidString
-    var from: String = ""
-    var target: String = ""
-    var relation: String = ""
-    var since: Int = 0
+    var from: RDFTerm = .iri(.xsdString)
+    var target: RDFTerm = .iri(.xsdString)
+    var relation: RDFTerm = .iri(.xsdString)
+    var since: Int64 = 0
     var strength: Double = 0.0
     var status: String = "active"
 
-    #Index(GraphIndexKind<SocialConnection>(
-        from: \.from,
-        edge: \.relation,
-        to: \.target,
-        graph: nil,
-        strategy: .tripleStore
-    ), storedFields: [
-        \SocialConnection.since,
-        \SocialConnection.strength,
-        \SocialConnection.status
-    ], name: "social_graph")
+    #Index(
+        .rdfDataset,
+        from: \SocialConnection.from,
+        edge: \SocialConnection.relation,
+        to: \SocialConnection.target,
+        storedFields: [
+            \SocialConnection.since,
+            \SocialConnection.strength,
+            \SocialConnection.status,
+        ],
+        name: "social_graph"
+    )
 }
 
-// Test model without storedFields (for backward compatibility testing)
+// RDF dataset model without stored fields.
 @Persistable
 fileprivate struct BasicEdge {
     #Directory<BasicEdge>("test", "basic_edge")
     var id: String = UUID().uuidString
-    var from: String = ""
-    var target: String = ""
-    var label: String = ""
+    var from: RDFTerm = .iri(.xsdString)
+    var target: RDFTerm = .iri(.xsdString)
+    var label: RDFTerm = .iri(.xsdString)
 
-    #Index(GraphIndexKind<BasicEdge>(
-        from: \.from,
-        edge: \.label,
-        to: \.target,
-        graph: nil,
-        strategy: .tripleStore
-    ), name: "basic_graph")
+    #Index(
+        .rdfDataset,
+        from: \BasicEdge.from,
+        edge: \BasicEdge.label,
+        to: \BasicEdge.target,
+        name: "basic_graph"
+    )
 }
 
-@Suite("SPARQL Property Filter Integration Tests", .serialized, .heartbeat)
+@Suite("SPARQL Property Filter Integration Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct SPARQLPropertyFilterIntegrationTests {
 
     // MARK: - Setup
@@ -74,23 +74,50 @@ struct SPARQLPropertyFilterIntegrationTests {
         from: String,
         to: String,
         relation: String,
-        since: Int,
+        since: Int64,
         strength: Double,
         status: String = "active"
-    ) -> SocialConnection {
-        SocialConnection(
-            from: from,
-            target: to,
-            relation: relation,
-            since: since,
-            strength: strength,
-            status: status
+    ) throws -> SocialConnection {
+        var connection = SocialConnection()
+        connection.from = try Self.resource(from)
+        connection.target = try Self.resource(to)
+        connection.relation = try Self.predicate(relation)
+        connection.since = since
+        connection.strength = strength
+        connection.status = status
+        return connection
+    }
+
+    private func makeBasicEdge(
+        from: String,
+        target: String,
+        label: String
+    ) throws -> BasicEdge {
+        var edge = BasicEdge()
+        edge.from = try Self.resource(from)
+        edge.target = try Self.resource(target)
+        edge.label = try Self.predicate(label)
+        return edge
+    }
+
+    private static func resource(_ identifier: String) throws -> RDFTerm {
+        try .iri(
+            validating: "did:database-framework:test-resource:\(identifier)"
+        )
+    }
+
+    private static func predicate(_ identifier: String) throws -> RDFTerm {
+        try .iri(
+            validating: "did:database-framework:test-predicate:\(identifier)"
         )
     }
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([SocialConnection.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try SocialConnection.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialConnection.self, BasicEdge.self]), security: .disabled)
 
 
@@ -117,15 +144,15 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         // Insert 100 connections (only 1 with since = 2020)
         for year in 2010..<2020 {
-            try context.insert(makeConnection(
+            try context.insert(try makeConnection(
                 from: alice,
                 to: uniqueID("user-\(year)"),
                 relation: "knows",
-                since: year,
+                since: Int64(year),
                 strength: 0.5
             ))
         }
-        try context.insert(makeConnection(
+        try context.insert(try makeConnection(
             from: alice,
             to: uniqueID("user-2020"),
             relation: "knows",
@@ -139,8 +166,8 @@ struct SPARQLPropertyFilterIntegrationTests {
         let pattern = ExecutionPattern.filter(
             .basic([
                 ExecutionTriple(
-                    subject: .value(.string(alice)),
-                    predicate: .value(.string("knows")),
+                    subject: .value(.rdfTerm(try Self.resource(alice))),
+                    predicate: .value(.rdfTerm(try Self.predicate("knows"))),
                     object: .variable("?target")
                 )
             ]),
@@ -153,7 +180,8 @@ struct SPARQLPropertyFilterIntegrationTests {
         )
 
         #expect(result.bindings.count == 1)
-        #expect(result.bindings[0]["?since"] == .int64(2020))
+        let binding = try #require(result.bindings.first)
+        #expect(binding["?since"] == .int64(2020))
     }
 
     @Test("Property filter pushdown - range comparison")
@@ -165,11 +193,11 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         // Insert connections from 2015-2024
         for year in 2015...2024 {
-            try context.insert(makeConnection(
+            try context.insert(try makeConnection(
                 from: alice,
                 to: uniqueID("user-\(year)"),
                 relation: "knows",
-                since: year,
+                since: Int64(year),
                 strength: Double(year) / 100.0
             ))
         }
@@ -179,8 +207,8 @@ struct SPARQLPropertyFilterIntegrationTests {
         let pattern = ExecutionPattern.filter(
             .basic([
                 ExecutionTriple(
-                    subject: .value(.string(alice)),
-                    predicate: .value(.string("knows")),
+                    subject: .value(.rdfTerm(try Self.resource(alice))),
+                    predicate: .value(.rdfTerm(try Self.predicate("knows"))),
                     object: .variable("?target")
                 )
             ]),
@@ -208,17 +236,17 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         let alice = uniqueID("alice")
 
-        try context.insert(makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.5, status: "active-premium"))
-        try context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2021, strength: 0.6, status: "disabled"))
-        try context.insert(makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2022, strength: 0.7, status: "active"))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.5, status: "active-premium"))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2021, strength: 0.6, status: "disabled"))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2022, strength: 0.7, status: "active"))
         try await context.save()
 
         // Filter: status CONTAINS "active"
         let pattern = ExecutionPattern.filter(
             .basic([
                 ExecutionTriple(
-                    subject: .value(.string(alice)),
-                    predicate: .value(.string("knows")),
+                    subject: .value(.rdfTerm(try Self.resource(alice))),
+                    predicate: .value(.rdfTerm(try Self.predicate("knows"))),
                     object: .variable("?target")
                 )
             ]),
@@ -242,23 +270,23 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         let alice = uniqueID("alice")
 
-        try context.insert(makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.9, status: "active"))
-        try context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2020, strength: 0.3, status: "inactive"))
-        try context.insert(makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2021, strength: 0.9, status: "active"))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.9, status: "active"))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2020, strength: 0.3, status: "inactive"))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2021, strength: 0.9, status: "active"))
         try await context.save()
 
         // Filter: since = 2020 AND strength >= 0.5
         let pattern = ExecutionPattern.filter(
             .basic([
                 ExecutionTriple(
-                    subject: .value(.string(alice)),
-                    predicate: .value(.string("knows")),
+                    subject: .value(.rdfTerm(try Self.resource(alice))),
+                    predicate: .value(.rdfTerm(try Self.predicate("knows"))),
                     object: .variable("?target")
                 )
             ]),
             .and(
                 .equals("?since", .int64(2020)),
-                .greaterThanOrEqual("?strength", .double(0.5))
+                .greaterThanOrEqual("?strength", .float64(0.5))
             )
         )
 
@@ -277,17 +305,17 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         let alice = uniqueID("alice")
 
-        try context.insert(makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.9, status: "active"))
-        try context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2020, strength: 0.5, status: "inactive"))
-        try context.insert(makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2021, strength: 0.9, status: "active"))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.9, status: "active"))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2020, strength: 0.5, status: "inactive"))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2021, strength: 0.9, status: "active"))
         try await context.save()
 
         // Filter: since = 2020 AND status =~ /^active/
         let pattern = ExecutionPattern.filter(
             .basic([
                 ExecutionTriple(
-                    subject: .value(.string(alice)),
-                    predicate: .value(.string("knows")),
+                    subject: .value(.rdfTerm(try Self.resource(alice))),
+                    predicate: .value(.rdfTerm(try Self.predicate("knows"))),
                     object: .variable("?target")
                 )
             ]),
@@ -303,15 +331,19 @@ struct SPARQLPropertyFilterIntegrationTests {
         )
 
         #expect(result.bindings.count == 1)  // Only Bob
-        #expect(result.bindings[0]["?target"] != nil)
+        let binding = try #require(result.bindings.first)
+        #expect(binding["?target"] != nil)
     }
 
-    // MARK: - Backward Compatibility Tests
+    // MARK: - Dataset Without Stored Fields
 
-    @Test("Backward compatibility - no stored fields")
-    func testBackwardCompatibilityNoStoredFields() async throws {
+    @Test("RDF dataset without stored fields")
+    func testDatasetWithoutStoredFields() async throws {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([BasicEdge.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try BasicEdge.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialConnection.self, BasicEdge.self]), security: .disabled)
 
         
@@ -327,7 +359,7 @@ struct SPARQLPropertyFilterIntegrationTests {
         let subspace = try await container.resolveDirectory(for: BasicEdge.self)
         let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
 
-        for descriptor in BasicEdge.indexDescriptors {
+        for descriptor in try BasicEdge.indexDescriptors {
             let currentState = try await indexLifecycleStore.state(of: descriptor.name)
             if currentState == .disabled {
                 try await indexLifecycleStore.enable(descriptor.name)
@@ -342,16 +374,16 @@ struct SPARQLPropertyFilterIntegrationTests {
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
 
-        let edge = BasicEdge(from: alice, target: bob, label: "knows")
+        let edge = try makeBasicEdge(from: alice, target: bob, label: "knows")
         try context.insert(edge)
         try await context.save()
 
-        // This should use legacy path (no storedFieldNames)
+        // The RDF scan remains valid when no covering properties are configured.
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
-                subject: .value(.string(alice)),
-                predicate: .value(.string("knows")),
-                    object: .variable("?target")
+                subject: .value(.rdfTerm(try Self.resource(alice))),
+                predicate: .value(.rdfTerm(try Self.predicate("knows"))),
+                object: .variable("?target")
             )
         ])
 
@@ -361,7 +393,9 @@ struct SPARQLPropertyFilterIntegrationTests {
         )
 
         #expect(result.bindings.count == 1)
-        #expect(result.bindings[0]["?target"] == .string(bob))
+        let binding = try #require(result.bindings.first)
+        let expectedTarget = FieldValue.rdfTerm(try Self.resource(bob))
+        #expect(binding["?target"] == expectedTarget)
     }
 
     // MARK: - Performance Tests
@@ -376,25 +410,25 @@ struct SPARQLPropertyFilterIntegrationTests {
         // Insert 200 connections (only 2 with since = 2025)
         for i in 0..<198 {
             let year = 2010 + (i % 10)  // Years 2010-2019
-            try context.insert(makeConnection(
+            try context.insert(try makeConnection(
                 from: alice,
                 to: uniqueID("old-\(i)"),
                 relation: "knows",
-                since: year,
+                since: Int64(year),
                 strength: 0.5
             ))
         }
         // Add 2 recent connections
-        try context.insert(makeConnection(from: alice, to: uniqueID("recent-1"), relation: "knows", since: 2025, strength: 0.9))
-        try context.insert(makeConnection(from: alice, to: uniqueID("recent-2"), relation: "knows", since: 2025, strength: 0.95))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("recent-1"), relation: "knows", since: 2025, strength: 0.9))
+        try context.insert(try makeConnection(from: alice, to: uniqueID("recent-2"), relation: "knows", since: 2025, strength: 0.95))
         try await context.save()
 
         // Filter to only 2025 (1% selectivity)
         let pattern = ExecutionPattern.filter(
             .basic([
                 ExecutionTriple(
-                    subject: .value(.string(alice)),
-                    predicate: .value(.string("knows")),
+                    subject: .value(.rdfTerm(try Self.resource(alice))),
+                    predicate: .value(.rdfTerm(try Self.predicate("knows"))),
                     object: .variable("?target")
                 )
             ]),
@@ -420,15 +454,15 @@ struct SPARQLPropertyFilterIntegrationTests {
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
 
-        try context.insert(makeConnection(from: alice, to: bob, relation: "knows", since: 2020, strength: 0.9, status: "active"))
+        try context.insert(try makeConnection(from: alice, to: bob, relation: "knows", since: 2020, strength: 0.9, status: "active"))
         try await context.save()
 
         // Explicit projection: only ?target
         let result = try await context.executeSPARQLPattern(
             .basic([
                 ExecutionTriple(
-                    subject: .value(.string(alice)),
-                    predicate: .value(.string("knows")),
+                    subject: .value(.rdfTerm(try Self.resource(alice))),
+                    predicate: .value(.rdfTerm(try Self.predicate("knows"))),
                     object: .variable("?target")
                 )
             ]),
@@ -437,10 +471,11 @@ struct SPARQLPropertyFilterIntegrationTests {
         )
 
         #expect(result.bindings.count == 1)
-        let binding = result.bindings[0]
+        let binding = try #require(result.bindings.first)
+        let expectedTarget = FieldValue.rdfTerm(try Self.resource(bob))
 
         // Only ?target should be in result (property variables excluded)
-        #expect(binding["?target"] == .string(bob))
+        #expect(binding["?target"] == expectedTarget)
         #expect(binding["?since"] == nil)
         #expect(binding["?strength"] == nil)
         #expect(binding["?status"] == nil)
@@ -457,15 +492,15 @@ struct SPARQLPropertyFilterIntegrationTests {
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
 
-        try context.insert(makeConnection(from: alice, to: bob, relation: "knows", since: 2020, strength: 0.9, status: "active"))
+        try context.insert(try makeConnection(from: alice, to: bob, relation: "knows", since: 2020, strength: 0.9, status: "active"))
         try await context.save()
 
         // No filter - just check property variables are bound
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
-                subject: .value(.string(alice)),
-                predicate: .value(.string("knows")),
-                    object: .variable("?target")
+                subject: .value(.rdfTerm(try Self.resource(alice))),
+                predicate: .value(.rdfTerm(try Self.predicate("knows"))),
+                object: .variable("?target")
             )
         ])
 
@@ -475,13 +510,14 @@ struct SPARQLPropertyFilterIntegrationTests {
         )
 
         #expect(result.bindings.count == 1)
-        let binding = result.bindings[0]
+        let binding = try #require(result.bindings.first)
+        let expectedTarget = FieldValue.rdfTerm(try Self.resource(bob))
 
         // Check all property variables are bound
         #expect(binding["?since"] == .int64(2020))
-        #expect(binding["?strength"] == .double(0.9))
+        #expect(binding["?strength"] == .float64(0.9))
         #expect(binding["?status"] == .string("active"))
-        #expect(binding["?target"] == .string(bob))
+        #expect(binding["?target"] == expectedTarget)
     }
 }
 #endif

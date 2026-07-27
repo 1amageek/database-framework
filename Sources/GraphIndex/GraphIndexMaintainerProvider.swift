@@ -1,6 +1,5 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import Graph
 import StorageKit
 
 /// Canonical runtime provider for property graph indexes.
@@ -14,18 +13,14 @@ public struct GraphIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
-        let kind = try GraphIndexKind<Item>(canonical: index.kind)
-        return GraphIndexMaintainer<Item>(
+        let metadata = try PropertyGraphIndexMetadata(canonical: index.kind)
+        return try GraphIndexMaintainer<Item>(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            fromField: kind.fromField,
-            edgeField: kind.edgeField,
-            toField: kind.toField,
-            graphField: kind.graphField,
-            strategy: kind.strategy
+            metadata: metadata
         )
     }
 }

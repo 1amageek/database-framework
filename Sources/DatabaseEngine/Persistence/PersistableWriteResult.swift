@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import StorageKit
 
 /// Result of persisting one compiled model in the primary store.

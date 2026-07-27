@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 import OntologyIndex
 
 /// Applies SPARQL 1.1 value-comparison semantics to canonical RDF literals.
@@ -24,9 +24,11 @@ struct SPARQLValueComparator: Sendable {
     }
 
     func validateLexicalForm(
-        _ literal: DatabaseRDFLiteral
+        _ literal: RDFLiteral
     ) throws -> Bool {
-        guard Self.supportsLexicalValidation(datatype: literal.datatype) else {
+        guard Self.supportsLexicalValidation(
+            datatype: literal.datatypeIRI.rawValue
+        ) else {
             return true
         }
         switch try parse(literal) {
@@ -38,8 +40,8 @@ struct SPARQLValueComparator: Sendable {
     }
 
     func compare(
-        _ lhs: DatabaseRDFLiteral,
-        _ rhs: DatabaseRDFLiteral
+        _ lhs: RDFLiteral,
+        _ rhs: RDFLiteral
     ) throws -> SPARQLValueComparison {
         let lhsResult = try parse(lhs)
         let rhsResult = try parse(rhs)
@@ -83,7 +85,7 @@ struct SPARQLValueComparator: Sendable {
     }
 
     private func parse(
-        _ literal: DatabaseRDFLiteral
+        _ literal: RDFLiteral
     ) throws -> ParseResult {
         do {
             return .success(try parser.parse(literal))

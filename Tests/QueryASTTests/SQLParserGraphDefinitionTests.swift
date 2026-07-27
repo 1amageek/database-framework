@@ -1,5 +1,5 @@
 import QueryAST
-import QueryIR
+import DatabaseKit
 import Testing
 
 @Suite("SQL property graph definition parser")

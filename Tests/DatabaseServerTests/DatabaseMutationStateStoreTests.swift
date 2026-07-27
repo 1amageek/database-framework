@@ -1,9 +1,9 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 @testable import DatabaseServer
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 import Testing
 
@@ -71,11 +71,11 @@ struct DatabaseMutationStateStoreTests {
     @Test("Chunk writes retain borrowed response slices without materializing them")
     func chunkWritesRetainBorrowedSlices() async throws {
         let storeContext = try await makeMutationStateStoreContext(key: "borrowed-slices")
-        let owner = BorrowCountingDatabaseByteOwner(
+        let owner = BorrowCountingByteStringOwner(
             Array(repeating: 0xA5, count: 100_001)
         )
         let entity = makeEntity(
-            responsePayload: DatabaseBytes(retaining: owner)
+            responsePayload: ByteString(retaining: owner)
         )
         let borrowCountBeforeStore = owner.borrowCount
 
@@ -366,8 +366,8 @@ struct DatabaseMutationStateStoreTests {
         )
     }
 
-    private func makePayload(count: Int) -> DatabaseBytes {
-        DatabaseBytes.copying(count: count) { destination in
+    private func makePayload(count: Int) -> ByteString {
+        ByteString.copying(count: count) { destination in
             for index in 0..<count {
                 destination[index] = UInt8(truncatingIfNeeded: index)
             }
@@ -375,9 +375,9 @@ struct DatabaseMutationStateStoreTests {
     }
 
     private func makeEntity(
-        responsePayload: DatabaseBytes
+        responsePayload: ByteString
     ) -> DatabaseIdempotencyEntry {
-        let requestPayload: DatabaseBytes = [0xA5]
+        let requestPayload: ByteString = [0xA5]
         return DatabaseIdempotencyEntry(
             operation: .mutationExecute,
             requestDigest: DatabaseRequestDigest.compute(
@@ -437,7 +437,7 @@ struct DatabaseMutationStateStoreTests {
     }
 
     private func writeMetadata(
-        _ metadata: DatabaseBytes,
+        _ metadata: ByteString,
         to storeContext: MutationStateStoreContext
     ) async throws {
         try await storeContext.container.engine.withTransaction { transaction in
@@ -449,16 +449,18 @@ struct DatabaseMutationStateStoreTests {
     }
 
     private func encodeUncheckedManifest(
-        requestDigest: DatabaseBytes,
-        responseDigest: DatabaseBytes,
+        requestDigest: ByteString,
+        responseDigest: ByteString,
         totalResponseBytes: UInt64,
         chunkByteCount: UInt32,
         chunkCount: UInt32
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         try DatabaseWireWriter.encode(limits: .default) {
             (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
             writer.writeUInt16(DatabaseIdempotencyManifest.formatVersion)
-            DatabaseOperationIdentifier.mutationExecute.encode(into: &writer)
+            writer.writeUInt16(
+                DatabaseOperationIdentifier.mutationExecute.rawValue
+            )
             try writer.writeBytes(requestDigest)
             try writer.writeBytes(responseDigest)
             writer.writeUInt64(totalResponseBytes)

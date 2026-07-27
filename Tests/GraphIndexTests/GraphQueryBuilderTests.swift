@@ -6,13 +6,12 @@
 
 import Testing
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseRuntime
 import DatabaseEngine
 import StorageKit
 import FDBStorage
-import Graph
 import TestSupport
 @testable import GraphIndex
 
@@ -27,17 +26,17 @@ struct GraphQueryEdge: Equatable {
     var predicate: String = ""
     var target: String = ""
 
-    #Index(GraphIndexKind<GraphQueryEdge>(
-        from: \.source,
-        edge: \.predicate,
-        to: \.target,
-        strategy: .adjacency
-    ))
+    #Index(
+        .propertyGraph(strategy: .adjacency),
+        from: \GraphQueryEdge.source,
+        edge: \GraphQueryEdge.predicate,
+        to: \GraphQueryEdge.target
+    )
 }
 
 // MARK: - Test Suite
 
-@Suite("GraphQueryBuilder Tests", .serialized, .heartbeat)
+@Suite("GraphQueryBuilder Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct GraphQueryBuilderTests {
 
     init() async throws {
@@ -50,12 +49,20 @@ struct GraphQueryBuilderTests {
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([GraphQueryEdge.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try GraphQueryEdge.schemaEntity
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
         return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [GraphQueryEdge.self]), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.removeDirectory(path: ["test", "graphquerybuilder", "edges"])
+        let path = ["test", "graphquerybuilder", "edges"]
+        if try await container.engine.directoryExists(path: path) {
+            try await container.engine.removeDirectory(path: path)
+        }
         try await container.ensureIndexesReady()
     }
 
@@ -272,9 +279,13 @@ struct GraphQueryBuilderTests {
 
             // Test: Using field combination that doesn't have an index should throw
             // The actual index is defined on (source, predicate, target), not (id, source, target)
-            await #expect(throws: GraphQueryError.self) {
+            await #expect(throws: PropertyGraphIndexResolutionError.self) {
                 _ = try await context.graph(GraphQueryEdge.self)
-                    .index(\.id, \.source, \.target)
+                    .index(
+                        GraphQueryEdge.fields.id,
+                        GraphQueryEdge.fields.source,
+                        GraphQueryEdge.fields.target
+                    )
                     .from("Alice")
                     .execute()
             }

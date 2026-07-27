@@ -10,7 +10,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import Synchronization
-import Core
+import DatabaseKit
 
 // MARK: - CacheConfiguration
 
@@ -239,8 +239,8 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
     /// - Parameters:
     ///   - item: The item to cache
     ///   - key: The cache key
-    public func put(item: Item, key: String) {
-        let size = estimateSize(item)
+    public func put(item: Item, key: String) throws {
+        let size = try encodedSize(of: item)
 
         state.withLock { state in
             // Remove existing entry if present
@@ -324,19 +324,19 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
     /// Preload multiple items
     ///
     /// - Parameter items: Items to preload with their keys
-    public func preload(_ items: [(key: String, item: Item)]) {
+    public func preload(_ items: [(key: String, item: Item)]) throws {
         for (key, item) in items {
-            put(item: item, key: key)
+            try put(item: item, key: key)
         }
     }
 
     /// Preload items using ID as key
     ///
     /// - Parameter items: Items to preload
-    public func preload(_ items: [Item]) {
+    public func preload(_ items: [Item]) throws {
         for item in items {
             let key = cacheKey(for: item)
-            put(item: item, key: key)
+            try put(item: item, key: key)
         }
     }
 
@@ -373,7 +373,7 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
 
         // Fetch and cache
         let item = try await fetch()
-        put(item: item, key: key)
+        try put(item: item, key: key)
         return item
     }
 
@@ -396,7 +396,7 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
         guard let item = try await fetch() else {
             return nil
         }
-        put(item: item, key: key)
+        try put(item: item, key: key)
         return item
     }
 
@@ -552,14 +552,8 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
         return "\(item.id)"
     }
 
-    private func estimateSize(_ item: Item) -> Int {
-        // Estimate size using JSON encoding as proxy
-        do {
-            let data = try JSONEncoder().encode(item)
-            return data.count + 64 // Add overhead for cache entry
-        } catch {
-            return 256 // Default estimate
-        }
+    private func encodedSize(of item: Item) throws -> Int {
+        try PersistableStorageCodec.encodedByteCount(item) + 64
     }
 }
 
@@ -628,8 +622,8 @@ public struct ScopedCache<Item: Persistable>: Sendable {
     }
 
     /// Put item with key
-    public func put(item: Item, key: String) {
-        cache.put(item: item, key: scopedKey(key))
+    public func put(item: Item, key: String) throws {
+        try cache.put(item: item, key: scopedKey(key))
     }
 
     /// Remove item by key
@@ -676,7 +670,7 @@ public struct CacheWarmer<Item: Persistable>: Sendable {
 
         for try await item in source {
             let key = keyExtractor(item)
-            cache.put(item: item, key: key)
+            try cache.put(item: item, key: key)
             count += 1
 
             if let limit = limit, count >= limit {
@@ -696,10 +690,10 @@ public struct CacheWarmer<Item: Persistable>: Sendable {
     public func warm(
         items: [Item],
         keyExtractor: (Item) -> String
-    ) -> Int {
+    ) throws -> Int {
         for item in items {
             let key = keyExtractor(item)
-            cache.put(item: item, key: key)
+            try cache.put(item: item, key: key)
         }
         return items.count
     }

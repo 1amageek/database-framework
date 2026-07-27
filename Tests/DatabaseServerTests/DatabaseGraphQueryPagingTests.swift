@@ -1,11 +1,11 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
-import QueryIR
+import DatabaseKit
+import DatabaseKit
 import StorageKit
 import Testing
 
@@ -16,9 +16,9 @@ struct DatabaseGraphQueryPagingTests {
         let container = try await makeContainer()
         let query = constructQuery()
         let budget = executionBudget()
-        var continuation: DatabaseBytes?
+        var continuation: ByteString?
         var snapshots = Set<Int64>()
-        var triples: [DatabaseRDFQuad] = []
+        var triples: [RDFQuad] = []
 
         for _ in 0..<8 {
             let page = try graphPage(
@@ -93,7 +93,7 @@ struct DatabaseGraphQueryPagingTests {
             guard case .blankNode(let identifier) = triple.subject else {
                 return nil
             }
-            return identifier
+            return identifier.rawValue
         })
 
         #expect(blankNodes.count == 2)
@@ -123,7 +123,7 @@ struct DatabaseGraphQueryPagingTests {
             guard case .blankNode(let identifier) = quad.subject else {
                 return nil
             }
-            return identifier
+            return identifier.rawValue
         })
 
         #expect(page.triples.count == 4)
@@ -164,19 +164,25 @@ struct DatabaseGraphQueryPagingTests {
                 container: container
             )
         )
+        let retainedPredicate = try RDFPredicateIRI("urn:retained")
+        let reifiesPredicate = try RDFPredicateIRI(Self.reifiesPredicate)
         let retainedCount = page.triples.count {
-            $0.predicate == .iri("urn:retained")
+            $0.predicate == retainedPredicate
         }
         let reificationCount = page.triples.count {
-            $0.predicate == .iri(Self.reifiesPredicate)
+            $0.predicate == reifiesPredicate
         }
 
         #expect(page.triples.count == 4)
         #expect(retainedCount == 2)
         #expect(reificationCount == 2)
+        let omittedPredicate = try RDFPredicateIRI("urn:omitted")
+        let outerOmittedPredicate = try RDFPredicateIRI(
+            "urn:outer-omitted"
+        )
         #expect(!page.triples.contains {
-            $0.predicate == .iri("urn:omitted")
-                || $0.predicate == .iri("urn:outer-omitted")
+            $0.predicate == omittedPredicate
+                || $0.predicate == outerOmittedPredicate
         })
     }
 
@@ -190,8 +196,8 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         let budget = executionBudget()
-        var continuation: DatabaseBytes?
-        var triples: [DatabaseRDFQuad] = []
+        var continuation: ByteString?
+        var triples: [RDFQuad] = []
 
         for _ in 0..<6 {
             let page = try graphPage(
@@ -213,7 +219,8 @@ struct DatabaseGraphQueryPagingTests {
         #expect(continuation == nil)
         #expect(triples.count == 3)
         #expect(Set(triples).count == 3)
-        #expect(triples.allSatisfy { $0.subject == .iri(Self.describedSubject) })
+        let describedIRI = try RDFIRI(Self.describedSubject)
+        #expect(triples.allSatisfy { $0.subject == .iri(describedIRI) })
     }
 
     @Test("DESCRIBE scans a blank-node subject bound through a variable")
@@ -240,7 +247,13 @@ struct DatabaseGraphQueryPagingTests {
         )
 
         #expect(page.triples.count == 1)
-        #expect(page.triples[0].subject == .blankNode(Self.describedBlankNode))
+        let describedBlankNode = try RDFBlankNodeIdentifier(
+            Self.describedBlankNode
+        )
+        #expect(
+            page.triples[0].subject
+                == .blankNode(describedBlankNode)
+        )
     }
 
     @Test("Explicit DESCRIBE resources are independent of a zero solution limit")
@@ -262,8 +275,9 @@ struct DatabaseGraphQueryPagingTests {
         )
 
         #expect(page.triples.count == 3)
+        let describedIRI = try RDFIRI(Self.describedSubject)
         #expect(page.triples.allSatisfy {
-            $0.subject == .iri(Self.describedSubject)
+            $0.subject == .iri(describedIRI)
         })
     }
 
@@ -287,13 +301,13 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
 
-        #expect(Set(page.triples.map(\.subject)) == [
-            .iri("urn:source:1"),
-            .iri("urn:source:2"),
-        ])
+        let sourceOne = RDFSubject.iri(try RDFIRI("urn:source:1"))
+        let sourceTwo = RDFSubject.iri(try RDFIRI("urn:source:2"))
+        #expect(Set(page.triples.map(\.subject)) == [sourceOne, sourceTwo])
+        let objectOne = RDFSubject.iri(try RDFIRI("urn:object:1"))
+        let objectTwo = RDFSubject.iri(try RDFIRI("urn:object:2"))
         #expect(!page.triples.contains {
-            $0.subject == .iri("urn:object:1")
-                || $0.subject == .iri("urn:object:2")
+            $0.subject == objectOne || $0.subject == objectTwo
         })
     }
 
@@ -348,9 +362,9 @@ struct DatabaseGraphQueryPagingTests {
                 container: container
             )
         }
-        var corruptedBytes = continuation.contiguousArray()
+        var corruptedBytes = continuation.copyBytes()
         corruptedBytes.append(0)
-        let corruptedContinuation = DatabaseBytes(corruptedBytes)
+        let corruptedContinuation = ByteString(corruptedBytes)
         await expectGraphError(.invalidContinuation) {
             try await execute(
                 request(
@@ -377,7 +391,7 @@ struct DatabaseGraphQueryPagingTests {
         let continuation = try #require(first.continuation)
         let context = container.newContext()
         try context.insert(
-            statement(
+            try statement(
                 id: "source-3",
                 subject: "urn:source:3",
                 predicate: Self.sourcePredicate,
@@ -407,7 +421,7 @@ struct DatabaseGraphQueryPagingTests {
                 request(
                     .construct(constructQuery()),
                     limit: 3,
-                    budget: DatabaseExecutionBudget(
+                    budget: ExecutionBudget(
                         maximumRows: 2,
                         maximumWorkUnits: 100,
                         timeoutMilliseconds: 1_000
@@ -421,7 +435,7 @@ struct DatabaseGraphQueryPagingTests {
                 request(
                     .construct(constructQuery()),
                     limit: 1,
-                    budget: DatabaseExecutionBudget(
+                    budget: ExecutionBudget(
                         maximumRows: 10,
                         maximumWorkUnits: 1,
                         timeoutMilliseconds: 1_000
@@ -451,29 +465,29 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         let operationRequest = request(.construct(constructQuery()), limit: 2)
-        let payload = try DatabaseEnvelopeCodec.encode(operationRequest)
-        let frame = try DatabaseEnvelopeCodec.encode(
-            request: DatabaseWireRequestEnvelope(
-                requestID: 77,
-                operation: .queryExecute,
-                metadata: DatabaseRequestMetadata(traceID: "graph-page"),
-                payload: payload
-            )
+        let encoder = DatabaseWireEncoder()
+        let decoder = DatabaseWireDecoder()
+        let frame = try encoder.encodeRequest(
+            DatabaseOperations.queryExecute,
+            requestID: 77,
+            metadata: OperationRequestMetadata(traceID: "graph-page"),
+            request: operationRequest
         )
 
         let responseFrame = try await endpoint.execute(frame)
-        let envelope = try DatabaseEnvelopeCodec.decodeResponse(responseFrame)
-        guard case .success(let responsePayload) = envelope.payload else {
+        let header = try decoder.decodeResponseHeader(responseFrame)
+        let decoded = try decoder.decodeResponse(
+            DatabaseOperations.queryExecute,
+            from: responseFrame,
+            matching: 77
+        )
+        guard case .success(let response) = decoded else {
             Issue.record("Expected a successful graph response")
             return
         }
-        let response = try DatabaseEnvelopeCodec.decode(
-            QueryExecuteOperation.Response.self,
-            from: responsePayload
-        )
         let page = try graphPage(response)
 
-        #expect(envelope.requestID == 77)
+        #expect(header.requestID == 77)
         #expect(page.triples.count == 2)
         #expect(page.continuation != nil)
         #expect(page.snapshotVersion != nil)
@@ -517,37 +531,6 @@ struct DatabaseGraphQueryPagingTests {
             #expect(statement == "ASK")
         } catch {
             Issue.record("Unexpected error: \(error)")
-        }
-    }
-
-    @Test("ASK rejects negative binary solution modifiers")
-    func askRejectsNegativeSolutionModifiers() async throws {
-        let container = try await makeContainer()
-        let invalidQueries = [
-            AskQuery(
-                pattern: sourcePattern,
-                modifiers: SPARQLSolutionModifiers(limit: -1)
-            ),
-            AskQuery(
-                pattern: sourcePattern,
-                modifiers: SPARQLSolutionModifiers(offset: -1)
-            ),
-        ]
-
-        for query in invalidQueries {
-            do {
-                _ = try await execute(
-                    request(.ask(query), limit: 1),
-                    container: container
-                )
-                Issue.record("Expected a negative solution modifier failure")
-            } catch DatabaseQueryExecutionError
-                .solutionModifierMustBeNonNegative(let name, let value) {
-                #expect(name == "LIMIT" || name == "OFFSET")
-                #expect(value == -1)
-            } catch {
-                Issue.record("Unexpected error: \(error)")
-            }
         }
     }
 
@@ -596,10 +579,11 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         #expect(page.triples.count == 2)
-        #expect(Set(page.triples.map(\.subject)) == [
-            .iri("urn:named:shared"),
-            .iri("urn:named:unique"),
-        ])
+        let expectedNamedSubjects: Set<RDFSubject> = [
+            .iri(try RDFIRI("urn:named:shared")),
+            .iri(try RDFIRI("urn:named:unique")),
+        ]
+        #expect(Set(page.triples.map(\.subject)) == expectedNamedSubjects)
 
         let namedPattern = GraphPattern.graph(
             name: .iri(Self.namedGraphOne),
@@ -655,9 +639,17 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         #expect(graphRows.rows.count == 1)
-        #expect(graphRows.rows[0].values.contains {
-            $0.name == "graph" && $0.value == .rdfTerm(.iri(Self.namedGraphOne))
-        })
+        let graphValue = rowValue(
+            named: "graph",
+            in: graphRows.rows[0],
+            columns: graphRows.columns
+        )
+        let expectedGraphValue = FieldValue.rdfTerm(
+            try .iri(validating: Self.namedGraphOne)
+        )
+        #expect(
+            graphValue == expectedGraphValue
+        )
 
         let describedNamedResource = DescribeQuery(
             selection: .resources(
@@ -676,7 +668,13 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         #expect(describedPage.triples.count == 1)
-        #expect(describedPage.triples[0].subject == .iri("urn:named:shared"))
+        let describedNamedSubject = RDFSubject.iri(
+            try RDFIRI("urn:named:shared")
+        )
+        #expect(
+            describedPage.triples[0].subject
+                == describedNamedSubject
+        )
     }
 
     @Test("ASK and DESCRIBE execute their solution modifiers")
@@ -720,10 +718,11 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         #expect(page.triples.count == 2)
-        #expect(Set(page.triples.map(\.subject)) == [
-            .iri("urn:source:1"),
-            .iri("urn:object:1"),
-        ])
+        let expectedSubjects: Set<RDFSubject> = [
+            .iri(try RDFIRI("urn:source:1")),
+            .iri(try RDFIRI("urn:object:1")),
+        ]
+        #expect(Set(page.triples.map(\.subject)) == expectedSubjects)
     }
 
     @Test("ASK applies implicit and explicit grouping before existence")
@@ -791,11 +790,22 @@ struct DatabaseGraphQueryPagingTests {
         let page = try rowPage(response)
 
         #expect(page.rows.count == 1)
-        #expect(page.rows[0].values.contains {
-            $0.name == "subject"
-                && $0.value == .rdfTerm(.iri("urn:source:1"))
-        })
-        #expect(!page.rows[0].values.contains { $0.name == "object" })
+        let subject = rowValue(
+            named: "subject",
+            in: page.rows[0],
+            columns: page.columns
+        )
+        let expectedSubject = FieldValue.rdfTerm(
+            try .iri(validating: "urn:source:1")
+        )
+        #expect(subject == expectedSubject)
+        #expect(
+            rowValue(
+                named: "object",
+                in: page.rows[0],
+                columns: page.columns
+            ) == nil
+        )
     }
 
     @Test("Text SPARQL LATERAL SubSelect receives each outer solution")
@@ -829,10 +839,19 @@ struct DatabaseGraphQueryPagingTests {
         let page = try rowPage(response)
 
         #expect(page.rows.count == 2)
-        #expect(page.rows.map(\.values).allSatisfy { fields in
-            fields.contains { $0.name == "subject" }
-                && fields.contains { $0.name == "object" }
-        })
+        let allRowsContainProjectedValues = page.rows.allSatisfy { row in
+            rowValue(
+                named: "subject",
+                in: row,
+                columns: page.columns
+            ) != nil
+                && rowValue(
+                    named: "object",
+                    in: row,
+                    columns: page.columns
+                ) != nil
+        }
+        #expect(allRowsContainProjectedValues)
     }
 
     private func makeContainer() async throws -> DBContainer {
@@ -845,7 +864,7 @@ struct DatabaseGraphQueryPagingTests {
         let container = try await makeEmptyContainer(engine: engine)
         let context = container.newContext()
         try context.insert(
-            statement(
+            try statement(
                 id: "source-1",
                 subject: "urn:source:1",
                 predicate: Self.sourcePredicate,
@@ -853,7 +872,7 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         try context.insert(
-            statement(
+            try statement(
                 id: "named-1",
                 subject: "urn:named:shared",
                 predicate: Self.sourcePredicate,
@@ -862,7 +881,7 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         try context.insert(
-            statement(
+            try statement(
                 id: "named-duplicate",
                 subject: "urn:named:shared",
                 predicate: Self.sourcePredicate,
@@ -871,7 +890,7 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         try context.insert(
-            statement(
+            try statement(
                 id: "named-unique",
                 subject: "urn:named:unique",
                 predicate: Self.sourcePredicate,
@@ -880,7 +899,7 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         try context.insert(
-            statement(
+            try statement(
                 id: "source-2",
                 subject: "urn:source:2",
                 predicate: Self.sourcePredicate,
@@ -888,7 +907,7 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         try context.insert(
-            statement(
+            try statement(
                 id: "object-detail-1",
                 subject: "urn:object:1",
                 predicate: "urn:object-detail",
@@ -896,24 +915,26 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         try context.insert(
-            statement(
+            try statement(
                 id: "object-detail-2",
                 subject: "urn:object:2",
                 predicate: "urn:object-detail",
                 object: "urn:detail:2"
             )
         )
-        var blankNodeStatement = statement(
+        var blankNodeStatement = try statement(
             id: "blank-node-detail",
             subject: "urn:placeholder",
             predicate: "urn:blank-detail",
             object: "urn:blank-object"
         )
-        blankNodeStatement.subject = .blankNode(Self.describedBlankNode)
+        blankNodeStatement.subject = .blankNode(
+            try RDFBlankNodeIdentifier(Self.describedBlankNode)
+        )
         try context.insert(blankNodeStatement)
         for index in 1...3 {
             try context.insert(
-                statement(
+                try statement(
                     id: "describe-\(index)",
                     subject: Self.describedSubject,
                     predicate: "urn:describe:\(index)",
@@ -949,14 +970,14 @@ struct DatabaseGraphQueryPagingTests {
         predicate: String,
         object: String,
         graph: String? = nil
-    ) -> DatabaseGraphQueryStatement {
-        var value = DatabaseGraphQueryStatement()
-        value.id = id
-        value.subject = .iri(subject)
-        value.predicate = .iri(predicate)
-        value.object = .iri(object)
-        value.graph = graph.map(DatabaseRDFTerm.iri)
-        return value
+    ) throws -> DatabaseGraphQueryStatement {
+        DatabaseGraphQueryStatement(
+            id: id,
+            subject: try .iri(validating: subject),
+            predicate: try .iri(validating: predicate),
+            object: try .iri(validating: object),
+            graph: try graph.map { try .iri(validating: $0) }
+        )
     }
 
     private func constructQuery() -> ConstructQuery {
@@ -990,8 +1011,8 @@ struct DatabaseGraphQueryPagingTests {
     private func request(
         _ statement: QueryStatement,
         limit: UInt32,
-        continuation: DatabaseBytes? = nil,
-        budget: DatabaseExecutionBudget? = nil
+        continuation: ByteString? = nil,
+        budget: ExecutionBudget? = nil
     ) -> QueryExecuteOperation.Request {
         QueryExecuteOperation.Request(
             input: .ir(statement),
@@ -1003,8 +1024,8 @@ struct DatabaseGraphQueryPagingTests {
         )
     }
 
-    private func executionBudget() -> DatabaseExecutionBudget {
-        DatabaseExecutionBudget(
+    private func executionBudget() -> ExecutionBudget {
+        ExecutionBudget(
             maximumRows: 100,
             maximumWorkUnits: 10_000,
             timeoutMilliseconds: 1_000
@@ -1020,28 +1041,69 @@ struct DatabaseGraphQueryPagingTests {
             context: DatabaseOperationContext(
                 container: container,
                 requestID: 1,
-                metadata: DatabaseRequestMetadata(),
-                requestPayload: try DatabaseEnvelopeCodec.encode(request)
+                metadata: OperationRequestMetadata(),
+                requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
+                    DatabaseOperations.queryExecute,
+                    request: request
+                )
             )
         )
     }
 
     private func graphPage(
         _ response: QueryExecuteOperation.Response
-    ) throws -> QueryExecuteOperation.GraphPage {
+    ) throws -> MaterializedGraphPage {
         guard case .rdfGraph(let page) = response else {
             throw GraphQueryResponseAssertionError.expectedGraphPage
         }
-        return page
+        return MaterializedGraphPage(
+            triples: try page.materializedQuads(
+                maximumCount: page.quadCount
+            ),
+            continuation: page.continuation,
+            snapshotVersion: page.snapshotVersion
+        )
     }
 
     private func rowPage(
         _ response: QueryExecuteOperation.Response
-    ) throws -> QueryExecuteOperation.RowPage {
+    ) throws -> MaterializedRowPage {
         guard case .rows(let page) = response else {
             throw GraphQueryResponseAssertionError.expectedRowPage
         }
-        return page
+        return MaterializedRowPage(
+            columns: page.columns,
+            rows: try page.materializedRows(
+                maximumCount: page.rowCount
+            ),
+            continuation: page.continuation,
+            snapshotVersion: page.snapshotVersion
+        )
+    }
+
+    private func rowValue(
+        named name: String,
+        in row: DatabaseWire.QueryRow,
+        columns: [QueryColumn]
+    ) -> FieldValue? {
+        guard let index = columns.firstIndex(where: { $0.name == name }),
+              row.values.indices.contains(index) else {
+            return nil
+        }
+        return row.values[index]
+    }
+
+    private struct MaterializedGraphPage {
+        let triples: [RDFQuad]
+        let continuation: ByteString?
+        let snapshotVersion: Int64?
+    }
+
+    private struct MaterializedRowPage {
+        let columns: [QueryColumn]
+        let rows: [DatabaseWire.QueryRow]
+        let continuation: ByteString?
+        let snapshotVersion: UInt64?
     }
 
     private func boolean(

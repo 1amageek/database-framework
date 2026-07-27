@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import LeaderboardIndex
@@ -90,16 +90,14 @@ private struct LeaderboardBenchmarkContext {
 
         let indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let kind = TimeWindowLeaderboardIndexKind<LeaderboardBenchmarkScore>(
-            scoreField: \.score,
-            groupBy: [],
-            window: window,
-            windowCount: windowCount
-        )
-
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: timeWindowLeaderboardIndexMetadata(
+                scoreFieldName: "score",
+                scoreFieldNumber: 3,
+                window: window,
+                windowCount: windowCount
+            ),
             rootExpression: FieldKeyExpression(fieldName: "score"),
             subspaceKey: indexName,
             itemTypes: Set(["LeaderboardBenchmarkScore"])

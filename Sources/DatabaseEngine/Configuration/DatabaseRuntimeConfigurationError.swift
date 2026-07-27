@@ -19,6 +19,11 @@ public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
         indexName: String,
         kindIdentifier: String
     )
+    case missingIndexUniquenessSupport(
+        source: DatabaseRuntimeIndexRequirementSource,
+        indexName: String,
+        kindIdentifier: String
+    )
     case missingIndexReadExecutor(
         source: DatabaseRuntimeIndexRequirementSource,
         indexName: String,

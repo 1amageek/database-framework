@@ -1,45 +1,34 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 enum DatabaseQueryRowEncoder {
     static func encodeFields(
-        _ values: [String: DatabaseValue]
-    ) throws -> [DatabaseObjectField] {
+        _ values: [String: FieldValue]
+    ) throws -> FieldObject {
         let sortedValues = values.sorted { $0.key < $1.key }
-        var fields: [DatabaseObjectField] = []
-        fields.reserveCapacity(sortedValues.count)
-        for (offset, field) in sortedValues.enumerated() {
-            guard let number = UInt32(exactly: offset + 1) else {
-                throw DatabaseQueryRowEncodingError.fieldCountExceeded(values.count)
+        return try FieldObject(
+            sortedValues.map { field in
+                (key: field.key, value: field.value)
             }
-            fields.append(
-                DatabaseObjectField(
-                    number: number,
-                    name: field.key,
-                    value: field.value
-                )
-            )
-        }
-        return fields
+        )
     }
 
-    static func encode(_ row: QueryRow) throws -> QueryExecuteOperation.Row {
-        let version: DatabaseBytes?
+    static func encode(
+        _ row: DatabaseEngine.QueryRow,
+        columnNames: [String]
+    ) throws -> DatabaseWire.QueryRow {
+        let version: ByteString?
         if let token = row.version {
             version = try PersistableVersionTokenCodec.digest(from: token)
         } else {
             version = nil
         }
-        return QueryExecuteOperation.Row(
-            values: try encodeFields(row.fields),
+        return DatabaseWire.QueryRow(
+            values: columnNames.map { row.fields[$0] ?? .null },
             annotations: try encodeFields(row.annotations),
             version: version
         )
     }
-}
-
-enum DatabaseQueryRowEncodingError: Error, Sendable, Equatable {
-    case fieldCountExceeded(Int)
 }

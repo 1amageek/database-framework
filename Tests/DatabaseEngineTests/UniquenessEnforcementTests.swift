@@ -7,7 +7,7 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
-@testable import Core
+@testable import DatabaseKit
 
 /// Tests for Uniqueness Enforcement
 ///
@@ -17,7 +17,7 @@ import DatabaseRuntime
 /// - UniquenessCheckMode
 /// - UniquenessViolationTracker operations
 /// - DatabaseContext violation API
-@Suite("Uniqueness Enforcement Tests", .serialized, .heartbeat)
+@Suite("Uniqueness Enforcement Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct UniquenessEnforcementTests {
 
     // MARK: - Helper Types
@@ -26,9 +26,9 @@ struct UniquenessEnforcementTests {
     @Persistable
     struct UniquenessConstrainedUser {
         #Directory<UniquenessConstrainedUser>("test", "uniqueness", "users")
-        #Index(ScalarIndexKind<UniquenessConstrainedUser>(fields: [\.email]), unique: true, name: "UniqueTestUser_email")
+        #Index(.scalar, fields: [\UniquenessConstrainedUser.email], unique: true, name: "UniqueTestUser_email")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var email: String
         var name: String
     }
@@ -37,9 +37,9 @@ struct UniquenessEnforcementTests {
     @Persistable
     struct UnconstrainedProduct {
         #Directory<UnconstrainedProduct>("test", "uniqueness", "products")
-        #Index(ScalarIndexKind<UnconstrainedProduct>(fields: [\.category]), name: "NonUniqueTestProduct_category")
+        #Index(.scalar, fields: [\UnconstrainedProduct.category], name: "NonUniqueTestProduct_category")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var category: String
         var name: String
     }
@@ -179,14 +179,14 @@ struct UniquenessEnforcementTests {
         let error = UniquenessViolationError(
             indexName: "email_idx",
             persistableType: "User",
-            conflictingValues: ["test@example.com"],
+            conflictingValues: [.string("test@example.com")],
             existingPrimaryKey: Tuple("user1"),
             newPrimaryKey: Tuple("user2")
         )
 
         #expect(error.indexName == "email_idx")
         #expect(error.persistableType == "User")
-        #expect(error.conflictingValues == ["test@example.com"])
+        #expect(error.conflictingValues == [.string("test@example.com")])
         #expect(error.valueDescription == "test@example.com")
     }
 
@@ -195,7 +195,7 @@ struct UniquenessEnforcementTests {
         let error = UniquenessViolationError(
             indexName: "email_idx",
             persistableType: "User",
-            conflictingValues: ["test@example.com"],
+            conflictingValues: [.string("test@example.com")],
             existingPrimaryKey: Tuple("user1"),
             newPrimaryKey: Tuple("user2")
         )
@@ -288,11 +288,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let databaseStore = store as? DatabaseDataStore else {
-                Issue.record("Store is not DatabaseDataStore")
-                return
-            }
+            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
             let indexName = "test_violation_idx"
@@ -325,11 +321,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let databaseStore = store as? DatabaseDataStore else {
-                Issue.record("Store is not DatabaseDataStore")
-                return
-            }
+            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
             let indexName = "test_has_violations_idx"
@@ -365,11 +357,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let databaseStore = store as? DatabaseDataStore else {
-                Issue.record("Store is not DatabaseDataStore")
-                return
-            }
+            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
             let indexName = "test_count_idx"
@@ -402,11 +390,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let databaseStore = store as? DatabaseDataStore else {
-                Issue.record("Store is not DatabaseDataStore")
-                return
-            }
+            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
             let indexName = "test_clear_idx"
@@ -443,11 +427,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let databaseStore = store as? DatabaseDataStore else {
-                Issue.record("Store is not DatabaseDataStore")
-                return
-            }
+            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
             let indexName = "test_summary_idx"
@@ -498,11 +478,7 @@ struct UniquenessEnforcementTests {
             let indexName = "test_context_scan_idx"
 
             // Add a violation directly to tracker
-            let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let databaseStore = store as? DatabaseDataStore else {
-                Issue.record("Store is not DatabaseDataStore")
-                return
-            }
+            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
 
             try await container.engine.withTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
@@ -547,11 +523,7 @@ struct UniquenessEnforcementTests {
             #expect(hasBefore == false)
 
             // Add a violation
-            let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let databaseStore = store as? DatabaseDataStore else {
-                Issue.record("Store is not DatabaseDataStore")
-                return
-            }
+            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
 
             try await container.engine.withTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
@@ -589,11 +561,7 @@ struct UniquenessEnforcementTests {
             let indexName = "test_context_summary_idx"
 
             // Add violations
-            let store = try await container.store(for: UniquenessConstrainedUser.self)
-            guard let databaseStore = store as? DatabaseDataStore else {
-                Issue.record("Store is not DatabaseDataStore")
-                return
-            }
+            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
 
             try await container.engine.withTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
@@ -622,11 +590,11 @@ struct UniquenessEnforcementTests {
         }
     }
 
-    // MARK: - OnlineIndexerError Tests
+    // MARK: - OnlineIndexBuildError Tests
 
-    @Test("OnlineIndexerError uniquenessViolationsDetected")
+    @Test("OnlineIndexBuildError uniquenessViolationsDetected")
     func indexerErrorViolations() {
-        let error = OnlineIndexerError.uniquenessViolationsDetected(
+        let error = OnlineIndexBuildError.uniquenessViolationsDetected(
             indexName: "email_idx",
             violationCount: 3,
             totalConflictingEntities: 7
@@ -642,10 +610,10 @@ struct UniquenessEnforcementTests {
     // MARK: - Index isUnique Property Tests
 
     @Test("Index isUnique defaults to false")
-    func indexIsUniqueDefault() {
+    func indexIsUniqueDefault() throws {
         let index = Index(
             name: "test_idx",
-            kind: ScalarIndexKind<UniquenessConstrainedUser>(fields: [\.email]),
+            kind: try UniquenessConstrainedUser.indexDescriptors[0].kind,
             rootExpression: FieldKeyExpression(fieldName: "email")
         )
 
@@ -653,10 +621,10 @@ struct UniquenessEnforcementTests {
     }
 
     @Test("Index isUnique can be set to true")
-    func indexIsUniqueTrue() {
+    func indexIsUniqueTrue() throws {
         let index = Index(
             name: "unique_idx",
-            kind: ScalarIndexKind<UniquenessConstrainedUser>(fields: [\.email]),
+            kind: try UniquenessConstrainedUser.indexDescriptors[0].kind,
             rootExpression: FieldKeyExpression(fieldName: "email"),
             isUnique: true
         )

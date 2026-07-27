@@ -1,8 +1,7 @@
-import DatabaseDigest
+@_spi(DatabaseServer) import DatabaseWire
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
-import Graph
+import DatabaseTypes
+import DatabaseKit
 import OntologyIndex
 import StorageKit
 
@@ -23,7 +22,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
 
     public func replace(
         _ document: OntologyExecuteOperation.Document,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
     ) async throws {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
@@ -65,7 +64,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
 
     public func delete(
         ontology: String,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
     ) async throws {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
@@ -98,7 +97,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         ontology: String,
         profile: OntologyExecuteOperation.ReasoningProfile,
         page: QueryExecuteOperation.Page,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
     ) async throws -> OntologyExecuteOperation.InferencePage {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
@@ -155,12 +154,14 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         let inferred = known.subtracting(explicit).sorted()
         let lower = min(offset, inferred.count)
         let upper = min(lower + Int(page.limit), inferred.count)
-        let values = try inferred[lower..<upper].map { triple in
-            try DatabaseRDFQuad(
+        let graph = try RDFGraphName(iri: ontology)
+        let values = inferred.dropFirst(lower).prefix(upper - lower).map {
+            triple in
+            RDFQuad(
                 subject: triple.subject,
-                predicate: triple.predicate.term,
+                predicate: triple.predicate,
                 object: triple.object,
-                graph: .iri(ontology)
+                graph: graph
             )
         }
         let next = upper < inferred.count ? upper : nil
@@ -185,7 +186,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         direction: OntologyExecuteOperation.HierarchyDirection,
         maximumDepth: UInt32,
         page: QueryExecuteOperation.Page,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
     ) async throws -> OntologyExecuteOperation.HierarchyPage {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
@@ -275,9 +276,9 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     public func validateSchema(
         ontology: String,
         page: QueryExecuteOperation.Page,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
-    ) async throws -> DatabaseValidationReport {
+    ) async throws -> ValidationReport {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
         let entailmentClosure = try await loadEntailmentClosure(
             root: ontology,
@@ -305,7 +306,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             configuration: reasonerConfiguration(budget)
         )
         var issues = reasoner.validateStructure().map { error in
-            DatabaseValidationReport.Issue(
+            ValidationReport.Issue(
                 severity: .violation,
                 code: Self.validationCode(error),
                 messages: [String(describing: error)]
@@ -313,7 +314,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         }
         let regularity = reasoner.validateOWLDL()
         issues.append(contentsOf: regularity.violations.map { violation in
-            DatabaseValidationReport.Issue(
+            ValidationReport.Issue(
                 severity: .violation,
                 code: "OWL_DL_REGULARITY",
                 messages: [violation.description]
@@ -322,7 +323,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         let consistency = reasoner.isConsistent()
         if !consistency.value {
             issues.append(
-                DatabaseValidationReport.Issue(
+                ValidationReport.Issue(
                     severity: .violation,
                     code: "OWL_INCONSISTENT",
                     messages: consistency.explanation.isEmpty
@@ -341,7 +342,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         let lower = min(offset, issues.count)
         let upper = min(lower + Int(page.limit), issues.count)
         let next = upper < issues.count ? upper : nil
-        return DatabaseValidationReport(
+        return ValidationReport(
             conforms: issues.isEmpty,
             issues: Array(issues[lower..<upper]),
             continuation: try next.map {
@@ -526,7 +527,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     private func sourceOntology(
         identifier: String,
         imports: [String],
-        quads: [DatabaseRDFQuad]
+        quads: [RDFQuad]
     ) throws -> OWLOntology {
         let decoded: OWLOntology
         do {
@@ -635,17 +636,12 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     }
 
     private func reasoningTriple(
-        from quad: DatabaseRDFQuad
+        from quad: RDFQuad
     ) throws -> ReasoningTriple {
-        guard case .iri(let predicateIRI) = quad.predicate else {
-            throw DatabaseOntologyProcessingError.invalidDocument(
-                "RDF predicates must be IRIs"
-            )
-        }
         do {
             return try ReasoningTriple(
                 subject: quad.subject,
-                predicateIRI: predicateIRI,
+                predicate: quad.predicate,
                 object: quad.object
             )
         } catch let error {
@@ -693,13 +689,13 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     private func pageOffset(
         _ page: QueryExecuteOperation.Page,
         ontology: String,
-        fingerprint: DatabaseBytes,
+        fingerprint: ByteString,
         kind: DatabaseOntologyPageCursor.Kind
     ) throws -> Int {
         guard let bytes = page.continuation else { return 0 }
         let cursor: DatabaseOntologyPageCursor
         do {
-            cursor = try DatabaseEnvelopeCodec.decode(
+            cursor = try ServerPayloadDecoder.decode(
                 DatabaseOntologyPageCursor.self,
                 from: bytes,
                 limits: wireLimits
@@ -718,14 +714,14 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
 
     private func continuation(
         ontology: String,
-        fingerprint: DatabaseBytes,
+        fingerprint: ByteString,
         offset: Int,
         kind: DatabaseOntologyPageCursor.Kind
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         guard let encodedOffset = UInt64(exactly: offset) else {
             throw DatabaseOntologyProcessingError.invalidContinuation
         }
-        return try DatabaseEnvelopeCodec.encode(
+        return try ServerPayloadEncoder.encode(
             DatabaseOntologyPageCursor(
                 ontology: ontology,
                 dependencyFingerprint: fingerprint,
@@ -738,7 +734,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
 
     private func dependencyFingerprint(
         _ documents: [DocumentSnapshot]
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         let encoded = try DatabaseWireWriter.encode(
             limits: wireLimits
         ) {
@@ -755,7 +751,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     }
 
     private func reasonerConfiguration(
-        _ budget: DatabaseExecutionBudget
+        _ budget: ExecutionBudget
     ) -> OWLReasoner.Configuration {
         OWLReasoner.Configuration(
             maxExpansionSteps: Int(
@@ -812,12 +808,12 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         let identifier: String
         let revision: UInt64
         let imports: [String]
-        let quads: [DatabaseRDFQuad]
+        let quads: [RDFQuad]
     }
 
     private struct EntailmentClosureSnapshot: Sendable {
         let documents: [DocumentSnapshot]
-        let fingerprint: DatabaseBytes
+        let fingerprint: ByteString
     }
 
     private struct WorkBudget: Sendable {

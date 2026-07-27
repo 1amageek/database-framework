@@ -7,7 +7,7 @@ import Foundation
 import StorageKit
 import PostgreSQLStorage
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 import TestSupport
 import DatabaseRuntime
 
@@ -66,18 +66,18 @@ struct PostgreSQLPointReadTests {
     }
 
     private func setupStaticContainer() async throws -> DBContainer {
-        let schema = Schema([PGPointReadItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try PGPointReadItem.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGPointReadItem.self])
     }
 
     private func setupPartitionedContainer() async throws -> DBContainer {
-        let schema = Schema([TenantOrder.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try TenantOrder.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [TenantOrder.self])
     }
 
     private func setupSecuredContainer() async throws -> DBContainer {
         let engine = try await PostgreSQLScenarioCoordinator.shared.engine
-        let schema = Schema([PGSecuredPointReadItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try PGSecuredPointReadItem.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),

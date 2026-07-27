@@ -1,13 +1,13 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 /// Type-erased statement mutation executor for runtime composition.
 public final class AnyDatabaseStatementMutationExecutor:
     Sendable {
     private let prepareMutation: @Sendable (
         ValidatedDatabaseStatement,
-        DatabaseExecutionBudget,
+        ExecutionBudget,
         DatabaseOperationContext
     ) async throws -> PreparedDatabaseStatementMutation
 
@@ -32,7 +32,7 @@ public final class AnyDatabaseStatementMutationExecutor:
 
     public func prepare(
         _ statement: ValidatedDatabaseStatement,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         context: DatabaseOperationContext
     ) async throws -> PreparedDatabaseStatementMutation {
         try await prepareMutation(

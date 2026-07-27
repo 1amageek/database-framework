@@ -1,6 +1,6 @@
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 
 @Persistable
 struct RelationshipPlannerGrandchild {
@@ -9,5 +9,5 @@ struct RelationshipPlannerGrandchild {
     var id: String = ""
 
     @Relationship(deleteRule: .cascade)
-    var owner: DatabaseReference<RelationshipPlannerCascadeOwner>? = nil
+    var owner: PersistableReference<RelationshipPlannerCascadeOwner>? = nil
 }

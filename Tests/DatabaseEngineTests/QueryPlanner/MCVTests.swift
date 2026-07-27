@@ -6,11 +6,11 @@
 import Testing
 import TestHeartbeat
 import Foundation
+import DatabaseTypes
 @testable import DatabaseEngine
-import Core
+import DatabaseKit
 
-// Use type aliases to disambiguate from Core types
-typealias CV = Core.FieldValue
+typealias CV = FieldValue
 
 @Suite("MCV Tests", .heartbeat)
 struct MCVTests {

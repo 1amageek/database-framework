@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 
 /// SchemaMigrationPlan - Migration plan protocol
 ///
@@ -179,7 +179,7 @@ extension SchemaMigrationPlan {
             }
 
             if stage.isLightweight {
-                let report = stage.schemaCompatibilityReport
+                let report = try stage.schemaCompatibilityReport
                 if !report.isLightweightCompatible {
                     throw MigrationPlanError.incompatibleLightweightStage(
                         stageIndex: index,

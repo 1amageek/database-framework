@@ -18,7 +18,7 @@ import DatabaseKit
 import DatabaseRuntime
 @testable import TestSupport
 
-@Suite("QueryCursor Tests", .serialized, .heartbeat)
+@Suite("QueryCursor Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct QueryCursorTests {
 
     // MARK: - Test Model

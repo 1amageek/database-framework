@@ -1,8 +1,8 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 
 @Persistable
 struct RelationshipPartitionedOwner {
@@ -11,7 +11,7 @@ struct RelationshipPartitionedOwner {
     var id: String = ""
 
     @Relationship(deleteRule: .deny)
-    var target: DatabaseReference<RelationshipPartitionedTarget>
+    var target: PersistableReference<RelationshipPartitionedTarget>
 }
 #endif
 #endif

@@ -1,4 +1,6 @@
 import DatabaseServer
+import DatabaseKit
+import DatabaseTypes
 import DatabaseWire
 import Testing
 
@@ -7,73 +9,64 @@ struct DatabaseCommandRegistryCompositionTests {
     @Test("Read and write registries preserve both command sets")
     func mergesDistinctCommands() throws {
         let read = try DatabaseReadCommandRegistry(
-            commands: [AnyDatabaseReadCommand(FirstReadCommand())]
+            commands: [AnyDatabaseReadCommand(try FirstReadCommand())]
         ).merging(
             DatabaseReadCommandRegistry(
-                commands: [AnyDatabaseReadCommand(SecondReadCommand())]
+                commands: [AnyDatabaseReadCommand(try SecondReadCommand())]
             )
         )
         let write = try DatabaseWriteCommandRegistry(
-            commands: [AnyDatabaseWriteCommand(FirstWriteCommand())]
+            commands: [AnyDatabaseWriteCommand(try FirstWriteCommand())]
         ).merging(
             DatabaseWriteCommandRegistry(
-                commands: [AnyDatabaseWriteCommand(SecondWriteCommand())]
+                commands: [AnyDatabaseWriteCommand(try SecondWriteCommand())]
             )
         )
 
-        #expect(read.identifiers == ["test.read.first", "test.read.second"])
-        #expect(write.identifiers == ["test.write.first", "test.write.second"])
+        #expect(
+            read.identifiers.map(\.rawValue)
+                == ["test.read.first", "test.read.second"]
+        )
+        #expect(
+            write.identifiers.map(\.rawValue)
+                == ["test.write.first", "test.write.second"]
+        )
     }
 
     @Test("Composition rejects duplicate command identifiers")
     func rejectsDuplicates() throws {
         let read = try DatabaseReadCommandRegistry(
-            commands: [AnyDatabaseReadCommand(FirstReadCommand())]
+            commands: [AnyDatabaseReadCommand(try FirstReadCommand())]
         )
         do {
             _ = try read.merging(
                 DatabaseReadCommandRegistry(
-                    commands: [AnyDatabaseReadCommand(FirstReadCommand())]
+                    commands: [
+                        AnyDatabaseReadCommand(try FirstReadCommand())
+                    ]
                 )
             )
             Issue.record("Expected duplicate read command rejection")
         } catch DatabaseCommandRegistryError.duplicate(let identifier) {
-            #expect(identifier == "test.read.first")
+            #expect(identifier.rawValue == "test.read.first")
         }
     }
 }
 
-private enum FirstReadDescriptor: DatabaseReadCommandDescriptor {
-    typealias Input = DatabaseEmpty
-    typealias Output = DatabaseEmpty
-    static let identifier = "test.read.first"
-}
-
-private enum SecondReadDescriptor: DatabaseReadCommandDescriptor {
-    typealias Input = DatabaseEmpty
-    typealias Output = DatabaseEmpty
-    static let identifier = "test.read.second"
-}
-
-private enum FirstWriteDescriptor: DatabaseWriteCommandDescriptor {
-    typealias Input = DatabaseEmpty
-    typealias Output = DatabaseEmpty
-    static let identifier = "test.write.first"
-}
-
-private enum SecondWriteDescriptor: DatabaseWriteCommandDescriptor {
-    typealias Input = DatabaseEmpty
-    typealias Output = DatabaseEmpty
-    static let identifier = "test.write.second"
-}
-
 private struct FirstReadCommand: DatabaseReadCommand {
-    typealias Descriptor = FirstReadDescriptor
+    let declaration: CommandDeclaration
+
+    init() throws {
+        declaration = CommandDeclaration(
+            identifier: try CommandIdentifier("test.read.first"),
+            access: .readOnly
+        )
+    }
 
     func execute(
-        input: DatabaseEmpty,
+        input: FieldObject,
         context: DatabaseReadCommandContext
-    ) async throws -> DatabaseCommandResult<DatabaseEmpty> {
+    ) async throws -> DatabaseCommandResult {
         _ = input
         _ = context
         throw RegistryCommandTestError.invoked
@@ -81,12 +74,19 @@ private struct FirstReadCommand: DatabaseReadCommand {
 }
 
 private struct SecondReadCommand: DatabaseReadCommand {
-    typealias Descriptor = SecondReadDescriptor
+    let declaration: CommandDeclaration
+
+    init() throws {
+        declaration = CommandDeclaration(
+            identifier: try CommandIdentifier("test.read.second"),
+            access: .readOnly
+        )
+    }
 
     func execute(
-        input: DatabaseEmpty,
+        input: FieldObject,
         context: DatabaseReadCommandContext
-    ) async throws -> DatabaseCommandResult<DatabaseEmpty> {
+    ) async throws -> DatabaseCommandResult {
         _ = input
         _ = context
         throw RegistryCommandTestError.invoked
@@ -94,12 +94,19 @@ private struct SecondReadCommand: DatabaseReadCommand {
 }
 
 private struct FirstWriteCommand: DatabaseWriteCommand {
-    typealias Descriptor = FirstWriteDescriptor
+    let declaration: CommandDeclaration
+
+    init() throws {
+        declaration = CommandDeclaration(
+            identifier: try CommandIdentifier("test.write.first"),
+            access: .readWrite
+        )
+    }
 
     func execute(
-        input: DatabaseEmpty,
+        input: FieldObject,
         context: DatabaseWriteCommandContext
-    ) async throws -> DatabaseCommandResult<DatabaseEmpty> {
+    ) async throws -> DatabaseCommandResult {
         _ = input
         _ = context
         throw RegistryCommandTestError.invoked
@@ -107,12 +114,19 @@ private struct FirstWriteCommand: DatabaseWriteCommand {
 }
 
 private struct SecondWriteCommand: DatabaseWriteCommand {
-    typealias Descriptor = SecondWriteDescriptor
+    let declaration: CommandDeclaration
+
+    init() throws {
+        declaration = CommandDeclaration(
+            identifier: try CommandIdentifier("test.write.second"),
+            access: .readWrite
+        )
+    }
 
     func execute(
-        input: DatabaseEmpty,
+        input: FieldObject,
         context: DatabaseWriteCommandContext
-    ) async throws -> DatabaseCommandResult<DatabaseEmpty> {
+    ) async throws -> DatabaseCommandResult {
         _ = input
         _ = context
         throw RegistryCommandTestError.invoked

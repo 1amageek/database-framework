@@ -1,10 +1,10 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import GraphIndex
 import OntologyIndex
 import StorageKit
@@ -15,17 +15,18 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
     @Test("entity focus resolves compiled RDF subjects")
     func resolvesEntityFocus() async throws {
         let resolutionContext = try await makeSHACLDataSourceResolutionContext()
-        var statement = DatabaseSHACLStatement()
-        statement.id = "statement-1"
-        statement.subject = .iri("urn:person:1")
-        statement.predicate = .iri("urn:predicate")
-        statement.object = .iri("urn:object")
-        statement.graph = .iri("urn:data")
+        let statement = DatabaseSHACLStatement(
+            id: "statement-1",
+            subject: try .iri(validating: "urn:person:1"),
+            predicate: try .iri(validating: "urn:predicate"),
+            object: try .iri(validating: "urn:object"),
+            graph: try .iri(validating: "urn:data")
+        )
         let context = resolutionContext.container.newContext()
         try context.insert(statement)
         try await context.save()
 
-        let identity = PersistableIdentity(
+        let identity = try EntityReference(
             entity: DatabaseSHACLStatement.persistableType,
             id: .string(statement.id)
         )
@@ -37,16 +38,22 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                 focus: .entities([identity]),
                 entailment: .none,
                 workBudget: SHACLValidationWorkBudget(
-                    budget: DatabaseExecutionBudget(maximumWorkUnits: 10)
+                    budget: ExecutionBudget(maximumWorkUnits: 10)
                 ),
                 transaction: transaction
             )
         }
 
         #expect(resolved.data == resolutionContext.data)
-        #expect(resolved.focus == .entities([identity]))
+        #expect(
+            resolved.focus
+                == SHACLExecuteOperation.Focus.entities([identity])
+        )
         #expect(resolved.graphScope == .named(try RDFGraphName(iri: "urn:data")))
-        #expect(resolved.selectedFocusNodes == [.iri("urn:person:1")])
+        #expect(
+            resolved.selectedFocusNodes
+                == [try RDFTerm.iri(validating: "urn:person:1")]
+        )
         #expect(resolved.snapshotFingerprint.count == 8)
     }
 
@@ -61,7 +68,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                 focus: .entities([]),
                 entailment: .none,
                 workBudget: SHACLValidationWorkBudget(
-                    budget: DatabaseExecutionBudget(maximumWorkUnits: 2)
+                    budget: ExecutionBudget(maximumWorkUnits: 2)
                 ),
                 transaction: transaction
             )
@@ -82,7 +89,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                     focus: .targets,
                     entailment: .rdfs,
                     workBudget: SHACLValidationWorkBudget(
-                        budget: DatabaseExecutionBudget(maximumWorkUnits: 2)
+                        budget: ExecutionBudget(maximumWorkUnits: 2)
                     ),
                     transaction: transaction
                 )
@@ -129,7 +136,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
             data: SHACLExecuteOperation.DataSource(
                 entity: DatabaseSHACLStatement.persistableType,
                 index: descriptor.name,
-                graph: .named(.iri("urn:data"))
+                graph: .named(try RDFTerm.iri(validating: "urn:data"))
             )
         )
     }

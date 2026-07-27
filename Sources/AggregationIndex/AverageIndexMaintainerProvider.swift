@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -12,12 +12,11 @@ public struct AverageIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
         let valueType = try validate(kind: index.kind)
         switch valueType {
-        case .int:
-            return AverageIndexMaintainer<Item, Int>(index: index, subspace: subspace, idExpression: idExpression)
+
         case .int8:
             return AverageIndexMaintainer<Item, Int8>(index: index, subspace: subspace, idExpression: idExpression)
         case .int16:
@@ -26,8 +25,7 @@ public struct AverageIndexMaintainerProvider: IndexMaintainerProvider {
             return AverageIndexMaintainer<Item, Int32>(index: index, subspace: subspace, idExpression: idExpression)
         case .int64:
             return AverageIndexMaintainer<Item, Int64>(index: index, subspace: subspace, idExpression: idExpression)
-        case .uint:
-            return AverageIndexMaintainer<Item, UInt>(index: index, subspace: subspace, idExpression: idExpression)
+
         case .uint8:
             return AverageIndexMaintainer<Item, UInt8>(index: index, subspace: subspace, idExpression: idExpression)
         case .uint16:
@@ -36,11 +34,11 @@ public struct AverageIndexMaintainerProvider: IndexMaintainerProvider {
             return AverageIndexMaintainer<Item, UInt32>(index: index, subspace: subspace, idExpression: idExpression)
         case .uint64:
             return AverageIndexMaintainer<Item, UInt64>(index: index, subspace: subspace, idExpression: idExpression)
-        case .float:
+        case .float32:
             return AverageIndexMaintainer<Item, Float>(index: index, subspace: subspace, idExpression: idExpression)
-        case .double:
+        case .float64:
             return AverageIndexMaintainer<Item, Double>(index: index, subspace: subspace, idExpression: idExpression)
-        case .string, .date:
+        case .string, .date, .timestamp:
             throw IndexMaintainerProviderError.invalidMetadata(
                 kindIdentifier: kindIdentifier,
                 key: "valueType"

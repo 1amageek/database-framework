@@ -6,7 +6,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 
 /// Protocol for queries that can participate in fusion operations
 ///

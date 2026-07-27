@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 
 /// Emits one canonical entity identifier directly into a tuple sink.
@@ -6,7 +6,7 @@ import StorageKit
 /// The value retains string and byte storage through their existing owners.
 /// Packing performs the single allocation required for the final key bytes.
 struct PersistableIdentifierTupleElement: TupleElement {
-    let value: PersistableIdentifierValue
+    let value: ReferenceIdentifier
 
     func encodeTuple(to sink: inout TupleEncodingSink) {
         Self.encode(value, to: &sink)
@@ -23,14 +23,26 @@ struct PersistableIdentifierTupleElement: TupleElement {
     }
 
     private static func encode(
-        _ value: PersistableIdentifierValue,
+        _ value: ReferenceIdentifier,
         to sink: inout TupleEncodingSink
     ) {
         switch value {
         case .bool(let value):
             value.encodeTuple(to: &sink)
+        case .int8(let value):
+            Int64(value).encodeTuple(to: &sink)
+        case .int16(let value):
+            Int64(value).encodeTuple(to: &sink)
+        case .int32(let value):
+            Int64(value).encodeTuple(to: &sink)
         case .int64(let value):
             value.encodeTuple(to: &sink)
+        case .uint8(let value):
+            UInt64(value).encodeTuple(to: &sink)
+        case .uint16(let value):
+            UInt64(value).encodeTuple(to: &sink)
+        case .uint32(let value):
+            UInt64(value).encodeTuple(to: &sink)
         case .uint64(let value):
             value.encodeTuple(to: &sink)
         case .string(let value):

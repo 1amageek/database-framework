@@ -7,7 +7,8 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Core
+import DatabaseTypes
+import DatabaseKit
 
 // MARK: - TupleElement Conversion
 
@@ -42,13 +43,6 @@ extension FieldValue {
         tupleElement: any TupleElement,
         limits: FieldValueTupleCodecLimits = .default
     ) throws(FieldValueTupleCodecError) {
-        switch tupleElement {
-        case let value as Float:
-            self = .double(Double(value))
-        case let value as UUID:
-            self = .string(value.uuidString)
-        default:
-            self = try FieldValueTupleCodec.decode(tupleElement, limits: limits)
-        }
+        self = try FieldValueTupleCodec.decode(tupleElement, limits: limits)
     }
 }

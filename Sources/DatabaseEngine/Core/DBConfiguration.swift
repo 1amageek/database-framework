@@ -7,7 +7,7 @@ import StorageKit
 #if FOUNDATION_DB
 import FDBStorage
 #endif
-import Core
+import DatabaseKit
 
 /// Database configuration
 ///
@@ -31,9 +31,8 @@ import Core
 ///     backend: .fdb(),
 ///     indexConfigurations: [
 ///         VectorIndexConfiguration<Document>(
-///             keyPath: \.embedding,
-///             dimensions: 1536,
-///             hnswParameters: .default
+///             field: Document.fields.embedding,
+///             hnsw: .default
 ///         )
 ///     ]
 /// )
@@ -72,7 +71,7 @@ public struct DBConfiguration: Sendable {
     /// - Full-text search: language settings, tokenizer configuration
     ///
     /// Multiple configurations for the same index are allowed (e.g., multi-language full-text).
-    public let indexConfigurations: [any IndexConfiguration]
+    public let indexConfigurations: [any IndexRuntimeConfiguration]
 
     /// Canonical physical entity format for this database.
     public let itemStorage: ItemStorageConfiguration
@@ -91,7 +90,7 @@ public struct DBConfiguration: Sendable {
     public init(
         name: String? = nil,
         backend: StorageBackend,
-        indexConfigurations: [any IndexConfiguration] = [],
+        indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .system
     ) {

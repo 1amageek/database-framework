@@ -8,10 +8,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
-import Graph
+import DatabaseKit
 
 // MARK: - ShortestPathFinder
 

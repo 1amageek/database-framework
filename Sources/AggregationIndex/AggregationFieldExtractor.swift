@@ -1,4 +1,5 @@
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -43,7 +44,7 @@ enum AggregationFieldExtractor {
         guard !fieldNames.isEmpty,
               fieldNames.count == index.rootExpression.columnCount,
               let valueFieldName = fieldNames.last else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Aggregation index '\(index.name)' has inconsistent field metadata"
             )
         }
@@ -117,7 +118,7 @@ enum AggregationFieldExtractor {
         }
 
         guard elements.count == 1, let element = elements.first else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Aggregation index '\(indexName)' field '\(fieldName)' must produce exactly one value"
             )
         }

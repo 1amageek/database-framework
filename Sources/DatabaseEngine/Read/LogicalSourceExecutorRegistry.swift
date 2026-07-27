@@ -3,9 +3,9 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 public protocol GraphTableSourceExecutor: Sendable {
@@ -13,7 +13,7 @@ public protocol GraphTableSourceExecutor: Sendable {
         context: DatabaseContext,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> [QueryRow]
 }
 
@@ -22,14 +22,14 @@ public protocol SPARQLSourceExecutor: Sendable {
         context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> QueryResponse
 
     func executeInTransaction(
         context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> QueryResponse
 
@@ -37,7 +37,7 @@ public protocol SPARQLSourceExecutor: Sendable {
         context: DatabaseContext,
         askQuery: AskQuery,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> Bool
 
@@ -46,7 +46,7 @@ public protocol SPARQLSourceExecutor: Sendable {
         constructQuery: ConstructQuery,
         resultScope: DatabaseGraphResultScope,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph
 
@@ -54,7 +54,7 @@ public protocol SPARQLSourceExecutor: Sendable {
         context: DatabaseContext,
         describeQuery: DescribeQuery,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph
 }

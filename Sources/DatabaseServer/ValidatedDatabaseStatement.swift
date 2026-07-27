@@ -1,4 +1,4 @@
-import QueryIR
+import DatabaseKit
 
 /// A statement admitted through canonical parsing, binding, and validation.
 public struct ValidatedDatabaseStatement: Sendable {

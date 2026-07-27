@@ -11,8 +11,8 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Graph
-import Core
+import DatabaseKit
+import DatabaseKit
 import DatabaseEngine
 
 // MARK: - DatabaseContext Extension
@@ -370,7 +370,10 @@ public struct OntologyContextAPI: Sendable {
     ///
     /// **Example**:
     /// ```swift
-    /// let schema = Schema([Employee.self, Assignment.self])
+    /// let schema = try Schema(
+    ///     entities: [try Employee.schemaEntity, try Assignment.schemaEntity],
+    ///     version: .init(1, 0, 0)
+    /// )
     /// try await context.ontology.validateSchema(schema, ontologyIRI: "http://example.org/onto")
     /// ```
     public func validateSchema(_ schema: Schema, ontologyIRI: String) async throws {
@@ -380,44 +383,37 @@ public struct OntologyContextAPI: Sendable {
         let errors: [OntologyValidationError] = try await context.indexQueryContext.withTransaction { transaction in
             var collected: [OntologyValidationError] = []
             for entity in schema.entities {
-                // Validate @OWLClass IRI
-                if let classIRI = entity.ontologyClassIRI {
+                guard let binding = entity.ontology else {
+                    continue
+                }
+
+                let dataPropertyIRIs: [String]
+                switch binding {
+                case .owlClass(let classIRI, let propertyIRIs):
                     do {
                         try await validator.validateClass(classIRI, in: ontologyIRI, transaction: transaction)
                     } catch let error as OntologyValidationError {
                         collected.append(error)
                     }
-                    // Non-validation errors (FDB connection, etc.) propagate immediately
-                }
-
-                // Validate @OWLObjectProperty IRI
-                if let propIRI = entity.objectPropertyIRI {
+                    dataPropertyIRIs = propertyIRIs
+                case .owlObjectProperty(
+                    let propertyIRI,
+                    _,
+                    _,
+                    let propertyIRIs
+                ):
                     do {
-                        try await validator.validateObjectProperty(propIRI, in: ontologyIRI, transaction: transaction)
+                        try await validator.validateObjectProperty(
+                            propertyIRI,
+                            in: ontologyIRI,
+                            transaction: transaction
+                        )
                     } catch let error as OntologyValidationError {
                         collected.append(error)
                     }
-                    // Non-validation errors propagate immediately
+                    dataPropertyIRIs = propertyIRIs
                 }
 
-                // Validate @OWLDataProperty IRIs
-                // Source 1: Runtime type (when Persistable type is linked)
-                // Source 2: Schema.Entity.dataPropertyIRIs (when deserialized from wire format)
-                let dataPropertyIRIs: [String]
-                if let type = entity.persistableType {
-                    if let owlClass = type as? any OWLClassEntity.Type {
-                        dataPropertyIRIs = owlClass.ontologyPropertyDescriptors.map(\.iri)
-                    } else if let owlObjProp = type as? any OWLObjectPropertyEntity.Type {
-                        dataPropertyIRIs = owlObjProp.ontologyPropertyDescriptors.map(\.iri)
-                    } else {
-                        dataPropertyIRIs = []
-                    }
-                } else if let wireIRIs = entity.dataPropertyIRIs {
-                    // E-1 fallback: use wire-format IRIs when persistableType is nil
-                    dataPropertyIRIs = wireIRIs
-                } else {
-                    dataPropertyIRIs = []
-                }
                 for iri in dataPropertyIRIs {
                     do {
                         try await validator.validateDataProperty(iri, in: ontologyIRI, transaction: transaction)

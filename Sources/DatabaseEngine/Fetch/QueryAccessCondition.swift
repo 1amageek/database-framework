@@ -1,4 +1,5 @@
-import Core
+import DatabaseTypes
+import DatabaseKit
 
 /// A predicate clause consumed by the selected storage access path.
 public struct QueryAccessCondition: Sendable, Equatable, Hashable {

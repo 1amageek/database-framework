@@ -1,8 +1,8 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 
 @Persistable
 struct RelationshipDenyOwner {
@@ -11,7 +11,7 @@ struct RelationshipDenyOwner {
     var id: String = ""
 
     @Relationship(deleteRule: .deny)
-    var target: DatabaseReference<RelationshipTarget>
+    var target: PersistableReference<RelationshipTarget>
 }
 #endif
 #endif

@@ -1,6 +1,6 @@
 import DatabaseServer
 import DatabaseWire
-import QueryIR
+import DatabaseKit
 import Testing
 
 @Suite("Database runtime execution limits")
@@ -9,7 +9,7 @@ struct DatabaseRuntimeLimitsTests {
     func acceptsIntermediateCaps() throws {
         let limits = try makeLimits()
         try limits.validate(
-            DatabaseExecutionBudget(
+            ExecutionBudget(
                 maximumRows: 100,
                 maximumWorkUnits: 1_000,
                 maximumIntermediateRows: 20,
@@ -300,8 +300,8 @@ struct DatabaseRuntimeLimitsTests {
         intermediateRows: UInt32 = 20,
         intermediateBytes: UInt64 = 2_048,
         timeoutMilliseconds: UInt32 = 500
-    ) -> DatabaseExecutionBudget {
-        DatabaseExecutionBudget(
+    ) -> ExecutionBudget {
+        ExecutionBudget(
             maximumRows: maximumRows,
             maximumWorkUnits: maximumWorkUnits,
             maximumIntermediateRows: intermediateRows,

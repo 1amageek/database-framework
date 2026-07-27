@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import StorageKit
 import Testing
@@ -14,10 +14,11 @@ struct ScalarUInt64IndexRuntimeTests {
             UInt64(Int64.max) + 1,
             UInt64.max,
         ]
-        let kind = ScalarIndexKind<UnsignedScalarEntity>(fields: [\.value])
         let index = Index(
             name: "UnsignedScalarEntity_value",
-            kind: kind,
+            kind: scalarIndexMetadata(
+                fields: [FieldIdentity(name: "value", number: 2)]
+            ),
             rootExpression: FieldKeyExpression(fieldName: "value"),
             subspaceKey: "UnsignedScalarEntity_value",
             itemTypes: [UnsignedScalarEntity.persistableType]

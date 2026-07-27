@@ -1,10 +1,10 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
-struct DatabasePersistentJobDueEntry: DatabaseWireValue, Sendable, Hashable {
+struct DatabasePersistentJobDueEntry: ServerPayloadValue, Sendable, Hashable {
     private static let formatVersion: UInt8 = 1
 
-    let jobID: DatabaseUUID
+    let jobID: DatabaseTypes.UUID
     let stateRevision: UInt64
 
     func encode(
@@ -23,12 +23,12 @@ struct DatabasePersistentJobDueEntry: DatabaseWireValue, Sendable, Hashable {
             throw .unsupportedProtocolVersionValue(UInt16(version))
         }
         self.init(
-            jobID: try DatabaseUUID(from: &reader),
+            jobID: try DatabaseTypes.UUID(from: &reader),
             stateRevision: try reader.readUInt64()
         )
     }
 
-    init(jobID: DatabaseUUID, stateRevision: UInt64) {
+    init(jobID: DatabaseTypes.UUID, stateRevision: UInt64) {
         self.jobID = jobID
         self.stateRevision = stateRevision
     }

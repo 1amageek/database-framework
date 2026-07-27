@@ -1,4 +1,5 @@
-import Core
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 /// A decoded physical index entry with its logical indexed values and owner.

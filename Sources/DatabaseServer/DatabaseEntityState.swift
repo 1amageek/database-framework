@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 
 enum DatabaseEntityState: Sendable {
     case missing

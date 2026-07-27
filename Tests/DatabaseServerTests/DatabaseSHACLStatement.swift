@@ -1,22 +1,22 @@
-import Core
-import DatabaseValue
-import DatabaseValueCodable
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKitFoundation
 
 @Persistable
 struct DatabaseSHACLStatement {
     #Directory<DatabaseSHACLStatement>("test", "database-server-shacl")
 
-    var id: String = ""
-    var subject: DatabaseRDFTerm = .iri("urn:subject")
-    var predicate: DatabaseRDFTerm = .iri("urn:predicate")
-    var object: DatabaseRDFTerm = .iri("urn:object")
-    var graph: DatabaseRDFTerm = .iri("urn:graph")
+    var id: String
+    var subject: RDFTerm
+    var predicate: RDFTerm
+    var object: RDFTerm
+    var graph: RDFTerm
 
-    #Index(RDFQuadIndexKind<DatabaseSHACLStatement>(
-        subject: \.subject,
-        predicate: \.predicate,
-        object: \.object,
-        graph: \.graph
-    ))
+    #Index(
+        .rdfDataset,
+        from: \DatabaseSHACLStatement.subject,
+        edge: \DatabaseSHACLStatement.predicate,
+        to: \DatabaseSHACLStatement.object,
+        graph: \DatabaseSHACLStatement.graph
+    )
 }

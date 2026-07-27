@@ -4,7 +4,7 @@
 // Provides runtime type dispatch for OnlineIndexer instantiation.
 
 import StorageKit
-import Core
+import DatabaseKit
 
 /// Helper namespace for runtime index building
 ///
@@ -17,7 +17,7 @@ public struct EntityIndexBuilder {
         _ index: Index,
         _ indexLifecycleStore: IndexLifecycleStore,
         _ batchSize: Int,
-        _ configurations: [any IndexConfiguration]
+        _ configurations: [any IndexRuntimeConfiguration]
     ) async throws -> Void
 
     public static func buildIndex(
@@ -27,7 +27,7 @@ public struct EntityIndexBuilder {
         index: Index,
         indexLifecycleStore: IndexLifecycleStore,
         batchSize: Int = 100,
-        configurations: [any IndexConfiguration] = []
+        configurations: [any IndexRuntimeConfiguration] = []
     ) async throws {
         func makeBuilder<T: Persistable>(_: T.Type) -> Builder {
             { container, storeSubspace, index, lifecycleStore, batchSize, configurations in

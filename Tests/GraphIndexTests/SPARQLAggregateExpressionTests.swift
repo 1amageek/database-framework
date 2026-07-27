@@ -1,9 +1,9 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 @testable import GraphIndex
-import QueryIR
+import DatabaseKit
 import Synchronization
 import TestHeartbeat
 import Testing
@@ -164,7 +164,7 @@ struct SPARQLAggregateExpressionTests {
             Issue.record("GROUP_CONCAT did not return an RDF literal")
             return
         }
-        #expect(literal.datatype == "http://www.w3.org/2001/XMLSchema#string")
+        #expect(literal.datatypeIRI == .xsdString)
         #expect(literal.lexicalForm == "a,b")
     }
 
@@ -226,7 +226,7 @@ struct SPARQLAggregateExpressionTests {
         for binding in bindings {
             try builder.append(binding, at: .aggregateInput)
         }
-        let expressionContext = SPARQLQueryExpressionContext(
+        let expressionContext = try SPARQLQueryExpressionContext(
             functionRegistry: .empty,
             workMeter: workMeter
         )
@@ -247,7 +247,7 @@ struct SPARQLAggregateExpressionTests {
 
     private func meter() -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000
@@ -257,7 +257,8 @@ struct SPARQLAggregateExpressionTests {
 
     private func integerLexicalForm(_ value: FieldValue?) -> String? {
         guard case .rdfTerm(.literal(let literal)) = value,
-              literal.datatype == "http://www.w3.org/2001/XMLSchema#integer" else {
+              literal.datatypeIRI.rawValue
+                == "http://www.w3.org/2001/XMLSchema#integer" else {
             return nil
         }
         return literal.lexicalForm

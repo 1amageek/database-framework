@@ -4,16 +4,15 @@
 
 import Testing
 import Foundation
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import Graph
 import DatabaseEngine
 import StorageKit
 import FDBStorage
 import TestSupport
 @testable import GraphIndex
 
-@Suite("GraphQuery Property Filter Tests", .serialized, .heartbeat)
+@Suite("GraphQuery Property Filter Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct GraphQueryPropertyFilterTests {
 
     // MARK: - Test Model
@@ -26,17 +25,22 @@ struct GraphQueryPropertyFilterTests {
         var from: String = ""
         var target: String = ""
         var label: String = ""
-        var since: Int = 0
+        var since: Int64 = 0
         var status: String? = nil
         var score: Double = 0.0
 
-        #Index(GraphIndexKind<SocialEdge>(
-            from: \.from,
-            edge: \.label,
-            to: \.target,
-            graph: nil,
-            strategy: .tripleStore
-        ), storedFields: [\SocialEdge.since, \SocialEdge.status, \SocialEdge.score], name: "social_graph_query_index")
+        #Index(
+            .propertyGraph(strategy: .tripleStore),
+            from: \SocialEdge.from,
+            edge: \SocialEdge.label,
+            to: \SocialEdge.target,
+            storedFields: [
+                \SocialEdge.since,
+                \SocialEdge.status,
+                \SocialEdge.score,
+            ],
+            name: "social_graph_query_index"
+        )
     }
 
     // MARK: - Setup
@@ -49,17 +53,25 @@ struct GraphQueryPropertyFilterTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func makeEdge(from: String, target: String, label: String, since: Int, status: String?, score: Double) -> SocialEdge {
+    private func makeEdge(from: String, target: String, label: String, since: Int64, status: String?, score: Double) -> SocialEdge {
         SocialEdge(from: from, target: target, label: label, since: since, status: status, score: score)
     }
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try SocialEdge.schemaEntity
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialEdge.self]), security: .disabled)
 
 
-        try? await database.removeDirectory(path: ["test", "social_edges_query"])
+        let path = ["test", "social_edges_query"]
+        if try await database.directoryExists(path: path) {
+            try await database.removeDirectory(path: path)
+        }
         try await container.ensureIndexesReady()
 
         return container
@@ -85,7 +97,7 @@ struct GraphQueryPropertyFilterTests {
             .defaultIndex()
             .from(alice)
             .edge("KNOWS")
-            .where(\.since, .equal, 2020)
+            .where(SocialEdge.fields.since, .equal, 2020)
             .execute()
 
         #expect(results.count == 1)
@@ -99,7 +111,7 @@ struct GraphQueryPropertyFilterTests {
 
         let alice = uniqueID("alice")
 
-        for year in [2018, 2019, 2020, 2021, 2022] {
+        for year: Int64 in [2018, 2019, 2020, 2021, 2022] {
             try context.insert(makeEdge(from: alice, target: uniqueID("user-\(year)"), label: "KNOWS", since: year, status: "active", score: 0.5))
         }
         try await context.save()
@@ -109,7 +121,7 @@ struct GraphQueryPropertyFilterTests {
             .defaultIndex()
             .from(alice)
             .edge("KNOWS")
-            .where(\.since, .greaterThanOrEqual, 2020)
+            .where(SocialEdge.fields.since, .greaterThanOrEqual, 2020)
             .execute()
 
         #expect(results.count == 3)
@@ -135,8 +147,8 @@ struct GraphQueryPropertyFilterTests {
             .defaultIndex()
             .from(alice)
             .edge("KNOWS")
-            .where(\.since, .equal, 2020)
-            .where(\.status, .equal, "active")
+            .where(SocialEdge.fields.since, .equal, 2020)
+            .where(SocialEdge.fields.status, .equal, "active")
             .execute()
 
         #expect(results.count == 1)
@@ -161,7 +173,11 @@ struct GraphQueryPropertyFilterTests {
             .defaultIndex()
             .from(alice)
             .edge("KNOWS")
-            .whereRaw(fieldName: "since", .greaterThanOrEqual, 2020)
+            .whereField(
+                named: "since",
+                .greaterThanOrEqual,
+                .int64(2020)
+            )
             .execute()
 
         #expect(results.count == 1)
@@ -189,7 +205,7 @@ struct GraphQueryPropertyFilterTests {
             .defaultIndex()
             .from(alice)
             .edge("KNOWS")
-            .whereRaw(fieldName: "status", .isNotNil, 0)  // Value ignored for isNotNil
+            .whereField(named: "status", .isNotNil, .null)
             .execute()
 
         #expect(results.count == 2)  // Empty string and "active"

@@ -1,31 +1,31 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
-struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
+struct DatabasePersistentJobState: ServerPayloadValue, Sendable, Hashable {
     private static let formatVersion: UInt8 = 1
 
-    let jobID: DatabaseUUID
-    let specificationDigest: DatabaseBytes
+    let jobID: DatabaseTypes.UUID
+    let specificationDigest: ByteString
     let revision: UInt64
     let status: JobStatusOperation.State
-    let operationStatePayload: DatabaseBytes
+    let operationStatePayload: ByteString
     let completedWorkUnits: UInt64
     let totalWorkUnits: UInt64?
     let executionCount: UInt64
     let currentSliceAttempt: UInt32
     let unsuccessfulOutcomeCommitAttempt: UInt64
     let pendingUnsuccessfulOutcome: DatabaseJobUnsuccessfulOutcome?
-    let lastUnsuccessfulOutcomeCommitError: DatabaseRemoteError?
+    let lastUnsuccessfulOutcomeCommitError: RemoteOperationError?
     let cancellationRequested: Bool
-    let nextAttemptAt: DatabaseTimestamp?
-    let leaseOwner: DatabaseUUID?
-    let leaseToken: DatabaseUUID?
-    let leaseExpiresAt: DatabaseTimestamp?
-    let resultDigest: DatabaseJobResultDigest?
-    let failure: DatabaseRemoteError?
-    let updatedAt: DatabaseTimestamp
+    let nextAttemptAt: Timestamp?
+    let leaseOwner: DatabaseTypes.UUID?
+    let leaseToken: DatabaseTypes.UUID?
+    let leaseExpiresAt: Timestamp?
+    let resultDigest: JobResultDigest?
+    let failure: RemoteOperationError?
+    let updatedAt: Timestamp
 
-    var scheduledAt: DatabaseTimestamp? {
+    var scheduledAt: Timestamp? {
         switch status {
         case .pending:
             return nextAttemptAt
@@ -39,10 +39,10 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     }
 
     func acquiringLease(
-        owner: DatabaseUUID,
-        token: DatabaseUUID,
-        expiresAt: DatabaseTimestamp,
-        updatedAt: DatabaseTimestamp
+        owner: DatabaseTypes.UUID,
+        token: DatabaseTypes.UUID,
+        expiresAt: Timestamp,
+        updatedAt: Timestamp
     ) throws -> Self {
         switch status {
         case .pending, .running:
@@ -102,11 +102,11 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     }
 
     func continuing(
-        operationStatePayload: DatabaseBytes,
+        operationStatePayload: ByteString,
         cumulativeWorkUnits: UInt64,
         totalWorkUnits: UInt64?,
-        nextAttemptAt: DatabaseTimestamp,
-        updatedAt: DatabaseTimestamp
+        nextAttemptAt: Timestamp,
+        updatedAt: Timestamp
     ) throws -> Self {
         guard status == .running else {
             throw DatabaseJobRuntimeError.invalidStateTransition
@@ -135,8 +135,8 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     func succeeding(
         cumulativeWorkUnits: UInt64,
         totalWorkUnits: UInt64,
-        resultDigest: DatabaseJobResultDigest,
-        updatedAt: DatabaseTimestamp
+        resultDigest: JobResultDigest,
+        updatedAt: Timestamp
     ) throws -> Self {
         guard status == .running else {
             throw DatabaseJobRuntimeError.invalidStateTransition
@@ -163,8 +163,8 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     }
 
     func retrying(
-        at nextAttemptAt: DatabaseTimestamp,
-        updatedAt: DatabaseTimestamp
+        at nextAttemptAt: Timestamp,
+        updatedAt: Timestamp
     ) throws -> Self {
         guard status == .running else {
             throw DatabaseJobRuntimeError.invalidStateTransition
@@ -192,8 +192,8 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
 
     func schedulingUnsuccessfulOutcomeCommit(
         _ outcome: DatabaseJobUnsuccessfulOutcome,
-        nextAttemptAt: DatabaseTimestamp,
-        updatedAt: DatabaseTimestamp
+        nextAttemptAt: Timestamp,
+        updatedAt: Timestamp
     ) throws -> Self {
         guard status == .pending || status == .running else {
             throw DatabaseJobRuntimeError.invalidStateTransition
@@ -220,10 +220,10 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     }
 
     func schedulingCancellationOutcomeCommitAfterCheckpoint(
-        operationStatePayload: DatabaseBytes,
+        operationStatePayload: ByteString,
         cumulativeWorkUnits: UInt64,
         totalWorkUnits: UInt64?,
-        updatedAt: DatabaseTimestamp
+        updatedAt: Timestamp
     ) throws -> Self {
         guard status == .running,
               cancellationRequested else {
@@ -251,9 +251,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     }
 
     func schedulingUnsuccessfulOutcomeCommitRetry(
-        after error: DatabaseRemoteError,
-        at nextAttemptAt: DatabaseTimestamp,
-        updatedAt: DatabaseTimestamp
+        after error: RemoteOperationError,
+        at nextAttemptAt: Timestamp,
+        updatedAt: Timestamp
     ) throws -> Self {
         guard status == .committingUnsuccessfulOutcome,
               pendingUnsuccessfulOutcome != nil,
@@ -284,7 +284,7 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     }
 
     func completingUnsuccessfulOutcomeCommit(
-        updatedAt: DatabaseTimestamp
+        updatedAt: Timestamp
     ) throws -> Self {
         guard status == .committingUnsuccessfulOutcome,
               let pendingUnsuccessfulOutcome,
@@ -296,7 +296,7 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
             throw DatabaseJobRuntimeError.invalidStateTransition
         }
         let completedStatus: JobStatusOperation.State
-        let failure: DatabaseRemoteError?
+        let failure: RemoteOperationError?
         switch pendingUnsuccessfulOutcome {
         case .failed(let error):
             completedStatus = .failed
@@ -326,7 +326,7 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         )
     }
 
-    func requestingCancellation(updatedAt: DatabaseTimestamp) throws -> Self {
+    func requestingCancellation(updatedAt: Timestamp) throws -> Self {
         guard status == .running, !cancellationRequested else {
             throw DatabaseJobRuntimeError.invalidStateTransition
         }
@@ -499,11 +499,17 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         writer.writeUInt64(unsuccessfulOutcomeCommitAttempt)
         writer.writeBool(pendingUnsuccessfulOutcome != nil)
         if let pendingUnsuccessfulOutcome {
-            try pendingUnsuccessfulOutcome.encode(into: &writer)
+            try Self.encode(
+                pendingUnsuccessfulOutcome,
+                into: &writer
+            )
         }
         writer.writeBool(lastUnsuccessfulOutcomeCommitError != nil)
         if let lastUnsuccessfulOutcomeCommitError {
-            try lastUnsuccessfulOutcomeCommitError.encode(into: &writer)
+            try Self.encode(
+                lastUnsuccessfulOutcomeCommitError,
+                into: &writer
+            )
         }
         writer.writeBool(cancellationRequested)
         try Self.encode(nextAttemptAt, into: &writer)
@@ -515,7 +521,7 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
             try resultDigest.encode(into: &writer)
         }
         writer.writeBool(failure != nil)
-        if let failure { try failure.encode(into: &writer) }
+        if let failure { try Self.encode(failure, into: &writer) }
         try updatedAt.encode(into: &writer)
     }
 
@@ -526,7 +532,7 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         guard version == Self.formatVersion else {
             throw .unsupportedProtocolVersionValue(UInt16(version))
         }
-        let jobID = try DatabaseUUID(from: &reader)
+        let jobID = try DatabaseTypes.UUID(from: &reader)
         let specificationDigest = try reader.readBytes()
         let revision = try reader.readUInt64()
         let rawStatus = try reader.readUInt8()
@@ -542,10 +548,10 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         let currentSliceAttempt = try reader.readUInt32()
         let unsuccessfulOutcomeCommitAttempt = try reader.readUInt64()
         let pendingUnsuccessfulOutcome = try reader.readBool()
-            ? try DatabaseJobUnsuccessfulOutcome(from: &reader)
+            ? try Self.decodeUnsuccessfulOutcome(from: &reader)
             : nil
         let lastUnsuccessfulOutcomeCommitError = try reader.readBool()
-            ? try DatabaseRemoteError(from: &reader)
+            ? try Self.decodeRemoteError(from: &reader)
             : nil
         let cancellationRequested = try reader.readBool()
         let nextAttemptAt = try Self.decodeTimestamp(from: &reader)
@@ -553,12 +559,12 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         let leaseToken = try Self.decodeUUID(from: &reader)
         let leaseExpiresAt = try Self.decodeTimestamp(from: &reader)
         let resultDigest = try reader.readBool()
-            ? try DatabaseJobResultDigest(from: &reader)
+            ? try JobResultDigest(from: &reader)
             : nil
         let failure = try reader.readBool()
-            ? try DatabaseRemoteError(from: &reader)
+            ? try Self.decodeRemoteError(from: &reader)
             : nil
-        let updatedAt = try DatabaseTimestamp(from: &reader)
+        let updatedAt = try Timestamp(from: &reader)
         self.init(
             jobID: jobID,
             specificationDigest: specificationDigest,
@@ -584,26 +590,26 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     }
 
     init(
-        jobID: DatabaseUUID,
-        specificationDigest: DatabaseBytes,
+        jobID: DatabaseTypes.UUID,
+        specificationDigest: ByteString,
         revision: UInt64,
         status: JobStatusOperation.State,
-        operationStatePayload: DatabaseBytes,
+        operationStatePayload: ByteString,
         completedWorkUnits: UInt64,
         totalWorkUnits: UInt64?,
         executionCount: UInt64,
         currentSliceAttempt: UInt32,
         unsuccessfulOutcomeCommitAttempt: UInt64,
         pendingUnsuccessfulOutcome: DatabaseJobUnsuccessfulOutcome?,
-        lastUnsuccessfulOutcomeCommitError: DatabaseRemoteError?,
+        lastUnsuccessfulOutcomeCommitError: RemoteOperationError?,
         cancellationRequested: Bool,
-        nextAttemptAt: DatabaseTimestamp?,
-        leaseOwner: DatabaseUUID?,
-        leaseToken: DatabaseUUID?,
-        leaseExpiresAt: DatabaseTimestamp?,
-        resultDigest: DatabaseJobResultDigest?,
-        failure: DatabaseRemoteError?,
-        updatedAt: DatabaseTimestamp
+        nextAttemptAt: Timestamp?,
+        leaseOwner: DatabaseTypes.UUID?,
+        leaseToken: DatabaseTypes.UUID?,
+        leaseExpiresAt: Timestamp?,
+        resultDigest: JobResultDigest?,
+        failure: RemoteOperationError?,
+        updatedAt: Timestamp
     ) {
         self.jobID = jobID
         self.specificationDigest = specificationDigest
@@ -629,22 +635,22 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
 
     private func advancing(
         status: JobStatusOperation.State,
-        operationStatePayload: DatabaseBytes,
+        operationStatePayload: ByteString,
         completedWorkUnits: UInt64,
         totalWorkUnits: UInt64?,
         executionCount: UInt64,
         currentSliceAttempt: UInt32,
         unsuccessfulOutcomeCommitAttempt: UInt64,
         pendingUnsuccessfulOutcome: DatabaseJobUnsuccessfulOutcome?,
-        lastUnsuccessfulOutcomeCommitError: DatabaseRemoteError?,
+        lastUnsuccessfulOutcomeCommitError: RemoteOperationError?,
         cancellationRequested: Bool,
-        nextAttemptAt: DatabaseTimestamp?,
-        leaseOwner: DatabaseUUID?,
-        leaseToken: DatabaseUUID?,
-        leaseExpiresAt: DatabaseTimestamp?,
-        resultDigest: DatabaseJobResultDigest?,
-        failure: DatabaseRemoteError?,
-        updatedAt: DatabaseTimestamp
+        nextAttemptAt: Timestamp?,
+        leaseOwner: DatabaseTypes.UUID?,
+        leaseToken: DatabaseTypes.UUID?,
+        leaseExpiresAt: Timestamp?,
+        resultDigest: JobResultDigest?,
+        failure: RemoteOperationError?,
+        updatedAt: Timestamp
     ) throws -> Self {
         let (nextRevision, overflow) = revision.addingReportingOverflow(1)
         guard !overflow else {
@@ -679,7 +685,50 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     }
 
     private static func encode(
-        _ value: DatabaseTimestamp?,
+        _ value: DatabaseJobUnsuccessfulOutcome,
+        into writer: inout DatabaseWireWriter
+    ) throws(DatabaseWireError) {
+        let storedValue: FieldValue
+        do {
+            storedValue = try value.persistentJobValue()
+        } catch {
+            throw .invalidFieldValueWireState
+        }
+        try storedValue.encode(into: &writer)
+    }
+
+    private static func encode(
+        _ value: RemoteOperationError,
+        into writer: inout DatabaseWireWriter
+    ) throws(DatabaseWireError) {
+        try encode(.failed(value), into: &writer)
+    }
+
+    private static func decodeUnsuccessfulOutcome(
+        from reader: inout DatabaseWireReader
+    ) throws(DatabaseWireError) -> DatabaseJobUnsuccessfulOutcome {
+        let storedValue = try FieldValue(from: &reader)
+        do {
+            return try DatabaseJobUnsuccessfulOutcome(
+                persistentJobValue: storedValue
+            )
+        } catch {
+            throw .invalidFieldValueWireState
+        }
+    }
+
+    private static func decodeRemoteError(
+        from reader: inout DatabaseWireReader
+    ) throws(DatabaseWireError) -> RemoteOperationError {
+        let outcome = try decodeUnsuccessfulOutcome(from: &reader)
+        guard case .failed(let error) = outcome else {
+            throw .invalidFieldValueWireState
+        }
+        return error
+    }
+
+    private static func encode(
+        _ value: Timestamp?,
         into writer: inout DatabaseWireWriter
     ) throws(DatabaseWireError) {
         writer.writeBool(value != nil)
@@ -687,7 +736,7 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     }
 
     private static func encode(
-        _ value: DatabaseUUID?,
+        _ value: DatabaseTypes.UUID?,
         into writer: inout DatabaseWireWriter
     ) throws(DatabaseWireError) {
         writer.writeBool(value != nil)
@@ -696,13 +745,13 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
 
     private static func decodeTimestamp(
         from reader: inout DatabaseWireReader
-    ) throws(DatabaseWireError) -> DatabaseTimestamp? {
-        try reader.readBool() ? try DatabaseTimestamp(from: &reader) : nil
+    ) throws(DatabaseWireError) -> Timestamp? {
+        try reader.readBool() ? try Timestamp(from: &reader) : nil
     }
 
     private static func decodeUUID(
         from reader: inout DatabaseWireReader
-    ) throws(DatabaseWireError) -> DatabaseUUID? {
-        try reader.readBool() ? try DatabaseUUID(from: &reader) : nil
+    ) throws(DatabaseWireError) -> DatabaseTypes.UUID? {
+        try reader.readBool() ? try DatabaseTypes.UUID(from: &reader) : nil
     }
 }

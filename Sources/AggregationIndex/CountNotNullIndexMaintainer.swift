@@ -9,7 +9,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -147,7 +147,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
               ),
               fields.grouping.count == groupByFieldNames.count,
               index.kind.fieldNames.last == valueFieldName else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Count-not-null index '\(index.name)' has inconsistent field metadata"
             )
         }

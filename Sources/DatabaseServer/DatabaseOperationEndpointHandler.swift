@@ -1,11 +1,10 @@
-import DatabaseValue
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public protocol DatabaseOperationEndpointHandler: Sendable {
-    var identifier: DatabaseOperationIdentifier { get }
+    associatedtype Operation: ServerOperationDeclaration
 
     func invoke(
-        payload: DatabaseBytes,
+        request: Operation.Request,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
     ) async throws -> DatabaseOperationResult

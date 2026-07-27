@@ -1,29 +1,34 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseOperationResponseEncoder: Sendable {
-    private let writeResponse: @Sendable (
-        inout DatabaseWireWriter
-    ) throws(DatabaseWireError) -> Void
+    public let operation: DatabaseOperationIdentifier
+    private let encodeResponse: @Sendable (
+        UInt64,
+        DatabaseWireLimits
+    ) throws(DatabaseWireError) -> DatabaseWireEncodedResponse
 
-    public init<Response: DatabaseWireValue>(_ response: Response) {
-        self.writeResponse = {
-            (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
-            try response.encode(into: &writer)
+    public init<Operation: ServerOperationDeclaration>(
+        _ operation: Operation.Type,
+        response: Operation.Response
+    ) {
+        self.operation = Operation.operation.identifier
+        self.encodeResponse = {
+            (
+                requestID: UInt64,
+                limits: DatabaseWireLimits
+            ) throws(DatabaseWireError) -> DatabaseWireEncodedResponse in
+            try DatabaseWireEncoder(limits: limits).encodeResponseAndPayload(
+                Operation.operation,
+                requestID: requestID,
+                response: response
+            )
         }
     }
 
-    public init(
-        encode: @escaping @Sendable (
-            inout DatabaseWireWriter
-        ) throws(DatabaseWireError) -> Void
-    ) {
-        self.writeResponse = encode
-    }
-
     public func encode(
-        into writer: inout DatabaseWireWriter
-    ) throws(DatabaseWireError) {
-        try writeResponse(&writer)
+        requestID: UInt64,
+        limits: DatabaseWireLimits
+    ) throws(DatabaseWireError) -> DatabaseWireEncodedResponse {
+        try encodeResponse(requestID, limits)
     }
-
 }

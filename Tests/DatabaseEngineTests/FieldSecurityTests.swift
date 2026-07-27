@@ -1,490 +1,277 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-// FieldSecurityTests.swift
-// Tests for field-level security functionality
-
-import Testing
-import Foundation
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
-import Core
-import DatabaseValue
-import TestSupport
+import Testing
 @testable import DatabaseEngine
 
-// MARK: - Test Models Using @Persistable Macro
-
-/// Employee with restricted salary and SSN fields
-/// Uses @Persistable macro - access levels are stored as static metadata
 @Persistable
-struct SecureEmployee {
+private struct SecureEmployee {
+    var id: String = ""
     var name: String = ""
 
-    /// Salary - only HR and managers can read/write
     @Restricted(read: .roles(["hr", "manager"]), write: .roles(["hr"]))
     var salary: Double = 0
 
-    /// SSN - only HR can read/write
     @Restricted(read: .roles(["hr"]), write: .roles(["hr"]))
-    var ssn: String = ""
+    var socialSecurityNumber: String = ""
 
-    /// Department - anyone can read, only admin can write
     @Restricted(write: .roles(["admin"]))
     var department: String = ""
 
-    /// Internal notes - only authenticated users can read
     @Restricted(read: .authenticated)
     var internalNotes: String = ""
 }
 
-/// Simple model without restrictions for comparison
 @Persistable
-struct PublicProfile {
+private struct PublicProfile {
+    var id: String = ""
     var name: String = ""
-    var bio: String = ""
+    var biography: String = ""
 }
 
-/// Simple test auth context
-private struct FieldSecurityAuthorizationContext: AuthContext {
-    let userID: String
-    var roles: Set<String>
-
-    init(userID: String, roles: Set<String> = []) {
-        self.userID = userID
-        self.roles = roles
-    }
+private func authorization(
+    identifier: String,
+    roles: Set<String> = []
+) -> AuthorizationContext {
+    .authenticated(
+        Principal(identifier: identifier, roles: roles)
+    )
 }
 
-// MARK: - Static Metadata Tests (Key Fix Verification)
+@Suite("Compiled field authorization metadata")
+struct CompiledFieldAuthorizationMetadataTests {
+    @Test("@Persistable emits exact field identities and access rules")
+    func generatedRules() throws {
+        let rules = SecureEmployee.fieldAccessRules
 
-@Suite("Static Metadata Generation", .heartbeat)
-struct StaticMetadataTests {
-
-    @Test("@Persistable generates restrictedFieldsMetadata")
-    func persistableGeneratesMetadata() {
-        // This is the key test - metadata should be static, not instance-based
-        let metadata = SecureEmployee.restrictedFieldsMetadata
-
-        #expect(metadata.count == 4)
-
-        // Find salary metadata
-        let salaryMeta = metadata.first { $0.fieldName == "salary" }
-        #expect(salaryMeta != nil)
-        #expect(salaryMeta?.readAccess == .roles(["hr", "manager"]))
-        #expect(salaryMeta?.writeAccess == .roles(["hr"]))
-
-        // Find ssn metadata
-        let ssnMeta = metadata.first { $0.fieldName == "ssn" }
-        #expect(ssnMeta != nil)
-        #expect(ssnMeta?.readAccess == .roles(["hr"]))
-
-        // Find department metadata
-        let deptMeta = metadata.first { $0.fieldName == "department" }
-        #expect(deptMeta != nil)
-        #expect(deptMeta?.readAccess == .public)
-        #expect(deptMeta?.writeAccess == .roles(["admin"]))
-
-        // Find internalNotes metadata
-        let notesMeta = metadata.first { $0.fieldName == "internalNotes" }
-        #expect(notesMeta != nil)
-        #expect(notesMeta?.readAccess == .authenticated)
+        #expect(rules.count == 4)
+        #expect(
+            rules.first {
+                $0.field == SecureEmployee.fields.salary.identity
+            }?.read == .roles(["hr", "manager"])
+        )
+        #expect(
+            rules.first {
+                $0.field
+                    == SecureEmployee.fields.socialSecurityNumber.identity
+            }?.write == .roles(["hr"])
+        )
+        #expect(
+            rules.first {
+                $0.field == SecureEmployee.fields.department.identity
+            }?.read == .public
+        )
+        #expect(
+            rules.first {
+                $0.field == SecureEmployee.fields.internalNotes.identity
+            }?.read == .authenticated
+        )
     }
 
-    @Test("Models without @Restricted have empty metadata")
-    func modelsWithoutRestrictedHaveEmptyMetadata() {
-        #expect(PublicProfile.restrictedFieldsMetadata.isEmpty)
+    @Test("Unrestricted entities emit no field rules")
+    func unrestrictedEntityRules() {
+        #expect(PublicProfile.fieldAccessRules.isEmpty)
     }
 
-    @Test("Metadata is preserved after encode/decode - CRITICAL TEST")
-    func metadataPreservedAfterDecode() throws {
-        // Create an employee
+    @Test("Canonical storage round-trip preserves values and static rules")
+    func canonicalStorageRoundTrip() throws {
         var employee = SecureEmployee(name: "Alice")
-        employee.salary = 100000
-        employee.ssn = "123-45-6789"
+        employee.salary = 100_000
+        employee.socialSecurityNumber = "123-45-6789"
 
-        // Encode to JSON
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(employee)
+        let frame = try PersistableStorageCodec.encode(employee)
+        let decoded = try PersistableStorageCodec.decode(
+            SecureEmployee.self,
+            from: frame
+        )
 
-        // Decode back
-        let decoder = JSONDecoder()
-        let decoded = try decoder.decode(SecureEmployee.self, from: data)
-
-        // Values should be preserved
-        #expect(decoded.name == "Alice")
-        #expect(decoded.salary == 100000)
-        #expect(decoded.ssn == "123-45-6789")
-
-        // CRITICAL: Static metadata should still be correct after decode
-        // This would fail with reflection-based approach because @Restricted
-        // property wrapper loses access levels after decode
-        let metadata = SecureEmployee.restrictedFieldsMetadata
-        let salaryMeta = metadata.first { $0.fieldName == "salary" }
-        #expect(salaryMeta?.readAccess == .roles(["hr", "manager"]))
-        #expect(salaryMeta?.writeAccess == .roles(["hr"]))
-
-        // Verify evaluator uses static metadata
-        let hrAuth = FieldSecurityAuthorizationContext(userID: "hr1", roles: ["hr"])
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "emp1", roles: ["employee"])
-
-        // Should use static metadata, not instance reflection
-        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: decoded, auth: hrAuth) == true)
-        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: decoded, auth: employeeAuth) == false)
+        #expect(decoded.name == employee.name)
+        #expect(decoded.salary == employee.salary)
+        #expect(
+            FieldSecurityEvaluator.canRead(
+                SecureEmployee.fields.salary,
+                in: decoded,
+                context: authorization(
+                    identifier: "hr-1",
+                    roles: ["hr"]
+                )
+            )
+        )
+        #expect(
+            !FieldSecurityEvaluator.canRead(
+                SecureEmployee.fields.salary,
+                in: decoded,
+                context: authorization(
+                    identifier: "employee-1",
+                    roles: ["employee"]
+                )
+            )
+        )
     }
 }
 
-// MARK: - Masking Tests (Key Fix Verification)
+@Suite("Field access decisions")
+struct FieldAccessDecisionTests {
+    @Test("Access levels evaluate concrete authorization context")
+    func accessLevels() {
+        let employee = authorization(
+            identifier: "employee-1",
+            roles: ["employee"]
+        )
+        let humanResources = authorization(
+            identifier: "hr-1",
+            roles: ["hr"]
+        )
 
-@Suite("Field Masking", .heartbeat)
-struct FieldMaskingTests {
-
-    @Test("masked(auth:) masks restricted fields")
-    func maskedMasksRestrictedFields() {
-        var employee = SecureEmployee(name: "Alice")
-        employee.salary = 100000
-        employee.ssn = "123-45-6789"
-        employee.department = "Engineering"
-        employee.internalNotes = "Good performer"
-
-        // Regular employee - cannot see salary, ssn
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "emp1", roles: ["employee"])
-        let masked = employee.masked(auth: employeeAuth)
-
-        #expect(masked.name == "Alice")
-        #expect(masked.salary == 0) // Masked to default
-        #expect(masked.ssn == "") // Masked to default
-        #expect(masked.department == "Engineering") // Visible
-        #expect(masked.internalNotes == "Good performer") // Visible (authenticated)
+        #expect(FieldAccessLevel.public.allows(.anonymous))
+        #expect(!FieldAccessLevel.authenticated.allows(.anonymous))
+        #expect(FieldAccessLevel.authenticated.allows(employee))
+        #expect(
+            !FieldAccessLevel.roles(["hr", "manager"]).allows(employee)
+        )
+        #expect(FieldAccessLevel.roles(["hr", "manager"]).allows(humanResources))
     }
 
-    @Test("masked(auth:) preserves visible fields")
-    func maskedPreservesVisibleFields() {
-        var employee = SecureEmployee(name: "Alice")
-        employee.salary = 100000
-        employee.ssn = "123-45-6789"
-
-        // HR user - can see everything
-        let hrAuth = FieldSecurityAuthorizationContext(userID: "hr1", roles: ["hr"])
-        let masked = employee.masked(auth: hrAuth)
-
-        #expect(masked.name == "Alice")
-        #expect(masked.salary == 100000) // Visible to HR
-        #expect(masked.ssn == "123-45-6789") // Visible to HR
-    }
-
-    @Test("FieldSecurityEvaluator.mask uses generated method")
-    func evaluatorMaskUsesGeneratedMethod() {
-        var employee = SecureEmployee(name: "Alice")
-        employee.salary = 100000
-
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "emp1", roles: ["employee"])
-        let masked = FieldSecurityEvaluator.mask(employee, auth: employeeAuth)
-
-        #expect(masked.salary == 0) // Should be masked
-    }
-
-    @Test("Masking works after encode/decode - CRITICAL TEST")
-    func maskingWorksAfterDecode() throws {
-        var employee = SecureEmployee(name: "Alice")
-        employee.salary = 100000
-
-        // Encode and decode
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(employee)
-        let decoder = JSONDecoder()
-        let decoded = try decoder.decode(SecureEmployee.self, from: data)
-
-        // CRITICAL: Masking should still work on decoded instance
-        // This would fail if masking relied on @Restricted property wrapper's
-        // instance access levels (which are lost after decode)
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "emp1", roles: ["employee"])
-        let masked = decoded.masked(auth: employeeAuth)
-
-        #expect(masked.salary == 0) // Should be masked even after decode
-    }
-
-    @Test("Batch masking works")
-    func batchMaskingWorks() {
-        var emp1 = SecureEmployee(name: "Alice")
-        emp1.salary = 100000
-
-        var emp2 = SecureEmployee(name: "Bob")
-        emp2.salary = 80000
-
-        let employees = [emp1, emp2]
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "emp1", roles: ["employee"])
-
-        let masked = FieldSecurityEvaluator.mask(employees, auth: employeeAuth)
-
-        #expect(masked.count == 2)
-        #expect(masked[0].salary == 0)
-        #expect(masked[1].salary == 0)
-        #expect(masked[0].name == "Alice")
-        #expect(masked[1].name == "Bob")
-    }
-}
-
-// MARK: - FieldAccessLevel Tests
-
-@Suite("FieldAccessLevel", .heartbeat)
-struct FieldAccessLevelTests {
-
-    @Test("Public access allows everyone")
-    func publicAccessAllowsEveryone() {
-        let level = FieldAccessLevel.public
-
-        #expect(level.evaluate(auth: nil) == true)
-        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1")) == true)
-        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1", roles: ["admin"])) == true)
-    }
-
-    @Test("Authenticated access requires auth")
-    func authenticatedAccessRequiresAuth() {
-        let level = FieldAccessLevel.authenticated
-
-        #expect(level.evaluate(auth: nil) == false)
-        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1")) == true)
-    }
-
-    @Test("Role-based access checks roles")
-    func roleBasedAccessChecksRoles() {
-        let level = FieldAccessLevel.roles(["hr", "manager"])
-
-        #expect(level.evaluate(auth: nil) == false)
-        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])) == false)
-        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1", roles: ["hr"])) == true)
-        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1", roles: ["manager"])) == true)
-        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee", "hr"])) == true)
-    }
-
-    @Test("Custom access uses predicate")
-    func customAccessUsesPredicate() {
-        let level = FieldAccessLevel.custom { auth in
-            auth.userID.hasPrefix("admin_")
-        }
-
-        #expect(level.evaluate(auth: nil) == false)
-        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "user1")) == false)
-        #expect(level.evaluate(auth: FieldSecurityAuthorizationContext(userID: "admin_1")) == true)
-    }
-
-    @Test("FieldAccessLevel equality")
-    func fieldAccessLevelEquality() {
-        #expect(FieldAccessLevel.public == FieldAccessLevel.public)
-        #expect(FieldAccessLevel.authenticated == FieldAccessLevel.authenticated)
-        #expect(FieldAccessLevel.roles(["a", "b"]) == FieldAccessLevel.roles(["a", "b"]))
-        #expect(FieldAccessLevel.roles(["a"]) != FieldAccessLevel.roles(["b"]))
-    }
-}
-
-// MARK: - FieldSecurityEvaluator Tests
-
-@Suite("FieldSecurityEvaluator", .heartbeat)
-struct FieldSecurityEvaluatorTests {
-
-    @Test("Extract restricted fields from type (static)")
-    func extractRestrictedFieldsFromType() {
-        let restrictions = FieldSecurityEvaluator.extractRestrictedFields(for: SecureEmployee.self)
-
-        #expect(restrictions.count == 4)
-        #expect(restrictions["salary"] != nil)
-        #expect(restrictions["ssn"] != nil)
-        #expect(restrictions["department"] != nil)
-        #expect(restrictions["internalNotes"] != nil)
-
-        #expect(restrictions["salary"]?.readAccess == .roles(["hr", "manager"]))
-        #expect(restrictions["salary"]?.writeAccess == .roles(["hr"]))
-    }
-
-    @Test("canRead evaluates correctly using static metadata")
-    func canReadEvaluatesUsingStaticMetadata() {
-        var employee = SecureEmployee(name: "Alice")
-        employee.salary = 100000
-
-        // Unauthenticated user
-        #expect(FieldSecurityEvaluator.canRead(field: "name", in: employee, auth: nil) == true)
-        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: nil) == false)
-        #expect(FieldSecurityEvaluator.canRead(field: "internalNotes", in: employee, auth: nil) == false)
-
-        // Regular employee
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
-        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: employeeAuth) == false)
-        #expect(FieldSecurityEvaluator.canRead(field: "internalNotes", in: employee, auth: employeeAuth) == true)
-
-        // HR user
-        let hrAuth = FieldSecurityAuthorizationContext(userID: "hr1", roles: ["hr"])
-        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: hrAuth) == true)
-        #expect(FieldSecurityEvaluator.canRead(field: "ssn", in: employee, auth: hrAuth) == true)
-
-        // Manager
-        let managerAuth = FieldSecurityAuthorizationContext(userID: "mgr1", roles: ["manager"])
-        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: managerAuth) == true)
-        #expect(FieldSecurityEvaluator.canRead(field: "ssn", in: employee, auth: managerAuth) == false)
-    }
-
-    @Test("canWrite evaluates correctly")
-    func canWriteEvaluates() {
+    @Test("Evaluator accepts generated fields instead of string lookup")
+    func generatedFieldEvaluation() {
         let employee = SecureEmployee(name: "Alice")
+        let regularContext = authorization(
+            identifier: "employee-1",
+            roles: ["employee"]
+        )
+        let humanResourcesContext = authorization(
+            identifier: "hr-1",
+            roles: ["hr"]
+        )
 
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
-        #expect(FieldSecurityEvaluator.canWrite(field: "name", in: employee, auth: employeeAuth) == true)
-        #expect(FieldSecurityEvaluator.canWrite(field: "salary", in: employee, auth: employeeAuth) == false)
-        #expect(FieldSecurityEvaluator.canWrite(field: "department", in: employee, auth: employeeAuth) == false)
-
-        let hrAuth = FieldSecurityAuthorizationContext(userID: "hr1", roles: ["hr"])
-        #expect(FieldSecurityEvaluator.canWrite(field: "salary", in: employee, auth: hrAuth) == true)
-
-        let adminAuth = FieldSecurityAuthorizationContext(userID: "admin1", roles: ["admin"])
-        #expect(FieldSecurityEvaluator.canWrite(field: "department", in: employee, auth: adminAuth) == true)
+        #expect(
+            FieldSecurityEvaluator.canRead(
+                SecureEmployee.fields.name,
+                in: employee,
+                context: .anonymous
+            )
+        )
+        #expect(
+            !FieldSecurityEvaluator.canRead(
+                SecureEmployee.fields.salary,
+                in: employee,
+                context: regularContext
+            )
+        )
+        #expect(
+            FieldSecurityEvaluator.canRead(
+                SecureEmployee.fields.salary,
+                in: employee,
+                context: humanResourcesContext
+            )
+        )
+        #expect(
+            !FieldSecurityEvaluator.canWrite(
+                SecureEmployee.fields.department,
+                in: employee,
+                context: regularContext
+            )
+        )
     }
 
-    @Test("unreadableFields returns correct list")
-    func unreadableFieldsReturnsCorrectList() {
-        var employee = SecureEmployee(name: "Alice")
-        employee.salary = 100000
+    @Test("Unreadable field output retains canonical identities")
+    func unreadableFieldIdentities() {
+        let employee = SecureEmployee(name: "Alice")
+        let unreadable = Set(
+            FieldSecurityEvaluator.unreadableFields(
+                in: employee,
+                context: .anonymous
+            )
+        )
 
-        // Unauthenticated
-        let unreadableNil = FieldSecurityEvaluator.unreadableFields(in: employee, auth: nil)
-        #expect(unreadableNil.contains("salary"))
-        #expect(unreadableNil.contains("ssn"))
-        #expect(unreadableNil.contains("internalNotes"))
-        #expect(!unreadableNil.contains("department"))
-
-        // Regular employee
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
-        let unreadableEmployee = FieldSecurityEvaluator.unreadableFields(in: employee, auth: employeeAuth)
-        #expect(unreadableEmployee.contains("salary"))
-        #expect(unreadableEmployee.contains("ssn"))
-        #expect(!unreadableEmployee.contains("internalNotes"))
+        #expect(unreadable.contains(SecureEmployee.fields.salary.identity))
+        #expect(
+            unreadable.contains(
+                SecureEmployee.fields.socialSecurityNumber.identity
+            )
+        )
+        #expect(
+            unreadable.contains(
+                SecureEmployee.fields.internalNotes.identity
+            )
+        )
+        #expect(
+            !unreadable.contains(
+                SecureEmployee.fields.department.identity
+            )
+        )
     }
+}
 
-    @Test("validateWrite throws for unauthorized field changes")
-    func validateWriteThrowsForUnauthorizedChanges() {
-        var original = SecureEmployee(name: "Alice")
-        original.salary = 50000
-        var updated = original
-        updated.salary = 100000
+@Suite("Restricted field mutation validation")
+struct RestrictedFieldMutationValidationTests {
+    @Test("Insert rejects every field the principal may not write")
+    func insertValidation() {
+        let employee = SecureEmployee(name: "Alice")
+        let context = authorization(
+            identifier: "employee-1",
+            roles: ["employee"]
+        )
 
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
-
-        #expect(throws: FieldSecurityError.self) {
-            try FieldSecurityEvaluator.validateWrite(
-                original: original,
-                updated: updated,
-                auth: employeeAuth
+        #expect(
+            throws: FieldSecurityError.writeNotAllowed(
+                type: SecureEmployee.persistableType,
+                fields: [
+                    "department",
+                    "salary",
+                    "socialSecurityNumber",
+                ]
+            )
+        ) {
+            try FieldSecurityEvaluator.validateInsert(
+                updated: employee,
+                context: context
             )
         }
     }
 
-    @Test("validateWrite allows authorized field changes")
-    func validateWriteAllowsAuthorizedChanges() throws {
-        var original = SecureEmployee(name: "Alice")
-        original.salary = 50000
-        var updated = original
-        updated.salary = 100000
-
-        let hrAuth = FieldSecurityAuthorizationContext(userID: "hr1", roles: ["hr"])
-
-        try FieldSecurityEvaluator.validateWrite(
-            original: original,
-            updated: updated,
-            auth: hrAuth
-        )
-    }
-
-    @Test("validateWrite allows changes to unrestricted fields")
-    func validateWriteAllowsUnrestrictedChanges() throws {
+    @Test("Update validates only canonical values that changed")
+    func updateValidation() throws {
         let original = SecureEmployee(name: "Alice")
-        var updated = original
-        updated.name = "Alice Smith"
-
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
-
-        try FieldSecurityEvaluator.validateWrite(
-            original: original,
-            updated: updated,
-            auth: employeeAuth
+        var renamed = original
+        renamed.name = "Alicia"
+        let employeeContext = authorization(
+            identifier: "employee-1",
+            roles: ["employee"]
         )
-    }
 
-    @Test("validateWrite for new insert checks non-default values")
-    func validateWriteForNewInsertChecksNonDefaults() {
-        var newEmployee = SecureEmployee(name: "Bob")
-        newEmployee.salary = 75000
+        try FieldSecurityEvaluator.validateUpdate(
+            original: original,
+            updated: renamed,
+            context: employeeContext
+        )
 
-        let employeeAuth = FieldSecurityAuthorizationContext(userID: "user1", roles: ["employee"])
-
-        #expect(throws: FieldSecurityError.self) {
-            try FieldSecurityEvaluator.validateWrite(
-                original: nil,
-                updated: newEmployee,
-                auth: employeeAuth
+        var salaryChanged = renamed
+        salaryChanged.salary = 125_000
+        #expect(
+            throws: FieldSecurityError.writeNotAllowed(
+                type: SecureEmployee.persistableType,
+                fields: ["salary"]
+            )
+        ) {
+            try FieldSecurityEvaluator.validateUpdate(
+                original: renamed,
+                updated: salaryChanged,
+                context: employeeContext
             )
         }
-    }
-}
 
-// MARK: - FieldSecurityError Tests
-
-@Suite("FieldSecurityError", .heartbeat)
-struct FieldSecurityErrorTests {
-
-    @Test("Error contains type and field info")
-    func errorContainsTypeAndFieldInfo() {
-        let error = FieldSecurityError.writeNotAllowed(type: "SecureEmployee", fields: ["salary", "ssn"])
-
-        #expect(error.description.contains("SecureEmployee"))
-        #expect(error.description.contains("salary"))
-        #expect(error.description.contains("ssn"))
-    }
-
-    @Test("Error is equatable")
-    func errorIsEquatable() {
-        let error1 = FieldSecurityError.writeNotAllowed(type: "SecureEmployee", fields: ["salary"])
-        let error2 = FieldSecurityError.writeNotAllowed(type: "SecureEmployee", fields: ["salary"])
-        let error3 = FieldSecurityError.writeNotAllowed(type: "SecureEmployee", fields: ["ssn"])
-
-        #expect(error1 == error2)
-        #expect(error1 != error3)
-    }
-}
-
-// MARK: - RestrictedFieldMetadata Tests
-
-@Suite("RestrictedFieldMetadata", .heartbeat)
-struct RestrictedFieldMetadataTests {
-
-    @Test("Metadata struct is equatable")
-    func metadataIsEquatable() {
-        let meta1 = RestrictedFieldMetadata(
-            fieldName: "salary",
-            readAccess: .roles(["hr"]),
-            writeAccess: .roles(["hr"])
-        )
-        let meta2 = RestrictedFieldMetadata(
-            fieldName: "salary",
-            readAccess: .roles(["hr"]),
-            writeAccess: .roles(["hr"])
-        )
-        let meta3 = RestrictedFieldMetadata(
-            fieldName: "ssn",
-            readAccess: .roles(["hr"]),
-            writeAccess: .roles(["hr"])
-        )
-
-        #expect(meta1 == meta2)
-        #expect(meta1 != meta3)
-    }
-
-    @Test("Metadata is Sendable")
-    func metadataIsSendable() {
-        // Compile-time check - if this compiles, it's Sendable
-        let _: any Sendable = RestrictedFieldMetadata(
-            fieldName: "test",
-            readAccess: .public,
-            writeAccess: .public
+        try FieldSecurityEvaluator.validateUpdate(
+            original: renamed,
+            updated: salaryChanged,
+            context: authorization(
+                identifier: "hr-1",
+                roles: ["hr"]
+            )
         )
     }
 }
 #endif
-
 #endif

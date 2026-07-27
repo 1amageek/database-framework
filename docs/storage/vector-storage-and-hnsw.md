@@ -62,6 +62,10 @@ are not currently written by database-framework:
 
 ## Validation Log
 
+This table is a historical record of the commands used for the 2026-06-29
+snapshot. Current validation follows the repository-wide Xcode test and Swift
+6.4 WASI build gates documented in [Production Readiness](../production-readiness.md).
+
 | Date | Scope | Result |
 | --- | --- | --- |
 | 2026-06-29 | `swift build --traits SQLite --target VectorIndex` with Swift 6.4 | Passed |
@@ -80,7 +84,9 @@ are not currently written by database-framework:
 
 ## Design Rules
 
-- Keep `[Float]` as the user-facing vector shape.
+- Use database-types `Vector` as the portable user-facing and schema value.
+- Borrow contiguous vector elements when computing distance or writing binary
+  payloads; materialize an array only at an explicit API ownership boundary.
 - Store persisted vector payloads as Float32 little-endian bytes.
 - Use structured values only for metadata and mappings, not for dense vector payloads.
 - Decode to arrays for debug output, print-oriented inspection, and public result materialization.

@@ -1,4 +1,5 @@
 import DatabaseTypes
+import DatabaseKit
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -6,7 +7,6 @@ import Glibc
 #elseif canImport(WASILibc)
 import WASILibc
 #endif
-import DatabaseValue
 
 /// HyperLogLog cardinality estimator
 ///
@@ -44,7 +44,7 @@ import DatabaseValue
 /// **References**:
 /// - P. Flajolet et al., "HyperLogLog: the analysis of a near-optimal cardinality estimation algorithm"
 /// - http://algo.inria.fr/flajolet/Publications/FlFuGaMe07.pdf
-public struct HyperLogLog: Sendable, Codable, Hashable {
+public struct HyperLogLog: Sendable, Hashable {
     public static let supportedPrecision = 4...18
 
     // MARK: - Properties
@@ -110,8 +110,8 @@ public struct HyperLogLog: Sendable, Codable, Hashable {
     /// - Parameter value: The value to add
     public mutating func add(
         _ value: FieldValue
-    ) throws(RDFTermCodecError) {
-        let hash = try value.stableHash()
+    ) throws(RDFTermStorageError) {
+        let hash = value.stableHash()
         addHash(hash)
     }
 
@@ -267,46 +267,6 @@ public struct HyperLogLog: Sendable, Codable, Hashable {
         _ body: (UnsafeBufferPointer<UInt8>) throws -> Result
     ) rethrows -> Result {
         try registers.withUnsafeBufferPointer(body)
-    }
-}
-
-// MARK: - Codable
-
-extension HyperLogLog {
-    enum CodingKeys: String, CodingKey {
-        case precision
-        case registers
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-
-        let precision = try container.decode(Int.self, forKey: .precision)
-        guard Self.supportedPrecision.contains(precision) else {
-            throw DecodingError.dataCorrupted(
-                DecodingError.Context(
-                    codingPath: [CodingKeys.precision],
-                    debugDescription: "Unsupported HyperLogLog precision: \(precision)"
-                )
-            )
-        }
-        let registers = try container.decode([UInt8].self, forKey: .registers)
-        do {
-            try self.init(precision: precision, registers: registers)
-        } catch let error {
-            throw DecodingError.dataCorrupted(
-                DecodingError.Context(
-                    codingPath: [CodingKeys.registers],
-                    debugDescription: "Invalid HyperLogLog register state: \(error)"
-                )
-            )
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(precision, forKey: .precision)
-        try container.encode(registers, forKey: .registers)
     }
 }
 

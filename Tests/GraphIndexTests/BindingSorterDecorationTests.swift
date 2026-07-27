@@ -1,8 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
 import Synchronization
 import TestHeartbeat
 import Testing
@@ -12,13 +11,13 @@ import Testing
 struct BindingSorterDecorationTests {
     @Test("Direct binding fingerprints match canonical row fingerprints")
     func directFingerprintMatchesCanonicalRow() throws {
-        let rdfTerm = DatabaseRDFTerm.tripleTerm(
-            subject: .iri("urn:subject"),
-            predicate: .iri("urn:predicate"),
+        let rdfTerm = RDFTerm.tripleTerm(
+            subject: .iri(try RDFIRI("urn:subject")),
+            predicate: try RDFPredicateIRI("urn:predicate"),
             object: .literal(
-                DatabaseRDFLiteral(
+                RDFLiteral(
                     lexicalForm: "calendar",
-                    datatype: DatabaseXSDDatatype.string.typedLiteralDatatype
+                    datatype: XSDDatatype.string.typedLiteralDatatype
                 )
             )
         )
@@ -27,9 +26,9 @@ struct BindingSorterDecorationTests {
             "?bool": .bool(true),
             "?signed": .int64(-42),
             "?unsigned": .uint64(UInt64.max),
-            "?double": .double(-0.0),
+            "?double": .float64(-0.0),
             "?string": .string("予定📅"),
-            "?bytes": .data(DatabaseBytes([0x00, 0x80, 0xFF])),
+            "?bytes": .bytes(ByteString([0x00, 0x80, 0xFF])),
             "?array": .array([
                 .string("nested"),
                 .array([.int64(7), .null])
@@ -38,15 +37,15 @@ struct BindingSorterDecorationTests {
         ]
         let binding = VariableBinding(fields)
         let directMeter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget()
+            budget: ExecutionBudget()
         )
         let canonicalMeter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget()
+            budget: ExecutionBudget()
         )
 
         let direct = try binding.canonicalFingerprint(workMeter: directMeter)
         let canonical = try CanonicalRowFingerprint.compute(
-            QueryRow(fields: fields.mapValues(\.asDatabaseValue)),
+            QueryRow(fields: fields),
             workMeter: canonicalMeter
         )
 
@@ -71,10 +70,10 @@ struct BindingSorterDecorationTests {
         descending["?a"] = .int64(1)
 
         let first = try VariableBinding(ascending).canonicalFingerprint(
-            workMeter: DatabaseWorkMeter(budget: DatabaseExecutionBudget())
+            workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
         )
         let second = try VariableBinding(descending).canonicalFingerprint(
-            workMeter: DatabaseWorkMeter(budget: DatabaseExecutionBudget())
+            workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
         )
 
         #expect(first == second)
@@ -82,17 +81,17 @@ struct BindingSorterDecorationTests {
 
     @Test("Fingerprint preserves numeric value types")
     func fingerprintPreservesValueType() throws {
-        func fingerprint(_ value: FieldValue) throws -> DatabaseBytes {
+        func fingerprint(_ value: FieldValue) throws -> ByteString {
             try VariableBinding(["?value": value]).canonicalFingerprint(
                 workMeter: DatabaseWorkMeter(
-                    budget: DatabaseExecutionBudget()
+                    budget: ExecutionBudget()
                 )
             )
         }
 
         let signed = try fingerprint(.int64(1))
         let unsigned = try fingerprint(.uint64(1))
-        let floatingPoint = try fingerprint(.double(1))
+        let floatingPoint = try fingerprint(.float64(1))
 
         #expect(signed != unsigned)
         #expect(signed != floatingPoint)
@@ -106,13 +105,13 @@ struct BindingSorterDecorationTests {
         )
         let binding = VariableBinding([
             "?payload": .array([
-                .data(DatabaseBytes(retaining: owner)),
+                .bytes(ByteString(retaining: owner)),
                 .string("suffix")
             ])
         ])
 
         let fingerprint = try binding.canonicalFingerprint(
-            workMeter: DatabaseWorkMeter(budget: DatabaseExecutionBudget())
+            workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
         )
 
         #expect(fingerprint.count == 32)
@@ -135,7 +134,7 @@ struct BindingSorterDecorationTests {
         let sorted = try BindingSorter.sort(
             bindings,
             by: [key],
-            workMeter: DatabaseWorkMeter(budget: DatabaseExecutionBudget())
+            workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
         )
 
         #expect(evaluationCount.withLock { $0 } == bindings.count)
@@ -150,7 +149,7 @@ struct BindingSorterDecorationTests {
             VariableBinding(["?value": .int64(2)])
         ]
         let workMeter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumIntermediateRows: 3,
                 maximumIntermediateBytes: 4_096
             )
@@ -182,7 +181,7 @@ struct BindingSorterDecorationTests {
             return binding["?value"]
         }
         let workMeter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumIntermediateRows: 2,
                 maximumIntermediateBytes: 1
             )
@@ -228,7 +227,7 @@ struct BindingSorterDecorationTests {
         ]
         let evaluationCount = Mutex(0)
         let workMeter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumIntermediateRows: 3,
                 maximumIntermediateBytes: 4_096
             )
@@ -268,7 +267,7 @@ struct BindingSorterDecorationTests {
         let original = bindings
         let evaluationCount = Mutex(0)
         let workMeter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumIntermediateRows: 2,
                 maximumIntermediateBytes: 1
             )
@@ -302,7 +301,7 @@ struct BindingSorterDecorationTests {
 
     @Test("Semantic expression errors become unbound ordering keys")
     func expressionErrorBecomesUnboundKey() throws {
-        let expression = QueryIR.Expression.variable(Variable("missing"))
+        let expression = Expression.variable(Variable("missing"))
         let key = BindingSortKey { binding in
             try ExpressionEvaluator.evaluateForOrdering(
                 expression,
@@ -313,7 +312,7 @@ struct BindingSorterDecorationTests {
         let sorted = try BindingSorter.sort(
             [VariableBinding(), VariableBinding(["?other": .string("value")])],
             by: [key],
-            workMeter: DatabaseWorkMeter(budget: DatabaseExecutionBudget())
+            workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
         )
 
         #expect(sorted.count == 2)
@@ -333,13 +332,13 @@ struct BindingSorterDecorationTests {
             try BindingSorter.sort(
                 [VariableBinding(), VariableBinding()],
                 by: [key],
-                workMeter: DatabaseWorkMeter(budget: DatabaseExecutionBudget())
+                workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
             )
         }
     }
 }
 
-private final class BindingFingerprintBorrowCountingOwner: DatabaseByteOwner {
+private final class BindingFingerprintBorrowCountingOwner: ByteStringOwner {
     private let bytes: [UInt8]
     private let state = Mutex(0)
 

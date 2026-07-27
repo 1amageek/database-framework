@@ -1,13 +1,11 @@
-import DatabaseWire
+import DatabaseKit
 
 public protocol DatabaseCommand: Sendable {
-    associatedtype Descriptor: DatabaseCommandDescriptor
-
-    var identifier: String { get }
+    var declaration: CommandDeclaration { get }
 }
 
 public extension DatabaseCommand {
-    var identifier: String {
-        Descriptor.identifier
+    var identifier: CommandIdentifier {
+        declaration.identifier
     }
 }

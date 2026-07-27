@@ -1,10 +1,9 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
 import StorageKit
 import Testing
 
@@ -31,8 +30,10 @@ struct DatabaseQueryContinuationEndpointTests {
             endpoint: endpoint
         )
 
-        let identifiers = try (first.rows + second.rows).map {
-            try identifier(from: $0)
+        let rows = try first.materializedRows(maximumCount: 2)
+            + second.materializedRows(maximumCount: 2)
+        let identifiers = try rows.map {
+            try identifier(from: $0, columns: first.columns)
         }
         #expect(identifiers == ["entity-0", "entity-1", "entity-2", "entity-3"])
         #expect(Set(identifiers).count == identifiers.count)
@@ -68,7 +69,7 @@ struct DatabaseQueryContinuationEndpointTests {
         let first = try await successfulPage(
             request(
                 query: valuesQuery(),
-                graphPartitions: [partition("calendar-a")],
+                graphPartitions: try partition("calendar-a"),
                 pageLimit: 1
             ),
             requestID: 20,
@@ -79,7 +80,7 @@ struct DatabaseQueryContinuationEndpointTests {
         let error = try await remoteFailure(
             request(
                 query: valuesQuery(),
-                graphPartitions: [partition("calendar-b")],
+                graphPartitions: try partition("calendar-b"),
                 pageLimit: 1,
                 continuation: continuation
             ),
@@ -181,7 +182,7 @@ struct DatabaseQueryContinuationEndpointTests {
             var entity = DatabaseEndpointEntity()
             entity.id = "entity-\(index)"
             entity.title = "Title \(index)"
-            entity.priority = index
+            entity.priority = Int64(index)
             try context.insert(entity)
         }
         try await context.save()
@@ -208,9 +209,9 @@ struct DatabaseQueryContinuationEndpointTests {
 
     private func request(
         query: SelectQuery,
-        graphPartitions: [DatabaseObjectField] = [],
+        graphPartitions: FieldObject = FieldObject(),
         pageLimit: UInt32,
-        continuation: DatabaseBytes? = nil
+        continuation: ByteString? = nil
     ) -> QueryExecuteOperation.Request {
         QueryExecuteOperation.Request(
             input: .ir(.select(query)),
@@ -222,30 +223,25 @@ struct DatabaseQueryContinuationEndpointTests {
         )
     }
 
-    private func partition(_ value: String) -> DatabaseObjectField {
-        DatabaseObjectField(
-            number: 1,
-            name: "calendar",
-            value: .string(value)
-        )
+    private func partition(_ value: String) throws -> FieldObject {
+        try FieldObject([
+            (key: "calendar", value: .string(value)),
+        ])
     }
 
     private func successfulPage(
         _ request: QueryExecuteOperation.Request,
         requestID: UInt64,
         endpoint: DatabaseEndpoint
-    ) async throws -> QueryExecuteOperation.RowPage {
-        let envelope = try await execute(
+    ) async throws -> QueryRowPage {
+        let response = try await execute(
             request,
             requestID: requestID,
             endpoint: endpoint
         )
-        switch envelope.payload {
-        case .success(let payload):
-            let response = try DatabaseEnvelopeCodec.decode(
-                QueryExecuteOperation.Response.self,
-                from: payload
-            )
+        switch response {
+        case .success(let value):
+            let response = value
             guard case .rows(let page) = response else {
                 Issue.record("Expected a row page response")
                 throw ContinuationEndpointAssertionError.unexpectedResponse
@@ -261,13 +257,13 @@ struct DatabaseQueryContinuationEndpointTests {
         _ request: QueryExecuteOperation.Request,
         requestID: UInt64,
         endpoint: DatabaseEndpoint
-    ) async throws -> DatabaseRemoteError {
-        let envelope = try await execute(
+    ) async throws -> RemoteOperationError {
+        let response = try await execute(
             request,
             requestID: requestID,
             endpoint: endpoint
         )
-        switch envelope.payload {
+        switch response {
         case .failure(let error):
             return error
         case .success:
@@ -280,32 +276,42 @@ struct DatabaseQueryContinuationEndpointTests {
         _ request: QueryExecuteOperation.Request,
         requestID: UInt64,
         endpoint: DatabaseEndpoint
-    ) async throws -> DatabaseWireResponseEnvelope {
-        let requestFrame = try DatabaseEnvelopeCodec.encodeRequest(
-            QueryExecuteOperation.self,
+    ) async throws -> Result<
+        QueryExecuteOperation.Response,
+        RemoteOperationError
+    > {
+        let requestFrame = try DatabaseWireEncoder().encodeRequest(
+            DatabaseOperations.queryExecute,
             requestID: requestID,
-            metadata: DatabaseRequestMetadata(),
+            metadata: OperationRequestMetadata(),
             request: request
         )
         let responseFrame = try await endpoint.execute(requestFrame)
-        let envelope = try DatabaseEnvelopeCodec.decodeResponse(responseFrame)
-        #expect(envelope.requestID == requestID)
-        #expect(envelope.operation == .queryExecute)
-        return envelope
+        let decoder = DatabaseWireDecoder()
+        let header = try decoder.decodeResponseHeader(responseFrame)
+        #expect(header.requestID == requestID)
+        #expect(header.operation == .queryExecute)
+        return try decoder.decodeResponse(
+            DatabaseOperations.queryExecute,
+            from: responseFrame,
+            matching: requestID
+        )
     }
 
     private func identifier(
-        from row: QueryExecuteOperation.Row
+        from row: DatabaseWire.QueryRow,
+        columns: [QueryColumn]
     ) throws -> String {
-        guard let value = row.values.first(where: { $0.name == "id" })?.value,
-              case .string(let identifier) = value else {
+        guard let index = columns.firstIndex(where: { $0.name == "id" }),
+              row.values.indices.contains(index),
+              case .string(let identifier) = row.values[index] else {
             Issue.record("Expected each row to contain a string id")
             throw ContinuationEndpointAssertionError.missingIdentifier
         }
         return identifier
     }
 
-    private func expectInvalidContinuation(_ error: DatabaseRemoteError) {
+    private func expectInvalidContinuation(_ error: RemoteOperationError) {
         #expect(error.category == .invalidRequest)
         #expect(error.code == "INVALID_CONTINUATION")
         #expect(error.retryability == .never)

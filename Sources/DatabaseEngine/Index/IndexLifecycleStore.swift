@@ -247,6 +247,74 @@ public final class IndexLifecycleStore: Sendable {
         }
     }
 
+    /// Initializes missing index states for an empty source store while
+    /// preserving every explicit lifecycle state.
+    ///
+    /// Store resolution uses this operation because `disabled` and
+    /// `writeOnly` are valid mutation states. Read admission remains the
+    /// responsibility of `validateReadableForRead`.
+    func initializeMissingStates(
+        _ indexNames: [String],
+        entityRange: (begin: Bytes, end: Bytes)
+    ) async throws {
+        try await container.engine.withTransaction(
+            configuration: .batch
+        ) { transaction in
+            try await self.initializeMissingStates(
+                indexNames,
+                entityRange: entityRange,
+                transaction: transaction
+            )
+        }
+    }
+
+    /// Transaction-scoped state initialization used while resolving a store
+    /// for a database mutation.
+    func initializeMissingStates(
+        _ indexNames: [String],
+        entityRange: (begin: Bytes, end: Bytes),
+        transaction: any TransactionAccess
+    ) async throws {
+        var sourceIsEmpty: Bool?
+        for indexName in indexNames {
+            let stateKey = makeStateKey(for: indexName)
+            if let storedBytes = try await transaction.getValue(
+                for: stateKey,
+                snapshot: false
+            ) {
+                guard let stateValue = storedBytes.first,
+                      IndexState(rawValue: stateValue) != nil else {
+                    throw IndexStateError.invalidStateValue(
+                        storedBytes.first ?? 0
+                    )
+                }
+                continue
+            }
+
+            if sourceIsEmpty == nil {
+                let sourceRows = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(entityRange.begin),
+                    to: .firstGreaterOrEqual(entityRange.end),
+                    limit: 1,
+                    snapshot: false
+                )
+                sourceIsEmpty = sourceRows.isEmpty
+            }
+            guard sourceIsEmpty == true else {
+                throw IndexStateError.missingStateForNonEmptyStore(
+                    index: indexName
+                )
+            }
+            try transaction.setValue(
+                [IndexState.readable.rawValue],
+                for: stateKey
+            )
+            logger.info(
+                "Initialized index '\(indexName)' for an empty store"
+            )
+        }
+    }
+
     /// Validates index readability without creating or changing index state.
     ///
     /// A missing state is safe only while the covered entity range is empty.

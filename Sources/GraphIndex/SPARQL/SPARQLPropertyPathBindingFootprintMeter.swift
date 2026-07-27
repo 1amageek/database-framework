@@ -1,5 +1,5 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 
 /// Computes the exact final binding footprint directly from the seed,
 /// endpoint patterns, and RDF terms before a VariableBinding Dictionary is
@@ -7,13 +7,13 @@ import DatabaseValue
 final class SPARQLPropertyPathBindingFootprintMeter {
     private struct VariableAssignment {
         let variable: String
-        let term: DatabaseRDFTerm
+        let term: RDFTerm
     }
 
     private enum WorkItem {
-        case match(ExecutionTerm, DatabaseRDFTerm)
-        case exact(DatabaseRDFTerm, DatabaseRDFTerm)
-        case retain(DatabaseRDFTerm)
+        case match(ExecutionTerm, RDFTerm)
+        case exact(RDFTerm, RDFTerm)
+        case retain(RDFTerm)
     }
 
     private static let scratchContainerByteCount: UInt64 = 128
@@ -75,9 +75,9 @@ final class SPARQLPropertyPathBindingFootprintMeter {
     func footprint(
         retaining seed: borrowing VariableBinding,
         subject: ExecutionTerm,
-        start: DatabaseRDFTerm,
+        start: RDFTerm,
         object: ExecutionTerm,
-        end: DatabaseRDFTerm
+        end: RDFTerm
     ) throws -> SPARQLPropertyPathBindingFootprint {
         precondition(worklist.isEmpty)
         precondition(assignments.isEmpty)
@@ -105,7 +105,7 @@ final class SPARQLPropertyPathBindingFootprintMeter {
                         }
                         continue
                     }
-                    var existingTerm: DatabaseRDFTerm?
+                    var existingTerm: RDFTerm?
                     for assignment in assignments {
                         try workMeter.consume(at: stage)
                         if assignment.variable == variable {
@@ -146,14 +146,15 @@ final class SPARQLPropertyPathBindingFootprintMeter {
                         return .incompatible
                     }
                     try append(.match(object, storedObject))
-                    try append(.match(predicate, storedPredicate))
-                    try append(.match(subject, storedSubject))
+                    try append(.match(predicate, storedPredicate.term))
+                    try append(.match(subject, storedSubject.term))
                 }
 
             case .exact(let expected, let actual):
                 switch (expected, actual) {
-                case (.iri(let lhs), .iri(let rhs)),
-                     (.blankNode(let lhs), .blankNode(let rhs)):
+                case (.iri(let lhs), .iri(let rhs)):
+                    guard lhs == rhs else { return .incompatible }
+                case (.blankNode(let lhs), .blankNode(let rhs)):
                     guard lhs == rhs else { return .incompatible }
                 case (.literal(let lhs), .literal(let rhs)):
                     guard lhs == rhs else { return .incompatible }
@@ -162,8 +163,8 @@ final class SPARQLPropertyPathBindingFootprintMeter {
                     .tripleTerm(let rhsSubject, let rhsPredicate, let rhsObject)
                 ):
                     try append(.exact(lhsObject, rhsObject))
-                    try append(.exact(lhsPredicate, rhsPredicate))
-                    try append(.exact(lhsSubject, rhsSubject))
+                    try append(.exact(lhsPredicate.term, rhsPredicate.term))
+                    try append(.exact(lhsSubject.term, rhsSubject.term))
                 default:
                     return .incompatible
                 }
@@ -174,9 +175,14 @@ final class SPARQLPropertyPathBindingFootprintMeter {
                     Self.rdfTermNodeByteCount
                 )
                 switch term {
-                case .iri(let value), .blankNode(let value):
+                case .iri(let value):
                     retainedBytes = try Self.addString(
-                        value,
+                        value.rawValue,
+                        to: retainedBytes
+                    )
+                case .blankNode(let value):
+                    retainedBytes = try Self.addString(
+                        value.rawValue,
                         to: retainedBytes
                     )
                 case .literal(let literal):
@@ -203,8 +209,8 @@ final class SPARQLPropertyPathBindingFootprintMeter {
                     }
                 case .tripleTerm(let subject, let predicate, let object):
                     try append(.retain(object))
-                    try append(.retain(predicate))
-                    try append(.retain(subject))
+                    try append(.retain(predicate.term))
+                    try append(.retain(subject.term))
                 }
             }
         }

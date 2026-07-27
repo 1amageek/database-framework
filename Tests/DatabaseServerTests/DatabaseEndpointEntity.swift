@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 @Persistable
 struct DatabaseEndpointEntity {
@@ -7,5 +7,5 @@ struct DatabaseEndpointEntity {
 
     var id: String = ""
     var title: String = ""
-    var priority: Int = 0
+    var priority: Int64 = 0
 }

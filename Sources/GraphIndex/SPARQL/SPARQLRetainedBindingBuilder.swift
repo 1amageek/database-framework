@@ -1,4 +1,5 @@
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 
 /// Builds one SPARQL solution relation with admission before every retained

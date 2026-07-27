@@ -27,7 +27,7 @@ public enum CanonicalReadError: Error, Sendable {
     /// specific reason.
     case unsupportedSelectQuery(String)
 
-    /// A `QueryIR.Expression` could not be converted to a canonical operation.
+    /// A `Expression` could not be converted to a canonical operation.
     case unsupportedExpression
 
     /// A literal value type is incompatible with its target column/parameter.
@@ -65,6 +65,10 @@ public enum CanonicalReadError: Error, Sendable {
 
     /// The continuation token provided by the caller is malformed or stale.
     case invalidContinuation
+
+    /// A protocol-sized pagination value cannot be represented by this
+    /// runtime's collection index type.
+    case paginationValueExceedsRuntimeRange(name: String, value: UInt64)
 
     // MARK: Storage / encoding
 

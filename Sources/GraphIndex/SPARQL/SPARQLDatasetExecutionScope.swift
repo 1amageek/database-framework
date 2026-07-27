@@ -1,5 +1,5 @@
-import Graph
-import QueryIR
+import DatabaseKit
+import DatabaseKit
 
 /// The executable RDF dataset selected by SPARQL dataset clauses.
 public struct SPARQLDatasetExecutionScope: Sendable, Hashable {

@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -13,7 +13,7 @@ public struct RDFQuadIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
         guard index.kind.identifier == kindIdentifier else {
             throw IndexMaintainerProviderError.kindMismatch(
@@ -35,7 +35,7 @@ public struct RDFQuadIndexMaintainerProvider: IndexMaintainerProvider {
             )
         }
 
-        return RDFQuadIndexMaintainer<Item>(
+        return try RDFQuadIndexMaintainer<Item>(
             index: index,
             subspace: subspace,
             idExpression: idExpression,

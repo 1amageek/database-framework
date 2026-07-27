@@ -1,16 +1,10 @@
 // SelectQueryPlanner.swift
-// DatabaseEngine - Translate a QueryIR.SelectQuery into a typed Query<T>
+// DatabaseEngine - Translate a SelectQuery into a typed Query<T>
 // while tracking which clauses were pushed down so the caller can skip
 // redundant residual evaluation.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 
 /// Result of planning a SelectQuery against a concrete Persistable type.
 ///
@@ -23,7 +17,7 @@ struct SelectQueryPushdownPlan<T: Persistable>: Sendable {
     var typedQuery: Query<T>
     /// Residual filter that must be applied after the fetch.
     /// `nil` means the filter was fully pushed (or absent).
-    var residualFilter: QueryIR.Expression?
+    var residualFilter: Expression?
     /// Residual sort keys that must be applied after the fetch.
     /// `nil` means the orderBy was fully pushed (or absent).
     var residualOrderBy: [SortKey]?
@@ -33,7 +27,7 @@ struct SelectQueryPushdownPlan<T: Persistable>: Sendable {
     var offsetPushed: Bool
 }
 
-/// Translates a `QueryIR.SelectQuery` targeting a single `.table` source into
+/// Translates a `SelectQuery` targeting a single `.table` source into
 /// a `Query<T>` against the concrete Persistable type.
 ///
 /// The planner pushes work into the typed fetch path so that
@@ -88,7 +82,7 @@ enum SelectQueryPlanner {
         query.executionWorkMeter = options.workMeter
 
         // Filter: partial AND pushdown.
-        var residualFilter: QueryIR.Expression? = nil
+        var residualFilter: Expression? = nil
         if let filter = selectQuery.filter {
             let split = try filter.splitAnd(for: T.self)
             query.predicates.append(contentsOf: split.pushed)
@@ -122,10 +116,20 @@ enum SelectQueryPlanner {
             && resolvedPageSize == nil
         if noResidualFilter && noOrderBy && noExternalPagination {
             if let limit = selectQuery.limit {
+                guard let limit = Int(exactly: limit) else {
+                    throw CanonicalReadError.unsupportedSelectQuery(
+                        "Query limit exceeds the platform integer range"
+                    )
+                }
                 query.fetchLimit = limit
                 limitPushed = true
             }
             if let offset = selectQuery.offset {
+                guard let offset = Int(exactly: offset) else {
+                    throw CanonicalReadError.unsupportedSelectQuery(
+                        "Query offset exceeds the platform integer range"
+                    )
+                }
                 query.fetchOffset = offset
                 offsetPushed = true
             }
@@ -165,7 +169,9 @@ enum SelectQueryPlanner {
                     "accessPath with kind '\(indexScan.kindIdentifier)' is not supported for single-table queries"
                 )
             }
-            guard T.indexDescriptors.contains(where: { $0.name == indexScan.indexName }) else {
+            guard try T.indexDescriptors.contains(
+                where: { $0.name == indexScan.indexName }
+            ) else {
                 throw CanonicalReadError.indexHintNotFound(
                     "Forced index '\(indexScan.indexName)' not found on type '\(T.persistableType)'"
                 )
@@ -180,7 +186,7 @@ enum SelectQueryPlanner {
     }
 
     /// Left-fold a non-empty array of conjuncts into a single AND expression.
-    private static func combineAnd(_ expressions: [QueryIR.Expression]) -> QueryIR.Expression {
+    private static func combineAnd(_ expressions: [Expression]) -> Expression {
         guard let first = expressions.first else { return .literal(.bool(true)) }
         return expressions.dropFirst().reduce(first) { .and($0, $1) }
     }
@@ -199,9 +205,21 @@ enum SelectQueryPlanner {
             // so the canonical layer can honor it.
             if sortKey.nulls != nil { return nil }
             guard case .column(let column) = sortKey.expression else { return nil }
-            guard T.allFields.contains(column.column) else { return nil }
+            guard let schema = T.fieldSchemas.first(where: {
+                $0.name == column.column && $0.fieldNumber > 0
+            }) else {
+                return nil
+            }
             let order: SortOrder = sortKey.direction == .ascending ? .ascending : .descending
-            descriptors.append(SortDescriptor<T>(fieldName: column.column, order: order))
+            descriptors.append(
+                SortDescriptor<T>(
+                    field: FieldIdentity(
+                        name: schema.name,
+                        number: schema.fieldNumber
+                    ),
+                    order: order
+                )
+            )
         }
         return descriptors
     }

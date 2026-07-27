@@ -3,13 +3,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-
-// Re-export public types for protocol
-public typealias QueryPlanPublic = Core.QueryPlan
-public typealias QueryExecutionStatsPublic = Core.QueryExecutionStats
-public typealias CollectionStatisticsPublic = Core.CollectionStatistics
-public typealias IndexStatisticsPublic = Core.IndexStatistics
+import DatabaseKit
 
 /// Administrative statistics, query analysis, and index operations.
 ///
@@ -17,99 +11,107 @@ public typealias IndexStatisticsPublic = Core.IndexStatistics
 /// ```swift
 /// let admin = container.newAdminContext()
 ///
-/// // 統計情報の取得
+/// // Read collection statistics
 /// let stats = try await admin.collectionStatistics(User.self)
 /// print("Document count: \(stats.documentCount)")
 ///
-/// // クエリ実行計画の取得
-/// let plan = try await admin.explain(Query<User>().where(\.age > 18))
+/// // Explain a query plan
+/// let plan = try await admin.explain(
+///     Query<User>().where(User.fields.age > 18)
+/// )
 /// print("Plan type: \(plan.planType)")
 /// ```
 public protocol AdminContextProtocol: Sendable {
     // MARK: - Collection Statistics
 
-    /// コレクション（Type）の統計情報を取得
+    /// Returns statistics for a persistable collection.
     ///
-    /// - Parameter type: 対象の型
-    /// - Returns: コレクションの統計情報
-    func collectionStatistics<T: Persistable>(_ type: T.Type) async throws -> CollectionStatisticsPublic
+    /// - Parameter type: Persistable type to inspect.
+    /// - Returns: Collection statistics.
+    func collectionStatistics<T: Persistable>(
+        _ type: T.Type
+    ) async throws -> AdminCollectionStatistics
 
     // MARK: - Index Statistics
 
-    /// インデックスの統計情報を取得
+    /// Returns statistics for one index.
     ///
-    /// - Parameter indexName: インデックス名
-    /// - Returns: インデックスの統計情報
-    func indexStatistics(_ indexName: String) async throws -> IndexStatisticsPublic
+    /// - Parameter indexName: Index name.
+    /// - Returns: Index statistics.
+    func indexStatistics(
+        _ indexName: String
+    ) async throws -> AdminIndexStatistics
 
-    /// 全インデックスの統計情報を取得
+    /// Returns statistics for every index.
     ///
-    /// - Returns: 全インデックスの統計情報配列
-    func allIndexStatistics() async throws -> [IndexStatisticsPublic]
+    /// - Returns: All index statistics.
+    func allIndexStatistics() async throws -> [AdminIndexStatistics]
 
     // MARK: - Query Analysis
 
-    /// クエリの実行計画を取得（実行しない）
+    /// Explains a query without executing it.
     ///
-    /// PostgreSQLの`EXPLAIN`に相当する機能。
-    /// クエリを実行せずに、どのようなプランで実行されるかを分析する。
+    /// This is the database-framework equivalent of PostgreSQL `EXPLAIN`.
     ///
-    /// - Parameter query: 分析対象のクエリ
-    /// - Returns: クエリ実行計画
-    func explain<T: Persistable>(_ query: Query<T>) async throws -> QueryPlanPublic
+    /// - Parameter query: Query to analyze.
+    /// - Returns: Planned execution path.
+    func explain<T: Persistable>(
+        _ query: Query<T>
+    ) async throws -> AdminQueryPlan
 
-    /// クエリを実行し、実行統計を取得
+    /// Executes a query and returns measured execution statistics.
     ///
-    /// PostgreSQLの`EXPLAIN ANALYZE`に相当する機能。
-    /// 実際にクエリを実行し、実際の統計情報を収集する。
+    /// This is the database-framework equivalent of PostgreSQL
+    /// `EXPLAIN ANALYZE`.
     ///
-    /// - Parameter query: 分析対象のクエリ
-    /// - Returns: クエリ実行統計（計画 + 実測値）
-    func explainAnalyze<T: Persistable>(_ query: Query<T>) async throws -> QueryExecutionStatsPublic
+    /// - Parameter query: Query to execute and analyze.
+    /// - Returns: Plan and measured execution statistics.
+    func explainAnalyze<T: Persistable>(
+        _ query: Query<T>
+    ) async throws -> AdminQueryExecutionStatistics
 
     // MARK: - Index Management
 
-    /// インデックスを再構築
+    /// Rebuilds an index.
     ///
     /// - Parameters:
-    ///   - indexName: 再構築するインデックス名
-    ///   - progress: 進捗コールバック（0.0〜1.0）
+    ///   - indexName: Index to rebuild.
+    ///   - progress: Progress callback receiving values from 0.0 through 1.0.
     func rebuildIndex(_ indexName: String, progress: (@Sendable (Double) -> Void)?) async throws
 
-    /// 統計情報を更新（収集）
+    /// Refreshes all collected statistics.
     ///
-    /// PostgreSQLの`ANALYZE`に相当する機能。
-    /// サンプリングを行い、統計情報を更新する。
+    /// This samples stored entities and is analogous to PostgreSQL `ANALYZE`.
     func updateStatistics() async throws
 
-    /// 特定の型の統計情報を更新
+    /// Refreshes statistics for one persistable type.
     ///
-    /// - Parameter type: 対象の型
+    /// - Parameter type: Persistable type to analyze.
     func updateStatistics<T: Persistable>(for type: T.Type) async throws
 
     // MARK: - FDB-Specific Features
 
-    /// 現在のReadVersionを取得
+    /// Returns the current read version.
     ///
-    /// FoundationDB固有の機能。グローバルなトランザクション順序を表すバージョンを取得。
+    /// FoundationDB supplies this global transaction-ordering version.
     ///
-    /// - Returns: 現在のReadVersion
+    /// - Returns: Current read version.
     func currentReadVersion() async throws -> UInt64
 
-    /// キー範囲の推定サイズを取得
+    /// Estimates the byte size of a key range.
     ///
-    /// FoundationDB固有の機能。サーバーサイドでキー範囲のサイズを推定。
+    /// FoundationDB performs this estimate on the server.
     ///
     /// - Parameters:
-    ///   - type: 対象の型
-    /// - Returns: 推定サイズ（バイト）
+    ///   - type: Persistable type to estimate.
+    /// - Returns: Estimated byte count.
     func estimatedStorageSize<T: Persistable>(for type: T.Type) async throws -> Int64
 }
 
 // MARK: - Default Implementations
 
 extension AdminContextProtocol {
-    /// インデックス再構築（進捗コールバックなし）
+    /// Rebuilds an index without a progress callback.
     public func rebuildIndex(_ indexName: String) async throws {
         try await rebuildIndex(indexName, progress: nil)
     }

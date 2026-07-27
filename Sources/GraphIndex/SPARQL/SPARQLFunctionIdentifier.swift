@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 
 /// Canonical classification for every SPARQL function identifier.
 ///
@@ -108,8 +108,8 @@ enum SPARQLFunctionIdentifier: Sendable, Hashable {
     }
 
     case builtIn(BuiltIn)
-    case datatypeConstructor(DatabaseRDFIRI)
-    case extensionFunction(DatabaseRDFIRI)
+    case datatypeConstructor(RDFIRI)
+    case extensionFunction(RDFIRI)
 
     static let xsdNamespace = "http://www.w3.org/2001/XMLSchema#"
 
@@ -120,9 +120,9 @@ enum SPARQLFunctionIdentifier: Sendable, Hashable {
             return .builtIn(builtIn)
         }
 
-        let iri: DatabaseRDFIRI
+        let iri: RDFIRI
         do {
-            iri = try DatabaseRDFIRI(rawIdentifier)
+            iri = try RDFIRI(rawIdentifier)
         } catch {
             throw .invalidFunctionIdentifier(rawIdentifier)
         }

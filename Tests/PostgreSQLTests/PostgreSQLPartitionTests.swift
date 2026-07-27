@@ -10,7 +10,7 @@ import Foundation
 import StorageKit
 import PostgreSQLStorage
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 import TestSupport
 
 @Suite("PostgreSQL Partition Metadata Tests")
@@ -63,7 +63,13 @@ struct PostgreSQLPartitionTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let schema = Schema([Player.self, TenantOrder.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try Player.schemaEntity,
+                try TenantOrder.schemaEntity,
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
         return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [Player.self, TenantOrder.self])
     }
 

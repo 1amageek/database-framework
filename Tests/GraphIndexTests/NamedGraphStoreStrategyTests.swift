@@ -1,8 +1,7 @@
 import Foundation
 import Testing
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -14,25 +13,11 @@ private struct NamedGraphStoreQuad {
     var predicate: String
     var object: String
     var graph: String?
-
-    init(
-        id: String,
-        subject: String,
-        predicate: String,
-        object: String,
-        graph: String?
-    ) {
-        self.id = id
-        self.subject = subject
-        self.predicate = predicate
-        self.object = object
-        self.graph = graph
-    }
 }
 
 @Suite("NamedGraphStore Strategy Tests")
 struct NamedGraphStoreStrategyTests {
-    private func makeMaintainer(graphField: String? = "graph") -> (
+    private func makeMaintainer(graphField: String? = "graph") throws -> (
         maintainer: GraphIndexMaintainer<NamedGraphStoreQuad>,
         indexSubspace: Subspace
     ) {
@@ -42,11 +27,11 @@ struct NamedGraphStoreStrategyTests {
             .subspace(indexName)
         let index = Index(
             name: indexName,
-            kind: GraphIndexKind<NamedGraphStoreQuad>(
-                fromField: "subject",
-                edgeField: "predicate",
-                toField: "object",
-                graphField: graphField,
+            kind: propertyGraphIndexMetadata(
+                sourceFieldName: "subject",
+                labelFieldName: "predicate",
+                targetFieldName: "object",
+                namespaceFieldName: graphField,
                 strategy: .namedGraphStore
             ),
             rootExpression: ConcatenateKeyExpression(children: [
@@ -57,15 +42,11 @@ struct NamedGraphStoreStrategyTests {
             subspaceKey: indexName,
             itemTypes: Set(["NamedGraphStoreQuad"])
         )
-        let maintainer = GraphIndexMaintainer<NamedGraphStoreQuad>(
+        let maintainer = try GraphIndexMaintainer<NamedGraphStoreQuad>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            fromField: "subject",
-            edgeField: "predicate",
-            toField: "object",
-            graphField: graphField,
-            strategy: .namedGraphStore
+            metadata: try PropertyGraphIndexMetadata(canonical: index.kind)
         )
         return (maintainer, indexSubspace)
     }
@@ -77,7 +58,7 @@ struct NamedGraphStoreStrategyTests {
 
     @Test("namedGraphStore generates GSPO, GPOS, and GOSP graph-first keys")
     func namedGraphStoreGeneratesGraphFirstKeys() async throws {
-        let setup = makeMaintainer()
+        let setup = try makeMaintainer()
         let quad = NamedGraphStoreQuad(
             id: "q1",
             subject: "Alice",
@@ -113,7 +94,7 @@ struct NamedGraphStoreStrategyTests {
 
     @Test("namedGraphStore indexes nil graph as default graph sentinel")
     func namedGraphStoreIndexesNilGraphAsDefaultGraphSentinel() async throws {
-        let setup = makeMaintainer()
+        let setup = try makeMaintainer()
         let quad = NamedGraphStoreQuad(
             id: "q1",
             subject: "Alice",
@@ -142,14 +123,15 @@ struct NamedGraphStoreStrategyTests {
         #expect(GraphIndexOrdering.gpos.isGraphFirst)
         #expect(GraphIndexOrdering.gosp.isGraphFirst)
 
-        let data = try JSONEncoder().encode(GraphIndexStrategy.namedGraphStore)
-        let decoded = try JSONDecoder().decode(GraphIndexStrategy.self, from: data)
-        #expect(decoded == .namedGraphStore)
+        #expect(
+            PropertyGraphIndexStrategy.namedGraphStore.storageStrategy
+                == .namedGraphStore
+        )
     }
 
     @Test("edge scanner applies named and default graph scopes")
     func edgeScannerAppliesGraphScope() async throws {
-        let setup = makeMaintainer()
+        let setup = try makeMaintainer()
         let database = InMemoryEngine()
         let named = NamedGraphStoreQuad(
             id: "named",

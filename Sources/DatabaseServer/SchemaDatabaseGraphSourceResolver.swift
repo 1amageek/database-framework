@@ -1,8 +1,8 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
-import Graph
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 import GraphIndex
 import StorageKit
 
@@ -120,9 +120,6 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
         case .defaultGraph:
             scope = .defaultGraph
         case .named(.rdf(let graph)):
-            guard graph.isRDFGraphName else {
-                throw DatabaseGraphAlgorithmError.invalidRDFGraphName(.rdf(graph))
-            }
             scope = .named(graph)
         case .named(let term):
             throw DatabaseGraphAlgorithmError.expectedRDFTerm(term)
@@ -132,7 +129,7 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
             requestedScope: scope,
             indexName: source.index
         )
-        let predicate: DatabaseRDFTerm?
+        let predicate: RDFTerm?
         switch source.edgeLabel {
         case nil:
             predicate = nil

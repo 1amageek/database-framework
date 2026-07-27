@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseRuntime
 
 @Persistable
@@ -7,10 +7,11 @@ struct CatalogPartitionedEntity {
     #Directory<CatalogPartitionedEntity>(
         "test",
         "partition-catalog",
-        Field(\CatalogPartitionedEntity.tenantID)
+        \CatalogPartitionedEntity.tenantID
     )
     #Index(
-        ScalarIndexKind<CatalogPartitionedEntity>(fields: [\.value]),
+        .scalar,
+        fields: [\CatalogPartitionedEntity.value],
         name: "catalog_value"
     )
 

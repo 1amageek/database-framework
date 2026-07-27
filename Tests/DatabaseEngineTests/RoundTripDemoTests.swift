@@ -11,7 +11,7 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
-@testable import Core
+@testable import DatabaseKit
 
 @Persistable
 struct DemoItem: Equatable {
@@ -19,11 +19,11 @@ struct DemoItem: Equatable {
 
     var id: String = UUID().uuidString
     var name: String = ""
-    var value: Int = 0
+    var value: Int64 = 0
     var tags: [String] = []
 }
 
-@Suite("Round Trip Demo", .serialized, .heartbeat)
+@Suite("Round Trip Demo", .foundationDBScenario, .serialized, .heartbeat)
 struct RoundTripDemoTests {
 
     private func setupContainer() async throws -> DBContainer {

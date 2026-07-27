@@ -4,7 +4,7 @@ import Foundation
 import StorageKit
 import PostgreSQLStorage
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 import TestSupport
 import TestHeartbeat
 import DatabaseRuntime
@@ -13,6 +13,7 @@ import DatabaseRuntime
 struct PGDirectoryMigrationUserV1 {
     #Directory<PGDirectoryMigrationUserV1>("test", "pg-directory-migration", "legacy")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -21,18 +22,27 @@ struct PGDirectoryMigrationUserV1 {
 struct PGDirectoryMigrationUserV2 {
     #Directory<PGDirectoryMigrationUserV2>("test", "pg-directory-migration", "current")
 
+    var id: String = ""
     var name: String
     var email: String
 }
 
 enum PGDirectoryMigrationSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [PGDirectoryMigrationUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGDirectoryMigrationUserV1.schemaEntity]
+        }
+    }
 }
 
 enum PGDirectoryMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [PGDirectoryMigrationUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGDirectoryMigrationUserV2.schemaEntity]
+        }
+    }
 }
 
 enum PGDirectoryMigrationCopyPlan: SchemaMigrationPlan {

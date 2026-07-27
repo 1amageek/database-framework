@@ -1,17 +1,18 @@
 #if !os(WASI)
 #if FOUNDATION_DB
 // IndexConfigurationTests.swift
-// FDBIndexingTests - Tests for IndexConfiguration propagation and application
+// Tests for runtime index configuration propagation and application.
 
 import Testing
 import TestHeartbeat
 import Foundation
 import StorageKit
-@testable import Core
+import DatabaseTypes
+@testable import DatabaseKit
 @testable import DatabaseEngine
 
-/// Tests for IndexConfiguration functionality
-@Suite("IndexConfiguration Tests", .heartbeat)
+/// Tests for runtime index configuration behavior.
+@Suite("Index runtime configuration tests", .heartbeat)
 struct IndexConfigurationTests {
 
     // MARK: - Provider Configuration Tests
@@ -20,7 +21,7 @@ struct IndexConfigurationTests {
     func indexConfigurationApplicableApply() async throws {
         let configuration = DimensionIndexConfiguration(
             fieldName: "embedding",
-            modelTypeName: "IndexConfigurationEntity",
+            entityName: "IndexConfigurationEntity",
             dimensions: 384,
             distanceMetric: "cosine"
         )
@@ -55,10 +56,10 @@ struct IndexConfigurationTests {
 
     @Test("Provider applies all matching configurations")
     func multiIndexConfigurationApplicableApply() async throws {
-        let configs: [any IndexConfiguration] = [
-            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationEntity", language: "en"),
-            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationEntity", language: "ja"),
-            LanguageIndexConfiguration(fieldName: "content", modelTypeName: "IndexConfigurationEntity", language: "zh")
+        let configs: [any IndexRuntimeConfiguration] = [
+            LanguageIndexConfiguration(fieldName: "content", entityName: "IndexConfigurationEntity", language: "en"),
+            LanguageIndexConfiguration(fieldName: "content", entityName: "IndexConfigurationEntity", language: "ja"),
+            LanguageIndexConfiguration(fieldName: "content", entityName: "IndexConfigurationEntity", language: "zh")
         ]
 
         let index = Index(
@@ -94,7 +95,7 @@ struct IndexConfigurationTests {
     func configurationNotAppliedForMismatchedIndex() async throws {
         let configuration = DimensionIndexConfiguration(
             fieldName: "embedding",
-            modelTypeName: "IndexConfigurationEntity",
+            entityName: "IndexConfigurationEntity",
             dimensions: 768,
             distanceMetric: "euclidean"
         )
@@ -127,21 +128,21 @@ struct IndexConfigurationTests {
 
     // MARK: - Configuration Name Matching Tests
 
-    @Test("IndexConfiguration indexName is computed correctly")
-    func indexConfigurationIndexName() {
+    @Test("Runtime configuration indexName is computed correctly")
+    func runtimeConfigurationIndexName() {
         let configuration = DimensionIndexConfiguration(
             fieldName: "embedding",
-            modelTypeName: "IndexConfigurationEntity",
+            entityName: "IndexConfigurationEntity",
             dimensions: 384,
             distanceMetric: "cosine"
         )
 
-        // indexName should be "{modelTypeName}_{fieldName}"
+        // indexName is derived from the canonical entity and field names.
         #expect(configuration.indexName == "IndexConfigurationEntity_embedding")
     }
 
-    @Test("IndexConfiguration kindIdentifier matches expected kind")
-    func indexConfigurationKindIdentifier() {
+    @Test("Runtime configuration kindIdentifier matches expected kind")
+    func runtimeConfigurationKindIdentifier() {
         #expect(DimensionIndexConfiguration.kindIdentifier == "dimension-configured")
         #expect(LanguageIndexConfiguration.kindIdentifier == "language-configured")
     }
@@ -151,54 +152,49 @@ struct IndexConfigurationTests {
 
 @Persistable
 struct IndexConfigurationEntity {
+    var id: String = ""
     var content: String = ""
-    var embedding: [Float] = []
+    var embedding: Vector = Vector(int8: [])
     var otherField: String = ""
 }
 
 // MARK: - Index Configuration Scenarios
 
 /// Dimension-bearing configuration for single-configuration application.
-struct DimensionIndexConfiguration: IndexConfiguration, Sendable {
+struct DimensionIndexConfiguration: IndexRuntimeConfiguration, Sendable {
     static var kindIdentifier: String { "dimension-configured" }
 
     let fieldName: String
-    let _modelTypeName: String
-    var modelTypeName: String { _modelTypeName }
-
-    var indexName: String { "\(_modelTypeName)_\(fieldName)" }
+    let entityName: String
 
     let dimensions: Int
     let distanceMetric: String
 
     init(
         fieldName: String,
-        modelTypeName: String,
+        entityName: String,
         dimensions: Int,
         distanceMetric: String
     ) {
         self.fieldName = fieldName
-        self._modelTypeName = modelTypeName
+        self.entityName = entityName
         self.dimensions = dimensions
         self.distanceMetric = distanceMetric
     }
 }
 
 /// Language-bearing configuration used to verify multi-configuration application.
-struct LanguageIndexConfiguration: IndexConfiguration, Sendable {
+struct LanguageIndexConfiguration: IndexRuntimeConfiguration, Sendable {
     static var kindIdentifier: String { "language-configured" }
 
     let fieldName: String
-    let _modelTypeName: String
-    var modelTypeName: String { _modelTypeName }
-
-    var indexName: String { "\(_modelTypeName)_\(fieldName)" }
+    let entityName: String
 
     let language: String
 
-    init(fieldName: String, modelTypeName: String, language: String) {
+    init(fieldName: String, entityName: String, language: String) {
         self.fieldName = fieldName
-        self._modelTypeName = modelTypeName
+        self.entityName = entityName
         self.language = language
     }
 }
@@ -207,23 +203,28 @@ struct LanguageIndexConfiguration: IndexConfiguration, Sendable {
 
 /// Index kind carrying an expected vector dimension.
 struct DimensionConfiguredIndexKind: IndexKind {
+    typealias Model = IndexConfigurationEntity
+
     static let identifier = "dimension-configured"
     static let subspaceStructure = SubspaceStructure.hierarchical
 
     let dimensions: Int
-    var fieldNames: [String] = []
+    let indexFields: [IndexField<IndexConfigurationEntity>]
     var indexName: String { Self.identifier }
-    var metadata: [String: IndexMetadataValue] {
-        ["dimensions": .int(dimensions)]
+    var metadata: [String: FieldValue] {
+        ["dimensions": .int64(Int64(dimensions))]
     }
 
     init(dimensions: Int = 0) {
         self.dimensions = dimensions
+        self.indexFields = [
+            IndexConfigurationEntity.fields.embedding.ascending
+        ]
     }
 
-    static func validateTypes(_ types: [Any.Type]) throws {
-        // Accept any types for testing
-    }
+    static func validateFields(
+        _ fields: [FieldSchema]
+    ) throws(IndexValidationError) {}
 }
 
 struct DimensionConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
@@ -233,7 +234,7 @@ struct DimensionConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
         let dimensions = try index.kind.requireInt("dimensions")
         let configuration = configurations.first(where: {
@@ -252,17 +253,23 @@ struct DimensionConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
 
 /// Index kind accepting one configuration per language.
 struct LanguageConfiguredIndexKind: IndexKind {
+    typealias Model = IndexConfigurationEntity
+
     static let identifier = "language-configured"
     static let subspaceStructure = SubspaceStructure.flat
 
-    var fieldNames: [String] = []
+    let indexFields: [IndexField<IndexConfigurationEntity>]
     var indexName: String { Self.identifier }
 
-    static func validateTypes(_ types: [Any.Type]) throws {
-        // Accept any types for testing
-    }
+    static func validateFields(
+        _ fields: [FieldSchema]
+    ) throws(IndexValidationError) {}
 
-    init() {}
+    init() {
+        self.indexFields = [
+            IndexConfigurationEntity.fields.content.ascending
+        ]
+    }
 }
 
 struct LanguageConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
@@ -272,7 +279,7 @@ struct LanguageConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
         let languages = Set(
             configurations

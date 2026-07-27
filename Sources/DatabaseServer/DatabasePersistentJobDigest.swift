@@ -1,15 +1,15 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 enum DatabasePersistentJobDigest {
-    private static let planDomain: DatabaseBytes = [0x4a, 0x50, 0x4c, 0x4e]
-    private static let specificationDomain: DatabaseBytes = [0x4a, 0x53, 0x50, 0x43]
-    private static let chunkDomain: DatabaseBytes = [0x4a, 0x43, 0x48, 0x4b]
+    private static let planDomain: ByteString = [0x4a, 0x50, 0x4c, 0x4e]
+    private static let specificationDomain: ByteString = [0x4a, 0x53, 0x50, 0x43]
+    private static let chunkDomain: ByteString = [0x4a, 0x43, 0x48, 0x4b]
 
     static func plan(
-        operation: DatabaseJobOperationIdentifier,
-        payload: DatabaseBytes
-    ) -> DatabaseBytes {
+        operation: JobOperationIdentifier,
+        payload: ByteString
+    ) -> ByteString {
         DatabaseRequestDigest.compute(
             jobOperation: operation,
             prefix: planDomain,
@@ -18,9 +18,9 @@ enum DatabasePersistentJobDigest {
     }
 
     static func specification(
-        operation: DatabaseJobOperationIdentifier,
-        payload: DatabaseBytes
-    ) -> DatabaseBytes {
+        operation: JobOperationIdentifier,
+        payload: ByteString
+    ) -> ByteString {
         DatabaseRequestDigest.compute(
             jobOperation: operation,
             prefix: specificationDomain,
@@ -29,10 +29,10 @@ enum DatabasePersistentJobDigest {
     }
 
     static func result(
-        operation: DatabaseJobOperationIdentifier,
-        payload: DatabaseBytes
-    ) -> DatabaseJobResultDigest {
-        var accumulator = DatabaseJobResultDigestAccumulator(
+        operation: JobOperationIdentifier,
+        payload: ByteString
+    ) -> JobResultDigest {
+        var accumulator = JobResultDigestAccumulator(
             operation: operation
         )
         accumulator.update(payload)
@@ -40,10 +40,10 @@ enum DatabasePersistentJobDigest {
     }
 
     static func chunk(
-        operation: DatabaseJobOperationIdentifier,
+        operation: JobOperationIdentifier,
         index: UInt32,
-        payload: DatabaseBytes
-    ) -> DatabaseBytes {
+        payload: ByteString
+    ) -> ByteString {
         var accumulator = DatabaseRequestDigestAccumulator(
             jobOperation: operation
         )

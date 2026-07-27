@@ -1,12 +1,12 @@
 import Testing
 import GraphIndex
-import QueryIR
+import DatabaseKit
 
 @Suite("Graph pattern conversion failures")
 struct GraphPatternConverterFailureTests {
     @Test("Unsupported patterns fail instead of changing query meaning")
     func unsupportedPatternsFail() {
-        let empty = QueryIR.GraphPattern.basic([])
+        let empty = GraphPattern.basic([])
 
         #expect(throws: GraphPatternConversionError.unsupportedGraphPattern("SERVICE")) {
             try GraphPatternConverter.convert(
@@ -18,7 +18,7 @@ struct GraphPatternConverterFailureTests {
     @Test("Malformed VALUES tables fail before execution")
     func malformedValuesFail() {
         #expect(
-            throws: GraphPatternConversionError.duplicateValuesVariable("?value")
+            throws: SPARQLSemanticValidationError.duplicateValuesVariable("value")
         ) {
             try GraphPatternConverter.convert(
                 .values(
@@ -28,7 +28,7 @@ struct GraphPatternConverterFailureTests {
             )
         }
         #expect(
-            throws: GraphPatternConversionError.valuesRowWidth(
+            throws: SPARQLSemanticValidationError.valuesRowWidth(
                 row: 0,
                 expected: 2,
                 actual: 1
@@ -130,7 +130,7 @@ struct GraphPatternConverterFailureTests {
 
     @Test("BIND compiles to an Extend node without changing its expression")
     func bindCompilesToExtend() throws {
-        let expression = QueryIR.Expression.literal(.int(1))
+        let expression = Expression.literal(.int(1))
         let pattern = try GraphPatternConverter.convert(
             .bind(.basic([]), variable: "value", expression: expression)
         )
@@ -150,7 +150,7 @@ struct GraphPatternConverterFailureTests {
 
     @Test("Group expressions compile to explicit key plans")
     func groupExpressionIsPreserved() throws {
-        let expression = QueryIR.Expression.literal(.int(1))
+        let expression = Expression.literal(.int(1))
         let pattern = try GraphPatternConverter.convert(
             .groupBy(
                 .basic([]),
@@ -175,7 +175,7 @@ struct GraphPatternConverterFailureTests {
 
     @Test("Aggregate operands preserve arbitrary expressions")
     func aggregateExpressionIsPreserved() throws {
-        let expression = QueryIR.Expression.add(
+        let expression = Expression.add(
             .variable(Variable("left")),
             .variable(Variable("right"))
         )

@@ -4,7 +4,7 @@
 // Reference: FDB Record Layer multi-target indexing strategy
 
 import StorageKit
-import Core
+import DatabaseKit
 import Metrics
 import Synchronization
 
@@ -26,10 +26,9 @@ import Synchronization
 ///
 /// **Usage Example**:
 /// ```swift
-/// let indexer = MultiTargetOnlineIndexer<User>(
+/// let indexer = try MultiTargetOnlineIndexer<User>(
 ///     container: container,
-///     itemSubspace: itemSubspace,
-///     indexSubspace: indexSubspace,
+///     storeSubspace: storeSubspace,
 ///     itemType: "User",
 ///     targets: [
 ///         IndexBuildTarget(index: emailIndex, maintainer: emailMaintainer),
@@ -64,6 +63,9 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     /// Index state manager
     private let lifecycleStore: IndexLifecycleStore
 
+    /// Shared uniqueness violation persistence for all targets.
+    private let violationTracker: UniquenessViolationTracker
+
     // Configuration
     private let batchSize: Int
     private let throttleDelayMs: Int
@@ -84,9 +86,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     ///
     /// - Parameters:
     ///   - container: FDB Container instance
-    ///   - itemSubspace: Subspace where items are stored
-    ///   - indexSubspace: Subspace where index data is stored
-    ///   - blobsSubspace: Subspace where blob chunks are stored
+    ///   - storeSubspace: Root subspace containing items, indexes, blobs, and metadata
     ///   - itemType: Type name of items to index
     ///   - targets: Index build targets (index + maintainer pairs)
     ///   - lifecycleStore: Index state manager
@@ -94,28 +94,53 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     ///   - throttleDelayMs: Delay between batches in ms (default: 0)
     public init(
         container: DBContainer,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         itemType: String,
         targets: [IndexBuildTarget<Item>],
         lifecycleStore: IndexLifecycleStore,
         batchSize: Int = 100,
         throttleDelayMs: Int = 0
-    ) {
+    ) throws(OnlineIndexBuildError) {
+        guard !targets.isEmpty else {
+            throw .emptyTargetSet
+        }
+        guard batchSize > 0 else {
+            throw .invalidBatchSize(batchSize)
+        }
+        guard throttleDelayMs >= 0 else {
+            throw .invalidThrottleDelayMilliseconds(throttleDelayMs)
+        }
+        var targetNames = Set<String>()
+        for target in targets where !targetNames.insert(target.index.name).inserted {
+            throw .duplicateTargetIndexName(target.index.name)
+        }
+        for target in targets where target.maintainer.customBuildStrategy != nil {
+            throw .unsupportedCustomBuildStrategy(indexName: target.index.name)
+        }
+        for target in targets where target.index.isUnique {
+            guard target.maintainer is any IndexUniquenessMaintainer<Item> else {
+                throw .unsupportedUniquenessConstraint(
+                    indexName: target.index.name
+                )
+            }
+        }
         self.container = container
-        self.itemSubspace = itemSubspace
-        self.indexSubspace = indexSubspace
-        self.blobsSubspace = blobsSubspace
+        self.itemSubspace = storeSubspace.subspace(SubspaceKey.items)
+        self.indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
+        self.blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
         self.itemType = itemType
         self.targets = targets
         self.lifecycleStore = lifecycleStore
+        self.violationTracker = UniquenessViolationTracker(
+            container: container,
+            metadataSubspace: storeSubspace.subspace(SubspaceKey.metadata)
+        )
         self.batchSize = batchSize
         self.throttleDelayMs = throttleDelayMs
 
         // Create unique progress key for this multi-target build
         let indexNames = targets.map { $0.index.name }.sorted().joined(separator: "+")
-        self.progressKey = indexSubspace
+        self.progressKey = self.indexSubspace
             .subspace("_progress_multi")
             .pack(Tuple(indexNames))
 
@@ -165,11 +190,18 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         if clearFirst {
             for target in targets {
                 try await clearIndexData(for: target.index)
+                if target.index.isUnique {
+                    try await violationTracker.clearAllViolations(
+                        indexName: target.index.name
+                    )
+                }
             }
         }
 
         // Build indexes with single scan
         try await buildIndexesInBatches()
+
+        try await requireNoUniquenessViolations()
 
         // Transition all to readable
         for target in targets {
@@ -254,8 +286,11 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                     // Call all maintainers once per batch. Maintainers that do
                     // not override scanItems preserve scanItem behavior.
                     for target in self.targets {
-                        try await target.maintainer.scanItems(
+                        try await OnlineIndexBatchWriter.write(
                             batchEntries,
+                            index: target.index,
+                            maintainer: target.maintainer,
+                            violationTracker: self.violationTracker,
                             transaction: transaction
                         )
                     }
@@ -339,6 +374,21 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         let indexRange = self.indexSubspace.subspace(index.name).range()
         try await container.engine.withTransaction(configuration: .batch) { transaction in
             try transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
+        }
+    }
+
+    private func requireNoUniquenessViolations() async throws {
+        for target in targets where target.index.isUnique {
+            let summary = try await violationTracker.violationSummary(
+                indexName: target.index.name
+            )
+            guard !summary.hasViolations else {
+                throw OnlineIndexBuildError.uniquenessViolationsDetected(
+                    indexName: target.index.name,
+                    violationCount: summary.violationCount,
+                    totalConflictingEntities: summary.totalConflictingEntities
+                )
+            }
         }
     }
 }

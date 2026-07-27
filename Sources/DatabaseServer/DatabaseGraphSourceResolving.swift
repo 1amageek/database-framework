@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public protocol DatabaseGraphSourceResolving: Sendable {
     func resolve(

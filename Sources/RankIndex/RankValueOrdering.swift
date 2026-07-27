@@ -1,4 +1,4 @@
-import Core
+import DatabaseTypes
 import DatabaseEngine
 import StorageKit
 
@@ -15,28 +15,24 @@ struct RankValueEntry<Item> {
 
 enum RankValueOrdering {
     static func numericValue(
-        from rawValue: (any Sendable)?,
+        from fieldValue: FieldValue?,
         fieldName: String
     ) throws -> FieldValue {
-        guard let rawValue else {
+        guard let fieldValue else {
             throw RankValueError.missingField(fieldName)
         }
 
-        let fieldValue: FieldValue
-        do {
-            fieldValue = try TypeConversion.toFieldValue(rawValue)
-        } catch {
-            throw RankValueError.nonNumericField(
-                fieldName: fieldName,
-                actualType: String(reflecting: type(of: rawValue))
-            )
-        }
-
         switch fieldValue {
-        case .int64, .uint64:
+        case .int8, .int16, .int32, .int64,
+             .uint8, .uint16, .uint32, .uint64:
             return fieldValue
-        case .double(let value):
-            guard !value.isNaN else {
+        case .float32(let value):
+            guard value.isFinite else {
+                throw RankValueError.unorderedFloatingPoint(fieldName: fieldName)
+            }
+            return fieldValue
+        case .float64(let value):
+            guard value.isFinite else {
                 throw RankValueError.unorderedFloatingPoint(fieldName: fieldName)
             }
             return fieldValue
@@ -45,7 +41,7 @@ enum RankValueOrdering {
         default:
             throw RankValueError.nonNumericField(
                 fieldName: fieldName,
-                actualType: String(reflecting: type(of: rawValue))
+                actualType: String(reflecting: fieldValue)
             )
         }
     }

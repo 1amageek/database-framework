@@ -1,6 +1,6 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
-public struct DatabaseOperationRoute<Operation: DatabaseOperation>:
+public struct DatabaseOperationRoute<Operation: ServerOperationDeclaration>:
     DatabaseOperationHandler,
     Sendable
 {

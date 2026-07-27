@@ -17,6 +17,8 @@ reports are intentionally not part of the public documentation tree.
 
 ## Runtime Contracts
 
+- [Architecture and Ownership](architecture.md) - package responsibility,
+  runtime forms, value ownership, transactions, and synchronization.
 - [Security](security.md) - authentication context and model-level policies.
 - [Ontology and Graph](ontology.md) - GraphIndex, OWL metadata, and ontology
   persistence.
@@ -38,18 +40,8 @@ not a copy of historical design proposals.
 ## Documentation Boundaries
 
 ~~~text
-database-kit
-  model metadata, IndexKind, QueryIR, DatabaseWire
-        |
-        v
-database-framework
-  execution, transactions, planning, indexes, migrations
-        |
-        v
-storage-kit
-  StorageEngine and backend implementations
-        |
-        +--> FoundationDB / SQLite / PostgreSQL / custom engine
+database-types -> database-kit -> database-framework -> storage-kit
+   primitives       contracts        behavior             storage
 ~~~
 
 Backend adapters, web hosts, and application tools are documented as separate

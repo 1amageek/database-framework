@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import GraphIndex
 import StorageKit
 
@@ -36,7 +36,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 context: context
             )
             try workBudget.workMeter.recordOutputRows(
-                UInt32(page.shapes.count)
+                UInt32(page.shapeCount)
             )
             return .encoding(.shapes(page))
         case .upsertShapes(let graph, let shapes, let expectedRevision):
@@ -73,7 +73,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                     transaction: transaction
                 )
             }
-            guard let issueCount = UInt32(exactly: report.issues.count) else {
+            guard let issueCount = UInt32(exactly: report.issueCount) else {
                 throw DatabaseWorkLimitError.maximumRows(
                     stage: .resultMaterialization,
                     consumed: workBudget.workMeter.consumedRows,
@@ -136,7 +136,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
 
     private func upsert(
         graph: String,
-        shapes: [DatabaseRDFQuad],
+        shapes: [RDFQuad],
         expectedRevision: UInt64?,
         request: SHACLExecuteOperation.Request,
         workBudget: SHACLValidationWorkBudget,
@@ -165,7 +165,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 return revision
             } makeResponse: { revision, commitVersion in
                 .mutation(
-                    DatabaseRevisionMutationResult(
+                    RevisionMutationResult(
                         commitVersion: commitVersion,
                         revision: revision
                     )
@@ -196,7 +196,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 return revision
             } makeResponse: { revision, commitVersion in
                 .mutation(
-                    DatabaseRevisionMutationResult(
+                    RevisionMutationResult(
                         commitVersion: commitVersion,
                         revision: revision
                     )
@@ -214,3 +214,4 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
         )
     }
 }
+import DatabaseKit

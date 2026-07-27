@@ -16,17 +16,20 @@ import VersionIndex
 /// Runtime composition that exposes the complete database-framework feature set.
 public enum DatabaseFrameworkRuntime {
     public static func configuration(
-        persistableTypes: [any Persistable.Type]
+        persistableTypes: [any Persistable.Type],
+        authorizationPolicies: [AuthorizationPolicyHandler] = []
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         try configuration(
             persistableTypes: persistableTypes,
-            sparqlFunctionRegistry: .empty
+            sparqlFunctionRegistry: .empty,
+            authorizationPolicies: authorizationPolicies
         )
     }
 
     public static func configuration(
         persistableTypes: [any Persistable.Type],
-        sparqlFunctionRegistry: SPARQLFunctionRegistry
+        sparqlFunctionRegistry: SPARQLFunctionRegistry,
+        authorizationPolicies: [AuthorizationPolicyHandler] = []
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
             indexMaintainerProviders: maintainerProviders(),
@@ -51,7 +54,8 @@ public enum DatabaseFrameworkRuntime {
                 functionRegistry: sparqlFunctionRegistry
             ),
             persistableMutationMaintainers: [RelationshipReferenceMaintainer()],
-            persistableTypes: persistableTypes
+            persistableTypes: persistableTypes,
+            authorizationPolicies: authorizationPolicies
         )
     }
 

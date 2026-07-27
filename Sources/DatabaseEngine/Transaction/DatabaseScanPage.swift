@@ -1,5 +1,5 @@
 // Bounded result page returned by a typed database scan.
-import Core
+import DatabaseKit
 
 public struct DatabaseScanPage<Model: Persistable>: Sendable {
     public let items: [Model]

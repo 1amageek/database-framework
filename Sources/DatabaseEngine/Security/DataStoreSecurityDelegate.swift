@@ -1,346 +1,295 @@
-// DataStoreSecurityDelegate.swift
-// DatabaseEngine - Security delegate protocol for DataStore
+import DatabaseKit
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
-
-/// Security delegate protocol for DataStore
-///
-/// DataStore calls these methods before/after data operations to evaluate security.
-/// The delegate is responsible for obtaining the current auth context (e.g., from TaskLocal)
-/// and evaluating permissions based on SecurityPolicy.
-///
-/// **Design**:
-/// - DataStore holds a reference to the delegate
-/// - Auth context is obtained via TaskLocal (set per request)
-/// - Delegate evaluates security and throws SecurityError if denied
+/// Authorizes database operations before their observable effects occur.
 public protocol DataStoreSecurityDelegate: Sendable {
-
-    /// Evaluate LIST operation security
-    ///
-    /// Called before executing list/query operations.
-    ///
-    /// - Parameters:
-    ///   - type: The Persistable type being queried
-    ///   - limit: Query limit
-    ///   - offset: Query offset
-    ///   - orderBy: Query sort fields
-    /// - Throws: SecurityError if LIST operation is not allowed
-    func evaluateList<T: Persistable>(
-        type: T.Type,
+    func evaluateList<Model: Persistable>(
+        type: Model.Type,
         limit: Int?,
         offset: Int?,
         orderBy: [String]?
     ) throws
 
-    /// Evaluate GET operation security
-    ///
-    /// Called after fetching a resource to verify access is allowed.
-    ///
-    /// - Parameter resource: The fetched resource
-    /// - Throws: SecurityError if GET operation is not allowed
-    func evaluateGet(_ resource: any Persistable) throws
+    func evaluateGet(
+        _ resource: borrowing any Persistable
+    ) throws
 
-    /// Evaluate CREATE operation security
-    ///
-    /// Called before creating a new resource.
-    ///
-    /// - Parameter resource: The resource being created
-    /// - Throws: SecurityError if CREATE operation is not allowed
-    func evaluateCreate(_ resource: any Persistable) throws
+    func evaluateCreate(
+        _ resource: borrowing any Persistable
+    ) throws
 
-    /// Evaluate UPDATE operation security
-    ///
-    /// Called before updating an existing resource.
-    ///
-    /// - Parameters:
-    ///   - resource: The existing resource (before update)
-    ///   - newResource: The updated resource
-    /// - Throws: SecurityError if UPDATE operation is not allowed
-    func evaluateUpdate(_ resource: any Persistable, newResource: any Persistable) throws
+    func evaluateUpdate(
+        _ resource: borrowing any Persistable,
+        newResource: borrowing any Persistable
+    ) throws
 
-    /// Evaluate DELETE operation security
-    ///
-    /// Called before deleting a resource.
-    ///
-    /// - Parameter resource: The resource being deleted
-    /// - Throws: SecurityError if DELETE operation is not allowed
-    func evaluateDelete(_ resource: any Persistable) throws
+    func evaluateDelete(
+        _ resource: borrowing any Persistable
+    ) throws
 
-    /// Require admin privileges
-    ///
-    /// Called for admin-only operations like clearAll.
-    ///
-    /// - Parameters:
-    ///   - operation: The operation name (for error message)
-    ///   - targetType: The target type name (for error message)
-    /// - Throws: SecurityError if not admin
     func requireAdmin(operation: String, targetType: String) throws
-
-    /// Filter items by GET access
-    ///
-    /// Called after LIST operations to filter out items the user cannot read.
-    /// Unlike `evaluateGet()` which throws on denial, this method silently
-    /// excludes denied items from the result set.
-    ///
-    /// - Parameter items: The items to filter
-    /// - Returns: Only the items the user is allowed to GET
-    func filterByGetAccess<T: Persistable>(_ items: [T]) -> [T]
 }
 
-// MARK: - Default filterByGetAccess Implementation
-
 extension DataStoreSecurityDelegate {
-    public func filterByGetAccess<T: Persistable>(_ items: [T]) -> [T] {
-        items.filter { item in
-            do {
-                try evaluateGet(item)
-                return true
-            } catch {
-                return false
-            }
+    /// Authorizes every result without converting denial into an empty or
+    /// partial successful response.
+    func evaluateReadResults<Model: Persistable>(
+        _ resources: borrowing [Model]
+    ) throws {
+        for index in resources.indices {
+            try evaluateGet(resources[index])
         }
     }
 }
 
-// MARK: - TaskLocal Auth Context
-
-/// TaskLocal storage for current auth context
-///
-/// Set this value at the beginning of each request to provide
-/// authentication information to the security delegate.
-///
-/// **Usage**:
-/// ```swift
-/// // In request handler
-/// try await AuthContextKey.$current.withValue(userAuth) {
-///     let context = container.newContext()
-///     // All operations in this scope use userAuth
-///     try await context.save()
-/// }
-/// ```
-public enum AuthContextKey {
-    @TaskLocal public static var current: (any AuthContext)?
+/// Request-scoped authorization state supplied by the authenticated
+/// application boundary.
+public enum RequestAuthorization {
+    @TaskLocal public static var context: AuthorizationContext = .anonymous
 }
 
-// MARK: - Security Policy Delegate
-
-/// Evaluates configured security policies using the request's authentication context.
-public final class RequestSecurityPolicyDelegate: DataStoreSecurityDelegate, Sendable {
-
-    /// Security configuration
+/// Evaluates the explicitly registered policy for each compiled entity.
+public final class RequestSecurityPolicyDelegate:
+    DataStoreSecurityDelegate,
+    Sendable
+{
     private let configuration: SecurityConfiguration
+    private let policies: AuthorizationPolicyRegistry
 
-    public init(configuration: SecurityConfiguration) {
+    public init(
+        configuration: SecurityConfiguration,
+        policies: AuthorizationPolicyRegistry
+    ) {
         self.configuration = configuration
+        self.policies = policies
     }
 
-    /// Current auth context from TaskLocal
-    private var auth: (any AuthContext)? {
-        AuthContextKey.current
+    private var context: AuthorizationContext {
+        RequestAuthorization.context
     }
 
-    /// Whether security evaluation should be performed
-    private var shouldEvaluate: Bool {
-        guard configuration.isEnabled else { return false }
-        guard let auth else { return true }  // Unauthenticated must be evaluated
-        return auth.roles.isDisjoint(with: configuration.adminRoles)
+    private var userID: String? {
+        context.principal?.identifier
     }
 
-    /// Whether current auth has admin privileges
     private var isAdmin: Bool {
-        guard let auth else { return false }
-        return !auth.roles.isDisjoint(with: configuration.adminRoles)
+        guard let principal = context.principal else {
+            return false
+        }
+        return !principal.roles.isDisjoint(
+            with: configuration.adminRoles
+        )
     }
 
-    // MARK: - DataStoreSecurityDelegate
+    private var shouldEvaluate: Bool {
+        configuration.isEnabled && !isAdmin
+    }
 
-    public func evaluateList<T: Persistable>(
-        type: T.Type,
+    public func evaluateList<Model: Persistable>(
+        type: Model.Type,
         limit: Int?,
         offset: Int?,
         orderBy: [String]?
     ) throws {
-        guard shouldEvaluate else { return }
-
-        guard let secureType = T.self as? any SecurityPolicy.Type else {
-            if configuration.strict {
-                throw SecurityError(
-                    operation: .list,
-                    targetType: T.persistableType,
-                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false.",
-                    userID: auth?.userID
-                )
-            }
+        guard shouldEvaluate else {
             return
         }
-
-        let allowed = secureType._evaluateList(
-            limit: limit,
-            offset: offset,
-            orderBy: orderBy,
-            auth: auth
-        )
-
-        guard allowed else {
-            throw SecurityError(
+        guard limit.map({ $0 >= 0 }) ?? true,
+              offset.map({ $0 >= 0 }) ?? true else {
+            throw denial(
                 operation: .list,
-                targetType: T.persistableType,
-                reason: "Access denied: list operation not allowed",
-                userID: auth?.userID
+                entity: Model.persistableType,
+                reason: "Query limit and offset must be nonnegative"
             )
         }
-    }
-
-    public func evaluateGet(_ resource: any Persistable) throws {
-        guard shouldEvaluate else { return }
-        let modelType = type(of: resource)
-
-        guard let secureType = modelType as? any SecurityPolicy.Type else {
-            if configuration.strict {
-                throw SecurityError(
-                    operation: .get,
-                    targetType: modelType.persistableType,
-                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false.",
-                    resourceID: "\(resource.id)",
-                    userID: auth?.userID
-                )
-            }
-            return
-        }
-
-        let allowed = secureType._evaluateGet(resource: resource, auth: auth)
-
-        guard allowed else {
-            throw SecurityError(
-                operation: .get,
-                targetType: modelType.persistableType,
-                reason: "Access denied: get operation not allowed",
-                resourceID: "\(resource.id)",
-                userID: auth?.userID
-            )
-        }
-    }
-
-    public func evaluateCreate(_ resource: any Persistable) throws {
-        guard shouldEvaluate else { return }
-        let modelType = type(of: resource)
-
-        guard let secureType = modelType as? any SecurityPolicy.Type else {
-            if configuration.strict {
-                throw SecurityError(
-                    operation: .create,
-                    targetType: modelType.persistableType,
-                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false.",
-                    userID: auth?.userID
-                )
-            }
-            return
-        }
-
-        let allowed = secureType._evaluateCreate(newResource: resource, auth: auth)
-
-        guard allowed else {
-            throw SecurityError(
-                operation: .create,
-                targetType: modelType.persistableType,
-                reason: "Access denied: create operation not allowed",
-                userID: auth?.userID
-            )
-        }
-    }
-
-    public func evaluateUpdate(_ resource: any Persistable, newResource: any Persistable) throws {
-        guard shouldEvaluate else { return }
-        let modelType = type(of: newResource)
-
-        guard let secureType = modelType as? any SecurityPolicy.Type else {
-            if configuration.strict {
-                throw SecurityError(
-                    operation: .update,
-                    targetType: modelType.persistableType,
-                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false.",
-                    userID: auth?.userID
-                )
-            }
-            return
-        }
-
-        let allowed = secureType._evaluateUpdate(
-            resource: resource,
-            newResource: newResource,
-            auth: auth
+        let handler = try registeredHandler(
+            operation: .list,
+            entity: Model.persistableType
         )
-
-        guard allowed else {
-            throw SecurityError(
-                operation: .update,
-                targetType: modelType.persistableType,
-                reason: "Access denied: update operation not allowed",
-                userID: auth?.userID
+        let query = SecurityQuery(
+            limit: limit.map(UInt64.init),
+            offset: offset.map(UInt64.init),
+            orderBy: orderBy
+        )
+        guard handler.permitsQuery(query, context: context) else {
+            throw denial(
+                operation: .list,
+                entity: Model.persistableType,
+                reason: "The registered policy denied the query"
             )
         }
     }
 
-    public func evaluateDelete(_ resource: any Persistable) throws {
-        guard shouldEvaluate else { return }
-        let modelType = type(of: resource)
-
-        guard let secureType = modelType as? any SecurityPolicy.Type else {
-            if configuration.strict {
-                throw SecurityError(
-                    operation: .delete,
-                    targetType: modelType.persistableType,
-                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false.",
-                    userID: auth?.userID
-                )
-            }
+    public func evaluateGet(
+        _ resource: borrowing any Persistable
+    ) throws {
+        guard shouldEvaluate else {
             return
         }
-
-        let allowed = secureType._evaluateDelete(resource: resource, auth: auth)
-
-        guard allowed else {
-            throw SecurityError(
-                operation: .delete,
-                targetType: modelType.persistableType,
-                reason: "Access denied: delete operation not allowed",
-                resourceID: "\(resource.id)",
-                userID: auth?.userID
+        let entity = type(of: resource).persistableType
+        let handler = try registeredHandler(
+            operation: .get,
+            entity: entity,
+            resourceID: String(describing: resource.id)
+        )
+        guard try handler.permitsRead(resource, context: context) else {
+            throw denial(
+                operation: .get,
+                entity: entity,
+                reason: "The registered policy denied the read",
+                resourceID: String(describing: resource.id)
             )
         }
     }
 
-    public func requireAdmin(operation: String, targetType: String) throws {
-        guard isAdmin || !configuration.isEnabled else {
-            throw SecurityError(
-                operation: .admin,
-                targetType: targetType,
-                reason: "\(operation) requires admin privileges",
-                userID: auth?.userID
+    public func evaluateCreate(
+        _ resource: borrowing any Persistable
+    ) throws {
+        guard shouldEvaluate else {
+            return
+        }
+        let entity = type(of: resource).persistableType
+        let handler = try registeredHandler(
+            operation: .create,
+            entity: entity,
+            resourceID: String(describing: resource.id)
+        )
+        guard try handler.permitsCreate(resource, context: context) else {
+            throw denial(
+                operation: .create,
+                entity: entity,
+                reason: "The registered policy denied the create",
+                resourceID: String(describing: resource.id)
             )
         }
+    }
+
+    public func evaluateUpdate(
+        _ resource: borrowing any Persistable,
+        newResource: borrowing any Persistable
+    ) throws {
+        guard shouldEvaluate else {
+            return
+        }
+        let entity = type(of: newResource).persistableType
+        let handler = try registeredHandler(
+            operation: .update,
+            entity: entity,
+            resourceID: String(describing: newResource.id)
+        )
+        guard try handler.permitsUpdate(
+            from: resource,
+            to: newResource,
+            context: context
+        ) else {
+            throw denial(
+                operation: .update,
+                entity: entity,
+                reason: "The registered policy denied the update",
+                resourceID: String(describing: newResource.id)
+            )
+        }
+    }
+
+    public func evaluateDelete(
+        _ resource: borrowing any Persistable
+    ) throws {
+        guard shouldEvaluate else {
+            return
+        }
+        let entity = type(of: resource).persistableType
+        let handler = try registeredHandler(
+            operation: .delete,
+            entity: entity,
+            resourceID: String(describing: resource.id)
+        )
+        guard try handler.permitsDelete(resource, context: context) else {
+            throw denial(
+                operation: .delete,
+                entity: entity,
+                reason: "The registered policy denied the delete",
+                resourceID: String(describing: resource.id)
+            )
+        }
+    }
+
+    public func requireAdmin(
+        operation: String,
+        targetType: String
+    ) throws {
+        guard !configuration.isEnabled || isAdmin else {
+            throw denial(
+                operation: .admin,
+                entity: targetType,
+                reason: "\(operation) requires an administrator role"
+            )
+        }
+    }
+
+    private func registeredHandler(
+        operation: SecurityError.Operation,
+        entity: String,
+        resourceID: String? = nil
+    ) throws -> AuthorizationPolicyHandler {
+        guard let handler = policies.handler(for: entity) else {
+            throw denial(
+                operation: operation,
+                entity: entity,
+                reason: "No authorization policy is registered for the entity",
+                resourceID: resourceID
+            )
+        }
+        return handler
+    }
+
+    private func denial(
+        operation: SecurityError.Operation,
+        entity: String,
+        reason: String,
+        resourceID: String? = nil
+    ) -> SecurityError {
+        SecurityError(
+            operation: operation,
+            targetType: entity,
+            reason: reason,
+            resourceID: resourceID,
+            userID: userID
+        )
     }
 }
 
-// MARK: - Disabled Security Delegate
-
-/// Security delegate that allows all operations (for testing)
-///
-/// **Warning**: Never use in production.
-public final class DisabledSecurityDelegate: DataStoreSecurityDelegate, Sendable {
-
+/// Explicitly bypasses authorization in isolated test runtimes.
+public final class DisabledSecurityDelegate:
+    DataStoreSecurityDelegate,
+    Sendable
+{
     public init() {}
 
-    public func evaluateList<T: Persistable>(type: T.Type, limit: Int?, offset: Int?, orderBy: [String]?) throws {}
-    public func evaluateGet(_ resource: any Persistable) throws {}
-    public func evaluateCreate(_ resource: any Persistable) throws {}
-    public func evaluateUpdate(_ resource: any Persistable, newResource: any Persistable) throws {}
-    public func evaluateDelete(_ resource: any Persistable) throws {}
-    public func requireAdmin(operation: String, targetType: String) throws {}
-    public func filterByGetAccess<T: Persistable>(_ items: [T]) -> [T] { items }
+    public func evaluateList<Model: Persistable>(
+        type: Model.Type,
+        limit: Int?,
+        offset: Int?,
+        orderBy: [String]?
+    ) throws {}
+
+    public func evaluateGet(
+        _ resource: borrowing any Persistable
+    ) throws {}
+
+    public func evaluateCreate(
+        _ resource: borrowing any Persistable
+    ) throws {}
+
+    public func evaluateUpdate(
+        _ resource: borrowing any Persistable,
+        newResource: borrowing any Persistable
+    ) throws {}
+
+    public func evaluateDelete(
+        _ resource: borrowing any Persistable
+    ) throws {}
+
+    public func requireAdmin(
+        operation: String,
+        targetType: String
+    ) throws {}
 }

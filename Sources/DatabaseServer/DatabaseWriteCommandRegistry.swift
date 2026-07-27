@@ -1,3 +1,5 @@
+import DatabaseKit
+
 public struct DatabaseWriteCommandRegistry: Sendable {
     private let commands: [AnyDatabaseWriteCommand]
 
@@ -6,7 +8,7 @@ public struct DatabaseWriteCommandRegistry: Sendable {
         self.commands = commands.sorted { $0.identifier < $1.identifier }
     }
 
-    public var identifiers: [String] {
+    public var identifiers: [CommandIdentifier] {
         commands.map(\.identifier)
     }
 
@@ -18,7 +20,9 @@ public struct DatabaseWriteCommandRegistry: Sendable {
         )
     }
 
-    func resolve(_ identifier: String) throws -> AnyDatabaseWriteCommand {
+    func resolve(
+        _ identifier: CommandIdentifier
+    ) throws -> AnyDatabaseWriteCommand {
         guard let command = commands.first(where: {
             $0.identifier == identifier
         }) else {
@@ -27,10 +31,7 @@ public struct DatabaseWriteCommandRegistry: Sendable {
         return command
     }
 
-    private static func validate(_ identifiers: [String]) throws {
-        guard identifiers.allSatisfy({ !$0.isEmpty }) else {
-            throw DatabaseCommandRegistryError.emptyIdentifier
-        }
+    private static func validate(_ identifiers: [CommandIdentifier]) throws {
         let sorted = identifiers.sorted()
         guard sorted.count > 1 else {
             return

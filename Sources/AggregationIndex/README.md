@@ -466,7 +466,7 @@ let rate: Double? = result.groupKeyDouble("rate")     // Double fields
 | min | `FieldValue?` | `nil` |
 | max | `FieldValue?` | `nil` |
 | distinct | `FieldValue.int64` | `0` |
-| percentile | `FieldValue.double` | `nil` |
+| percentile | `FieldValue.float64` | `nil` |
 
 **Important**: `min`/`max` return `nil` for empty groups, not `0`. This distinguishes "no data" from "minimum is zero".
 

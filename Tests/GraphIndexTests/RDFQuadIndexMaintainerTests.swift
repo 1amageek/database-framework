@@ -1,6 +1,5 @@
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 import Testing
 @testable import DatabaseEngine
@@ -9,38 +8,43 @@ import Testing
 @Persistable
 private struct RDFQuadIndexEntity {
     var id: String = ""
-    var subject: DatabaseRDFTerm
-    var predicate: DatabaseRDFTerm
-    var object: DatabaseRDFTerm
-    var graph: DatabaseRDFTerm?
+    var subject: RDFTerm
+    var predicate: RDFTerm
+    var object: RDFTerm
+    var graph: RDFTerm?
 
-    init(
-        id: String,
-        subject: DatabaseRDFTerm,
-        predicate: DatabaseRDFTerm,
-        object: DatabaseRDFTerm,
-        graph: DatabaseRDFTerm?
-    ) {
-        self.id = id
-        self.subject = subject
-        self.predicate = predicate
-        self.object = object
-        self.graph = graph
-    }
+    #Index(
+        .rdfDataset,
+        from: \RDFQuadIndexEntity.subject,
+        edge: \RDFQuadIndexEntity.predicate,
+        to: \RDFQuadIndexEntity.object,
+        graph: \RDFQuadIndexEntity.graph,
+        name: "rdf_quad_test"
+    )
+
 }
 
 @Suite("RDF quad index maintainer")
 struct RDFQuadIndexMaintainerTests {
     @Test("Every ordering stores one canonical graph discriminator")
     func everyOrderingStoresCanonicalGraphDiscriminator() async throws {
-        let setup = makeMaintainer()
-        let graph = DatabaseRDFTerm.iri("https://calendar.example/graph/active")
+        let setup = try makeMaintainer()
+        let graph = try RDFTerm.iri(
+            validating:
+                "https://calendar.example/graph/active"
+        )
         let entity = RDFQuadIndexEntity(
             id: "statement-1",
-            subject: .iri("https://calendar.example/event/1"),
-            predicate: .iri("https://calendar.example/ontology/title"),
+            subject: try .iri(
+                validating:
+                    "https://calendar.example/event/1"
+            ),
+            predicate: try .iri(
+                validating:
+                    "https://calendar.example/ontology/title"
+            ),
             object: .literal(
-                DatabaseRDFLiteral(
+                RDFLiteral(
                     lexicalForm: "Festival",
                     datatype: .xsdString
                 )
@@ -55,7 +59,7 @@ struct RDFQuadIndexMaintainerTests {
         #expect(keys.count == 6)
 
         let expectedGraph = Bytes(
-            retaining: try DatabaseRDFTermCodec.encode(graph)
+            retaining: try RDFTermStorageFormat.encode(graph)
         )
         for (offset, subspaceKey) in [2, 3, 4, 8, 9, 10].enumerated() {
             let tuple = try setup.base.subspace(Int64(subspaceKey)).unpack(keys[offset])
@@ -67,13 +71,19 @@ struct RDFQuadIndexMaintainerTests {
 
     @Test("Default graph uses a reserved discriminator in all six orderings")
     func defaultGraphUsesReservedDiscriminator() async throws {
-        let setup = makeMaintainer()
+        let setup = try makeMaintainer()
         let entity = RDFQuadIndexEntity(
             id: "statement-2",
-            subject: .iri("https://calendar.example/event/2"),
-            predicate: .iri("https://calendar.example/ontology/title"),
+            subject: try .iri(
+                validating:
+                    "https://calendar.example/event/2"
+            ),
+            predicate: try .iri(
+                validating:
+                    "https://calendar.example/ontology/title"
+            ),
             object: .literal(
-                DatabaseRDFLiteral(
+                RDFLiteral(
                     lexicalForm: "Parade",
                     datatype: .xsdString
                 )
@@ -98,19 +108,18 @@ struct RDFQuadIndexMaintainerTests {
         }
     }
 
-    private func makeMaintainer() -> (
+    private func makeMaintainer() throws -> (
         maintainer: RDFQuadIndexMaintainer<RDFQuadIndexEntity>,
         base: Subspace
     ) {
-        let kind = RDFQuadIndexKind<RDFQuadIndexEntity>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object,
-            graph: \.graph
-        )
+        guard let descriptor =
+            try RDFQuadIndexEntity.indexDescriptors.first
+        else {
+            throw RDFQuadIndexMaintainerTestError.missingDescriptor
+        }
         let index = Index(
             name: "rdf_quad_test",
-            kind: kind,
+            kind: descriptor.kind,
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
                 FieldKeyExpression(fieldName: "predicate"),
@@ -122,7 +131,7 @@ struct RDFQuadIndexMaintainerTests {
         )
         let base = Subspace(prefix: Tuple("rdf-quad-test").pack())
         return (
-            RDFQuadIndexMaintainer(
+            try RDFQuadIndexMaintainer(
                 index: index,
                 subspace: base,
                 idExpression: FieldKeyExpression(fieldName: "id"),
@@ -134,4 +143,8 @@ struct RDFQuadIndexMaintainerTests {
             base
         )
     }
+}
+
+private enum RDFQuadIndexMaintainerTestError: Error {
+    case missingDescriptor
 }

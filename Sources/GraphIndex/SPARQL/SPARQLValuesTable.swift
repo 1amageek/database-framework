@@ -1,4 +1,5 @@
-import Core
+import DatabaseTypes
+import DatabaseKit
 
 /// A compiled SPARQL VALUES relation backed by one row-major cell buffer.
 public struct SPARQLValuesTable: Sendable, Equatable {

@@ -1,9 +1,9 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
-import Graph
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 import GraphIndex
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 struct SPARQLUpdateExecutor: Sendable {
@@ -147,11 +147,11 @@ struct SPARQLUpdateExecutor: Sendable {
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
-        let graph: DatabaseRDFTerm?
+        let graph: RDFGraphName?
         var createdGraphs: UInt64 = 0
         if let destination = prepared.destination {
             let graphName = try RDFGraphName(iri: destination)
-            graph = .iri(destination)
+            graph = graphName
             if try await !graphStore.containsGraph(
                 graphName,
                 readMode: .serializable,
@@ -175,7 +175,7 @@ struct SPARQLUpdateExecutor: Sendable {
             try workMeter.consume(at: .mutationPlanning)
             try mutationMeter.consume()
             let insertResult = try await graphStore.insert(
-                Graph.RDFQuad(
+                RDFQuad(
                     subject: triple.subject,
                     predicate: triple.predicate,
                     object: triple.object,
@@ -286,8 +286,8 @@ struct SPARQLUpdateExecutor: Sendable {
             transaction: transaction,
             workMeter: workMeter
         )
-        let deletePattern: [QueryIR.Quad]
-        let insertPattern: [QueryIR.Quad]
+        let deletePattern: [Quad]
+        let insertPattern: [Quad]
         switch query.action {
         case .delete(let pattern):
             deletePattern = pattern
@@ -618,7 +618,7 @@ struct SPARQLUpdateExecutor: Sendable {
 
         for sourceQuad in sourceQuads {
             try mutationMeter.consume()
-            let destinationQuad = retarget(
+            let destinationQuad = try retarget(
                 sourceQuad.quad,
                 to: query.destination
             )
@@ -810,17 +810,17 @@ struct SPARQLUpdateExecutor: Sendable {
     }
 
     private func retarget(
-        _ quad: Graph.RDFQuad,
+        _ quad: RDFQuad,
         to endpoint: SPARQLGraphTransferEndpoint
-    ) -> Graph.RDFQuad {
-        let graph: DatabaseRDFTerm?
+    ) throws -> RDFQuad {
+        let graph: RDFGraphName?
         switch endpoint {
         case .default:
             graph = nil
         case .graph(let iri):
-            graph = .iri(iri)
+            graph = try RDFGraphName(iri: iri)
         }
-        return Graph.RDFQuad(
+        return RDFQuad(
             subject: quad.subject,
             predicate: quad.predicate,
             object: quad.object,
@@ -846,7 +846,7 @@ struct SPARQLUpdateExecutor: Sendable {
         )
     }
 
-    private func graphPattern(from quads: [QueryIR.Quad]) -> GraphPattern {
+    private func graphPattern(from quads: [Quad]) -> GraphPattern {
         var result: GraphPattern?
         for quad in quads {
             let component: GraphPattern
@@ -868,11 +868,11 @@ struct SPARQLUpdateExecutor: Sendable {
     }
 
     private func templateQuad(
-        _ quad: QueryIR.Quad,
+        _ quad: Quad,
         defaultGraph: String?
-    ) -> QueryIR.Quad {
+    ) -> Quad {
         guard quad.graph == nil, let defaultGraph else { return quad }
-        return QueryIR.Quad(
+        return Quad(
             graph: .iri(defaultGraph),
             triple: quad.triple
         )

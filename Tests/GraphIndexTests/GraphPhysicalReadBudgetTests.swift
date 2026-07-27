@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 import Synchronization
 import Testing
@@ -422,9 +422,15 @@ struct GraphPhysicalReadBudgetTests {
     func rdfIdentityRetainsPhysicalKeyStorage() async throws {
         let engine = InMemoryEngine()
         let subspace = Subspace(prefix: Tuple("rdf-storage-sharing-scan").pack())
-        let subject = try DatabaseRDFTermCodec.encode(.blankNode("event"))
-        let predicate = try DatabaseRDFTermCodec.encode(.iri("urn:contains"))
-        let object = try DatabaseRDFTermCodec.encode(.iri("urn:item"))
+        let subject = try RDFTermStorageFormat.encode(
+            .blankNode(identifier: "event")
+        )
+        let predicate = try RDFTermStorageFormat.encode(
+            .iri(validating: "urn:contains")
+        )
+        let object = try RDFTermStorageFormat.encode(
+            .iri(validating: "urn:item")
+        )
         let key = subspace.subspace(Int64(8)).pack(
             Tuple(
                 Bytes(
@@ -464,17 +470,17 @@ struct GraphPhysicalReadBudgetTests {
             try expectIdentity(
                 edge.source,
                 isRetainedWithin: physicalKeyRange,
-                decodesAs: .blankNode("event")
+                decodesAs: try .blankNode(identifier: "event")
             )
             try expectIdentity(
                 edge.edgeLabel,
                 isRetainedWithin: physicalKeyRange,
-                decodesAs: .iri("urn:contains")
+                decodesAs: try .iri(validating: "urn:contains")
             )
             try expectIdentity(
                 edge.target,
                 isRetainedWithin: physicalKeyRange,
-                decodesAs: .iri("urn:item")
+                decodesAs: try .iri(validating: "urn:item")
             )
         }
     }
@@ -489,7 +495,7 @@ struct GraphPhysicalReadBudgetTests {
     private func expectIdentity(
         _ identity: GraphIdentity,
         isRetainedWithin keyRange: Range<UInt>,
-        decodesAs expectedTerm: DatabaseRDFTerm
+        decodesAs expectedTerm: RDFTerm
     ) throws {
         let bytes = try #require(identity.canonicalRDFBytes)
         bytes.withUnsafeBytes { buffer in

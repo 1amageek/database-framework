@@ -10,7 +10,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseEngine
-import Geospatial
+import DatabaseKit
 
 /// Winding Number algorithm for robust point-in-polygon testing
 ///

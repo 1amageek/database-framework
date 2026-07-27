@@ -1,7 +1,7 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 @Persistable
 struct IndexProjectionKeyOnlyEntity {

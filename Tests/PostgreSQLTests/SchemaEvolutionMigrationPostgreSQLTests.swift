@@ -4,7 +4,7 @@ import Foundation
 import StorageKit
 import PostgreSQLStorage
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 @testable import ScalarIndex
 import TestSupport
 import TestHeartbeat
@@ -14,6 +14,7 @@ import DatabaseRuntime
 struct PGSchemaEvolutionUserV1 {
     #Directory<PGSchemaEvolutionUserV1>("test", "pg-migration", "schema-evolution")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -22,27 +23,37 @@ struct PGSchemaEvolutionUserV1 {
 struct PGSchemaEvolutionUserV2 {
     #Directory<PGSchemaEvolutionUserV2>("test", "pg-migration", "schema-evolution")
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 @Persistable(type: "PGSchemaEvolutionUser")
 struct PGSchemaEvolutionUserReordered {
     #Directory<PGSchemaEvolutionUserReordered>("test", "pg-migration", "schema-evolution")
 
+    var id: String = ""
     var email: String
     var name: String
 }
 
 enum PGSchemaEvolutionSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [PGSchemaEvolutionUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGSchemaEvolutionUserV1.schemaEntity]
+        }
+    }
 }
 
 enum PGSchemaEvolutionSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [PGSchemaEvolutionUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGSchemaEvolutionUserV2.schemaEntity]
+        }
+    }
 }
 
 enum PGAppendOnlyMigrationPlan: SchemaMigrationPlan {
@@ -64,6 +75,7 @@ enum PGAppendOnlyMigrationPlan: SchemaMigrationPlan {
 struct PGMigratedUserV1 {
     #Directory<PGMigratedUserV1>("test", "pg-migration", "migrated-user")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -71,20 +83,33 @@ struct PGMigratedUserV1 {
 @Persistable(type: "PGMigratedUser")
 struct PGMigratedUserV2 {
     #Directory<PGMigratedUserV2>("test", "pg-migration", "migrated-user")
-    #Index(ScalarIndexKind<PGMigratedUserV2>(fields: [\.fullName]), name: "PGMigratedUser_fullName")
+    #Index(
+        .scalar,
+        fields: [\PGMigratedUserV2.fullName],
+        name: "PGMigratedUser_fullName"
+    )
 
+    var id: String = ""
     var fullName: String
     var email: String
 }
 
 enum PGMigrationSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [PGMigratedUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGMigratedUserV1.schemaEntity]
+        }
+    }
 }
 
 enum PGMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [PGMigratedUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try PGMigratedUserV2.schemaEntity]
+        }
+    }
 }
 
 enum PGCustomMigrationPlan: SchemaMigrationPlan {
@@ -175,8 +200,8 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let registry = SchemaRegistry(database: engine)
 
-            try await registry.persist(Schema([PGSchemaEvolutionUserV1.self]))
-            try await registry.persist(Schema([PGSchemaEvolutionUserV2.self]))
+            try await registry.persist(Schema(entities: [try PGSchemaEvolutionUserV1.schemaEntity]))
+            try await registry.persist(Schema(entities: [try PGSchemaEvolutionUserV2.schemaEntity]))
 
             let entity = try await registry.load(typeName: PGSchemaEvolutionUserV1.persistableType)
             #expect(entity?.fieldMapByName["name"]?.fieldNumber == 2)
@@ -193,10 +218,10 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let registry = SchemaRegistry(database: engine)
             let typeName = PGSchemaEvolutionUserV1.persistableType
 
-            try await registry.persist(Schema([PGSchemaEvolutionUserV1.self]))
+            try await registry.persist(Schema(entities: [try PGSchemaEvolutionUserV1.schemaEntity]))
 
             do {
-                try await registry.persist(Schema([PGSchemaEvolutionUserReordered.self]))
+                try await registry.persist(Schema(entities: [try PGSchemaEvolutionUserReordered.schemaEntity]))
                 Issue.record("Expected incompatibleEntityEvolution error")
             } catch let error as SchemaRegistryError {
                 if case .incompatibleEntityEvolution(let entityName, let issues) = error {
@@ -306,7 +331,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let migratedContext = verificationContainer.newContext()
             let migratedUsers = try await migratedContext
                 .fetch(PGMigratedUserV2.self)
-                .orderBy(\.fullName)
+                .orderBy(PGMigratedUserV2.fields.fullName)
                 .execute()
 
             #expect(migratedUsers.count == 2)

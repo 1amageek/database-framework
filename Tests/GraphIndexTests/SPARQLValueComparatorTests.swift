@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 import OntologyIndex
 import Testing
 @testable import GraphIndex
@@ -81,7 +81,7 @@ struct SPARQLValueComparatorTests {
             literal("1", "integer")
         ) == .typeError)
         #expect(try comparator.compare(
-            DatabaseRDFLiteral(lexicalForm: "1", language: "en"),
+            RDFLiteral(lexicalForm: "1", language: "en"),
             literal("1", "integer")
         ) == .typeError)
     }
@@ -91,7 +91,7 @@ struct SPARQLValueComparatorTests {
         let comparator = SPARQLValueComparator()
 
         #expect(try comparator.validateLexicalForm(
-            DatabaseRDFLiteral(
+            RDFLiteral(
                 lexicalForm: "application-defined",
                 datatype: "https://example.com/CustomDatatype"
             )
@@ -117,8 +117,8 @@ struct SPARQLValueComparatorTests {
     private func literal(
         _ lexicalForm: String,
         _ localDatatype: String
-    ) throws -> DatabaseRDFLiteral {
-        try DatabaseRDFLiteral(
+    ) throws -> RDFLiteral {
+        try RDFLiteral(
             lexicalForm: lexicalForm,
             datatype: Self.xsd + localDatatype
         )

@@ -1,4 +1,5 @@
-import Core
+import DatabaseKit
+import DatabaseTypes
 import Testing
 @testable import ScalarIndex
 
@@ -7,18 +8,9 @@ struct ScalarRangeValueMatcherTests {
     @Test("UInt64 boundaries are not converted through Double")
     func preservesUInt64Precision() throws {
         let boundary = UInt64(9_007_199_254_740_992)
-        let value = try ScalarRangeValueMatcher.fieldValue(
-            from: boundary + 1,
-            fieldName: "sequence"
-        )
-        let minimum = try ScalarRangeValueMatcher.fieldValue(
-            from: boundary + 1,
-            fieldName: "sequence"
-        )
-        let maximum = try ScalarRangeValueMatcher.fieldValue(
-            from: boundary + 2,
-            fieldName: "sequence"
-        )
+        let value = FieldValue.uint64(boundary + 1)
+        let minimum = FieldValue.uint64(boundary + 1)
+        let maximum = FieldValue.uint64(boundary + 2)
 
         #expect(
             try ScalarRangeValueMatcher.matches(
@@ -37,7 +29,7 @@ struct ScalarRangeValueMatcherTests {
     func comparesMixedNumericBoundsExactly() throws {
         let boundary = UInt64(9_007_199_254_740_992)
         let value = FieldValue.uint64(boundary + 1)
-        let roundedDoubleBoundary = FieldValue.double(Double(boundary))
+        let roundedDoubleBoundary = FieldValue.float64(Double(boundary))
 
         #expect(
             !(try ScalarRangeValueMatcher.matches(
@@ -72,8 +64,12 @@ struct ScalarRangeValueMatcherTests {
         #expect(
             throws: FilterError.unorderedFloatingPoint(fieldName: "value")
         ) {
-            try ScalarRangeValueMatcher.fieldValue(
-                from: Double.nan,
+            try ScalarRangeValueMatcher.matches(
+                .float64(.nan),
+                minimum: nil,
+                maximum: nil,
+                minimumInclusive: true,
+                maximumInclusive: true,
                 fieldName: "value"
             )
         }

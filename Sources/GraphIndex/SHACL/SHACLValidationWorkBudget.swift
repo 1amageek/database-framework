@@ -4,7 +4,7 @@ import DatabaseWire
 public final class SHACLValidationWorkBudget: Sendable {
     public let workMeter: DatabaseWorkMeter
 
-    public init(budget: DatabaseExecutionBudget) {
+    public init(budget: ExecutionBudget) {
         self.workMeter = DatabaseWorkMeter(budget: budget)
     }
 

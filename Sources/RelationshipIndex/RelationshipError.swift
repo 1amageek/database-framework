@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 
 public enum RelationshipError: Error, Sendable, CustomStringConvertible {
     case deleteRuleDenied(
@@ -9,7 +9,7 @@ public enum RelationshipError: Error, Sendable, CustomStringConvertible {
     )
     case mutationLimitExceeded(actual: Int, maximum: Int)
     case workLimitExceeded(maximum: UInt64)
-    case catalogOwnerMissing(PersistableIdentity)
+    case catalogOwnerMissing(EntityReference)
 
     public var description: String {
         switch self {

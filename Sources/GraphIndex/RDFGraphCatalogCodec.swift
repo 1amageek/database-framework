@@ -1,6 +1,6 @@
-import DatabaseValue
+import DatabaseTypes
 import DatabaseEngine
-import Graph
+import DatabaseKit
 import StorageKit
 
 /// Physical codec for persistent named-graph identity. The graph term is
@@ -21,9 +21,9 @@ package struct RDFGraphCatalogCodec: Sendable {
     package func key(
         for graph: RDFGraphName
     ) throws -> Bytes {
-        let plan: DatabaseRDFTermEncodingPlan
+        let plan: RDFTermStorageEncoding
         do {
-            plan = try DatabaseRDFTermCodec.encodingPlan(
+            plan = try RDFTermStorageFormat.encodingPlan(
                 graph.term,
                 role: .graphName
             )
@@ -53,11 +53,11 @@ package struct RDFGraphCatalogCodec: Sendable {
             ) { (sink: inout TupleEncodingSink) throws in
                 sink.writeByte(TupleTypeCode.bytes.rawValue)
                 var rdfSink = RDFSink(tupleSink: sink)
-                try DatabaseRDFTermCodec.encode(plan, into: &rdfSink)
+                try RDFTermStorageFormat.encode(plan, into: &rdfSink)
                 sink = rdfSink.tupleSink
                 sink.writeByte(0)
             }
-        } catch let error as DatabaseRDFTermCodecError {
+        } catch let error as RDFTermStorageError {
             throw RDFGraphStoreError.invalidTermEncoding(error)
         }
         guard key.count <= databaseMaximumKeySize else {
@@ -96,10 +96,10 @@ package struct RDFGraphCatalogCodec: Sendable {
             )
         }
 
-        let term: DatabaseRDFTerm
+        let term: RDFTerm
         do {
-            term = try DatabaseRDFTermCodec.decode(
-                DatabaseBytes(retaining: bytes),
+            term = try RDFTermStorageFormat.decode(
+                ByteString(retaining: bytes),
                 role: .graphName
             )
         } catch let error {
@@ -107,10 +107,8 @@ package struct RDFGraphCatalogCodec: Sendable {
         }
         do {
             return try RDFGraphName(term)
-        } catch let error as RDFDatasetValidationError {
+        } catch let error {
             throw RDFGraphStoreError.invalidCatalogGraphName(error)
-        } catch {
-            preconditionFailure("RDFGraphName threw an undocumented error type")
         }
     }
 
@@ -122,7 +120,7 @@ package struct RDFGraphCatalogCodec: Sendable {
         }
     }
 
-    private struct RDFSink: DatabaseRDFTermEncodingSink {
+    private struct RDFSink: RDFTermStorageSink {
         var tupleSink: TupleEncodingSink
 
         mutating func write(_ byte: UInt8) {

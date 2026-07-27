@@ -1,14 +1,14 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public enum DatabaseRequestDigest {
     public static let byteCount = 32
 
     public static func compute(
         operation: DatabaseOperationIdentifier,
-        prefix: DatabaseBytes = [],
-        payload: DatabaseBytes
-    ) -> DatabaseBytes {
+        prefix: ByteString = [],
+        payload: ByteString
+    ) -> ByteString {
         var accumulator = DatabaseRequestDigestAccumulator(
             operation: operation
         )
@@ -18,10 +18,10 @@ public enum DatabaseRequestDigest {
     }
 
     static func compute(
-        jobOperation: DatabaseJobOperationIdentifier,
-        prefix: DatabaseBytes = [],
-        payload: DatabaseBytes
-    ) -> DatabaseBytes {
+        jobOperation: JobOperationIdentifier,
+        prefix: ByteString = [],
+        payload: ByteString
+    ) -> ByteString {
         var accumulator = DatabaseRequestDigestAccumulator(
             jobOperation: jobOperation
         )

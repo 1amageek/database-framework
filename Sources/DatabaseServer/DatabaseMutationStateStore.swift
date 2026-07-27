@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 
 public struct DatabaseMutationStateStore: Sendable {
@@ -100,7 +100,7 @@ public struct DatabaseMutationStateStore: Sendable {
         let manifest: DatabaseIdempotencyManifest
         do {
             manifest = try DatabaseIdempotencyManifest.decode(
-                DatabaseBytes(retaining: metadata),
+                ByteString(retaining: metadata),
                 limits: limits
             )
         } catch {
@@ -152,7 +152,7 @@ public struct DatabaseMutationStateStore: Sendable {
             throw DatabaseMutationError.idempotencyEntryCorrupted
         }
 
-        let responsePayload = DatabaseBytes.copying(
+        let responsePayload = ByteString.copying(
             count: totalResponseBytes
         ) { destination in
             var destinationOffset = 0
@@ -207,7 +207,10 @@ public struct DatabaseMutationStateStore: Sendable {
                   lowerBound < upperBound else {
                 throw DatabaseMutationError.idempotencyEntryCorrupted
             }
-            let chunk = entry.responsePayload.slice(lowerBound..<upperBound)
+            let startIndex = entry.responsePayload.startIndex
+            let chunk = entry.responsePayload[
+                (startIndex + lowerBound)..<(startIndex + upperBound)
+            ]
             try transaction.setValue(
                 Bytes(retaining: chunk),
                 for: Self.chunkKey(in: chunks, index: chunkIndex)

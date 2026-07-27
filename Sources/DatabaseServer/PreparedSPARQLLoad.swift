@@ -1,4 +1,4 @@
-import Graph
+import DatabaseKit
 
 struct PreparedSPARQLLoad: Sendable {
     let destination: String?

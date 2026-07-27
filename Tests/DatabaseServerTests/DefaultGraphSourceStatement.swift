@@ -1,7 +1,6 @@
-import Core
-import DatabaseValue
-import DatabaseValueCodable
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKitFoundation
 
 @Persistable
 struct DefaultGraphSourceStatement {
@@ -10,17 +9,16 @@ struct DefaultGraphSourceStatement {
         "database-server-default-graph-source"
     )
 
-    var id: String = ""
-    var subject: DatabaseRDFTerm = .iri("urn:subject")
-    var predicate: DatabaseRDFTerm = .iri("urn:predicate")
-    var object: DatabaseRDFTerm = .iri("urn:object")
+    var id: String
+    var subject: RDFTerm
+    var predicate: RDFTerm
+    var object: RDFTerm
 
     #Index(
-        RDFQuadIndexKind<DefaultGraphSourceStatement>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object
-        ),
+        .rdfDataset,
+        from: \DefaultGraphSourceStatement.subject,
+        edge: \DefaultGraphSourceStatement.predicate,
+        to: \DefaultGraphSourceStatement.object,
         name: "default_rdf"
     )
 }

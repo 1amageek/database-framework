@@ -1,8 +1,8 @@
 #if FOUNDATION_DB
 import Testing
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import DatabaseRuntime
 import AggregationIndex
@@ -18,9 +18,18 @@ struct Sale {
     var region: String = ""
     var amount: Double = 0.0
 
-    // MIN/MAX indexes by region
-    #Index(MinIndexKind<Sale, Double>(groupBy: [\.region], value: \.amount), name: "region_min")
-    #Index(MaxIndexKind<Sale, Double>(groupBy: [\.region], value: \.amount), name: "region_max")
+    #Index(
+        .minimum,
+        groupBy: [\Sale.region],
+        value: \Sale.amount,
+        name: "region_min"
+    )
+    #Index(
+        .maximum,
+        groupBy: [\Sale.region],
+        value: \Sale.amount,
+        name: "region_max"
+    )
 }
 
 @Suite("AggregationIndex: MIN/MAX Batch Benchmark", .serialized, .heartbeat)
@@ -38,11 +47,16 @@ struct MinMaxBatchBenchmark {
             // Ignore missing benchmark directories so each benchmark starts clean.
         }
 
-        let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try Sale.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [Sale.self]
+            ),
             security: .disabled
         )
         try await container.ensureIndexesReady()
@@ -87,18 +101,18 @@ struct MinMaxBatchBenchmark {
                 // Baseline: Aggregation query (index-backed)
                 // Query all regions and filter to first 10
                 let results = try await ctx.aggregate(Sale.self)
-                    .groupBy(\.region)
-                    .min(\.amount, as: "minAmount")
-                    .max(\.amount, as: "maxAmount")
+                    .groupBy(Sale.fields.region)
+                    .min(Sale.fields.amount, as: "minAmount")
+                    .max(Sale.fields.amount, as: "maxAmount")
                     .execute()
                 return Array(results.prefix(10))
             },
             optimized: { @Sendable () async throws -> [AggregateResult<Sale>] in
                 // Optimized: Same query (demonstrates current performance)
                 let results = try await ctx.aggregate(Sale.self)
-                    .groupBy(\.region)
-                    .min(\.amount, as: "minAmount")
-                    .max(\.amount, as: "maxAmount")
+                    .groupBy(Sale.fields.region)
+                    .min(Sale.fields.amount, as: "minAmount")
+                    .max(Sale.fields.amount, as: "maxAmount")
                     .execute()
                 return Array(results.prefix(10))
             },
@@ -183,9 +197,9 @@ struct MinMaxBatchBenchmark {
         ) { @Sendable (groupLimit: Int) async throws -> Int in
             // Perform aggregation query with limit
             let results = try await ctx.aggregate(Sale.self)
-                .groupBy(\.region)
-                .min(\.amount, as: "minAmount")
-                .max(\.amount, as: "maxAmount")
+                .groupBy(Sale.fields.region)
+                .min(Sale.fields.amount, as: "minAmount")
+                .max(Sale.fields.amount, as: "maxAmount")
                 .execute()
 
             return Array(results.prefix(groupLimit)).count
@@ -237,13 +251,13 @@ struct MinMaxBatchBenchmark {
             baseline: { @Sendable () async throws -> [AggregateResult<Sale>] in
                 // Baseline: Query MIN and MAX separately
                 let minResults = try await ctx.aggregate(Sale.self)
-                    .groupBy(\.region)
-                    .min(\.amount, as: "minAmount")
+                    .groupBy(Sale.fields.region)
+                    .min(Sale.fields.amount, as: "minAmount")
                     .execute()
 
                 let maxResults = try await ctx.aggregate(Sale.self)
-                    .groupBy(\.region)
-                    .max(\.amount, as: "maxAmount")
+                    .groupBy(Sale.fields.region)
+                    .max(Sale.fields.amount, as: "maxAmount")
                     .execute()
 
                 return minResults + maxResults
@@ -251,9 +265,9 @@ struct MinMaxBatchBenchmark {
             optimized: { @Sendable () async throws -> [AggregateResult<Sale>] in
                 // Optimized: Query MIN and MAX together
                 try await ctx.aggregate(Sale.self)
-                    .groupBy(\.region)
-                    .min(\.amount, as: "minAmount")
-                    .max(\.amount, as: "maxAmount")
+                    .groupBy(Sale.fields.region)
+                    .min(Sale.fields.amount, as: "minAmount")
+                    .max(Sale.fields.amount, as: "maxAmount")
                     .execute()
             },
             verify: { baseline, optimized in

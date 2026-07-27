@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 struct ScalarIndexClause: Sendable {
     let fieldName: String

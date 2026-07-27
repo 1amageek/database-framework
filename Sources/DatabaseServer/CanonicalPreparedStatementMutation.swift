@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseWire
-import QueryIR
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 
 public struct CanonicalPreparedStatementMutation: Sendable {
     enum Payload: Sendable {

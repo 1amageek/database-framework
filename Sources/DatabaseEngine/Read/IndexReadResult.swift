@@ -3,8 +3,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 /// A row produced by an index-specific read executor.
 ///
@@ -14,13 +14,13 @@ import DatabaseValue
 /// (`WHERE` / `ORDER BY` / projection / `DISTINCT` / `LIMIT` / `OFFSET`) on top,
 /// so executors must not paginate or project themselves.
 public struct IndexReadRow: Sendable {
-    public let fields: [String: DatabaseValue]
-    public let annotations: [String: DatabaseValue]
+    public let fields: [String: FieldValue]
+    public let annotations: [String: FieldValue]
     public let version: PersistableVersionToken?
 
     public init(
-        fields: [String: DatabaseValue],
-        annotations: [String: DatabaseValue] = [:],
+        fields: [String: FieldValue],
+        annotations: [String: FieldValue] = [:],
         version: PersistableVersionToken? = nil
     ) {
         self.fields = fields
@@ -30,7 +30,7 @@ public struct IndexReadRow: Sendable {
 
     public static func materializing<T: Persistable>(
         _ item: T,
-        annotations: [String: DatabaseValue] = [:]
+        annotations: [String: FieldValue] = [:]
     ) throws -> IndexReadRow {
         let row = try QueryRowCodec.encodeAny(item, annotations: annotations)
         return IndexReadRow(fields: row.fields, annotations: row.annotations, version: row.version)
@@ -38,7 +38,7 @@ public struct IndexReadRow: Sendable {
 
     public static func materializing(
         any item: any Persistable,
-        annotations: [String: DatabaseValue] = [:]
+        annotations: [String: FieldValue] = [:]
     ) throws -> IndexReadRow {
         let row = try QueryRowCodec.encodeAny(item, annotations: annotations)
         return IndexReadRow(fields: row.fields, annotations: row.annotations, version: row.version)
@@ -62,12 +62,12 @@ public struct IndexReadResult: Sendable {
 
     public var rows: [IndexReadRow]
     public var ordering: Ordering
-    public var metadata: [String: DatabaseValue]
+    public var metadata: [String: FieldValue]
 
     public init(
         rows: [IndexReadRow],
         ordering: Ordering = .orderedByIndex,
-        metadata: [String: DatabaseValue] = [:]
+        metadata: [String: FieldValue] = [:]
     ) {
         self.rows = rows
         self.ordering = ordering

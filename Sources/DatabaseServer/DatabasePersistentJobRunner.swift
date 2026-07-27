@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public actor DatabasePersistentJobRunner {
     private struct LeasedJob: Sendable {
@@ -24,7 +24,7 @@ public actor DatabasePersistentJobRunner {
     private let wireLimits: DatabaseWireLimits
     private let storageLimits: DatabasePersistentJobStorageLimits
     private let failureStoragePolicy: DatabasePersistentJobFailureStoragePolicy
-    private let runnerID: DatabaseUUID
+    private let runnerID: DatabaseTypes.UUID
 
     init(
         container: DBContainer,
@@ -38,7 +38,7 @@ public actor DatabasePersistentJobRunner {
         wireLimits: DatabaseWireLimits,
         storageLimits: DatabasePersistentJobStorageLimits,
         failureStoragePolicy: DatabasePersistentJobFailureStoragePolicy,
-        runnerID: DatabaseUUID
+        runnerID: DatabaseTypes.UUID
     ) {
         self.container = container
         self.store = store
@@ -58,7 +58,7 @@ public actor DatabasePersistentJobRunner {
         try await scheduleNext()
     }
 
-    public func notifyWorkAvailable(at timestamp: DatabaseTimestamp) async throws {
+    public func notifyWorkAvailable(at timestamp: Timestamp) async throws {
         try await scheduler.ensureWakeUp(noLaterThan: timestamp)
     }
 
@@ -245,7 +245,7 @@ public actor DatabasePersistentJobRunner {
                 }
                 if state.currentSliceAttempt >= allowedAttempts {
                     let committing = try state.schedulingUnsuccessfulOutcomeCommit(
-                        .failed(DatabaseRemoteError(
+                        .failed(RemoteOperationError(
                             category: .internalFailure,
                             code: "JOB_ATTEMPTS_EXHAUSTED",
                             message: "Job exhausted its configured attempts",
@@ -668,7 +668,7 @@ public actor DatabasePersistentJobRunner {
         _ error: DatabaseJobUnsuccessfulOutcomeCommitError,
         snapshot: DatabasePersistentJobSnapshot
     ) async throws {
-        let diagnostic = DatabaseRemoteError(
+        let diagnostic = RemoteOperationError(
             category: .internalFailure,
             code: "JOB_UNSUCCESSFUL_OUTCOME_COMMIT_FAILED",
             message: "The operation unsuccessful outcome could not be committed",
@@ -731,8 +731,8 @@ public actor DatabasePersistentJobRunner {
     private static func validateOperationLease(
         _ current: DatabasePersistentJobState,
         expected: DatabasePersistentJobState,
-        runnerID: DatabaseUUID,
-        now: DatabaseTimestamp
+        runnerID: DatabaseTypes.UUID,
+        now: Timestamp
     ) throws {
         guard current.status == .running,
               expected.status == .running,
@@ -749,8 +749,8 @@ public actor DatabasePersistentJobRunner {
     private static func validateUnsuccessfulOutcomeLease(
         _ current: DatabasePersistentJobState,
         expected: DatabasePersistentJobState,
-        runnerID: DatabaseUUID,
-        now: DatabaseTimestamp
+        runnerID: DatabaseTypes.UUID,
+        now: Timestamp
     ) throws {
         try validateUnsuccessfulOutcomeLeaseIdentity(
             current,
@@ -766,7 +766,7 @@ public actor DatabasePersistentJobRunner {
     private static func validateUnsuccessfulOutcomeLeaseIdentity(
         _ current: DatabasePersistentJobState,
         expected: DatabasePersistentJobState,
-        runnerID: DatabaseUUID
+        runnerID: DatabaseTypes.UUID
     ) throws {
         guard current.status == expected.status,
               current.status == .committingUnsuccessfulOutcome,
@@ -807,7 +807,7 @@ public actor DatabasePersistentJobRunner {
     }
 
     private static func backoffMilliseconds(
-        retryability: DatabaseRetryability,
+        retryability: OperationRetryability,
         policy: JobStartOperation.RetryPolicy,
         currentSliceAttempt: UInt32,
         maximum: UInt32
@@ -849,8 +849,8 @@ public actor DatabasePersistentJobRunner {
 
     private static func adding(
         milliseconds: UInt32,
-        to timestamp: DatabaseTimestamp
-    ) throws -> DatabaseTimestamp {
+        to timestamp: Timestamp
+    ) throws -> Timestamp {
         let additionalSeconds = Int64(milliseconds / 1_000)
         let additionalNanoseconds = UInt64(milliseconds % 1_000) * 1_000_000
         let nanoseconds = UInt64(timestamp.nanoseconds) + additionalNanoseconds
@@ -864,7 +864,7 @@ public actor DatabasePersistentJobRunner {
                 "timestamp overflow"
             )
         }
-        return DatabaseTimestamp(
+        return try Timestamp(
             secondsSinceUnixEpoch: seconds,
             nanoseconds: UInt32(nanoseconds % 1_000_000_000)
         )

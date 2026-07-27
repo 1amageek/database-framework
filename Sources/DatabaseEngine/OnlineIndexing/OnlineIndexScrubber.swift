@@ -4,7 +4,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Core
+import DatabaseKit
 import Metrics
 
 /// Online index scrubber for detecting and repairing index inconsistencies

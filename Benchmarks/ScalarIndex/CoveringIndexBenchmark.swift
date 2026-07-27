@@ -1,8 +1,8 @@
 #if FOUNDATION_DB
 import Testing
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import DatabaseRuntime
 import ScalarIndex
@@ -17,13 +17,19 @@ struct User {
     var id: String = UUID().uuidString
     var email: String = ""
     var name: String = ""
-    var age: Int = 0
+    var age: Int64 = 0
 
-    // Standard index on email
-    #Index(ScalarIndexKind<User>(fields: [\.email]), name: "email_standard")
-
-    // Covering index on email with stored fields (future optimization)
-    #Index(ScalarIndexKind<User>(fields: [\.email]), storedFields: [\User.name, \User.age], name: "email_covering")
+    #Index(
+        .scalar,
+        fields: [\User.email],
+        name: "email_standard"
+    )
+    #Index(
+        .scalar,
+        fields: [\User.email],
+        storedFields: [\User.name, \User.age],
+        name: "email_covering"
+    )
 }
 
 @Suite("ScalarIndex: Covering Index Benchmark", .serialized, .heartbeat)
@@ -41,11 +47,16 @@ struct CoveringIndexBenchmark {
             // Ignore missing benchmark directories so each benchmark starts clean.
         }
 
-        let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try User.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [User.self]
+            ),
             security: .disabled
         )
         try await container.ensureIndexesReady()
@@ -62,7 +73,7 @@ struct CoveringIndexBenchmark {
             users.append(User(
                 email: "user\(i)@example.com",
                 name: "User \(i)",
-                age: 20 + (i % 50)
+                age: Int64(20 + (i % 50))
             ))
         }
 
@@ -121,7 +132,7 @@ struct CoveringIndexBenchmark {
             let user = User(
                 email: "scan_user\(i)@example.com",
                 name: "Scan User \(i)",
-                age: 20 + (i % 50)
+                age: Int64(20 + (i % 50))
             )
             try ctx.insert(user)
         }
@@ -164,7 +175,7 @@ struct CoveringIndexBenchmark {
             let user = User(
                 email: "batch_user\(i)@example.com",
                 name: "Batch User \(i)",
-                age: 25 + (i % 40)
+                age: Int64(25 + (i % 40))
             )
             try ctx.insert(user)
         }

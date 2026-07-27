@@ -1,5 +1,5 @@
 import DatabaseEngine
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseServerServiceContext: Sendable {
     public let container: DBContainer

@@ -10,7 +10,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseEngine
-import Core
+import DatabaseKit
 
 // MARK: - Aggregation Entry Point
 
@@ -25,15 +25,15 @@ import Core
 ///
 /// // Grouped aggregation
 /// let stats = try await context.aggregate(Order.self)
-///     .groupBy(\.region)
+///     .groupBy(Order.fields.region)
 ///     .count(as: "orderCount")
-///     .sum(\.amount, as: "totalSales")
+///     .sum(Order.fields.amount, as: "totalSales")
 ///     .execute()
 ///
 /// // Global aggregation (no grouping)
 /// let total = try await context.aggregate(Order.self)
 ///     .count()
-///     .sum(\.amount)
+///     .sum(Order.fields.amount)
 ///     .execute()
 ///
 /// // Force a specific index
@@ -52,11 +52,11 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
 
     /// Start a grouped aggregation
     ///
-    /// - Parameter keyPath: KeyPath to the field to group by
+    /// - Parameter field: Typed field to group by
     /// - Returns: AggregationQueryBuilder for adding aggregations
-    public func groupBy<V>(_ keyPath: KeyPath<T, V>) -> AggregationQueryBuilder<T> {
+    public func groupBy<V>(_ field: Field<T, V>) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
-            .groupBy(keyPath)
+            .groupBy(field)
     }
 
     // MARK: - Global Aggregation (No Grouping)
@@ -73,12 +73,23 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
     /// Add a SUM aggregation (global - no grouping)
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the numeric field to sum
+    ///   - field: Typed numeric field to sum
     ///   - name: Name for the aggregation result
     /// - Returns: AggregationQueryBuilder for chaining
-    public func sum<V: IndexNumericValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
+    public func sum<V: IndexNumericValue>(
+        _ field: Field<T, V>,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
-            .sum(keyPath, as: name)
+            .sum(field, as: name)
+    }
+
+    public func sum<V: IndexNumericValue>(
+        _ field: Field<T, V?>,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
+        AggregationQueryBuilder(queryContext: queryContext)
+            .sum(field, as: name)
     }
 
     /// Add an AVG aggregation (global - no grouping)
@@ -87,9 +98,20 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
     ///   - keyPath: KeyPath to the numeric field to average
     ///   - name: Name for the aggregation result
     /// - Returns: AggregationQueryBuilder for chaining
-    public func avg<V: IndexNumericValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
+    public func avg<V: IndexNumericValue>(
+        _ field: Field<T, V>,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
-            .avg(keyPath, as: name)
+            .avg(field, as: name)
+    }
+
+    public func avg<V: IndexNumericValue>(
+        _ field: Field<T, V?>,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
+        AggregationQueryBuilder(queryContext: queryContext)
+            .avg(field, as: name)
     }
 
     /// Add a MIN aggregation (global - no grouping)
@@ -98,9 +120,20 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
     ///   - keyPath: KeyPath to the comparable field
     ///   - name: Name for the aggregation result
     /// - Returns: AggregationQueryBuilder for chaining
-    public func min<V: IndexComparableValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
+    public func min<V: IndexComparableValue>(
+        _ field: Field<T, V>,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
-            .min(keyPath, as: name)
+            .min(field, as: name)
+    }
+
+    public func min<V: IndexComparableValue>(
+        _ field: Field<T, V?>,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
+        AggregationQueryBuilder(queryContext: queryContext)
+            .min(field, as: name)
     }
 
     /// Add a MAX aggregation (global - no grouping)
@@ -109,23 +142,34 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
     ///   - keyPath: KeyPath to the comparable field
     ///   - name: Name for the aggregation result
     /// - Returns: AggregationQueryBuilder for chaining
-    public func max<V: IndexComparableValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> AggregationQueryBuilder<T> {
+    public func max<V: IndexComparableValue>(
+        _ field: Field<T, V>,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
-            .max(keyPath, as: name)
+            .max(field, as: name)
+    }
+
+    public func max<V: IndexComparableValue>(
+        _ field: Field<T, V?>,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
+        AggregationQueryBuilder(queryContext: queryContext)
+            .max(field, as: name)
     }
 
     /// Add a DISTINCT aggregation (global - no grouping)
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the field whose distinct values are counted
+    ///   - field: Typed field whose distinct values are counted
     ///   - name: Name for the aggregation result
     /// - Returns: AggregationQueryBuilder for chaining
     public func distinct<V>(
-        _ keyPath: KeyPath<T, V>,
+        _ field: Field<T, V>,
         as name: String? = nil
     ) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
-            .distinct(keyPath, as: name)
+            .distinct(field, as: name)
     }
 
     /// Add a PERCENTILE aggregation (global - no grouping)
@@ -136,12 +180,21 @@ public struct AggregationEntryPoint<T: Persistable>: Sendable {
     ///   - name: Name for the aggregation result
     /// - Returns: AggregationQueryBuilder for chaining
     public func percentile<V: IndexNumericValue>(
-        _ keyPath: KeyPath<T, V>,
+        _ field: Field<T, V>,
         p percentile: Double,
         as name: String? = nil
     ) -> AggregationQueryBuilder<T> {
         AggregationQueryBuilder(queryContext: queryContext)
-            .percentile(keyPath, p: percentile, as: name)
+            .percentile(field, p: percentile, as: name)
+    }
+
+    public func percentile<V: IndexNumericValue>(
+        _ field: Field<T, V?>,
+        p percentile: Double,
+        as name: String? = nil
+    ) -> AggregationQueryBuilder<T> {
+        AggregationQueryBuilder(queryContext: queryContext)
+            .percentile(field, p: percentile, as: name)
     }
 
     // MARK: - Index Selection
@@ -176,9 +229,9 @@ extension DatabaseContext {
     ///
     /// // Grouped aggregation
     /// let stats = try await context.aggregate(Order.self)
-    ///     .groupBy(\.region)
+    ///     .groupBy(Order.fields.region)
     ///     .count(as: "orderCount")
-    ///     .sum(\.amount, as: "totalSales")
+    ///     .sum(Order.fields.amount, as: "totalSales")
     ///     .having { $0.aggregateInt64("orderCount") ?? 0 > 10 }
     ///     .execute()
     /// // Returns: [AggregateResult<Order>]
@@ -186,7 +239,7 @@ extension DatabaseContext {
     /// // Global aggregation (no grouping)
     /// let total = try await context.aggregate(Order.self)
     ///     .count()
-    ///     .sum(\.amount)
+    ///     .sum(Order.fields.amount)
     ///     .execute()
     /// ```
     ///

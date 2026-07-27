@@ -8,8 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import Graph
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -64,17 +64,17 @@ public struct GraphEntryPoint<T: Persistable>: Sendable {
     ///   - to: KeyPath to the target/object field
     /// - Returns: Graph query builder
     public func index<V1, V2, V3>(
-        _ from: KeyPath<T, V1>,
-        _ edge: KeyPath<T, V2>,
-        _ to: KeyPath<T, V3>
+        _ from: Field<T, V1>,
+        _ edge: Field<T, V2>,
+        _ to: Field<T, V3>
     ) throws -> GraphQueryBuilder<T> {
         return GraphQueryBuilder(
             queryContext: queryContext,
             index: try PropertyGraphIndexResolver.exact(
                 signature: PropertyGraphIndexSignature(
-                    sourceFieldName: T.fieldName(for: from),
-                    labelFieldName: T.fieldName(for: edge),
-                    targetFieldName: T.fieldName(for: to)
+                    sourceFieldName: from.name,
+                    labelFieldName: edge.name,
+                    targetFieldName: to.name
                 ),
                 for: T.self,
                 in: queryContext
@@ -531,19 +531,15 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     ///   - op: Comparison operator
     ///   - value: Value to compare against
     /// - Returns: New builder with filter added
-    public func `where`<Value: Sendable>(
-        _ keyPath: KeyPath<T, Value>,
+    public func `where`<Value: FieldValueRepresentable>(
+        _ field: Field<T, Value>,
         _ op: ComparisonOperator,
         _ value: Value
-    ) throws -> Self {
-        let fieldName = T.fieldName(for: keyPath)
-        guard let fieldValue = FieldValue(value) else {
-            throw GraphQueryError.unsupportedFilterValue(fieldName)
-        }
+    ) -> Self {
         let filter = PropertyFilter(
-            fieldName: fieldName,
+            fieldName: field.name,
             op: op,
-            value: fieldValue
+            value: value.fieldValue
         )
 
         var copy = self
@@ -551,25 +547,22 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
-    /// Add a type-erased property filter (for dynamic queries)
+    /// Add a property filter using the canonical field value model.
     ///
     /// - Parameters:
     ///   - fieldName: Name of the property field
     ///   - op: Comparison operator
     ///   - value: Value to compare against
     /// - Returns: New builder with filter added
-    public func whereRaw(
-        fieldName: String,
+    public func whereField(
+        named fieldName: String,
         _ op: ComparisonOperator,
-        _ value: any Sendable
-    ) throws -> Self {
-        guard let fieldValue = FieldValue(value) else {
-            throw GraphQueryError.unsupportedFilterValue(fieldName)
-        }
+        _ value: FieldValue
+    ) -> Self {
         let filter = PropertyFilter(
             fieldName: fieldName,
             op: op,
-            value: fieldValue
+            value: value
         )
 
         var copy = self
@@ -685,7 +678,6 @@ extension DatabaseContext {
 
 /// Errors for graph query operations
 public enum GraphQueryError: Error, Sendable, CustomStringConvertible {
-    case unsupportedFilterValue(String)
     case invalidLimit(Int)
 
     /// executeItems() is not supported for graph indexes
@@ -697,8 +689,6 @@ public enum GraphQueryError: Error, Sendable, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case .unsupportedFilterValue(let field):
-            return "Graph property filter has an unsupported value for field \(field)"
         case .invalidLimit(let limit):
             return "Graph query result limit must be positive: \(limit)"
         case .executeItemsNotSupported:

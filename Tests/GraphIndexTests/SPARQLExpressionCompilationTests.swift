@@ -1,4 +1,4 @@
-import QueryIR
+import DatabaseKit
 import TestHeartbeat
 import Testing
 @testable import GraphIndex

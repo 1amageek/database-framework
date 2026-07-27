@@ -9,6 +9,7 @@ import DatabaseRuntime
 struct SQLiteDirectoryMigrationUserV1 {
     #Directory<SQLiteDirectoryMigrationUserV1>("sqlite-dir-migration", "legacy")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -17,18 +18,27 @@ struct SQLiteDirectoryMigrationUserV1 {
 struct SQLiteDirectoryMigrationUserV2 {
     #Directory<SQLiteDirectoryMigrationUserV2>("sqlite-dir-migration", "current")
 
+    var id: String = ""
     var name: String
     var email: String
 }
 
 enum SQLiteDirectoryMigrationSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteDirectoryMigrationUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteDirectoryMigrationUserV1.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteDirectoryMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteDirectoryMigrationUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteDirectoryMigrationUserV2.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteDirectoryMigrationCopyPlan: SchemaMigrationPlan {

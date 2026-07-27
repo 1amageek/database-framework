@@ -1,8 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseValue
-import Graph
-import QueryIR
+import DatabaseTypes
+import Foundation
 import StorageKit
 import TestHeartbeat
 import Testing
@@ -15,20 +14,21 @@ struct SPARQLRuntimeDependencyInjectionTests {
     struct Statement {
         #Directory<Statement>("sparql_runtime_dependency_injection")
 
-        var id: String = ULID().ulidString
-        var subject: DatabaseRDFTerm = .iri("did:example:subject")
-        var predicate: DatabaseRDFTerm = .iri("did:example:predicate")
-        var object: DatabaseRDFTerm = .iri("did:example:object")
+        var id: String = Foundation.UUID().uuidString
+        var subject: RDFTerm = .iri(.xsdString)
+        var predicate: RDFTerm = .iri(.xsdString)
+        var object: RDFTerm = .iri(.xsdString)
 
-        #Index(RDFQuadIndexKind<Statement>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object
-        ))
+        #Index(
+            .rdfDataset,
+            from: \Statement.subject,
+            edge: \Statement.predicate,
+            to: \Statement.object
+        )
     }
 
     private struct IdentityFunction: SPARQLFunction {
-        let identifier: DatabaseRDFIRI
+        let identifier: RDFIRI
 
         func evaluate(arguments: [FieldValue]) throws -> FieldValue {
             guard arguments.count == 1 else {
@@ -42,13 +42,13 @@ struct SPARQLRuntimeDependencyInjectionTests {
 
     @Test("The container-scoped registry reaches normal and transaction reads")
     func registryIsInjectedIntoEveryReadPath() async throws {
-        let functionIdentifier = try DatabaseRDFIRI("did:example:identity")
+        let functionIdentifier = try RDFIRI("did:example:identity")
         let functionRegistry = try SPARQLFunctionRegistry([
             IdentityFunction(identifier: functionIdentifier)
         ])
         let container = try await DBContainer.open(
-            testing: Schema(
-                [Statement.self],
+            testing: try Schema(
+                entities: [try Statement.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .init(backend: .custom(InMemoryEngine())),
@@ -59,7 +59,18 @@ struct SPARQLRuntimeDependencyInjectionTests {
             security: .disabled
         )
         let context = container.newContext()
-        try context.insert(Statement())
+        let subject = try RDFTerm.iri(validating: "did:example:subject")
+        let predicate = try RDFTerm.iri(
+            validating: "did:example:predicate"
+        )
+        let object = try RDFTerm.iri(validating: "did:example:object")
+        try context.insert(
+            Statement(
+                subject: subject,
+                predicate: predicate,
+                object: object
+            )
+        )
         try await context.save()
 
         let query = SelectQuery(
@@ -97,20 +108,21 @@ struct SPARQLRuntimeDependencyInjectionTests {
                 context: container.newContext(),
                 selectQuery: query,
                 options: ReadExecutionContext(),
-                partitions: [],
+                partitions: FieldObject(),
                 transaction: transaction
             )
         }
 
+        let expectedSubject = FieldValue.rdfTerm(subject)
         for response in [ordinary, transactional] {
             #expect(response.rows.count == 1)
             #expect(
                 response.rows[0].fields["subject"]
-                    == .rdfTerm(.iri("did:example:subject"))
+                    == expectedSubject
             )
             #expect(
                 response.rows[0].fields["identity"]
-                    == .rdfTerm(.iri("did:example:subject"))
+                    == expectedSubject
             )
         }
     }

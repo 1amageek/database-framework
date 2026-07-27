@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct JobStatusHandler: DatabaseOperationHandler {
     public typealias Operation = JobStatusOperation

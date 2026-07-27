@@ -8,7 +8,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import StorageKit
 
 /// Protocol for IndexMaintainers that store index data in an FDB subspace

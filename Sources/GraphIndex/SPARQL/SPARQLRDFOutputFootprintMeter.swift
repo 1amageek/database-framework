@@ -1,6 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 
 /// Measures retained RDF output before the corresponding owner is created.
@@ -35,7 +35,7 @@ final class SPARQLRDFOutputFootprintMeter {
     }
 
     func footprint(
-        of term: borrowing DatabaseRDFTerm
+        of term: borrowing RDFTerm
     ) throws -> DatabaseIntermediateFootprint {
         try DatabaseIntermediateFootprint(
             rows: 1,
@@ -48,7 +48,7 @@ final class SPARQLRDFOutputFootprintMeter {
     }
 
     private func rdfPayloadFootprint(
-        of term: borrowing DatabaseRDFTerm
+        of term: borrowing RDFTerm
     ) throws -> DatabaseIntermediateFootprint {
         try valueMeter.footprint(of: .rdfTerm(copy term))
     }

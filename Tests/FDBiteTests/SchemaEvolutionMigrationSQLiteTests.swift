@@ -7,43 +7,60 @@ import DatabaseRuntime
 
 @Persistable(type: "SQLiteSchemaEvolutionUser")
 struct SQLiteSchemaEvolutionUserV1 {
+    var id: String = ""
     var name: String
     var email: String
 }
 
 @Persistable(type: "SQLiteSchemaEvolutionUser")
 struct SQLiteSchemaEvolutionUserV2 {
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 @Persistable(type: "SQLiteSchemaEvolutionUser")
 struct SQLiteSchemaEvolutionUserReordered {
+    var id: String = ""
     var email: String
     var name: String
 }
 
 enum SQLiteSchemaEvolutionSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteSchemaEvolutionUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteSchemaEvolutionUserV1.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteSchemaEvolutionSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteSchemaEvolutionUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteSchemaEvolutionUserV2.schemaEntity]
+        }
+    }
 }
 
 @Persistable(type: "SQLiteMigratedUser")
 struct SQLiteMigratedUserV1 {
+    var id: String = ""
     var name: String
     var email: String
 }
 
 @Persistable(type: "SQLiteMigratedUser")
 struct SQLiteMigratedUserV2 {
-    #Index(ScalarIndexKind<SQLiteMigratedUserV2>(fields: [\.fullName]), name: "SQLiteMigratedUser_fullName")
+    #Index(
+        .scalar,
+        fields: [\SQLiteMigratedUserV2.fullName],
+        name: "SQLiteMigratedUser_fullName"
+    )
 
+    var id: String = ""
     var fullName: String
     var email: String
 }
@@ -65,12 +82,20 @@ enum SQLiteAppendOnlyMigrationPlan: SchemaMigrationPlan {
 
 enum SQLiteMigrationSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteMigratedUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteMigratedUserV1.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteMigratedUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteMigratedUserV2.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteCustomMigrationPlan: SchemaMigrationPlan {
@@ -157,8 +182,8 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let registry = SchemaRegistry(database: engine)
 
-        try await registry.persist(Schema([SQLiteSchemaEvolutionUserV1.self]))
-        try await registry.persist(Schema([SQLiteSchemaEvolutionUserV2.self]))
+        try await registry.persist(Schema(entities: [try SQLiteSchemaEvolutionUserV1.schemaEntity]))
+        try await registry.persist(Schema(entities: [try SQLiteSchemaEvolutionUserV2.schemaEntity]))
 
         let entity = try await registry.load(typeName: SQLiteSchemaEvolutionUserV1.persistableType)
         #expect(entity?.fieldMapByName["name"]?.fieldNumber == 2)
@@ -172,10 +197,10 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let registry = SchemaRegistry(database: engine)
         let typeName = SQLiteSchemaEvolutionUserV1.persistableType
 
-        try await registry.persist(Schema([SQLiteSchemaEvolutionUserV1.self]))
+        try await registry.persist(Schema(entities: [try SQLiteSchemaEvolutionUserV1.schemaEntity]))
 
         do {
-            try await registry.persist(Schema([SQLiteSchemaEvolutionUserReordered.self]))
+            try await registry.persist(Schema(entities: [try SQLiteSchemaEvolutionUserReordered.schemaEntity]))
             Issue.record("Expected incompatibleEntityEvolution error")
         } catch let error as SchemaRegistryError {
             if case .incompatibleEntityEvolution(let entityName, let issues) = error {
@@ -287,13 +312,13 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let migratedContext = verificationContainer.newContext()
         let migratedUsers = try await migratedContext
             .fetch(SQLiteMigratedUserV2.self)
-            .orderBy(\.fullName)
+            .orderBy(SQLiteMigratedUserV2.fields.fullName)
             .execute()
 
         #expect(migratedUsers.count == 2)
-        #expect(migratedUsers.map(\.id) == ["sqlite-migrated-user-1", "sqlite-migrated-user-2"])
-        #expect(migratedUsers.map(\.fullName) == ["Alice", "Bob"])
-        #expect(migratedUsers.map(\.email) == ["alice@example.com", "bob@example.com"])
+        #expect(migratedUsers.map { $0.id } == ["sqlite-migrated-user-1", "sqlite-migrated-user-2"])
+        #expect(migratedUsers.map { $0.fullName } == ["Alice", "Bob"])
+        #expect(migratedUsers.map { $0.email } == ["alice@example.com", "bob@example.com"])
     }
 }
 #endif

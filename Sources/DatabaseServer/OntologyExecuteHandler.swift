@@ -1,8 +1,8 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct OntologyExecuteHandler: DatabaseOperationEndpointHandler {
-    public let identifier = DatabaseOperationIdentifier.ontologyExecute
+    public typealias Operation = OntologyExecuteOperation
 
     private let service: AnyDatabaseOntologyService
     private let runtimeLimits: DatabaseRuntimeLimits
@@ -16,15 +16,10 @@ public struct OntologyExecuteHandler: DatabaseOperationEndpointHandler {
     }
 
     public func invoke(
-        payload: DatabaseBytes,
+        request: OntologyExecuteOperation.Request,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
     ) async throws -> DatabaseOperationResult {
-        let request = try DatabaseEnvelopeCodec.decode(
-            OntologyExecuteOperation.Request.self,
-            from: payload,
-            limits: limits
-        )
         try runtimeLimits.validate(request.budget)
         try validatePageLimit(request.page.limit, budget: request.budget)
         return try await DatabaseExecutionTimeout.run(
@@ -38,7 +33,7 @@ public struct OntologyExecuteHandler: DatabaseOperationEndpointHandler {
 
     private func validatePageLimit(
         _ limit: UInt32,
-        budget: DatabaseExecutionBudget
+        budget: ExecutionBudget
     ) throws {
         guard limit > 0, limit <= budget.maximumRows else {
             throw DatabaseRuntimeLimitError.invalidMaximumRows(

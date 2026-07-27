@@ -9,10 +9,9 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import Graph
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for property graph indexes.
@@ -52,17 +51,17 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// ID expression for extracting item's unique identifier
     public let idExpression: KeyExpression
 
-    /// From/Subject/Source field name
-    private let fromField: String
+    /// Source node field.
+    private let sourceField: FieldIdentity
 
-    /// Edge/Predicate/Label field name (empty = no edge field)
-    private let edgeField: String
+    /// Edge label field. `nil` represents one implicit edge label.
+    private let labelField: FieldIdentity?
 
-    /// To/Object/Target field name
-    private let toField: String
+    /// Target node field.
+    private let targetField: FieldIdentity
 
-    /// Graph/Named Graph field name (nil = no graph field)
-    private let graphField: String?
+    /// Optional property-graph namespace field.
+    private let namespaceField: FieldIdentity?
 
     /// Storage strategy
     private let strategy: PropertyGraphIndexStrategy
@@ -78,30 +77,33 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ///   - index: Index definition
     ///   - subspace: FDB subspace for this index
     ///   - idExpression: Expression for extracting item's unique identifier
-    ///   - fromField: From node field name
-    ///   - edgeField: Edge label field name (empty for no edge field)
-    ///   - toField: To node field name
-    ///   - graphField: Graph field name (nil for no graph field)
-    ///   - strategy: Storage strategy
+    ///   - metadata: Validated property-graph declaration.
     public init(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        fromField: String,
-        edgeField: String,
-        toField: String,
-        graphField: String? = nil,
-        strategy: PropertyGraphIndexStrategy
-    ) {
+        metadata: PropertyGraphIndexMetadata
+    ) throws {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
-        self.fromField = fromField
-        self.edgeField = edgeField
-        self.toField = toField
-        self.graphField = graphField
-        self.strategy = strategy
-        self.strategySubspaces = StrategySubspaces(base: subspace, strategy: strategy)
+        self.sourceField = try Self.requireField(
+            named: metadata.sourceFieldName
+        )
+        self.labelField = metadata.labelFieldName.isEmpty
+            ? nil
+            : try Self.requireField(named: metadata.labelFieldName)
+        self.targetField = try Self.requireField(
+            named: metadata.targetFieldName
+        )
+        self.namespaceField = try metadata.namespaceFieldName.map {
+            try Self.requireField(named: $0)
+        }
+        self.strategy = metadata.declarativeStrategy
+        self.strategySubspaces = StrategySubspaces(
+            base: subspace,
+            strategy: metadata.declarativeStrategy
+        )
     }
 
     // MARK: - IndexMaintainer Protocol
@@ -177,9 +179,9 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let graph: (any TupleElement)?
 
         do {
-            from = try extractField(from: item, fieldName: fromField)
+            from = try extractField(from: item, field: sourceField)
             edge = try extractEdgeField(from: item)
-            to = try extractField(from: item, fieldName: toField)
+            to = try extractField(from: item, field: targetField)
             graph = try extractGraphField(from: item)
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index: nil field values are not indexed
@@ -356,24 +358,28 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Extract edge field value (or empty string if no edge field)
     private func extractEdgeField(from item: Item) throws -> any TupleElement {
-        if edgeField.isEmpty {
+        guard let labelField else {
             // No edge field - use empty string as default
             return ""
         }
-        return try extractField(from: item, fieldName: edgeField)
+        return try extractField(from: item, field: labelField)
     }
 
     /// Extract graph field value (nil if no graph field configured)
     private func extractGraphField(from item: Item) throws -> (any TupleElement)? {
-        guard let graphField else { return nil }
+        guard let namespaceField else { return nil }
 
         // Graph field is special: nil means "default graph", not a missing field
         // Unlike other fields, nil graph values should be indexed
-        guard let value = item[dynamicMember: graphField] else {
-            return nil  // nil graph = default graph (valid for Named Graph support)
+        guard let value = try item.persistedFieldValue(for: namespaceField)
+        else {
+            throw GraphIndexError.fieldNotFound(
+                fieldName: namespaceField.name,
+                itemType: Item.persistableType
+            )
         }
-
-        return try tupleElement(value, fieldName: graphField)
+        guard value != .null else { return nil }
+        return try tupleElement(value, fieldName: namespaceField.name)
     }
 
     /// Extract a field value from an item
@@ -382,27 +388,46 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// If the field value is nil (e.g., Optional FK field), throws
     /// `DataAccessError.nilValueCannotBeIndexed` which is caught by
     /// `buildIndexKeys` to skip indexing.
-    private func extractField(from item: Item, fieldName: String) throws -> any TupleElement {
-        guard let value = item[dynamicMember: fieldName] else {
-            // Sparse index: nil value cannot be indexed
+    private func extractField(
+        from item: Item,
+        field: FieldIdentity
+    ) throws -> any TupleElement {
+        guard let value = try item.persistedFieldValue(for: field) else {
+            throw GraphIndexError.fieldNotFound(
+                fieldName: field.name,
+                itemType: Item.persistableType
+            )
+        }
+        guard value != .null else {
             throw DataAccessError.nilValueCannotBeIndexed
         }
-
-        return try tupleElement(value, fieldName: fieldName)
+        return try tupleElement(value, fieldName: field.name)
     }
 
     private func tupleElement(
-        _ value: Any,
+        _ value: FieldValue,
         fieldName: String
     ) throws -> any TupleElement {
-        guard let string = value as? String else {
+        guard case .string(let string) = value else {
             throw GraphIndexError.invalidFieldType(
                 fieldName: fieldName,
                 expectedType: "String",
-                actualType: String(describing: type(of: value))
+                actualType: String(describing: value)
             )
         }
         return string
+    }
+
+    private static func requireField(
+        named fieldName: String
+    ) throws -> FieldIdentity {
+        guard let fieldNumber = Item.fieldNumber(for: fieldName) else {
+            throw GraphIndexError.fieldNotFound(
+                fieldName: fieldName,
+                itemType: Item.persistableType
+            )
+        }
+        return FieldIdentity(name: fieldName, number: fieldNumber)
     }
 }
 
@@ -468,7 +493,7 @@ public enum GraphIndexError: Error, CustomStringConvertible, Sendable {
     case invalidRDFSubject
     case invalidRDFObject
     case invalidRDFGraphName
-    case invalidRDFEncoding(DatabaseRDFTermCodecError)
+    case invalidRDFEncoding(RDFTermStorageError)
     case rdfPhysicalIndex(RDFQuadIndexPhysicalCodecError)
     case invalidScanState
 

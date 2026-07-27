@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct GraphAlgorithmHandler: DatabaseOperationHandler {
     public typealias Operation = GraphAlgorithmOperation
@@ -30,7 +30,7 @@ public struct GraphAlgorithmHandler: DatabaseOperationHandler {
 
     private func validatePageLimit(
         _ limit: UInt32,
-        budget: DatabaseExecutionBudget
+        budget: ExecutionBudget
     ) throws {
         guard limit > 0, limit <= budget.maximumRows else {
             throw DatabaseRuntimeLimitError.invalidMaximumRows(

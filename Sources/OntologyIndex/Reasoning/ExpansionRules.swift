@@ -16,8 +16,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 
 // MARK: - Expansion Rule Protocol
 
@@ -61,11 +61,11 @@ public struct ExpansionRules {
 
     /// Result of witness generation for a data range.
     ///
-    /// Eliminates the ambiguity of `OWLLiteral?` where `nil` conflated
+    /// Eliminates the ambiguity of `RDFLiteral?` where `nil` conflated
     /// "provably unsatisfiable" with "not yet implemented".
     private enum WitnessResult {
         /// A concrete witness value was generated
-        case witness(OWLLiteral)
+        case witness(RDFLiteral)
         /// The data range is provably empty (e.g., contradictory facets)
         case unsatisfiable
         /// Cannot determine satisfiability without a complete witness solver.
@@ -654,7 +654,9 @@ public struct ExpansionRules {
         ranges: [OWLDataRange],
         fullRange: OWLDataRange
     ) -> WitnessResult {
-        if ranges.isEmpty { return canonicalWitness(for: XSDDatatype.string.iri) }
+        if ranges.isEmpty {
+            return canonicalWitness(for: XSDDatatype.string.iri.rawValue)
+        }
         let validator = OWLDatatypeValidator()
         let compiled: CompiledOWLDataRange
         do {
@@ -756,10 +758,30 @@ public struct ExpansionRules {
             ))
         }
 
-        var candidates: [OWLLiteral] = []
+        let facetAnalysis: FacetAnalysis
+        do {
+            facetAnalysis = try analyzeFacets(
+                baseType: baseType,
+                facets: facets,
+                validator: validator
+            )
+        } catch let failure as XSDValidationFailure {
+            return .failure(failure)
+        } catch {
+            return .indeterminate(XSDDiagnostic(
+                code: "unexpectedFacetAnalysisFailure",
+                message: String(describing: error)
+            ))
+        }
+        if facetAnalysis.isUnsatisfiable {
+            return .unsatisfiable
+        }
+
+        var candidates: [RDFLiteral] = []
         if case .witness(let canonical) = canonicalWitness(for: baseType) {
             candidates.append(canonical)
         }
+        candidates.append(contentsOf: facetAnalysis.candidates)
         for restriction in facets {
             switch restriction.facet {
             case .minInclusive, .maxInclusive:
@@ -789,6 +811,351 @@ public struct ExpansionRules {
         ))
     }
 
+    private struct FacetAnalysis {
+        let isUnsatisfiable: Bool
+        let candidates: [RDFLiteral]
+    }
+
+    private struct OrderedFacetBound {
+        let value: RDFLiteral
+        let isInclusive: Bool
+    }
+
+    private static func analyzeFacets(
+        baseType: String,
+        facets: [FacetRestriction],
+        validator: OWLDatatypeValidator
+    ) throws -> FacetAnalysis {
+        guard let kind = XSDDatatypeKind(iri: baseType) else {
+            return FacetAnalysis(isUnsatisfiable: false, candidates: [])
+        }
+
+        let ordered = try analyzeOrderedBounds(
+            baseType: baseType,
+            facets: facets,
+            kind: kind,
+            validator: validator
+        )
+        if ordered.isUnsatisfiable {
+            return ordered
+        }
+
+        let lengths = try analyzeLengthFacets(
+            baseType: baseType,
+            facets: facets,
+            kind: kind,
+            maximumCandidateLength: validator.limits.maxLexicalUTF8Bytes
+        )
+        return FacetAnalysis(
+            isUnsatisfiable: lengths.isUnsatisfiable,
+            candidates: ordered.candidates + lengths.candidates
+        )
+    }
+
+    private static func analyzeOrderedBounds(
+        baseType: String,
+        facets: [FacetRestriction],
+        kind: XSDDatatypeKind,
+        validator: OWLDatatypeValidator
+    ) throws -> FacetAnalysis {
+        var lower: OrderedFacetBound?
+        var upper: OrderedFacetBound?
+
+        for restriction in facets {
+            switch restriction.facet {
+            case .minInclusive:
+                lower = try strongerLowerBound(
+                    lower,
+                    candidate: OrderedFacetBound(
+                        value: restriction.value,
+                        isInclusive: true
+                    ),
+                    validator: validator
+                )
+            case .minExclusive:
+                lower = try strongerLowerBound(
+                    lower,
+                    candidate: OrderedFacetBound(
+                        value: restriction.value,
+                        isInclusive: false
+                    ),
+                    validator: validator
+                )
+            case .maxInclusive:
+                upper = try strongerUpperBound(
+                    upper,
+                    candidate: OrderedFacetBound(
+                        value: restriction.value,
+                        isInclusive: true
+                    ),
+                    validator: validator
+                )
+            case .maxExclusive:
+                upper = try strongerUpperBound(
+                    upper,
+                    candidate: OrderedFacetBound(
+                        value: restriction.value,
+                        isInclusive: false
+                    ),
+                    validator: validator
+                )
+            default:
+                continue
+            }
+        }
+
+        if let lower, let upper {
+            switch try validator.compare(lower.value, upper.value) {
+            case .greater:
+                return FacetAnalysis(isUnsatisfiable: true, candidates: [])
+            case .equal where !lower.isInclusive || !upper.isInclusive:
+                return FacetAnalysis(isUnsatisfiable: true, candidates: [])
+            case .less, .equal, .unordered:
+                break
+            }
+        }
+
+        guard kind.isInteger else {
+            return FacetAnalysis(isUnsatisfiable: false, candidates: [])
+        }
+
+        var candidates: [RDFLiteral] = []
+        let minimum = try integerCandidate(
+            from: lower,
+            baseType: baseType,
+            direction: .minimum
+        )
+        let maximum = try integerCandidate(
+            from: upper,
+            baseType: baseType,
+            direction: .maximum
+        )
+        if let minimum {
+            candidates.append(minimum)
+        }
+        if let maximum {
+            candidates.append(maximum)
+        }
+        if let minimum, let maximum {
+            switch try validator.compare(minimum, maximum) {
+            case .greater:
+                return FacetAnalysis(isUnsatisfiable: true, candidates: [])
+            case .less, .equal, .unordered:
+                break
+            }
+        }
+        return FacetAnalysis(isUnsatisfiable: false, candidates: candidates)
+    }
+
+    private static func strongerLowerBound(
+        _ current: OrderedFacetBound?,
+        candidate: OrderedFacetBound,
+        validator: OWLDatatypeValidator
+    ) throws -> OrderedFacetBound {
+        guard let current else { return candidate }
+        switch try validator.compare(candidate.value, current.value) {
+        case .greater:
+            return candidate
+        case .equal:
+            return current.isInclusive && !candidate.isInclusive
+                ? candidate
+                : current
+        case .less, .unordered:
+            return current
+        }
+    }
+
+    private static func strongerUpperBound(
+        _ current: OrderedFacetBound?,
+        candidate: OrderedFacetBound,
+        validator: OWLDatatypeValidator
+    ) throws -> OrderedFacetBound {
+        guard let current else { return candidate }
+        switch try validator.compare(candidate.value, current.value) {
+        case .less:
+            return candidate
+        case .equal:
+            return current.isInclusive && !candidate.isInclusive
+                ? candidate
+                : current
+        case .greater, .unordered:
+            return current
+        }
+    }
+
+    private enum IntegerCandidateDirection {
+        case minimum
+        case maximum
+    }
+
+    private static func integerCandidate(
+        from bound: OrderedFacetBound?,
+        baseType: String,
+        direction: IntegerCandidateDirection
+    ) throws -> RDFLiteral? {
+        guard let bound else { return nil }
+        if bound.isInclusive {
+            return bound.value
+        }
+        let lexicalForm: String
+        switch direction {
+        case .minimum:
+            lexicalForm = incrementInteger(bound.value.lexicalForm)
+        case .maximum:
+            lexicalForm = decrementInteger(bound.value.lexicalForm)
+        }
+        return try RDFLiteral(
+            lexicalForm: lexicalForm,
+            datatype: baseType
+        )
+    }
+
+    private static func incrementInteger(_ lexicalForm: String) -> String {
+        let normalized = normalizedIntegerParts(lexicalForm)
+        if normalized.isNegative {
+            if normalized.magnitude == "1" {
+                return "0"
+            }
+            return "-" + decrementMagnitude(normalized.magnitude)
+        }
+        return incrementMagnitude(normalized.magnitude)
+    }
+
+    private static func decrementInteger(_ lexicalForm: String) -> String {
+        let normalized = normalizedIntegerParts(lexicalForm)
+        if normalized.isNegative {
+            return "-" + incrementMagnitude(normalized.magnitude)
+        }
+        if normalized.magnitude == "0" {
+            return "-1"
+        }
+        return decrementMagnitude(normalized.magnitude)
+    }
+
+    private static func normalizedIntegerParts(
+        _ lexicalForm: String
+    ) -> (isNegative: Bool, magnitude: String) {
+        var bytes = Array(lexicalForm.utf8)
+        let isNegative = bytes.first == 45
+        if bytes.first == 45 || bytes.first == 43 {
+            bytes.removeFirst()
+        }
+        while bytes.count > 1, bytes.first == 48 {
+            bytes.removeFirst()
+        }
+        return (
+            isNegative && bytes.contains(where: { $0 != 48 }),
+            String(decoding: bytes, as: UTF8.self)
+        )
+    }
+
+    private static func incrementMagnitude(_ magnitude: String) -> String {
+        var bytes = Array(magnitude.utf8)
+        var index = bytes.count
+        while index > 0 {
+            index -= 1
+            if bytes[index] < 57 {
+                bytes[index] += 1
+                return String(decoding: bytes, as: UTF8.self)
+            }
+            bytes[index] = 48
+        }
+        bytes.insert(49, at: 0)
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    private static func decrementMagnitude(_ magnitude: String) -> String {
+        var bytes = Array(magnitude.utf8)
+        var index = bytes.count
+        while index > 0 {
+            index -= 1
+            if bytes[index] > 48 {
+                bytes[index] -= 1
+                break
+            }
+            bytes[index] = 57
+        }
+        while bytes.count > 1, bytes.first == 48 {
+            bytes.removeFirst()
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    private static func analyzeLengthFacets(
+        baseType: String,
+        facets: [FacetRestriction],
+        kind: XSDDatatypeKind,
+        maximumCandidateLength: Int
+    ) throws -> FacetAnalysis {
+        guard kind.isStringFamily else {
+            return FacetAnalysis(isUnsatisfiable: false, candidates: [])
+        }
+
+        var exact: XSDDecimalValue?
+        var minimum: XSDDecimalValue?
+        var maximum: XSDDecimalValue?
+        for restriction in facets {
+            guard restriction.facet == .length
+                    || restriction.facet == .minLength
+                    || restriction.facet == .maxLength,
+                  let value = XSDDecimalValue(
+                    integer: restriction.value.lexicalForm
+                  ) else {
+                continue
+            }
+            switch restriction.facet {
+            case .length:
+                if let exact, exact.compare(to: value) != 0 {
+                    return FacetAnalysis(isUnsatisfiable: true, candidates: [])
+                }
+                exact = value
+            case .minLength:
+                if let currentMinimum = minimum {
+                    if currentMinimum.compare(to: value) < 0 {
+                        minimum = value
+                    }
+                } else {
+                    minimum = value
+                }
+            case .maxLength:
+                if let currentMaximum = maximum {
+                    if currentMaximum.compare(to: value) > 0 {
+                        maximum = value
+                    }
+                } else {
+                    maximum = value
+                }
+            default:
+                break
+            }
+        }
+
+        if let minimum, let maximum, minimum.compare(to: maximum) > 0 {
+            return FacetAnalysis(isUnsatisfiable: true, candidates: [])
+        }
+        if let exact {
+            if let minimum, exact.compare(to: minimum) < 0 {
+                return FacetAnalysis(isUnsatisfiable: true, candidates: [])
+            }
+            if let maximum, exact.compare(to: maximum) > 0 {
+                return FacetAnalysis(isUnsatisfiable: true, candidates: [])
+            }
+        }
+
+        guard let required = exact ?? minimum else {
+            return FacetAnalysis(isUnsatisfiable: false, candidates: [])
+        }
+        guard let length = Int(required.source),
+              length <= maximumCandidateLength else {
+            return FacetAnalysis(isUnsatisfiable: false, candidates: [])
+        }
+        let witness = try RDFLiteral(
+            lexicalForm: String(repeating: "a", count: length),
+            datatype: baseType
+        )
+        return FacetAnalysis(isUnsatisfiable: false, candidates: [witness])
+    }
+
     private static func canonicalWitness(for iri: String) -> WitnessResult {
         guard let kind = XSDDatatypeKind(iri: iri),
               XSDDatatypeProfile.owl2.supports(kind) else {
@@ -799,16 +1166,18 @@ public struct ExpansionRules {
         let datatype: String
         switch kind {
         case .owlReal:
-            return .witness(OWLLiteral(
+            return .witness(RDFLiteral(
                 lexicalForm: "0",
                 datatype: XSDDatatype.decimal.typedLiteralDatatype
             ))
         case .owlRational:
             lexicalForm = "0/1"; language = nil; datatype = iri
         case .rdfsLiteral:
-            return .witness(OWLLiteral.string("witness"))
-        case .string, .normalizedString, .token, .nmtoken, .name, .ncname:
-            lexicalForm = "witness"; language = nil; datatype = iri
+            return .witness(RDFLiteral.string("witness"))
+        case .string, .normalizedString:
+            lexicalForm = ""; language = nil; datatype = iri
+        case .token, .nmtoken, .name, .ncname:
+            lexicalForm = "a"; language = nil; datatype = iri
         case .language:
             lexicalForm = "en"; language = nil; datatype = iri
         case .boolean:
@@ -832,7 +1201,7 @@ public struct ExpansionRules {
         case .rdfPlainLiteral:
             lexicalForm = "@"; language = nil; datatype = iri
         case .rdfLangString:
-            return .witness(OWLLiteral(
+            return .witness(RDFLiteral(
                 lexicalForm: "witness",
                 language: .english
             ))
@@ -841,16 +1210,16 @@ public struct ExpansionRules {
         }
         if let language {
             do {
-                return .witness(OWLLiteral(
+                return .witness(RDFLiteral(
                     lexicalForm: lexicalForm,
-                    language: try DatabaseRDFLanguageTag(language)
+                    language: try RDFLanguageTag(language)
                 ))
             } catch {
                 return .failure(.unsupportedDatatype(datatype))
             }
         }
         do {
-            return .witness(try OWLLiteral(
+            return .witness(try RDFLiteral(
                 lexicalForm: lexicalForm,
                 datatype: datatype
             ))
@@ -859,22 +1228,22 @@ public struct ExpansionRules {
         }
     }
 
-    private static func canonicalOWL2Witnesses() -> [OWLLiteral] {
+    private static func canonicalOWL2Witnesses() -> [RDFLiteral] {
         let iris = [
-            XSDDatatype.string.iri,
-            XSDDatatype.boolean.iri,
-            XSDDatatype.integer.iri,
-            XSDDatatype.decimal.iri,
-            XSDDatatype.float.iri,
-            XSDDatatype.double.iri,
-            XSDDatatype.dateTime.iri,
-            XSDDatatype.dateTimeStamp.iri,
-            XSDDatatype.anyURI.iri,
-            XSDDatatype.hexBinary.iri,
-            XSDDatatype.base64Binary.iri,
+            XSDDatatype.string.iri.rawValue,
+            XSDDatatype.boolean.iri.rawValue,
+            XSDDatatype.integer.iri.rawValue,
+            XSDDatatype.decimal.iri.rawValue,
+            XSDDatatype.float.iri.rawValue,
+            XSDDatatype.double.iri.rawValue,
+            XSDDatatype.dateTime.iri.rawValue,
+            XSDDatatype.dateTimeStamp.iri.rawValue,
+            XSDDatatype.anyURI.iri.rawValue,
+            XSDDatatype.hexBinary.iri.rawValue,
+            XSDDatatype.base64Binary.iri.rawValue,
             XSDDatatypeKind.rdfNamespace + "langString",
         ]
-        var values: [OWLLiteral] = []
+        var values: [RDFLiteral] = []
         values.reserveCapacity(iris.count)
         for iri in iris {
             if case .witness(let value) = canonicalWitness(for: iri) {

@@ -1,7 +1,7 @@
 #if FOUNDATION_DB
 import Testing
 import Foundation
-import Core
+import DatabaseKit
 import DatabaseEngine
 import BitmapIndex
 import BenchmarkFramework

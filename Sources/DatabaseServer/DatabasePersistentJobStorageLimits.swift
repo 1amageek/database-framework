@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabasePersistentJobStorageLimits: Sendable, Hashable {
     public static let maximumResultChunkBytes = 512 * 1_024

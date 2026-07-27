@@ -1,4 +1,5 @@
 import DatabaseServer
+import DatabaseTypes
 import DatabaseWire
 import Testing
 
@@ -17,8 +18,12 @@ struct DatabaseResumableOperationRegistryTests {
         )
 
         #expect(registry.identifiers == [first.operation, second.operation])
-        #expect(try registry.resolve(first.operation).operation == first.operation)
-        #expect(try registry.resolve(second.operation).operation == second.operation)
+        #expect(
+            try registry.resolve(first.operation).operation == first.operation
+        )
+        #expect(
+            try registry.resolve(second.operation).operation == second.operation
+        )
     }
 
     @Test("exact duplicates are rejected")
@@ -35,8 +40,6 @@ struct DatabaseResumableOperationRegistryTests {
         } catch DatabaseResumableOperationRegistryError
             .duplicateOperation(let duplicate) {
             #expect(duplicate == operation.operation)
-        } catch {
-            Issue.record("Unexpected error: \(error)")
         }
     }
 
@@ -48,7 +51,9 @@ struct DatabaseResumableOperationRegistryTests {
         let registry = try DatabaseResumableOperationRegistry(
             operations: [operation]
         )
-        let missing = try MissingJob.jobOperationIdentifier()
+        let missing = try DatabaseOperations.maintenanceExecute.resumableJob(
+            kind: MissingJob.kind
+        ).identifier
 
         do {
             _ = try registry.resolve(missing)
@@ -56,70 +61,88 @@ struct DatabaseResumableOperationRegistryTests {
         } catch DatabaseResumableOperationRegistryError
             .unsupportedOperation(let unsupported) {
             #expect(unsupported == missing)
-        } catch {
-            Issue.record("Unexpected error: \(error)")
         }
-    }
-
-    private struct FirstJob: EmptyJobDescriptor {
-        static let kind = "calendar.import.first"
-    }
-
-    private struct SecondJob: EmptyJobDescriptor {
-        static let kind = "calendar.import.second"
-    }
-
-    private struct MissingJob: EmptyJobDescriptor {
-        static let kind = "calendar.import.missing"
     }
 }
 
-private protocol EmptyJobDescriptor: DatabaseJobDescriptor
-where Request == DatabaseEmpty, Response == DatabaseEmpty {
+private protocol EmptyJobKind {
     static var kind: String { get }
 }
 
-private extension EmptyJobDescriptor {
-    static func jobOperationIdentifier()
-        throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-        try DatabaseJobOperationIdentifier(
-            family: .commandWrite,
-            kind: kind
-        )
+private enum FirstJob: EmptyJobKind {
+    static let kind = "calendar.import.first"
+}
+
+private enum SecondJob: EmptyJobKind {
+    static let kind = "calendar.import.second"
+}
+
+private enum MissingJob: EmptyJobKind {
+    static let kind = "calendar.import.missing"
+}
+
+private struct EmptyPersistentJobPayload: PersistentJobPayload {
+    func persistentJobValue()
+        throws(PersistentJobPayloadError) -> FieldValue {
+        .null
+    }
+
+    init() {}
+
+    init(
+        persistentJobValue: FieldValue
+    ) throws(PersistentJobPayloadError) {
+        guard persistentJobValue == .null else {
+            throw .invalidValue("Expected null")
+        }
     }
 }
 
-private struct EmptyResumableOperation<Job: EmptyJobDescriptor>:
+private struct EmptyResumableOperation<Job: EmptyJobKind>:
     DatabaseUnsuccessfulOutcomeIndependentOperation {
-    typealias Plan = DatabaseEmpty
-    typealias State = DatabaseEmpty
+    typealias Request = MaintenanceExecuteOperation.Request
+    typealias Response = MaintenanceExecuteOperation.Response
+    typealias Plan = EmptyPersistentJobPayload
+    typealias State = EmptyPersistentJobPayload
+
+    static func job()
+        throws(DatabaseWireError)
+        -> JobOperation<Request, Response> {
+        try DatabaseOperations.maintenanceExecute.resumableJob(kind: Job.kind)
+    }
 
     func compile(
-        _ request: DatabaseEmpty,
+        _ request: Request,
         context: DatabaseResumableOperationStartContext
     ) async throws -> DatabasePreparedResumableJob<Plan, State> {
         _ = request
         _ = context
         return DatabasePreparedResumableJob(
-            plan: DatabaseEmpty(),
-            initialState: DatabaseEmpty(),
+            plan: EmptyPersistentJobPayload(),
+            initialState: EmptyPersistentJobPayload(),
             sliceTimeoutMilliseconds: 1
         )
     }
 
     func runSlice(
-        plan: DatabaseEmpty,
-        state: DatabaseEmpty,
+        plan: Plan,
+        state: State,
         maximumWorkUnits: UInt64,
         context: DatabaseResumableOperationContext
-    ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+    ) async throws -> DatabaseResumableOperationSlice<State, Response> {
         _ = plan
         _ = state
         _ = maximumWorkUnits
         _ = context
         return .complete(
             completedWorkUnits: 0,
-            result: DatabaseEmpty()
+            result: .execution(
+                MaintenanceExecuteOperation.ExecutionResult(
+                    kind: .migrations,
+                    completedWorkUnits: 0,
+                    isComplete: true
+                )
+            )
         )
     }
 }

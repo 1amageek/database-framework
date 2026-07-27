@@ -3,10 +3,8 @@
 //
 // Maintains full-text indexes using inverted index structure.
 
-import Core
+import DatabaseKit
 import DatabaseEngine
-import FullText
-import QueryIR
 import StorageKit
 
 // MARK: - FullText Constants
@@ -474,9 +472,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         var texts: [String] = []
         for value in fieldValues {
-            if let s = value as? String {
-                texts.append(s)
-            }
+            texts.append(try TupleDecoder.decodeString(value))
         }
 
         return texts.joined(separator: " ")

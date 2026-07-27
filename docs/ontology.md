@@ -33,6 +33,8 @@ import Graph
 struct Employee {
     #Directory<Employee>("app", "employees")
 
+    var id: String = ""
+
     @OWLDataProperty("http://example.org/onto#name")
     var name: String
 }
@@ -47,10 +49,23 @@ the core persistence macro.
 Register ontology-aware models in the schema:
 
 ~~~swift
-let schema = Schema([Employee.self, Department.self, WorksFor.self, RDFTriple.self])
-let container = try await DBContainer(
+let persistableTypes: [any Persistable.Type] = [
+    Employee.self,
+    Department.self,
+    WorksFor.self,
+    RDFTriple.self,
+]
+let schema = try Schema(
+    entities: try persistableTypes.map { try $0.schemaEntity },
+    version: .init(1, 0, 0)
+)
+let runtime = try DatabaseFrameworkRuntime.configuration(
+    persistableTypes: persistableTypes
+)
+let container = try await DBContainer.open(
     for: schema,
-    configuration: configuration
+    configuration: configuration,
+    runtimeConfiguration: runtime
 )
 ~~~
 

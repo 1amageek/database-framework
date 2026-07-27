@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 
 /// MigrationStage - Migration stage definition
 ///
@@ -153,12 +153,18 @@ public enum MigrationStage: Sendable {
 extension MigrationStage {
     /// Get schema compatibility report for this migration stage.
     public var schemaCompatibilityReport: SchemaCompatibilityReport {
-        toVersion.makeSchema().compatibilityReport(from: fromVersion.makeSchema())
+        get throws {
+            try toVersion.makeSchema().compatibilityReport(
+                from: fromVersion.makeSchema()
+            )
+        }
     }
 
     /// Entity names that require explicit migration acknowledgement.
     public var entitiesRequiringCustomMigration: Set<String> {
-        schemaCompatibilityReport.entitiesRequiringCustomMigration
+        get throws {
+            try schemaCompatibilityReport.entitiesRequiringCustomMigration
+        }
     }
 
     /// Get index changes for this migration stage
@@ -167,7 +173,9 @@ extension MigrationStage {
     ///
     /// - Returns: Tuple of (added indexes, removed indexes)
     public var indexChanges: (added: Set<String>, removed: Set<String>) {
-        return toVersion.indexChanges(from: fromVersion)
+        get throws {
+            try toVersion.indexChanges(from: fromVersion)
+        }
     }
 
     /// Get added concrete index descriptors for this migration stage.
@@ -177,15 +185,21 @@ extension MigrationStage {
     ///
     /// - Returns: Array of concrete IndexDescriptor objects to add
     public var addedIndexDescriptors: [IndexDescriptor] {
-        let addedNames = indexChanges.added
-        return toVersion.allIndexDescriptors.filter { addedNames.contains($0.name) }
+        get throws {
+            let addedNames = try indexChanges.added
+            return try toVersion.allIndexDescriptors.filter {
+                addedNames.contains($0.name)
+            }
+        }
     }
 
     /// Get removed index names for this migration stage
     ///
     /// - Returns: Set of index names to remove
     public var removedIndexNames: Set<String> {
-        return indexChanges.removed
+        get throws {
+            try indexChanges.removed
+        }
     }
 
     /// Description for logging
@@ -219,7 +233,7 @@ extension MigrationStage {
         to: any VersionedSchema.Type,
         willMigrate: (@Sendable (MigrationContext) async throws -> Void)? = nil,
         didMigrate: (@Sendable (MigrationContext) async throws -> Void)? = nil
-    ) -> MigrationStage {
+    ) throws -> MigrationStage {
         // If there are hooks, always use custom
         if willMigrate != nil || didMigrate != nil {
             return .custom(
@@ -231,7 +245,7 @@ extension MigrationStage {
         }
 
         // Check if lightweight is possible
-        if to.canLightweightMigrate(from: from) {
+        if try to.canLightweightMigrate(from: from) {
             return .lightweight(fromVersion: from, toVersion: to)
         }
 

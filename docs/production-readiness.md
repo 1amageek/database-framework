@@ -50,10 +50,13 @@ database-framework service.
 
 ~~~bash
 swift build
-swift test
+xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS'
 swift build --traits SQLite
-swift test --traits SQLite
 swift build --traits PostgreSQL
+swift build \
+  --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a_wasm \
+  --product DatabaseRuntime \
+  --disable-default-traits
 ~~~
 
 Run PostgreSQL integration tests only when a test database is configured.

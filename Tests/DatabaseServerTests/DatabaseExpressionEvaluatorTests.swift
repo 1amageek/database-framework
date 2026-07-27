@@ -1,5 +1,5 @@
-import DatabaseValue
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 import Testing
 @testable import DatabaseServer
 
@@ -23,7 +23,7 @@ struct DatabaseExpressionEvaluatorTests {
 
     @Test("LIKE and UUID casts preserve canonical semantics")
     func likeAndUUIDCast() throws {
-        let uuid = DatabaseUUID(
+        let uuid = DatabaseTypes.UUID(
             high: 0x0011_2233_4455_6677,
             low: 0x8899_AABB_CCDD_EEFF
         )
@@ -46,23 +46,33 @@ struct DatabaseExpressionEvaluatorTests {
         #expect(
             try evaluator.evaluate(
                 .add(
-                    .literal(.decimal(coefficient: 123, scale: 2)),
-                    .literal(.decimal(coefficient: 77, scale: 2))
+                    .literal(
+                        .decimal(ExactDecimal(coefficient: 123, scale: 2))
+                    ),
+                    .literal(
+                        .decimal(ExactDecimal(coefficient: 77, scale: 2))
+                    )
                 )
-            ) == .decimal(coefficient: 2, scale: 0)
+            ) == .decimal(ExactDecimal(coefficient: 2, scale: 0))
         )
         #expect(
             try evaluator.evaluate(
                 .divide(
-                    .literal(.decimal(coefficient: 1, scale: 0)),
-                    .literal(.decimal(coefficient: 2, scale: 0))
+                    .literal(
+                        .decimal(ExactDecimal(coefficient: 1, scale: 0))
+                    ),
+                    .literal(
+                        .decimal(ExactDecimal(coefficient: 2, scale: 0))
+                    )
                 )
-            ) == .decimal(coefficient: 5, scale: 1)
+            ) == .decimal(ExactDecimal(coefficient: 5, scale: 1))
         )
         #expect(
             try evaluator.evaluate(
                 .greaterThan(
-                    .literal(.decimal(coefficient: 1, scale: -20)),
+                    .literal(
+                        .decimal(ExactDecimal(coefficient: 1, scale: -20))
+                    ),
                     .literal(.uint(UInt64.max))
                 )
             ) == .bool(true)
@@ -76,8 +86,12 @@ struct DatabaseExpressionEvaluatorTests {
         #expect(throws: DatabaseExpressionEvaluationError.inexactDecimalResult) {
             _ = try evaluator.evaluate(
                 .divide(
-                    .literal(.decimal(coefficient: 1, scale: 0)),
-                    .literal(.decimal(coefficient: 3, scale: 0))
+                    .literal(
+                        .decimal(ExactDecimal(coefficient: 1, scale: 0))
+                    ),
+                    .literal(
+                        .decimal(ExactDecimal(coefficient: 3, scale: 0))
+                    )
                 )
             )
         }
@@ -89,14 +103,14 @@ struct DatabaseExpressionEvaluatorTests {
         var right = left
         left[left.count - 1] = 0x40
         right[right.count - 1] = 0x42
-        let leftOwner = BorrowCountingDatabaseByteOwner(left)
-        let rightOwner = BorrowCountingDatabaseByteOwner(right)
+        let leftOwner = BorrowCountingByteStringOwner(left)
+        let rightOwner = BorrowCountingByteStringOwner(right)
         let evaluator = DatabaseExpressionEvaluator(fields: [:])
 
         let result = try evaluator.evaluate(
             .lessThan(
-                .literal(.binary(DatabaseBytes(retaining: leftOwner))),
-                .literal(.binary(DatabaseBytes(retaining: rightOwner)))
+                .literal(.binary(ByteString(retaining: leftOwner))),
+                .literal(.binary(ByteString(retaining: rightOwner)))
             )
         )
 

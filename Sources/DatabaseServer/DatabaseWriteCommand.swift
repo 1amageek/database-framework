@@ -1,9 +1,8 @@
-import DatabaseWire
+import DatabaseTypes
 
-public protocol DatabaseWriteCommand:
-    DatabaseCommand where Descriptor: DatabaseWriteCommandDescriptor {
+public protocol DatabaseWriteCommand: DatabaseCommand {
     func execute(
-        input: Descriptor.Input,
+        input: FieldObject,
         context: DatabaseWriteCommandContext
-    ) async throws -> DatabaseCommandResult<Descriptor.Output>
+    ) async throws -> DatabaseCommandResult
 }

@@ -8,7 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 
 /// Result of a SPARQL-like query execution

@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 
 /// Conservative retained-memory accounting for one unique dataset scan row.
 ///
@@ -12,29 +12,23 @@ struct RDFDatasetScanRetainedMetrics: Sendable, Equatable {
 
     // Fixed v1 admission constants. They intentionally do not depend on
     // platform pointer width, Swift ABI layout, or allocator capacity.
-    static let initialWorklistCapacity: UInt64 = 4
-    static let worklistContainerByteCount: UInt64 = 128
-    static let worklistSlotByteCount: UInt64 = 32
-
     private static let quadValueBaseline: UInt64 = 64
     private static let tripleValueBaseline: UInt64 = 48
     private static let resultOwnerOverhead: UInt64 = 64
     private static let setEntryOverhead: UInt64 = 32
     private static let geometricCapacityMultiplier: UInt64 = 2
-    private static let termNodeOverhead: UInt64 = 32
+    private static let coveringValueOwnerOverhead: UInt64 = 16
+    private static let storedFieldArrayOverhead: UInt64 = 64
+    private static let storedFieldSlotByteCount: UInt64 = 16
     private static let stringStorageOverhead: UInt64 = 16
-    private static let literalPayloadOverhead: UInt64 = 24
 
     /// Reuses admitted caller-owned traversal storage across a physical scan.
     static func measure(
         _ quad: RDFQuad,
         mergesNamedGraphs: Bool,
-        worklist: inout [DatabaseRDFTerm],
-        modeledWorklistCapacity: inout UInt64,
-        scratchReservation: inout DatabaseIntermediateReservation?,
-        workMeter: DatabaseWorkMeter
+        coveringValueByteCount: Int = 0,
+        storedFieldNames: [String] = []
     ) throws -> RDFDatasetScanRetainedMetrics {
-        worklist.removeAll(keepingCapacity: true)
         let setValueByteCount = mergesNamedGraphs
             ? tripleValueBaseline
             : quadValueBaseline
@@ -59,96 +53,22 @@ struct RDFDatasetScanRetainedMetrics: Sendable, Equatable {
             resultOwnerOverhead
         )
 
-        try append(
-            quad.object,
-            to: &worklist,
-            modeledCapacity: &modeledWorklistCapacity,
-            scratchReservation: &scratchReservation,
-            workMeter: workMeter
+        var termByteCount = try RDFTermRetainedFootprint.measure(
+            quad.object
+        ).bytes
+        termByteCount = try checkedAdd(
+            termByteCount,
+            RDFTermRetainedFootprint.measure(quad.predicate.term).bytes
         )
-        try append(
-            quad.predicate,
-            to: &worklist,
-            modeledCapacity: &modeledWorklistCapacity,
-            scratchReservation: &scratchReservation,
-            workMeter: workMeter
-        )
-        try append(
-            quad.subject,
-            to: &worklist,
-            modeledCapacity: &modeledWorklistCapacity,
-            scratchReservation: &scratchReservation,
-            workMeter: workMeter
+        termByteCount = try checkedAdd(
+            termByteCount,
+            RDFTermRetainedFootprint.measure(quad.subject.term).bytes
         )
         if !mergesNamedGraphs, let graph = quad.graph {
-            try append(
-                graph,
-                to: &worklist,
-                modeledCapacity: &modeledWorklistCapacity,
-                scratchReservation: &scratchReservation,
-                workMeter: workMeter
-            )
-        }
-
-        var termByteCount: UInt64 = 0
-        while let term = worklist.popLast() {
             termByteCount = try checkedAdd(
                 termByteCount,
-                termNodeOverhead
+                RDFTermRetainedFootprint.measure(graph.term).bytes
             )
-            switch term {
-            case .iri(let value), .blankNode(let value):
-                termByteCount = try addRetainedString(
-                    value,
-                    to: termByteCount
-                )
-
-            case .literal(let literal):
-                termByteCount = try checkedAdd(
-                    termByteCount,
-                    literalPayloadOverhead
-                )
-                termByteCount = try addRetainedString(
-                    literal.lexicalForm,
-                    to: termByteCount
-                )
-                switch literal.annotation {
-                case .typed(let datatype):
-                    termByteCount = try addRetainedString(
-                        datatype.rawValue,
-                        to: termByteCount
-                    )
-                case .languageTagged(let language),
-                     .directionalLanguageTagged(let language, _):
-                    termByteCount = try addRetainedString(
-                        language.rawValue,
-                        to: termByteCount
-                    )
-                }
-
-            case .tripleTerm(let subject, let predicate, let object):
-                try append(
-                    object,
-                    to: &worklist,
-                    modeledCapacity: &modeledWorklistCapacity,
-                    scratchReservation: &scratchReservation,
-                    workMeter: workMeter
-                )
-                try append(
-                    predicate,
-                    to: &worklist,
-                    modeledCapacity: &modeledWorklistCapacity,
-                    scratchReservation: &scratchReservation,
-                    workMeter: workMeter
-                )
-                try append(
-                    subject,
-                    to: &worklist,
-                    modeledCapacity: &modeledWorklistCapacity,
-                    scratchReservation: &scratchReservation,
-                    workMeter: workMeter
-                )
-            }
         }
 
         // Set and Array values share Swift value payloads today. Counting the
@@ -158,60 +78,42 @@ struct RDFDatasetScanRetainedMetrics: Sendable, Equatable {
             retainedByteCount,
             checkedMultiply(termByteCount, 2)
         )
+
+        if coveringValueByteCount > 0 {
+            let coveringValueFootprint = try checkedAdd(
+                coveringValueOwnerOverhead,
+                UInt64(coveringValueByteCount)
+            )
+            retainedByteCount = try checkedAdd(
+                retainedByteCount,
+                checkedMultiply(coveringValueFootprint, 2)
+            )
+        }
+
+        if !storedFieldNames.isEmpty {
+            var storedFieldFootprint = try checkedAdd(
+                storedFieldArrayOverhead,
+                checkedMultiply(
+                    UInt64(storedFieldNames.count),
+                    storedFieldSlotByteCount
+                )
+            )
+            for fieldName in storedFieldNames {
+                storedFieldFootprint = try addRetainedString(
+                    fieldName,
+                    to: storedFieldFootprint
+                )
+            }
+            retainedByteCount = try checkedAdd(
+                retainedByteCount,
+                checkedMultiply(storedFieldFootprint, 2)
+            )
+        }
+
         return RDFDatasetScanRetainedMetrics(
             rowCount: 2,
             retainedByteCount: retainedByteCount
         )
-    }
-
-    private static func append(
-        _ term: DatabaseRDFTerm,
-        to worklist: inout [DatabaseRDFTerm],
-        modeledCapacity: inout UInt64,
-        scratchReservation: inout DatabaseIntermediateReservation?,
-        workMeter: DatabaseWorkMeter
-    ) throws {
-        if UInt64(worklist.count) == modeledCapacity {
-            let newCapacity = modeledCapacity == 0
-                ? initialWorklistCapacity
-                : try checkedMultiply(
-                    modeledCapacity,
-                    geometricCapacityMultiplier
-                )
-            guard let platformCapacity = Int(exactly: newCapacity) else {
-                throw RDFDatasetScannerError.retainedWorklistCapacityExceeded(
-                    required: newCapacity,
-                    maximum: UInt64(Int.max)
-                )
-            }
-            let additionalSlots = newCapacity - modeledCapacity
-            let additionalSlotBytes = try checkedMultiply(
-                additionalSlots,
-                worklistSlotByteCount
-            )
-            let additionalBytes = modeledCapacity == 0
-                ? try checkedAdd(
-                    worklistContainerByteCount,
-                    additionalSlotBytes
-                )
-                : additionalSlotBytes
-            if let scratchReservation {
-                try scratchReservation.reserveAdditional(
-                    rows: additionalSlots,
-                    bytes: additionalBytes,
-                    at: .deduplication
-                )
-            } else {
-                scratchReservation = try workMeter.reserveIntermediate(
-                    rows: additionalSlots,
-                    bytes: additionalBytes,
-                    at: .deduplication
-                )
-            }
-            worklist.reserveCapacity(platformCapacity)
-            modeledCapacity = newCapacity
-        }
-        worklist.append(term)
     }
 
     private static func addRetainedString(

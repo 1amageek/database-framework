@@ -1,5 +1,4 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
 import StorageKit
 
 /// Canonical bounded persistence codec for resumable range progress.
@@ -9,10 +8,10 @@ public enum RangeSetCodec {
 
     public static func encode(
         _ rangeSet: RangeSet,
-        limits: DatabaseWireLimits = .default
-    ) throws(DatabaseWireError) -> Bytes {
-        let encoded = try DatabaseWireWriter.encode(limits: limits) {
-            (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
+        limits: StorageFrameLimits = .default
+    ) throws(StorageFrameError) -> Bytes {
+        let encoded = try StorageFrameEncoder.encode(limits: limits) {
+            (writer: inout StorageFrameEncoder) throws(StorageFrameError) in
             for byte in magic {
                 writer.writeUInt8(byte)
             }
@@ -20,10 +19,10 @@ public enum RangeSetCodec {
             let continuations = rangeSet.persistedContinuations
             try writer.writeCount(continuations.count)
             for continuation in continuations {
-                try writer.writeBytes(DatabaseBytes(retaining: continuation.rangeBegin))
-                try writer.writeBytes(DatabaseBytes(retaining: continuation.rangeEnd))
+                try writer.writeBytes(ByteString(retaining: continuation.rangeBegin))
+                try writer.writeBytes(ByteString(retaining: continuation.rangeEnd))
                 try writer.writeOptionalBytes(
-                    continuation.lastProcessedKey.map(DatabaseBytes.init(retaining:))
+                    continuation.lastProcessedKey.map(ByteString.init(retaining:))
                 )
                 writer.writeBool(continuation.isComplete)
             }
@@ -33,10 +32,10 @@ public enum RangeSetCodec {
 
     public static func decode(
         _ bytes: Bytes,
-        limits: DatabaseWireLimits = .default
-    ) throws(DatabaseWireError) -> RangeSet {
-        var reader = DatabaseWireReader(
-            DatabaseBytes(retaining: bytes),
+        limits: StorageFrameLimits = .default
+    ) throws(StorageFrameError) -> RangeSet {
+        var reader = try StorageFrameDecoder(
+            ByteString(retaining: bytes),
             limits: limits
         )
         for byte in magic {
@@ -46,7 +45,7 @@ public enum RangeSetCodec {
         }
         let decodedVersion = try reader.readUInt16()
         guard decodedVersion == version else {
-            throw .unsupportedProtocolVersionValue(decodedVersion)
+            throw .unsupportedVersion(decodedVersion)
         }
 
         let count = try reader.readCount()

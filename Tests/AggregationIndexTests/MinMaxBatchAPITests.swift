@@ -3,7 +3,7 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -23,13 +23,6 @@ struct MinMaxBatchAPITests {
         var region: String
         var category: String
         var amount: Double
-
-        init(id: String = UUID().uuidString, region: String, category: String, amount: Double) {
-            self.id = id
-            self.region = region
-            self.category = category
-            self.amount = amount
-        }
     }
 
     // MARK: - getAllMins Tests
@@ -43,7 +36,14 @@ struct MinMaxBatchAPITests {
 
         let index = Index(
             name: "order_min_by_region",
-            kind: MinIndexKind<Order, Double>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .minimum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 4),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
@@ -104,7 +104,14 @@ struct MinMaxBatchAPITests {
 
         let index = Index(
             name: "order_max_by_region",
-            kind: MaxIndexKind<Order, Double>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .maximum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 4),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
@@ -165,7 +172,14 @@ struct MinMaxBatchAPITests {
 
         let index = Index(
             name: "order_min_by_region",
-            kind: MinIndexKind<Order, Double>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .minimum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 4),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")

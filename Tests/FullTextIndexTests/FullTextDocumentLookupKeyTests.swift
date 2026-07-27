@@ -1,6 +1,6 @@
 import Testing
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import StorageKit
 @testable import FullTextIndex

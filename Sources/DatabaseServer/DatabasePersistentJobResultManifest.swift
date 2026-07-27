@@ -1,18 +1,18 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
-struct DatabasePersistentJobResultManifest: DatabaseWireValue, Sendable, Hashable {
+struct DatabasePersistentJobResultManifest: ServerPayloadValue, Sendable, Hashable {
     private static let formatVersion: UInt8 = 1
 
-    let jobID: DatabaseUUID
-    let operation: DatabaseJobOperationIdentifier
-    let specificationDigest: DatabaseBytes
-    let responseDigest: DatabaseJobResultDigest
+    let jobID: DatabaseTypes.UUID
+    let operation: JobOperationIdentifier
+    let specificationDigest: ByteString
+    let responseDigest: JobResultDigest
     let totalBytes: UInt64
     let chunkBytes: UInt32
     let chunkCount: UInt32
-    let chunkDigests: [DatabaseBytes]
-    let createdAt: DatabaseTimestamp
+    let chunkDigests: [ByteString]
+    let createdAt: Timestamp
 
     func validate() throws {
         guard specificationDigest.count == DatabaseRequestDigest.byteCount,
@@ -56,15 +56,15 @@ struct DatabasePersistentJobResultManifest: DatabaseWireValue, Sendable, Hashabl
         guard version == Self.formatVersion else {
             throw .unsupportedProtocolVersionValue(UInt16(version))
         }
-        let jobID = try DatabaseUUID(from: &reader)
-        let operation = try DatabaseJobOperationIdentifier(from: &reader)
+        let jobID = try DatabaseTypes.UUID(from: &reader)
+        let operation = try JobOperationIdentifier(from: &reader)
         let specificationDigest = try reader.readBytes()
-        let responseDigest = try DatabaseJobResultDigest(from: &reader)
+        let responseDigest = try JobResultDigest(from: &reader)
         let totalBytes = try reader.readUInt64()
         let chunkBytes = try reader.readUInt32()
         let chunkCount = try reader.readUInt32()
         let digestCount = try reader.readCount()
-        var chunkDigests: [DatabaseBytes] = []
+        var chunkDigests: [ByteString] = []
         chunkDigests.reserveCapacity(digestCount)
         for _ in 0..<digestCount {
             chunkDigests.append(try reader.readBytes())
@@ -78,20 +78,20 @@ struct DatabasePersistentJobResultManifest: DatabaseWireValue, Sendable, Hashabl
             chunkBytes: chunkBytes,
             chunkCount: chunkCount,
             chunkDigests: chunkDigests,
-            createdAt: try DatabaseTimestamp(from: &reader)
+            createdAt: try Timestamp(from: &reader)
         )
     }
 
     init(
-        jobID: DatabaseUUID,
-        operation: DatabaseJobOperationIdentifier,
-        specificationDigest: DatabaseBytes,
-        responseDigest: DatabaseJobResultDigest,
+        jobID: DatabaseTypes.UUID,
+        operation: JobOperationIdentifier,
+        specificationDigest: ByteString,
+        responseDigest: JobResultDigest,
         totalBytes: UInt64,
         chunkBytes: UInt32,
         chunkCount: UInt32,
-        chunkDigests: [DatabaseBytes],
-        createdAt: DatabaseTimestamp
+        chunkDigests: [ByteString],
+        createdAt: Timestamp
     ) {
         self.jobID = jobID
         self.operation = operation

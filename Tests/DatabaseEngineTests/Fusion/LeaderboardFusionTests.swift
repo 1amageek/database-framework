@@ -7,8 +7,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -26,18 +26,16 @@ struct LeaderboardFusionScore {
     var score: Int64 = 0
     var region: String = "global"
 
-    #Index(TimeWindowLeaderboardIndexKind<LeaderboardFusionScore>(
-        scoreField: \.score,
-        window: .daily,
-        windowCount: 7
-    ))
+    #Index(
+        .timeWindowLeaderboard(window: .daily, windowCount: 7),
+        field: \LeaderboardFusionScore.score
+    )
 
-    #Index(TimeWindowLeaderboardIndexKind<LeaderboardFusionScore>(
-        scoreField: \.score,
-        groupBy: [\.region],
-        window: .daily,
-        windowCount: 7
-    ))
+    #Index(
+        .timeWindowLeaderboard(window: .daily, windowCount: 7),
+        groupBy: [\LeaderboardFusionScore.region],
+        field: \LeaderboardFusionScore.score
+    )
 }
 
 // MARK: - Unit Tests (No FDB)
@@ -45,10 +43,12 @@ struct LeaderboardFusionScore {
 @Suite("Leaderboard - Unit Tests", .heartbeat)
 struct LeaderboardUnitTests {
 
-    @Test("TimeWindowLeaderboardIndexKind identifier")
-    func testLeaderboardIndexKindIdentifier() {
-        let identifier = TimeWindowLeaderboardIndexKind<LeaderboardFusionScore>.identifier
-        #expect(identifier == "time_window_leaderboard")
+    @Test("Time-window leaderboard definition identifier")
+    func testLeaderboardDefinitionIdentifier() {
+        #expect(
+            IndexDefinition.timeWindowLeaderboard().identifier
+                == "time_window_leaderboard"
+        )
     }
 
     @Test("LeaderboardWindowType durations")
@@ -207,7 +207,7 @@ struct LeaderboardEdgeCaseTests {
 
 // MARK: - Integration Tests
 
-@Suite("Leaderboard - Integration Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("Leaderboard - Integration Tests", .tags(.fdb), .foundationDBScenario, .serialized, .heartbeat)
 struct LeaderboardIntegrationTests {
 
     private func createContainer() async throws -> DBContainer {
@@ -243,7 +243,7 @@ struct LeaderboardIntegrationTests {
 
         // Fetch back
         let fetched = try await context.fetch(LeaderboardFusionScore.self)
-            .where(\.id == scoreId)
+            .where(LeaderboardFusionScore.fields.id == scoreId)
             .first()
         #expect(fetched != nil)
         #expect(fetched?.playerName == "Alice")
@@ -270,7 +270,7 @@ struct LeaderboardIntegrationTests {
         // Verify all inserted
         for score in scores {
             let fetched = try await context.fetch(LeaderboardFusionScore.self)
-                .where(\.id == score.id)
+                .where(LeaderboardFusionScore.fields.id == score.id)
                 .first()
             #expect(fetched != nil, "Score for \(score.playerName) should exist")
         }
@@ -302,10 +302,10 @@ struct LeaderboardIntegrationTests {
         try await context.save()
 
         let fetchedAsia = try await context.fetch(LeaderboardFusionScore.self)
-            .where(\.id == asiaId)
+            .where(LeaderboardFusionScore.fields.id == asiaId)
             .first()
         let fetchedEurope = try await context.fetch(LeaderboardFusionScore.self)
-            .where(\.id == europeId)
+            .where(LeaderboardFusionScore.fields.id == europeId)
             .first()
 
         #expect(fetchedAsia?.region == "asia")
@@ -330,11 +330,11 @@ struct LeaderboardIntegrationTests {
 
         // Update score
         score.score = 1500
-        try context.insert(score)
+        try context.update(score)
         try await context.save()
 
         let fetched = try await context.fetch(LeaderboardFusionScore.self)
-            .where(\.id == scoreId)
+            .where(LeaderboardFusionScore.fields.id == scoreId)
             .first()
         #expect(fetched?.score == 1500)
     }
@@ -357,7 +357,7 @@ struct LeaderboardIntegrationTests {
 
         // Verify exists
         let beforeDelete = try await context.fetch(LeaderboardFusionScore.self)
-            .where(\.id == scoreId)
+            .where(LeaderboardFusionScore.fields.id == scoreId)
             .first()
         #expect(beforeDelete != nil)
 
@@ -367,7 +367,7 @@ struct LeaderboardIntegrationTests {
 
         // Verify deleted
         let afterDelete = try await context.fetch(LeaderboardFusionScore.self)
-            .where(\.id == scoreId)
+            .where(LeaderboardFusionScore.fields.id == scoreId)
             .first()
         #expect(afterDelete == nil)
     }
@@ -379,8 +379,8 @@ struct LeaderboardIntegrationTests {
 struct LeaderboardIndexDescriptorTests {
 
     @Test("Index descriptors are correctly defined")
-    func testIndexDescriptors() {
-        let descriptors = LeaderboardFusionScore.indexDescriptors
+    func testIndexDescriptors() throws {
+        let descriptors = try LeaderboardFusionScore.indexDescriptors
 
         // Should have at least the leaderboard indexes
         let leaderboardIndexes = descriptors.filter {
@@ -391,11 +391,12 @@ struct LeaderboardIndexDescriptorTests {
     }
 
     @Test("Index descriptor has correct field names")
-    func testIndexDescriptorFieldNames() {
-        let descriptors = LeaderboardFusionScore.indexDescriptors
+    func testIndexDescriptorFieldNames() throws {
+        let descriptors = try LeaderboardFusionScore.indexDescriptors
 
         let scoreIndex = descriptors.first { descriptor in
-            descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<LeaderboardFusionScore>.identifier
+            descriptor.kindIdentifier
+                == IndexDefinition.timeWindowLeaderboard().identifier
                 && descriptor.kind.fieldNames == ["score"]
         }
 
@@ -403,11 +404,12 @@ struct LeaderboardIndexDescriptorTests {
     }
 
     @Test("Grouped index has groupBy field")
-    func testGroupedIndexDescriptor() {
-        let descriptors = LeaderboardFusionScore.indexDescriptors
+    func testGroupedIndexDescriptor() throws {
+        let descriptors = try LeaderboardFusionScore.indexDescriptors
 
         let regionIndex = descriptors.first { descriptor in
-            descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<LeaderboardFusionScore>.identifier
+            descriptor.kindIdentifier
+                == IndexDefinition.timeWindowLeaderboard().identifier
                 && descriptor.kind.fieldNames == ["region", "score"]
         }
 

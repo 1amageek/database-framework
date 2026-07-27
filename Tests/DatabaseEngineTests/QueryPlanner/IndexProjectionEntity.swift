@@ -1,7 +1,7 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 @Persistable
 struct IndexProjectionEntity {
@@ -10,10 +10,10 @@ struct IndexProjectionEntity {
     var id: String = ""
     var email: String
     var name: String
-    var age: Int
+    var age: Int64
     var nickname: String? = nil
     var tags: [String] = []
-    var target: DatabaseReference<RelationshipTarget>? = nil
+    var target: PersistableReference<RelationshipTarget>? = nil
 }
 #endif
 #endif

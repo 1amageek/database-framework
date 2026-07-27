@@ -12,32 +12,31 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
 @testable import OntologyIndex
 
-@Suite("OntologyStore Phase 2 Fixes", .serialized, .heartbeat)
+@Suite("OntologyStore Phase 2 Fixes", .serialized, .foundationDBScenario, .heartbeat)
 struct OntologyStorePhase2Tests {
 
     @Persistable
     struct OntologyPhase2Dummy {
         #Directory<OntologyPhase2Dummy>("ontology_phase2_dummy")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var subject: String = ""
         var predicate: String = ""
         var object: String = ""
 
-        #Index(GraphIndexKind<OntologyPhase2Dummy>(
-            from: \.subject,
-            edge: \.predicate,
-            to: \.object,
-            strategy: .tripleStore
-        ))
+        #Index(
+            .propertyGraph(strategy: .tripleStore),
+            from: \OntologyPhase2Dummy.subject,
+            edge: \OntologyPhase2Dummy.predicate,
+            to: \OntologyPhase2Dummy.object
+        )
     }
 
     private static let testOntologyIRI = "http://test.org/ontology-phase2-fixes"
@@ -47,7 +46,10 @@ struct OntologyStorePhase2Tests {
     private func setupContext() async throws -> DatabaseContext {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([OntologyPhase2Dummy.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try OntologyPhase2Dummy.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),

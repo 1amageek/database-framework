@@ -1,5 +1,5 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import GraphIndex
 import OntologyIndex
 
@@ -10,8 +10,8 @@ public struct DatabaseSHACLResolvedDataSource: Sendable {
     public let executor: SPARQLQueryExecutor
     public let graphScope: SHACLDataGraphScope
     public let reasoner: OWLReasoner?
-    public let selectedFocusNodes: [DatabaseRDFTerm]?
-    public let snapshotFingerprint: DatabaseBytes
+    public let selectedFocusNodes: [RDFTerm]?
+    public let snapshotFingerprint: ByteString
 
     public init(
         data: SHACLExecuteOperation.DataSource,
@@ -20,8 +20,8 @@ public struct DatabaseSHACLResolvedDataSource: Sendable {
         executor: SPARQLQueryExecutor,
         graphScope: SHACLDataGraphScope,
         reasoner: OWLReasoner? = nil,
-        selectedFocusNodes: [DatabaseRDFTerm]? = nil,
-        snapshotFingerprint: DatabaseBytes
+        selectedFocusNodes: [RDFTerm]? = nil,
+        snapshotFingerprint: ByteString
     ) {
         self.data = data
         self.focus = focus

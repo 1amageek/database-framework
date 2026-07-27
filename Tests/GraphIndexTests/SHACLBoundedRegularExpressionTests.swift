@@ -1,7 +1,7 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import StorageKit
 import TestHeartbeat
 import Testing
@@ -175,7 +175,7 @@ struct SHACLBoundedRegularExpressionTests {
         let engine = InMemoryEngine()
         let executor = SPARQLQueryExecutor(database: engine, sources: [])
         let budget = SHACLValidationWorkBudget(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1_000,
                 maximumWorkUnits: 50_000_000,
                 timeoutMilliseconds: 60_000
@@ -186,7 +186,9 @@ struct SHACLBoundedRegularExpressionTests {
             shapes: [
                 .node(
                     NodeShape(
-                        identifier: .iri("urn:test:bounded-pattern"),
+                        identifier: try .iri(
+                            validating: "urn:test:bounded-pattern"
+                        ),
                         constraints: [.pattern(pattern, flags: flags)]
                     )
                 )

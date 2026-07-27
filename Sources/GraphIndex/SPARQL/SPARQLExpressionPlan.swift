@@ -1,4 +1,4 @@
-import QueryIR
+import DatabaseKit
 
 public struct SPARQLExpressionPlan: Sendable, Hashable {
     public enum Volatility: Sendable, Hashable {
@@ -7,7 +7,7 @@ public struct SPARQLExpressionPlan: Sendable, Hashable {
         case volatile
     }
 
-    public let expression: QueryIR.Expression
+    public let expression: Expression
     public let referencedVariables: Set<String>
     public let requiresDataset: Bool
     public let usesExtensionFunction: Bool
@@ -15,7 +15,7 @@ public struct SPARQLExpressionPlan: Sendable, Hashable {
     private let compiledExistsPatterns: [SelectQuery: ExecutionPattern]
 
     public init(
-        _ expression: QueryIR.Expression,
+        _ expression: Expression,
         limits: SPARQLExpressionCompilationLimits = .default
     ) throws {
         try SPARQLExpressionValidator.validate(expression, limits: limits)
@@ -69,7 +69,7 @@ public struct SPARQLExpressionPlan: Sendable, Hashable {
     }
 
     private static func analyze(
-        _ expression: QueryIR.Expression,
+        _ expression: Expression,
         into analysis: inout Analysis
     ) throws {
         switch expression {
@@ -161,7 +161,7 @@ public struct SPARQLExpressionPlan: Sendable, Hashable {
     }
 
     private static func analyze(
-        _ aggregate: QueryIR.AggregateFunction,
+        _ aggregate: AggregateFunction,
         into analysis: inout Analysis
     ) throws {
         switch aggregate {

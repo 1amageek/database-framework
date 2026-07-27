@@ -225,8 +225,8 @@ struct ArrayChunkingTests {
 
 // MARK: - Test Model
 
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 @Persistable

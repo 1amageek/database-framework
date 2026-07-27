@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 
 /// Executes all container-scoped persistable mutation maintainers.
 internal struct PersistableMutationMaintenanceService: Sendable {

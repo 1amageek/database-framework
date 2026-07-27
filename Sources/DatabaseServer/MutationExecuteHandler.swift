@@ -1,10 +1,10 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
-    public let identifier = DatabaseOperationIdentifier.mutationExecute
+    public typealias Operation = MutationExecuteOperation
 
     private let coordinator: DatabaseTransactionalOperationCoordinator
     private let statementExecutor: AnyDatabaseStatementMutationExecutor
@@ -32,15 +32,10 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
     }
 
     public func invoke(
-        payload: DatabaseBytes,
+        request: MutationExecuteOperation.Request,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
     ) async throws -> DatabaseOperationResult {
-        let request = try DatabaseEnvelopeCodec.decode(
-            MutationExecuteOperation.Request.self,
-            from: payload,
-            limits: limits
-        )
         try runtimeLimits.validate(request.budget)
         let requestPayload = context.requestPayload
 
@@ -84,7 +79,8 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
                 },
                 makeResponse: { result, commitVersion in
                     DatabaseOperationResponseEncoder(
-                        MutationExecuteOperation.Response(
+                        MutationExecuteOperation.self,
+                        response: MutationExecuteOperation.Response(
                             commitVersion: commitVersion,
                             result: result
                         )
@@ -126,7 +122,8 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
                 },
                 makeResponse: { result, commitVersion in
                     DatabaseOperationResponseEncoder(
-                        MutationExecuteOperation.Response(
+                        MutationExecuteOperation.self,
+                        response: MutationExecuteOperation.Response(
                             commitVersion: commitVersion,
                             result: result
                         )

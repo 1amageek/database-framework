@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 /// Type-erased database error mapper.
 public final class AnyDatabaseErrorMapper: DatabaseErrorMapper, Sendable {
@@ -6,7 +6,7 @@ public final class AnyDatabaseErrorMapper: DatabaseErrorMapper, Sendable {
         any Error,
         DatabaseOperationContext,
         DatabaseWireLimits
-    ) -> DatabaseRemoteError
+    ) -> RemoteOperationError
 
     public init<Mapper: DatabaseErrorMapper>(_ mapper: Mapper) {
         self.mapError = { error, context, limits in
@@ -22,7 +22,7 @@ public final class AnyDatabaseErrorMapper: DatabaseErrorMapper, Sendable {
         for error: any Error,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
-    ) -> DatabaseRemoteError {
+    ) -> RemoteOperationError {
         mapError(error, context, limits)
     }
 }

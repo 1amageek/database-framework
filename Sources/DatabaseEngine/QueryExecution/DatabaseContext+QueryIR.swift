@@ -1,16 +1,51 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 
 package enum CanonicalPartitionBinding {
+    package static func validate(
+        _ partitions: FieldObject,
+        for entity: Schema.Entity
+    ) throws {
+        let requiredNames = entity.dynamicFieldNames
+        guard !requiredNames.isEmpty else {
+            guard partitions.isEmpty else {
+                throw CanonicalReadError.invalidPartition(
+                    entity: entity.name,
+                    reason: "the entity has a static directory"
+                )
+            }
+            return
+        }
+
+        guard Set(partitions.fields.map(\.key)) == Set(requiredNames) else {
+            throw CanonicalReadError.invalidPartition(
+                entity: entity.name,
+                reason: "expected exactly \(requiredNames.sorted())"
+            )
+        }
+
+        for fieldName in requiredNames {
+            guard let value = partitions[fieldName],
+                  let field = entity.fields.first(where: {
+                      $0.name == fieldName && $0.fieldNumber > 0
+                  }) else {
+                throw CanonicalReadError.invalidPartition(
+                    entity: entity.name,
+                    reason: "partition field '\(fieldName)' is missing from the schema"
+                )
+            }
+            guard acceptsPartitionValue(value, field: field) else {
+                throw CanonicalReadError.invalidPartition(
+                    entity: entity.name,
+                    reason: "partition field '\(fieldName)' must be a non-null required scalar matching its schema type"
+                )
+            }
+        }
+    }
+
     package static func makeBinding<T: Persistable>(
         for type: T.Type,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) throws -> DirectoryPath<T>? {
         let dynamicFieldNames = T.directoryFieldNames
         guard !dynamicFieldNames.isEmpty else {
@@ -23,20 +58,8 @@ package enum CanonicalPartitionBinding {
             return nil
         }
 
-        var fieldsByName: [String: DatabaseObjectField] = [:]
-        var seenNumbers = Set<UInt32>()
-        for partition in partitions {
-            guard seenNumbers.insert(partition.number).inserted,
-                  fieldsByName.updateValue(partition, forKey: partition.name) == nil else {
-                throw CanonicalReadError.invalidPartition(
-                    entity: T.persistableType,
-                    reason: "partition fields must have unique names and numbers"
-                )
-            }
-        }
-
         let requiredNames = dynamicFieldNames
-        guard Set(fieldsByName.keys) == Set(requiredNames) else {
+        guard Set(partitions.fields.map(\.key)) == Set(requiredNames) else {
             throw CanonicalReadError.invalidPartition(
                 entity: T.persistableType,
                 reason: "expected exactly \(requiredNames.sorted())"
@@ -45,151 +68,58 @@ package enum CanonicalPartitionBinding {
 
         var binding = DirectoryPath<T>()
         for fieldName in dynamicFieldNames {
-            guard let partition = fieldsByName[fieldName],
+            guard let partitionValue = partitions[fieldName],
                   let fieldSchema = T.fieldSchemas.first(where: {
-                      $0.name == fieldName && $0.fieldNumber == Int(partition.number)
+                      $0.name == fieldName && $0.fieldNumber > 0
                   }) else {
                 throw CanonicalReadError.invalidPartition(
                     entity: T.persistableType,
-                    reason: "partition field '\(fieldName)' does not match the compiled schema"
+                    reason: "partition field '\(fieldName)' is missing from the compiled schema"
                 )
             }
-            guard !fieldSchema.isOptional, !fieldSchema.isArray else {
+            guard acceptsPartitionValue(
+                partitionValue,
+                field: fieldSchema
+            ) else {
                 throw CanonicalReadError.invalidPartition(
                     entity: T.persistableType,
-                    reason: "partition field '\(fieldName)' must be a required scalar"
+                    reason: "partition field '\(fieldName)' must be a non-null required scalar matching its schema type"
                 )
             }
             binding.fieldValues.append(
                 DirectoryFieldBinding(
-                    name: fieldName,
-                    value: try directoryValue(
-                    partition.value,
-                    schema: fieldSchema,
-                    entity: T.persistableType
-                    )
+                    field: FieldIdentity(
+                        name: fieldSchema.name,
+                        number: fieldSchema.fieldNumber
+                    ),
+                    value: partitionValue
                 )
             )
         }
 
-        try binding.validate()
+        _ = try binding.canonicalPartitions()
         return binding
+    }
+
+    private static func acceptsPartitionValue(
+        _ value: FieldValue,
+        field: FieldSchema
+    ) -> Bool {
+        !field.isOptional
+            && !field.isArray
+            && field.type != .nested
+            && value != .null
+            && FieldSchemaValueValidator.accepts(value, as: field.type)
     }
 
     package static func makeAnyBinding(
         for type: any Persistable.Type,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) throws -> AnyDirectoryPath? {
         func bind<T: Persistable>(_ concreteType: T.Type) throws -> AnyDirectoryPath? {
             try makeBinding(for: concreteType, partitions: partitions).map(AnyDirectoryPath.init)
         }
         return try _openExistential(type, do: bind)
-    }
-
-    private static func directoryValue(
-        _ value: DatabaseValue,
-        schema: FieldSchema,
-        entity: String
-    ) throws -> any Sendable {
-        func mismatch() -> CanonicalReadError {
-            .invalidPartition(
-                entity: entity,
-                reason: "partition field '\(schema.name)' does not match type \(schema.type.rawValue)"
-            )
-        }
-
-        switch schema.type {
-        case .string:
-            guard case .string(let scalar) = value else { throw mismatch() }
-            return scalar
-        case .int:
-            guard case .int64(let scalar) = value,
-                  let converted = Int(exactly: scalar) else { throw mismatch() }
-            return converted
-        case .int8:
-            guard case .int64(let scalar) = value,
-                  let converted = Int8(exactly: scalar) else { throw mismatch() }
-            return converted
-        case .int16:
-            guard case .int64(let scalar) = value,
-                  let converted = Int16(exactly: scalar) else { throw mismatch() }
-            return converted
-        case .int32:
-            guard case .int64(let scalar) = value,
-                  let converted = Int32(exactly: scalar) else { throw mismatch() }
-            return converted
-        case .int64:
-            guard case .int64(let scalar) = value else { throw mismatch() }
-            return scalar
-        case .uint:
-            guard case .uint64(let scalar) = value,
-                  let converted = UInt(exactly: scalar) else { throw mismatch() }
-            return converted
-        case .uint8:
-            guard case .uint64(let scalar) = value,
-                  let converted = UInt8(exactly: scalar) else { throw mismatch() }
-            return converted
-        case .uint16:
-            guard case .uint64(let scalar) = value,
-                  let converted = UInt16(exactly: scalar) else { throw mismatch() }
-            return converted
-        case .uint32:
-            guard case .uint64(let scalar) = value,
-                  let converted = UInt32(exactly: scalar) else { throw mismatch() }
-            return converted
-        case .uint64:
-            guard case .uint64(let scalar) = value else { throw mismatch() }
-            return scalar
-        case .double:
-            guard case .double(let scalar) = value, scalar.isFinite else { throw mismatch() }
-            return scalar
-        case .float:
-            guard case .double(let scalar) = value,
-                  scalar.isFinite,
-                  let converted = Float(exactly: scalar) else { throw mismatch() }
-            return converted
-        case .bool:
-            guard case .bool(let scalar) = value else { throw mismatch() }
-            return scalar
-        case .date:
-            guard case .timestamp(let scalar) = value else { throw mismatch() }
-            return Date(
-                timeIntervalSince1970: Double(scalar.secondsSinceUnixEpoch)
-                    + Double(scalar.nanoseconds) / 1_000_000_000
-            )
-        case .uuid:
-            guard case .uuid(let scalar) = value else { throw mismatch() }
-            let bytes = scalar.bytes
-            return UUID(uuid: (
-                bytes[0], bytes[1], bytes[2], bytes[3],
-                bytes[4], bytes[5], bytes[6], bytes[7],
-                bytes[8], bytes[9], bytes[10], bytes[11],
-                bytes[12], bytes[13], bytes[14], bytes[15]
-            ))
-        case .data:
-            guard case .bytes(let scalar) = value else { throw mismatch() }
-            return Data(scalar)
-        case .rdfTerm:
-            guard case .rdfTerm(let term) = value else { throw mismatch() }
-            return term
-        case .enum:
-            switch value {
-            case .string(let scalar): return scalar
-            case .int64(let scalar): return scalar
-            case .uint64(let scalar): return scalar
-            default: throw mismatch()
-            }
-        case .nested:
-            throw CanonicalReadError.invalidPartition(
-                entity: entity,
-                reason: "nested field '\(schema.name)' cannot be a partition"
-            )
-        case .reference:
-            throw CanonicalReadError.invalidPartition(
-                entity: entity,
-                reason: "reference field '\(schema.name)' cannot be a partition"
-            )
-        }
     }
 
 }
@@ -199,7 +129,7 @@ package enum CanonicalPartitionBinding {
 extension DatabaseContext {
     /// Execute a canonical read query and return wire-level rows after validating the typed source.
     public func query<T: Persistable>(
-        _ selectQuery: QueryIR.SelectQuery,
+        _ selectQuery: SelectQuery,
         as type: T.Type,
         options: ReadExecutionOptions = .default
     ) async throws -> QueryResponse {
@@ -212,7 +142,7 @@ extension DatabaseContext {
 
     /// Execute a canonical read query and decode typed models from row fields.
     public func execute<T: Persistable>(
-        _ selectQuery: QueryIR.SelectQuery,
+        _ selectQuery: SelectQuery,
         as type: T.Type,
         options: ReadExecutionOptions = .default
     ) async throws -> [T] {
@@ -225,7 +155,7 @@ extension DatabaseContext {
     }
 
     private func validateTypedSelectQuery<T: Persistable>(
-        _ selectQuery: QueryIR.SelectQuery,
+        _ selectQuery: SelectQuery,
         matches type: T.Type
     ) throws {
         guard case .table(let tableRef) = selectQuery.source else {

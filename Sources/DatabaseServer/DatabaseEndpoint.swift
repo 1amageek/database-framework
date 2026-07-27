@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public final class DatabaseEndpoint: Sendable {
     private let container: DBContainer
@@ -41,10 +41,11 @@ public final class DatabaseEndpoint: Sendable {
         self.errorMapper = AnyDatabaseErrorMapper(errorMapper)
     }
 
-    public func execute(_ bytes: DatabaseBytes) async throws -> DatabaseBytes {
+    public func execute(_ bytes: ByteString) async throws -> ByteString {
         let request: DatabaseWireRequestEnvelope
         do {
-            request = try DatabaseEnvelopeCodec.decodeRequest(bytes, limits: limits)
+            request = try DatabaseWireDecoder(limits: limits)
+                .decodeRequestEnvelope(bytes)
         } catch {
             throw DatabaseEndpointError.invalidRequestFrame(error)
         }
@@ -59,7 +60,7 @@ public final class DatabaseEndpoint: Sendable {
         ) {
             return try encodeFailureResponse(
                 for: request,
-                error: DatabaseRemoteError(
+                error: RemoteOperationError(
                     category: .authorization,
                     code: denial.code,
                     message: denial.message,
@@ -131,7 +132,7 @@ public final class DatabaseEndpoint: Sendable {
                 throw DatabaseEndpointError.missingHandler(request.operation)
             }
             return try await operationHandler.invoke(
-                payload: request.payload,
+                envelope: request,
                 context: context,
                 limits: limits
             )
@@ -151,15 +152,15 @@ public final class DatabaseEndpoint: Sendable {
 
     private func encodeFailureResponse(
         for request: DatabaseWireRequestEnvelope,
-        error remoteError: DatabaseRemoteError
-    ) throws -> DatabaseBytes {
+        error remoteError: RemoteOperationError
+    ) throws -> ByteString {
         do {
             return try encodeFailureEnvelope(
                 for: request,
                 error: remoteError
             )
         } catch {
-            let reduced = DatabaseRemoteError(
+            let reduced = RemoteOperationError(
                 category: remoteError.category,
                 code: Self.stringPrefix(
                     remoteError.code,
@@ -177,7 +178,7 @@ public final class DatabaseEndpoint: Sendable {
                     error: reduced
                 )
             } catch {
-                let fallback = DatabaseRemoteError(
+                let fallback = RemoteOperationError(
                     category: .internalFailure,
                     code: Self.stringPrefix(
                         "FAILURE_RESPONSE_ENCODING_FAILED",
@@ -205,15 +206,12 @@ public final class DatabaseEndpoint: Sendable {
 
     private func encodeFailureEnvelope(
         for request: DatabaseWireRequestEnvelope,
-        error: DatabaseRemoteError
-    ) throws(DatabaseWireError) -> DatabaseBytes {
-        try DatabaseEnvelopeCodec.encode(
-            response: DatabaseWireResponseEnvelope(
-                requestID: request.requestID,
-                operation: request.operation,
-                payload: .failure(error)
-            ),
-            limits: limits
+        error: RemoteOperationError
+    ) throws(DatabaseWireError) -> ByteString {
+        try DatabaseWireEncoder(limits: limits).encodeFailure(
+            requestID: request.requestID,
+            operation: request.operation,
+            error: error
         )
     }
 

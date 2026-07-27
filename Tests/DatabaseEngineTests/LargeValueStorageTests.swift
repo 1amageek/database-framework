@@ -7,8 +7,9 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseKitFoundation
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -16,60 +17,17 @@ import DatabaseRuntime
 // MARK: - Test Model
 
 /// Model with large data field for testing 100KB limit handling
-struct LargeDataModel: Persistable {
-    typealias ID = String
-
+@Persistable
+struct LargeDataModel {
+    #Directory<LargeDataModel>("test", "largevalue")
     var id: String = UUID().uuidString
     var name: String
     var data: Data  // Can be large
-
-    static var persistableType: String { "LargeDataModel" }
-    static var directoryPathComponents: [String] { ["test", "largevalue"] }
-    static var allFields: [String] { ["id", "name", "data"] }
-
-    static var descriptors: [any Descriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "data": return data
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<LargeDataModel, Value>) -> String {
-        switch keyPath {
-        case \LargeDataModel.id: return "id"
-        case \LargeDataModel.name: return "name"
-        case \LargeDataModel.data: return "data"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<LargeDataModel>) -> String {
-        switch keyPath {
-        case \LargeDataModel.id: return "id"
-        case \LargeDataModel.name: return "name"
-        case \LargeDataModel.data: return "data"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<LargeDataModel> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Tests
 
-@Suite("Large Value Storage Tests", .serialized, .heartbeat)
+@Suite("Large Value Storage Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct LargeValueStorageTests {
 
     private func createContainer() async throws -> DBContainer {
@@ -133,7 +91,7 @@ struct LargeValueStorageTests {
         model.name = "Now Small"
         model.data = smallData
 
-        try context.insert(model)
+        try context.update(model)
         try await context.save()
 
         // Step 3: Verify small data is correctly retrieved
@@ -165,7 +123,7 @@ struct LargeValueStorageTests {
         model.name = "Now Large"
         model.data = largeData
 
-        try context.insert(model)
+        try context.update(model)
         try await context.save()
 
         // Step 3: Verify large data is correctly retrieved

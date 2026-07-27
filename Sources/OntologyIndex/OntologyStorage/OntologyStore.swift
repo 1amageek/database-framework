@@ -11,7 +11,8 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Graph
+import DatabaseKit
+import DatabaseTypes
 
 /// Ontology store for persistent TBox/RBox storage
 ///
@@ -251,11 +252,10 @@ public struct OntologyStore: Sendable {
         ontologyIRI: String,
         transaction: any TransactionAccess
     ) async throws {
-        let encoder = JSONEncoder()
         for (index, axiom) in axioms.enumerated() {
             let key = subspace.axiomKey(ontologyIRI, axiomID: String(index))
-            let data = try encoder.encode(axiom)
-            try transaction.setValue(Bytes(data), for: key)
+            let bytes = try OWLAxiomStorageFormat.encode(axiom)
+            try transaction.setValue(Bytes(retaining: bytes), for: key)
         }
     }
 
@@ -266,8 +266,6 @@ public struct OntologyStore: Sendable {
     ) async throws -> [OWLAxiom] {
         let (beginKey, endKey) = subspace.axioms(ontologyIRI).range()
         var axioms: [OWLAxiom] = []
-        let decoder = JSONDecoder()
-
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
@@ -275,7 +273,9 @@ public struct OntologyStore: Sendable {
         )
 
         for (_, value) in stream {
-            let axiom = try decoder.decode(OWLAxiom.self, from: Data(value))
+            let axiom = try OWLAxiomStorageFormat.decode(
+                ByteString(retaining: value)
+            )
             axioms.append(axiom)
         }
 

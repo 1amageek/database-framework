@@ -1,4 +1,5 @@
-import DatabaseValue
+import DatabaseEngine
+import DatabaseTypes
 
 /// Failures while scanning canonical RDF dataset indexes.
 public enum RDFDatasetScannerError: Error, Sendable, Equatable {
@@ -14,7 +15,7 @@ public enum RDFDatasetScannerError: Error, Sendable, Equatable {
     case invalidRDFComponent(
         source: String,
         component: RDFDatasetIndexComponent,
-        reason: DatabaseRDFTermCodecError
+        reason: RDFTermStorageError
     )
     case retainedByteCountOverflow(
         operation: RetainedByteCountOperation,

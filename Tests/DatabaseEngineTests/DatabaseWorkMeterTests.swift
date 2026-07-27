@@ -8,7 +8,7 @@ struct DatabaseWorkMeterTests {
     @Test("claims reach exact row and work limits")
     func reachesExactLimits() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 2,
                 maximumWorkUnits: 3,
                 timeoutMilliseconds: 30_000
@@ -26,7 +26,7 @@ struct DatabaseWorkMeterTests {
     @Test("row accounting does not consume work")
     func rowAccountingIsIndependent() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 2,
                 maximumWorkUnits: 0,
                 timeoutMilliseconds: 30_000
@@ -41,7 +41,7 @@ struct DatabaseWorkMeterTests {
     @Test("row and work exhaustion retain distinct typed errors")
     func reportsExhaustedDimension() throws {
         let rowMeter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 0,
                 maximumWorkUnits: 2,
                 timeoutMilliseconds: 30_000
@@ -52,7 +52,7 @@ struct DatabaseWorkMeterTests {
         }
 
         let workMeter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 2,
                 maximumWorkUnits: 0,
                 timeoutMilliseconds: 30_000
@@ -66,7 +66,7 @@ struct DatabaseWorkMeterTests {
     @Test("concurrent callers cannot exceed the exact limit")
     func concurrentClaimsAreAtomic() async {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 100,
                 maximumWorkUnits: 50,
                 timeoutMilliseconds: 30_000
@@ -107,7 +107,7 @@ struct DatabaseWorkMeterTests {
     @Test("storage sentinel is positive and overflow safe")
     func storageSentinelIsSafe() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: UInt64.max,
                 timeoutMilliseconds: 30_000
@@ -120,7 +120,7 @@ struct DatabaseWorkMeterTests {
     @Test("an expired deadline fails deterministically")
     func expiredDeadlineFails() {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: 1,
                 timeoutMilliseconds: 0
@@ -136,7 +136,7 @@ struct DatabaseWorkMeterTests {
     func expiredClaimsDoNotMutateCounters() throws {
         let clock = ManualWorkMeterClock()
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 4,
                 maximumWorkUnits: 4,
                 maximumIntermediateRows: 4,
@@ -179,7 +179,7 @@ struct DatabaseWorkMeterTests {
     func expiredStorageSentinelFails() {
         let clock = ManualWorkMeterClock()
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: 1,
                 timeoutMilliseconds: 1
@@ -198,7 +198,7 @@ struct DatabaseWorkMeterTests {
     @Test("intermediate reservations share one exact request budget")
     func intermediateReservationsShareRequestBudget() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 10,
                 maximumWorkUnits: 10,
                 maximumIntermediateRows: 3,
@@ -260,7 +260,7 @@ struct DatabaseWorkMeterTests {
     @Test("reservation lifetime releases retained resources exactly once")
     func reservationLifetimeReleasesExactlyOnce() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: 1,
                 maximumIntermediateRows: 1,
@@ -288,7 +288,7 @@ struct DatabaseWorkMeterTests {
     @Test("one reservation grows atomically with its retained owner")
     func reservationGrowthIsAtomic() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: 1,
                 maximumIntermediateRows: 3,
@@ -321,7 +321,7 @@ struct DatabaseWorkMeterTests {
     @Test("failed growth preserves the original reservation")
     func failedReservationGrowthIsTransactional() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: 1,
                 maximumIntermediateRows: 2,
@@ -360,7 +360,7 @@ struct DatabaseWorkMeterTests {
     @Test("released reservations reject later growth")
     func releasedReservationRejectsGrowth() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: 1,
                 maximumIntermediateRows: 1,
@@ -388,7 +388,7 @@ struct DatabaseWorkMeterTests {
     @Test("partial release rolls back only the failed owner increment")
     func partialReleaseIsExact() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: 1,
                 maximumIntermediateRows: 4,

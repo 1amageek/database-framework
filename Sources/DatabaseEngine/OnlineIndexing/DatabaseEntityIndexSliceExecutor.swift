@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import StorageKit
 
 enum DatabaseEntityIndexSliceExecutor {
@@ -56,7 +56,16 @@ enum DatabaseEntityIndexSliceExecutor {
                 batch.append((item: item, id: try itemTypeSubspace.unpack(key)))
                 lastKey = key
             }
-            try await maintainer.scanItems(batch, transaction: transaction)
+            try await OnlineIndexBatchWriter.write(
+                batch,
+                index: index,
+                maintainer: maintainer,
+                violationTracker: UniquenessViolationTracker(
+                    container: container,
+                    metadataSubspace: storeSubspace.subspace(SubspaceKey.metadata)
+                ),
+                transaction: transaction
+            )
             return Result(
                 processed: UInt64(batch.count),
                 lastProcessedKey: lastKey,

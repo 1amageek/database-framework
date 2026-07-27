@@ -1,12 +1,11 @@
-import Core
+import DatabaseKit
 import DatabaseMath
-import DatabaseValue
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
 import Foundation
 #endif
-import QueryIR
 
 struct SPARQLNumericValue: Sendable {
     enum ArithmeticOperation: Sendable, Equatable {
@@ -31,29 +30,50 @@ struct SPARQLNumericValue: Sendable {
     private enum Storage: Sendable {
         case integer(Int64)
         case unsignedInteger(UInt64)
-        case decimal(DatabaseExactDecimal)
+        case decimal(ExactDecimal)
         case floatingPoint(Double, FloatingKind)
     }
 
     private static let xsdNamespace = "http://www.w3.org/2001/XMLSchema#"
+    private static let decimalDivisionScale: Int32 = 18
 
     private let storage: Storage
 
     init?(_ value: FieldValue) {
         switch value {
+        case .int8(let integer):
+            storage = .integer(Int64(integer))
+        case .int16(let integer):
+            storage = .integer(Int64(integer))
+        case .int32(let integer):
+            storage = .integer(Int64(integer))
         case .int64(let integer):
             storage = .integer(integer)
+        case .uint8(let integer):
+            storage = .unsignedInteger(UInt64(integer))
+        case .uint16(let integer):
+            storage = .unsignedInteger(UInt64(integer))
+        case .uint32(let integer):
+            storage = .unsignedInteger(UInt64(integer))
         case .uint64(let integer):
             storage = .unsignedInteger(integer)
-        case .double(let double):
+        case .float32(let float):
+            storage = .floatingPoint(Double(float), .float)
+        case .float64(let double):
             storage = .floatingPoint(double, .double)
+        case .decimal(let decimal):
+            storage = .decimal(decimal)
         case .rdfTerm(.literal(let literal)):
-            guard literal.language == nil, literal.direction == nil,
+            guard literal.languageTag == nil, literal.baseDirection == nil,
                   let storage = Self.parse(literal) else {
                 return nil
             }
             self.storage = storage
-        case .bool, .string, .data, .rdfTerm, .null, .array:
+        case .bool, .string, .bytes,
+             .date, .time, .dateTime, .timestamp,
+             .timeSpan, .calendarPeriod,
+             .geographicPoint, .geographicPosition, .vector,
+             .uuid, .object, .reference, .rdfTerm, .null, .array:
             return nil
         }
     }
@@ -110,16 +130,16 @@ struct SPARQLNumericValue: Sendable {
                     guard !next.overflow else { return nil }
                     result = next.partialValue
                 }
-                return result
+                return Int64(exactly: result)
             }
-            guard value.scale < 19 else { return 0 }
-            var divisor: Int64 = 1
+            guard value.scale <= 38 else { return 0 }
+            var divisor: Int128 = 1
             for _ in 0..<value.scale {
                 let next = divisor.multipliedReportingOverflow(by: 10)
                 guard !next.overflow else { return 0 }
                 divisor = next.partialValue
             }
-            return value.coefficient / divisor
+            return Int64(exactly: value.coefficient / divisor)
         case .floatingPoint(let value, _):
             guard value.isFinite else { return nil }
             let truncated = value.rounded(.towardZero)
@@ -133,25 +153,22 @@ struct SPARQLNumericValue: Sendable {
     }
 
     func decimalConstructorLexicalForm() throws -> String? {
-        let decimal: DatabaseExactDecimal
+        let decimal: ExactDecimal
         switch storage {
         case .integer(let value):
-            decimal = DatabaseExactDecimal(coefficient: value, scale: 0)
+            decimal = ExactDecimal(coefficient: Int128(value), scale: 0)
         case .unsignedInteger(let value):
-            guard let coefficient = Int64(exactly: value) else { return nil }
-            decimal = DatabaseExactDecimal(coefficient: coefficient, scale: 0)
+            let coefficient = Int128(value)
+            decimal = ExactDecimal(coefficient: coefficient, scale: 0)
         case .decimal(let value):
             decimal = value
         case .floatingPoint(let value, _):
             guard value.isFinite,
-                  case .decimal(let coefficient, let scale)? =
+                  case .decimal(let parsedDecimal)? =
                     Literal.parseDecimal(String(value)) else {
                 return nil
             }
-            decimal = DatabaseExactDecimal(
-                coefficient: coefficient,
-                scale: scale
-            )
+            decimal = parsedDecimal
         }
         do {
             return try decimal.decimalLexicalForm(
@@ -259,7 +276,7 @@ struct SPARQLNumericValue: Sendable {
             return Self(storage: .integer(-Int64(value)))
         case .decimal(let value):
             let result = try Self.performExactDecimalOperation {
-                () throws(DatabaseExactDecimalError) -> DatabaseExactDecimal in
+                () throws(ExactDecimalError) -> ExactDecimal in
                 try value.negated()
             }
             return Self(storage: .decimal(result))
@@ -277,7 +294,7 @@ struct SPARQLNumericValue: Sendable {
             return self
         case .decimal(let value):
             let result = try Self.performExactDecimalOperation {
-                () throws(DatabaseExactDecimalError) -> DatabaseExactDecimal in
+                () throws(ExactDecimalError) -> ExactDecimal in
                 try value.magnitude()
             }
             return Self(storage: .decimal(result))
@@ -347,7 +364,7 @@ struct SPARQLNumericValue: Sendable {
         do {
             return .rdfTerm(
                 .literal(
-                    try DatabaseRDFLiteral(
+                    try RDFLiteral(
                         lexicalForm: lexicalForm,
                         datatype: datatype
                     )
@@ -372,13 +389,13 @@ struct SPARQLNumericValue: Sendable {
         return false
     }
 
-    private var exactDecimal: DatabaseExactDecimal? {
+    private var exactDecimal: ExactDecimal? {
         switch storage {
         case .integer(let value):
-            return DatabaseExactDecimal(coefficient: value, scale: 0)
+            return ExactDecimal(coefficient: Int128(value), scale: 0)
         case .unsignedInteger(let value):
-            guard let coefficient = Int64(exactly: value) else { return nil }
-            return DatabaseExactDecimal(coefficient: coefficient, scale: 0)
+            let coefficient = Int128(value)
+            return ExactDecimal(coefficient: coefficient, scale: 0)
         case .decimal(let value):
             return value
         case .floatingPoint:
@@ -466,89 +483,59 @@ struct SPARQLNumericValue: Sendable {
 
     private static func applyExact(
         _ operation: ArithmeticOperation,
-        _ left: DatabaseExactDecimal,
-        _ right: DatabaseExactDecimal
-    ) throws(SPARQLNumericError) -> DatabaseExactDecimal {
+        _ left: ExactDecimal,
+        _ right: ExactDecimal
+    ) throws(SPARQLNumericError) -> ExactDecimal {
         switch operation {
         case .add:
             return try performExactDecimalOperation {
-                () throws(DatabaseExactDecimalError) -> DatabaseExactDecimal in
+                () throws(ExactDecimalError) -> ExactDecimal in
                 try left.adding(right)
             }
         case .subtract:
             return try performExactDecimalOperation {
-                () throws(DatabaseExactDecimalError) -> DatabaseExactDecimal in
+                () throws(ExactDecimalError) -> ExactDecimal in
                 try left.subtracting(right)
             }
         case .multiply:
             return try performExactDecimalOperation {
-                () throws(DatabaseExactDecimalError) -> DatabaseExactDecimal in
+                () throws(ExactDecimalError) -> ExactDecimal in
                 try left.multiplying(by: right)
             }
         case .divide:
-            return try performExactDecimalOperation {
-                () throws(DatabaseExactDecimalError) -> DatabaseExactDecimal in
-                try left.dividing(by: right)
-            }
+            return try divideDecimal(left, by: right)
         case .modulo:
             return try performExactDecimalOperation {
-                () throws(DatabaseExactDecimalError) -> DatabaseExactDecimal in
+                () throws(ExactDecimalError) -> ExactDecimal in
                 try left.remainder(dividingBy: right)
             }
         }
     }
 
     private static func roundDecimal(
-        _ value: DatabaseExactDecimal,
+        _ value: ExactDecimal,
         operation: RoundingOperation
-    ) throws(SPARQLNumericError) -> DatabaseExactDecimal {
+    ) throws(SPARQLNumericError) -> ExactDecimal {
         guard value.scale > 0, value.coefficient != 0 else { return value }
 
-        if value.scale > 19 {
+        if value.scale > 38 {
             switch operation {
             case .round:
-                return DatabaseExactDecimal(coefficient: 0, scale: 0)
+                return ExactDecimal(coefficient: 0, scale: 0)
             case .ceiling:
-                return DatabaseExactDecimal(
+                return ExactDecimal(
                     coefficient: value.coefficient > 0 ? 1 : 0,
                     scale: 0
                 )
             case .floor:
-                return DatabaseExactDecimal(
+                return ExactDecimal(
                     coefficient: value.coefficient < 0 ? -1 : 0,
                     scale: 0
                 )
             }
         }
 
-        if value.scale == 19 {
-            switch operation {
-            case .round:
-                let threshold: UInt64 = 5_000_000_000_000_000_000
-                let magnitude = value.coefficient.magnitude
-                let coefficient: Int64
-                if value.coefficient > 0, magnitude >= threshold {
-                    coefficient = 1
-                } else if value.coefficient < 0, magnitude > threshold {
-                    coefficient = -1
-                } else {
-                    coefficient = 0
-                }
-                return DatabaseExactDecimal(coefficient: coefficient, scale: 0)
-            case .ceiling:
-                return DatabaseExactDecimal(
-                    coefficient: value.coefficient > 0 ? 1 : 0,
-                    scale: 0
-                )
-            case .floor:
-                return DatabaseExactDecimal(
-                    coefficient: value.coefficient < 0 ? -1 : 0,
-                    scale: 0
-                )
-            }
-        }
-
-        var divisor: Int64 = 1
+        var divisor: Int128 = 1
         for _ in 0..<value.scale {
             let next = divisor.multipliedReportingOverflow(by: 10)
             guard !next.overflow else { throw .numericOverflow }
@@ -557,13 +544,13 @@ struct SPARQLNumericValue: Sendable {
         let quotient = value.coefficient / divisor
         let remainder = value.coefficient % divisor
         guard remainder != 0 else {
-            return DatabaseExactDecimal(coefficient: quotient, scale: 0)
+            return ExactDecimal(coefficient: quotient, scale: 0)
         }
 
-        let coefficient: Int64
+        let coefficient: Int128
         switch operation {
         case .round:
-            let threshold = UInt64(divisor / 2)
+            let threshold = divisor.magnitude / 2
             if remainder > 0, remainder.magnitude >= threshold {
                 let result = quotient.addingReportingOverflow(1)
                 guard !result.overflow else { throw .numericOverflow }
@@ -592,11 +579,11 @@ struct SPARQLNumericValue: Sendable {
                 coefficient = quotient
             }
         }
-        return DatabaseExactDecimal(coefficient: coefficient, scale: 0)
+        return ExactDecimal(coefficient: coefficient, scale: 0)
     }
 
     private static func performExactDecimalOperation<T>(
-        _ operation: () throws(DatabaseExactDecimalError) -> T
+        _ operation: () throws(ExactDecimalError) -> T
     ) throws(SPARQLNumericError) -> T {
         do {
             return try operation()
@@ -609,8 +596,137 @@ struct SPARQLNumericValue: Sendable {
         }
     }
 
-    private static func parse(_ literal: DatabaseRDFLiteral) -> Storage? {
-        switch literal.datatype {
+    /// Divides two exact decimals using the SPARQL execution precision when the
+    /// mathematical quotient has no finite decimal representation.
+    ///
+    /// ExactDecimal deliberately rejects recurring results. SPARQL decimal
+    /// arithmetic instead requires an implementation-defined finite precision,
+    /// owned here by the query runtime rather than by the primitive value type.
+    private static func divideDecimal(
+        _ left: ExactDecimal,
+        by right: ExactDecimal
+    ) throws(SPARQLNumericError) -> ExactDecimal {
+        do {
+            return try left.dividing(by: right)
+        } catch let error {
+            switch error {
+            case .divisionByZero:
+                throw .divisionByZero
+            case .numericOverflow:
+                throw .numericOverflow
+            case .inexactResult:
+                // Continue with the runtime's bounded recurring-decimal policy.
+                break
+            }
+        }
+
+        var numerator = left.coefficient.magnitude
+        var denominator = right.coefficient.magnitude
+        guard denominator != 0 else { throw .divisionByZero }
+
+        let divisor = greatestCommonDivisor(numerator, denominator)
+        numerator /= divisor
+        denominator /= divisor
+
+        var resultScale = decimalDivisionScale
+        var scaledNumerator: UInt128?
+        var scaledDenominator: UInt128?
+        while resultScale >= 0 {
+            let exponent = Int64(resultScale)
+                + Int64(right.scale)
+                - Int64(left.scale)
+            if exponent >= 0 {
+                scaledNumerator = scaleMagnitude(
+                    numerator,
+                    by: exponent
+                )
+                scaledDenominator = denominator
+            } else {
+                scaledNumerator = numerator
+                scaledDenominator = scaleMagnitude(
+                    denominator,
+                    by: -exponent
+                )
+            }
+            if scaledNumerator != nil, scaledDenominator != nil {
+                break
+            }
+            resultScale -= 1
+        }
+
+        guard resultScale >= 0,
+              let scaledNumerator,
+              let scaledDenominator else {
+            throw .numericOverflow
+        }
+
+        var quotient = scaledNumerator / scaledDenominator
+        let remainder = scaledNumerator % scaledDenominator
+        let roundingThreshold = scaledDenominator / 2
+            + scaledDenominator % 2
+        if remainder >= roundingThreshold {
+            let rounded = quotient.addingReportingOverflow(1)
+            guard !rounded.overflow else { throw .numericOverflow }
+            quotient = rounded.partialValue
+        }
+
+        let isNegative = (left.coefficient < 0) != (right.coefficient < 0)
+        let maximumMagnitude = isNegative
+            ? UInt128(Int128.max) + 1
+            : UInt128(Int128.max)
+        guard quotient <= maximumMagnitude else { throw .numericOverflow }
+
+        let coefficient: Int128
+        if isNegative {
+            if quotient == UInt128(Int128.max) + 1 {
+                coefficient = Int128.min
+            } else {
+                guard let signed = Int128(exactly: quotient) else {
+                    throw .numericOverflow
+                }
+                coefficient = -signed
+            }
+        } else {
+            guard let signed = Int128(exactly: quotient) else {
+                throw .numericOverflow
+            }
+            coefficient = signed
+        }
+        return ExactDecimal(
+            coefficient: coefficient,
+            scale: resultScale
+        )
+    }
+
+    private static func scaleMagnitude(
+        _ value: UInt128,
+        by exponent: Int64
+    ) -> UInt128? {
+        guard exponent >= 0 else { return nil }
+        var result = value
+        for _ in 0..<exponent {
+            guard result <= UInt128.max / 10 else { return nil }
+            result *= 10
+        }
+        return result
+    }
+
+    private static func greatestCommonDivisor(
+        _ left: UInt128,
+        _ right: UInt128
+    ) -> UInt128 {
+        var left = left
+        var right = right
+        while right != 0 {
+            let remainder = left % right
+            left = right
+            right = remainder
+        }
+        return left
+    }
+
+    private static func parse(_ literal: RDFLiteral) -> Storage? {
+        switch literal.datatypeIRI.rawValue {
         case xsdNamespace + "integer":
             return parseInteger(literal.lexicalForm)
         case xsdNamespace + "nonPositiveInteger":
@@ -657,13 +773,11 @@ struct SPARQLNumericValue: Sendable {
             )
         case xsdNamespace + "decimal":
             guard isDecimalLexicalForm(literal.lexicalForm),
-                  case .decimal(let coefficient, let scale)? =
+                  case .decimal(let decimal)? =
                     Literal.parseDecimal(literal.lexicalForm) else {
                 return nil
             }
-            return .decimal(
-                DatabaseExactDecimal(coefficient: coefficient, scale: scale)
-            )
+            return .decimal(decimal)
         case xsdNamespace + "float":
             guard let value = parseFloatingPoint(literal.lexicalForm) else {
                 return nil

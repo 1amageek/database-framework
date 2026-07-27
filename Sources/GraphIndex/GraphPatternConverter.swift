@@ -3,9 +3,10 @@
 //
 // Converts the parsed SPARQL AST into GraphIndex execution structures.
 
-import QueryIR
-import Core
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
+import DatabaseKit
 
 /// Converts QueryIR graph types to GraphIndex execution types.
 ///
@@ -41,14 +42,14 @@ public struct GraphPatternConverter: Sendable {
 
     // MARK: - GraphPattern → ExecutionPattern
 
-    /// Convert a QueryIR.GraphPattern to a GraphIndex.ExecutionPattern
+    /// Convert a GraphPattern to a GraphIndex.ExecutionPattern
     ///
     /// - Parameters:
     ///   - pattern: The QueryIR graph pattern from the parser
     ///   - prefixes: Prefix map for expanding prefixed names (e.g., ["ex": "http://example.org/"])
     /// - Returns: An ExecutionPattern ready for the GraphIndex executor
     public static func convert(
-        _ pattern: QueryIR.GraphPattern,
+        _ pattern: GraphPattern,
         prefixes: [String: String] = [:],
         structuralLimits: QueryStructuralLimits = .default
     ) throws -> ExecutionPattern {
@@ -67,7 +68,7 @@ public struct GraphPatternConverter: Sendable {
     }
 
     package static func convert(
-        _ pattern: QueryIR.GraphPattern,
+        _ pattern: GraphPattern,
         prefixes: [String: String],
         context: inout SPARQLAlgebraCompilationContext,
         subqueryInputPolicy: SPARQLSubqueryInputPolicy,
@@ -283,7 +284,7 @@ public struct GraphPatternConverter: Sendable {
     }
 
     private static func convertBasicGraphPattern(
-        _ pattern: borrowing QueryIR.BasicGraphPattern,
+        _ pattern: borrowing BasicGraphPattern,
         prefixes: [String: String],
         blankNodeScopeIdentifier: UInt64
     ) throws -> ExecutionPattern {
@@ -344,7 +345,7 @@ public struct GraphPatternConverter: Sendable {
 
     private static func convertValues(
         variables: [String],
-        bindings: [[QueryIR.Literal?]]
+        bindings: [[Literal?]]
     ) throws -> ExecutionPattern {
         var normalizedVariables: [String] = []
         normalizedVariables.reserveCapacity(variables.count)
@@ -398,7 +399,7 @@ public struct GraphPatternConverter: Sendable {
     }
 
     private static func convertGraphSelector(
-        _ term: QueryIR.SPARQLTerm,
+        _ term: SPARQLTerm,
         prefixes: [String: String]
     ) throws -> ExecutionGraphSelector {
         if case .variable(let name) = term {
@@ -421,7 +422,7 @@ public struct GraphPatternConverter: Sendable {
     }
 
     private static func appendConvertedTriple(
-        _ triple: QueryIR.TriplePattern,
+        _ triple: TriplePattern,
         prefixes: [String: String],
         blankNodeScope: inout BlankNodeVariableScope,
         to triples: inout [ExecutionTriple]
@@ -454,7 +455,7 @@ public struct GraphPatternConverter: Sendable {
     }
 
     private static func lowerTerm(
-        _ term: QueryIR.SPARQLTerm,
+        _ term: SPARQLTerm,
         prefixes: [String: String],
         blankNodeScope: inout BlankNodeVariableScope,
         supplementalTriples: inout [ExecutionTriple]
@@ -463,7 +464,7 @@ public struct GraphPatternConverter: Sendable {
         case .variable(let name):
             return .variable("?\(name)")
         case .iri(let value):
-            return .value(.rdfTerm(.iri(value)))
+            return .value(.rdfTerm(.iri(try RDFIRI(value))))
         case .literal(let literal):
             return .value(try literal.toSPARQLFieldValue())
         case .blankNode(let identifier):
@@ -526,7 +527,11 @@ public struct GraphPatternConverter: Sendable {
                 subject: loweredReifier,
                 predicate: .value(
                     .rdfTerm(
-                        .iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies")
+                        .iri(
+                            try RDFIRI(
+                                "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"
+                            )
+                        )
                     )
                 ),
                 object: tripleTerm
@@ -537,7 +542,7 @@ public struct GraphPatternConverter: Sendable {
     }
 
     private static func convertPropertyPath(
-        _ path: QueryIR.PropertyPath
+        _ path: PropertyPath
     ) -> ExecutionPropertyPath {
         switch path {
         case .iri(let value):
@@ -563,11 +568,11 @@ public struct GraphPatternConverter: Sendable {
 
     // MARK: - Expression → FilterExpression
 
-    /// Convert a QueryIR.Expression to a GraphIndex.FilterExpression
+    /// Convert a Expression to a GraphIndex.FilterExpression
     ///
     /// Preserves QueryIR and expression traits for the execution layer.
     package static func convertFilter(
-        _ expression: QueryIR.Expression
+        _ expression: Expression
     ) throws -> FilterExpression {
         .query(try SPARQLExpressionPlan(expression))
     }
@@ -575,13 +580,13 @@ public struct GraphPatternConverter: Sendable {
     /// Adds SPARQL projection expressions as Extend algebra nodes. Aggregate
     /// expressions are evaluated by Group and are therefore not extended here.
     package static func applyingProjectionExpressions(
-        _ projection: QueryIR.Projection,
+        _ projection: Projection,
         to pattern: ExecutionPattern,
         inputVariables: Set<String> = [],
         reservedTargetVariables: Set<String> = [],
         restrictExpressionReferencesToScope: Bool = false
     ) throws -> ExecutionPattern {
-        let items: [QueryIR.ProjectionItem]
+        let items: [ProjectionItem]
         switch projection {
         case .items(let values), .distinctItems(let values):
             items = values
@@ -645,9 +650,9 @@ public struct GraphPatternConverter: Sendable {
 
     // MARK: - AggregateBinding → AggregateExpression
 
-    /// Convert a QueryIR.AggregateBinding to a GraphIndex.AggregateExpression
+    /// Convert a AggregateBinding to a GraphIndex.AggregateExpression
     package static func convertAggregate(
-        _ binding: QueryIR.AggregateBinding
+        _ binding: AggregateBinding
     ) throws -> AggregateExpression {
         let alias = "?\(binding.variable)"
         switch binding.aggregate {

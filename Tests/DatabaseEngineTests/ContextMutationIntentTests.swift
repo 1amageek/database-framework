@@ -7,9 +7,9 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import FullText
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -27,8 +27,8 @@ struct DelInsUser {
     var email: String = ""
     var city: String = ""
 
-    #Index(ScalarIndexKind<DelInsUser>(fields: [\.email]))
-    #Index(ScalarIndexKind<DelInsUser>(fields: [\.city]))
+    #Index(.scalar, fields: [\DelInsUser.email])
+    #Index(.scalar, fields: [\DelInsUser.city])
 }
 
 /// FullTextIndex-backed model: content is a tokenized text field.
@@ -40,12 +40,12 @@ struct DelInsArticle {
     var title: String = ""
     var content: String = ""
 
-    #Index(FullTextIndexKind<DelInsArticle>(fields: [\.content], tokenizer: .simple))
+    #Index(.fullText(tokenizer: .simple), fields: [\DelInsArticle.content])
 }
 
 // MARK: - Test Suite
 
-@Suite("Context mutation intent semantics", .serialized, .heartbeat)
+@Suite("Context mutation intent semantics", .foundationDBScenario, .serialized, .heartbeat)
 struct ContextMutationIntentTests {
 
     init() async throws {
@@ -112,7 +112,7 @@ struct ContextMutationIntentTests {
         try await context.save()
 
         // Sanity: old value reachable before the update.
-        let seed = try await context.fetch(DelInsUser.self).where(\.email == oldEmail).execute()
+        let seed = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.email == oldEmail).execute()
         try #require(seed.count == 1)
         try #require(seed.first?.id == userId)
 
@@ -122,11 +122,11 @@ struct ContextMutationIntentTests {
         try await context.save()
 
         // Old indexed value must be gone.
-        let old = try await context.fetch(DelInsUser.self).where(\.email == oldEmail).execute()
+        let old = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.email == oldEmail).execute()
         #expect(old.isEmpty, "Old index entry must be cleared after update (got \(old.count))")
 
         // New indexed value must be visible.
-        let new = try await context.fetch(DelInsUser.self).where(\.email == newEmail).execute()
+        let new = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.email == newEmail).execute()
         #expect(new.count == 1, "New index entry must be present after update")
         #expect(new.first?.id == userId)
         #expect(new.first?.email == newEmail)
@@ -155,10 +155,10 @@ struct ContextMutationIntentTests {
         try await context.save()
 
         let old = try await context.fetch(DelInsUser.self)
-            .where(\.email == oldEmail)
+            .where(DelInsUser.fields.email == oldEmail)
             .execute()
         let new = try await context.fetch(DelInsUser.self)
-            .where(\.email == newEmail)
+            .where(DelInsUser.fields.email == newEmail)
             .execute()
         #expect(old.count == 1)
         #expect(old.first?.id == userId)
@@ -189,13 +189,13 @@ struct ContextMutationIntentTests {
         try context.update(updated)
         try await context.save()
 
-        let oldEmailHit = try await context.fetch(DelInsUser.self).where(\.email == oldEmail).execute()
-        let oldCityHit = try await context.fetch(DelInsUser.self).where(\.city == oldCity).execute()
+        let oldEmailHit = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.email == oldEmail).execute()
+        let oldCityHit = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.city == oldCity).execute()
         #expect(oldEmailHit.isEmpty, "Stale email index entry must be cleared")
         #expect(oldCityHit.isEmpty, "Stale city index entry must be cleared")
 
-        let newEmailHit = try await context.fetch(DelInsUser.self).where(\.email == newEmail).execute()
-        let newCityHit = try await context.fetch(DelInsUser.self).where(\.city == newCity).execute()
+        let newEmailHit = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.email == newEmail).execute()
+        let newCityHit = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.city == newCity).execute()
         #expect(newEmailHit.count == 1)
         #expect(newCityHit.count == 1)
         #expect(newEmailHit.first?.id == userId)
@@ -227,8 +227,8 @@ struct ContextMutationIntentTests {
         try context.insert(userB)
         try await context.save()
 
-        let aHit = try await context.fetch(DelInsUser.self).where(\.email == emailA).execute()
-        let bHit = try await context.fetch(DelInsUser.self).where(\.email == emailB).execute()
+        let aHit = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.email == emailA).execute()
+        let bHit = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.email == emailB).execute()
         #expect(aHit.isEmpty, "Deleted id A must be gone from index")
         #expect(bHit.count == 1, "Inserted id B must be visible in index")
         #expect(bHit.first?.id == idB)
@@ -259,8 +259,8 @@ struct ContextMutationIntentTests {
         try context.insert(updated)
         try await context.save()
 
-        let old = try await context.fetch(DelInsUser.self).where(\.email == oldEmail).execute()
-        let new = try await context.fetch(DelInsUser.self).where(\.email == newEmail).execute()
+        let old = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.email == oldEmail).execute()
+        let new = try await context.fetch(DelInsUser.self).where(DelInsUser.fields.email == newEmail).execute()
         #expect(old.isEmpty)
         #expect(new.count == 1)
         #expect(new.first?.id == userId)
@@ -292,7 +292,7 @@ struct ContextMutationIntentTests {
 
         // Sanity: the old token is searchable.
         let seed = try await context.search(DelInsArticle.self)
-            .fullText(\.content)
+            .fullText(DelInsArticle.fields.content)
             .terms([oldToken])
             .execute()
         try #require(seed.count == 1)
@@ -304,20 +304,20 @@ struct ContextMutationIntentTests {
         try await context.save()
 
         let oldHits = try await context.search(DelInsArticle.self)
-            .fullText(\.content)
+            .fullText(DelInsArticle.fields.content)
             .terms([oldToken])
             .execute()
         #expect(oldHits.isEmpty, "Old full-text token must be cleared after update")
 
         let newHits = try await context.search(DelInsArticle.self)
-            .fullText(\.content)
+            .fullText(DelInsArticle.fields.content)
             .terms([newToken])
             .execute()
         #expect(newHits.count == 1, "New full-text token must be indexed after update")
         #expect(newHits.first?.id == articleId)
 
         let sharedHits = try await context.search(DelInsArticle.self)
-            .fullText(\.content)
+            .fullText(DelInsArticle.fields.content)
             .terms([sharedToken])
             .execute()
         #expect(sharedHits.count == 1, "Shared token must still match exactly once after update")

@@ -7,7 +7,7 @@ import Testing
 import TestHeartbeat
 @testable import DatabaseEngine
 
-@Suite("ContinuationToken Tests", .serialized, .heartbeat)
+@Suite("ContinuationToken Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct ContinuationTokenTests {
     @Test("Empty raw token is rejected")
     func emptyTokenIsRejected() {

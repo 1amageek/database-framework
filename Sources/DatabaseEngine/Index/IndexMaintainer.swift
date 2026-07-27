@@ -1,5 +1,5 @@
 import StorageKit
-import Core
+import DatabaseKit
 
 /// Protocol for maintaining an index
 ///

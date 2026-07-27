@@ -1,7 +1,7 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import StorageKit
 import Synchronization
 import TestHeartbeat
@@ -11,7 +11,7 @@ import Testing
 import TestSupport
 #endif
 
-@Suite("RDF dataset read isolation", .heartbeat)
+@Suite("RDF dataset read isolation", .foundationDBScenario, .heartbeat)
 struct RDFDatasetReadModeTests {
     @Test("SPARQL executor propagates default and mutation read modes")
     func sparqlExecutorPropagatesReadMode() async throws {
@@ -65,7 +65,7 @@ struct RDFDatasetReadModeTests {
         let graph = try RDFGraphName(
             iri: "https://example.com/graph/read-isolation"
         )
-        let quad = makeQuad(graph: graph)
+        let quad = try makeQuad(graph: graph)
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             _ = try await store.insert(
@@ -136,7 +136,7 @@ struct RDFDatasetReadModeTests {
                 observations: observations
             )
             let result = try await store.insert(
-                makeQuad(graph: graph),
+                try makeQuad(graph: graph),
                 transaction: recording,
                 workMeter: makeMeter()
             )
@@ -173,7 +173,7 @@ struct RDFDatasetReadModeTests {
             )
             let protectedTransaction = try engine.createTransaction()
             let protectedResult = try await store.insert(
-                makeQuad(graph: graph, suffix: "protected"),
+                try makeQuad(graph: graph, suffix: "protected"),
                 transaction: protectedTransaction,
                 workMeter: makeMeter()
             )
@@ -184,7 +184,7 @@ struct RDFDatasetReadModeTests {
 
             let orphanTransaction = try engine.createTransaction()
             try writePhysicalQuad(
-                makeQuad(graph: graph, suffix: "orphan"),
+                try makeQuad(graph: graph, suffix: "orphan"),
                 root: root,
                 transaction: orphanTransaction
             )
@@ -245,7 +245,7 @@ struct RDFDatasetReadModeTests {
 
     private func makeMeter() -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000
@@ -256,12 +256,21 @@ struct RDFDatasetReadModeTests {
     private func makeQuad(
         graph: RDFGraphName,
         suffix: String = "value"
-    ) -> RDFQuad {
+    ) throws -> RDFQuad {
         RDFQuad(
-            subject: .iri("https://example.com/subject/\(suffix)"),
-            predicate: .iri("https://example.com/predicate"),
-            object: .iri("https://example.com/object/\(suffix)"),
-            graph: graph.term
+            subject: .iri(
+                try RDFIRI(
+                    "https://example.com/subject/\(suffix)"
+                )
+            ),
+            predicate: try RDFPredicateIRI(
+                "https://example.com/predicate"
+            ),
+            object: try .iri(
+                validating:
+                    "https://example.com/object/\(suffix)"
+            ),
+            graph: graph
         )
     }
 
@@ -306,9 +315,9 @@ struct RDFDatasetReadModeTests {
         let observations: ScannerCallObservations
 
         func scan(
-            subject: DatabaseRDFTerm?,
-            predicate: DatabaseRDFTerm?,
-            object: DatabaseRDFTerm?,
+            subject: RDFTerm?,
+            predicate: RDFTerm?,
+            object: RDFTerm?,
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,

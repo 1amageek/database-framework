@@ -60,39 +60,58 @@ private func value(
 
 @Persistable(type: "SQLiteStageBoundaryUser")
 struct SQLiteStageBoundaryUserV1 {
+    var id: String = ""
     var name: String
     var email: String
 }
 
 @Persistable(type: "SQLiteStageBoundaryUser")
 struct SQLiteStageBoundaryUserV2 {
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 @Persistable(type: "SQLiteStageBoundaryUser")
 struct SQLiteStageBoundaryUserV3 {
-    #Index(ScalarIndexKind<SQLiteStageBoundaryUserV3>(fields: [\.fullName]), name: "SQLiteStageBoundaryUser_fullName")
+    #Index(
+        .scalar,
+        fields: [\SQLiteStageBoundaryUserV3.fullName],
+        name: "SQLiteStageBoundaryUser_fullName"
+    )
 
+    var id: String = ""
     var fullName: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 enum SQLiteStageBoundarySchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteStageBoundaryUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteStageBoundaryUserV1.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteStageBoundarySchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteStageBoundaryUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteStageBoundaryUserV2.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteStageBoundarySchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteStageBoundaryUserV3.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteStageBoundaryUserV3.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteStageBoundaryMigrationPlan: SchemaMigrationPlan {
@@ -149,33 +168,59 @@ enum SQLiteStageBoundaryMigrationPlan: SchemaMigrationPlan {
 
 @Persistable(type: "SQLiteIndexLifecycleUser")
 struct SQLiteIndexLifecycleUserV2 {
-    #Index(ScalarIndexKind<SQLiteIndexLifecycleUserV2>(fields: [\.email]), name: "SQLiteIndexLifecycleUser_email")
-    #Index(ScalarIndexKind<SQLiteIndexLifecycleUserV2>(fields: [\.age]), name: "SQLiteIndexLifecycleUser_age")
+    #Index(
+        .scalar,
+        fields: [\SQLiteIndexLifecycleUserV2.email],
+        name: "SQLiteIndexLifecycleUser_email"
+    )
+    #Index(
+        .scalar,
+        fields: [\SQLiteIndexLifecycleUserV2.age],
+        name: "SQLiteIndexLifecycleUser_age"
+    )
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int
+    var age: Int64
 }
 
 @Persistable(type: "SQLiteIndexLifecycleUser")
 struct SQLiteIndexLifecycleUserV3 {
-    #Index(ScalarIndexKind<SQLiteIndexLifecycleUserV3>(fields: [\.email]), name: "SQLiteIndexLifecycleUser_email")
-    #Index(ScalarIndexKind<SQLiteIndexLifecycleUserV3>(fields: [\.createdAt]), name: "SQLiteIndexLifecycleUser_createdAt")
+    #Index(
+        .scalar,
+        fields: [\SQLiteIndexLifecycleUserV3.email],
+        name: "SQLiteIndexLifecycleUser_email"
+    )
+    #Index(
+        .scalar,
+        fields: [\SQLiteIndexLifecycleUserV3.createdAt],
+        name: "SQLiteIndexLifecycleUser_createdAt"
+    )
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int
+    var age: Int64
     var createdAt: Double = 0
 }
 
 enum SQLiteIndexLifecycleSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteIndexLifecycleUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteIndexLifecycleUserV2.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteIndexLifecycleSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteIndexLifecycleUserV3.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteIndexLifecycleUserV3.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteIndexLifecycleMigrationPlan: SchemaMigrationPlan {
@@ -195,37 +240,52 @@ enum SQLiteIndexLifecycleMigrationPlan: SchemaMigrationPlan {
 
 @Persistable(type: "SQLiteStageFailureUser")
 struct SQLiteStageFailureUserV1 {
+    var id: String = ""
     var name: String
     var email: String
 }
 
 @Persistable(type: "SQLiteStageFailureUser")
 struct SQLiteStageFailureUserV2 {
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 @Persistable(type: "SQLiteStageFailureUser")
 struct SQLiteStageFailureUserV3 {
+    var id: String = ""
     var fullName: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 enum SQLiteStageFailureSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteStageFailureUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteStageFailureUserV1.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteStageFailureSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteStageFailureUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteStageFailureUserV2.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteStageFailureSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteStageFailureUserV3.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteStageFailureUserV3.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteStageFailureMigrationPlan: SchemaMigrationPlan {

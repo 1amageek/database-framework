@@ -4,7 +4,7 @@ import Foundation
 public enum CLIError: Error, CustomStringConvertible {
     case unknownCommand(String)
     case invalidArguments(String)
-    case entityNotFound(String)
+    case entityTypeNotFound(String)
     case entityNotFound(type: String, id: String)
     case invalidJSON(String)
     case connectionFailed(String)
@@ -22,7 +22,7 @@ public enum CLIError: Error, CustomStringConvertible {
             return "Unknown command: '\(cmd)'. Type 'help' for available commands."
         case .invalidArguments(let usage):
             return "Invalid arguments. \(usage)"
-        case .entityNotFound(let name):
+        case .entityTypeNotFound(let name):
             return "Type '\(name)' not found in schema. Use 'schema list' to see registered types."
         case .entityNotFound(let type, let id):
             return "Entity '\(id)' not found in '\(type)'"

@@ -1,5 +1,5 @@
 import DatabaseEngine
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 /// Database-wide authoritative catalog for SQL/PGQ property graph definitions.

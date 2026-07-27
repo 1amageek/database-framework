@@ -1,4 +1,4 @@
-import QueryIR
+import DatabaseKit
 
 /// Applies the aggregate-scope translation defined by SPARQL 1.1 section
 /// 18.2.4.1 without entering nested query scopes.
@@ -11,9 +11,9 @@ struct SPARQLGroupScopeExpressionRewriter {
     private var sampledVariables: [String: String] = [:]
 
     mutating func rewrite(
-        _ expression: QueryIR.Expression,
+        _ expression: Expression,
         aggregateRewriter: inout SPARQLAggregateRewriter
-    ) throws -> QueryIR.Expression {
+    ) throws -> Expression {
         if let variable = groupedExpressions[expression] {
             return .variable(Variable(variable))
         }
@@ -250,9 +250,9 @@ struct SPARQLGroupScopeExpressionRewriter {
 
     private mutating func sampleIfRequired(
         variable: String,
-        original: QueryIR.Expression,
+        original: Expression,
         aggregateRewriter: inout SPARQLAggregateRewriter
-    ) -> QueryIR.Expression {
+    ) -> Expression {
         let normalized = Self.prefixed(variable)
         guard shouldSample(normalized) else { return original }
         return .variable(

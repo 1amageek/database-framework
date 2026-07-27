@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import StorageKit
 
 /// Immutable, container-scoped index maintenance provider registry.
@@ -39,11 +39,17 @@ public struct IndexMaintainerProviderRegistry: Sendable {
         providers[kindIdentifier]?.physicalEntryCapabilities
     }
 
+    public func supportsUniquenessConstraints(
+        for kindIdentifier: String
+    ) -> Bool? {
+        providers[kindIdentifier]?.supportsUniquenessConstraints
+    }
+
     public func makeIndexMaintainer<Item: Persistable>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
         let kindIdentifier = index.kind.identifier
         guard let provider = providers[kindIdentifier] else {

@@ -1,14 +1,13 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import StorageKit
 import Synchronization
 import TestHeartbeat
 import Testing
 @testable import GraphIndex
 @testable import QueryAST
-import QueryIR
 
 @Suite("SPARQL SubSelect execution", .heartbeat)
 struct SPARQLSubSelectExecutionTests {
@@ -51,9 +50,9 @@ struct SPARQLSubSelectExecutionTests {
         let observations: ScanObservations
 
         func scan(
-            subject: DatabaseRDFTerm?,
-            predicate: DatabaseRDFTerm?,
-            object: DatabaseRDFTerm?,
+            subject: RDFTerm?,
+            predicate: RDFTerm?,
+            object: RDFTerm?,
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
@@ -67,9 +66,9 @@ struct SPARQLSubSelectExecutionTests {
             return RDFDatasetScanResult(
                 quads: [
                     RDFQuad(
-                        subject: .iri("urn:subject"),
-                        predicate: .iri("urn:predicate"),
-                        object: .iri("urn:object")
+                        subject: .iri(try RDFIRI("urn:subject")),
+                        predicate: try RDFPredicateIRI("urn:predicate"),
+                        object: try .iri(validating: "urn:object")
                     )
                 ],
                 physicalScanCount: 1
@@ -150,9 +149,9 @@ struct SPARQLSubSelectExecutionTests {
         let observations: RetryScanObservations
 
         func scan(
-            subject: DatabaseRDFTerm?,
-            predicate: DatabaseRDFTerm?,
-            object: DatabaseRDFTerm?,
+            subject: RDFTerm?,
+            predicate: RDFTerm?,
+            object: RDFTerm?,
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
@@ -168,20 +167,22 @@ struct SPARQLSubSelectExecutionTests {
                 )
             }
             let call = observations.record(
-                predicate: predicateIRI,
+                predicate: predicateIRI.rawValue,
                 transaction: transaction,
                 workMeter: workMeter
             )
 
-            switch predicateIRI {
+            switch predicateIRI.rawValue {
             case "urn:inner":
                 let value = call == 1 ? "urn:first" : "urn:second"
                 return RDFDatasetScanResult(
                     quads: [
                         RDFQuad(
-                            subject: .iri("urn:inner-subject"),
-                            predicate: .iri(predicateIRI),
-                            object: .iri(value)
+                            subject: .iri(
+                                try RDFIRI("urn:inner-subject")
+                            ),
+                            predicate: RDFPredicateIRI(predicateIRI),
+                            object: try .iri(validating: value)
                         )
                     ],
                     physicalScanCount: 1
@@ -193,9 +194,11 @@ struct SPARQLSubSelectExecutionTests {
                 return RDFDatasetScanResult(
                     quads: [
                         RDFQuad(
-                            subject: .iri("urn:right-subject"),
-                            predicate: .iri(predicateIRI),
-                            object: .iri("urn:second")
+                            subject: .iri(
+                                try RDFIRI("urn:right-subject")
+                            ),
+                            predicate: RDFPredicateIRI(predicateIRI),
+                            object: try .iri(validating: "urn:second")
                         )
                     ],
                     physicalScanCount: 1
@@ -231,9 +234,9 @@ struct SPARQLSubSelectExecutionTests {
 
     private struct FollowingBindingScanner: RDFDatasetScanner {
         func scan(
-            subject: DatabaseRDFTerm?,
-            predicate: DatabaseRDFTerm?,
-            object: DatabaseRDFTerm?,
+            subject: RDFTerm?,
+            predicate: RDFTerm?,
+            object: RDFTerm?,
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
@@ -245,19 +248,19 @@ struct SPARQLSubSelectExecutionTests {
             }
 
             let quad: RDFQuad
-            switch predicateIRI {
+            switch predicateIRI.rawValue {
             case "urn:p":
                 quad = RDFQuad(
-                    subject: .iri("urn:subject"),
-                    predicate: .iri(predicateIRI),
-                    object: .iri("urn:object")
+                    subject: .iri(try RDFIRI("urn:subject")),
+                    predicate: RDFPredicateIRI(predicateIRI),
+                    object: try .iri(validating: "urn:object")
                 )
             case "urn:q":
                 quad = RDFQuad(
-                    subject: .iri("urn:subject"),
-                    predicate: .iri(predicateIRI),
+                    subject: .iri(try RDFIRI("urn:subject")),
+                    predicate: RDFPredicateIRI(predicateIRI),
                     object: .literal(
-                        try DatabaseRDFLiteral(
+                        try RDFLiteral(
                             lexicalForm: "1",
                             datatype: "http://www.w3.org/2001/XMLSchema#integer"
                         )
@@ -330,7 +333,7 @@ struct SPARQLSubSelectExecutionTests {
                 )
             )
         )
-        let graphPattern = QueryIR.GraphPattern.join(
+        let graphPattern = GraphPattern.join(
             .values(
                 variables: ["identifier"],
                 bindings: [[.string("a")], [.string("b")]]
@@ -568,7 +571,10 @@ struct SPARQLSubSelectExecutionTests {
         )
 
         #expect(result.0.count == 1)
-        #expect(result.0[0]["?value"] == .rdfTerm(.iri("urn:second")))
+        let expectedValue = FieldValue.rdfTerm(
+            try .iri(validating: "urn:second")
+        )
+        #expect(result.0[0]["?value"] == expectedValue)
         #expect(observations.innerScanCount == 2)
         #expect(observations.rightScanCount == 2)
         #expect(observations.transactionCount == 2)
@@ -604,7 +610,10 @@ struct SPARQLSubSelectExecutionTests {
         )
 
         #expect(result.0.count == 1)
-        #expect(result.0[0]["?s"] == .rdfTerm(.iri("urn:subject")))
+        let expectedSubject = FieldValue.rdfTerm(
+            try .iri(validating: "urn:subject")
+        )
+        #expect(result.0[0]["?s"] == expectedSubject)
         #expect(lexicalForm(result.0[0], variable: "?y") == "1")
     }
 
@@ -728,20 +737,23 @@ struct SPARQLSubSelectExecutionTests {
         #expect(!rows[0].isBound("?value"))
     }
 
-    @Test("Invalid SubSelect modifiers and dataset clauses fail at compilation")
+    @Test("Unexecutable SubSelect modifiers and dataset clauses fail at compilation")
     func invalidSubSelectPlanFailsBeforeExecution() {
-        let source = DataSource.graphPattern(QueryIR.GraphPattern.basic([]))
+        let source = DataSource.graphPattern(GraphPattern.basic([]))
 
         #expect(
             throws: SPARQLSelectPlanCompilationError
-                .negativeSolutionModifier(name: "LIMIT", value: -1)
+                .solutionModifierExceedsExecutionRange(
+                    name: "LIMIT",
+                    value: .max
+                )
         ) {
             try GraphPatternConverter.convert(
                 .subquery(
                     SelectQuery(
                         projection: .all,
                         source: source,
-                        limit: -1
+                        limit: .max
                     )
                 )
             )
@@ -835,7 +847,7 @@ struct SPARQLSubSelectExecutionTests {
         maximumIntermediateBytes: UInt64 = 16 * 1_024 * 1_024
     ) -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1_000,
                 maximumWorkUnits: 100_000,
                 maximumIntermediateRows: maximumIntermediateRows,

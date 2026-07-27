@@ -8,7 +8,7 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
-@testable import Core
+@testable import DatabaseKit
 
 /// Tests for CachePolicy
 ///
@@ -18,7 +18,7 @@ import DatabaseRuntime
 /// - Query.cachePolicy fluent API
 /// - QueryExecutor.cachePolicy fluent API
 /// - DatabaseContext.fetch() cache integration
-@Suite("CachePolicy Tests", .serialized, .heartbeat)
+@Suite("CachePolicy Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct CachePolicyTests {
 
     // MARK: - CachePolicy + ReadVersionCache Tests
@@ -232,7 +232,7 @@ struct CachePolicyTests {
             // First fetch with .server
             let results = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.server)
-                .where(\.id == testId)
+                .where(CachePolicyEntity.fields.id == testId)
                 .execute()
 
             #expect(results.count == 1)
@@ -265,7 +265,7 @@ struct CachePolicyTests {
             // Count with .cached policy
             let count = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.cached)
-                .where(\.id == testId)
+                .where(CachePolicyEntity.fields.id == testId)
                 .count()
 
             #expect(count == 1)
@@ -300,21 +300,21 @@ struct CachePolicyTests {
             // Test .server
             let serverResults = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.server)
-                .where(\.id == testId)
+                .where(CachePolicyEntity.fields.id == testId)
                 .execute()
             #expect(serverResults.count == 1)
 
             // Test .cached
             let cachedResults = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.cached)
-                .where(\.id == testId)
+                .where(CachePolicyEntity.fields.id == testId)
                 .execute()
             #expect(cachedResults.count == 1)
 
             // Test .stale(60)
             let staleResults = try await context.fetch(CachePolicyEntity.self)
                 .cachePolicy(.stale(60))
-                .where(\.id == testId)
+                .where(CachePolicyEntity.fields.id == testId)
                 .execute()
             #expect(staleResults.count == 1)
         }
@@ -448,15 +448,10 @@ struct CachePolicyTests {
     struct CachePolicyEntity {
         #Directory<CachePolicyEntity>("test", "cachepolicy")
 
-        var id: String = ULID().ulidString
-        var value: Int = 0
+        var id: String = UUID().uuidString
+        var value: Int64 = 0
 
-        init(id: String = ULID().ulidString, value: Int = 0) {
-            self.id = id
-            self.value = value
-        }
-
-        #Index(ScalarIndexKind<CachePolicyEntity>(fields: [\.value]))
+        #Index(.scalar, fields: [\CachePolicyEntity.value])
     }
 }
 #endif

@@ -1,31 +1,41 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
+import DatabaseKit
 import DatabaseEngine
 
 enum IndexProjectionEntityFactory {
     static let storedFields = ["name", "age", "nickname", "tags", "target"]
 
     static func descriptor(
-        storedFields: [String] = storedFields
-    ) -> IndexDescriptor {
-        IndexDescriptor(
+        includesStoredFields: Bool = true
+    ) throws -> IndexDescriptor {
+        try IndexDescriptor(
             name: "IndexProjectionEntity_email",
-            keyPaths: [\IndexProjectionEntity.email],
-            kind: ScalarIndexKind<IndexProjectionEntity>(fields: [\.email]),
-            storedFieldNames: storedFields
+            definition: .scalar,
+            fields: [IndexProjectionEntity.fields.email.ascending],
+            storedFields: includesStoredFields
+                ? [
+                    IndexProjectionEntity.fields.name.ascending,
+                    IndexProjectionEntity.fields.age.ascending,
+                    IndexProjectionEntity.fields.nickname.ascending,
+                    IndexProjectionEntity.fields.tags.ascending,
+                    IndexProjectionEntity.fields.target.ascending,
+                ]
+                : []
         )
     }
 
     static func runtimeIndex(
-        from descriptor: IndexDescriptor
+        from descriptor: IndexDescriptor,
+        storedFieldNames: [String]? = nil
     ) -> Index {
         Index(
             name: descriptor.name,
             kind: descriptor.kind,
             rootExpression: KeyExpressionFactory.from(keyPaths: descriptor.fieldNames),
             isUnique: descriptor.isUnique,
-            storedFieldNames: descriptor.storedFieldNames
+            storedFieldNames: storedFieldNames
+                ?? descriptor.storedFieldNames
         )
     }
 

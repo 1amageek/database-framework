@@ -8,7 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -135,13 +136,13 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
             return nil
         }
         guard let sumBytes, let countBytes else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Sum index requires both sum and count entries"
             )
         }
         let count = try readInt64Value(countBytes)
         guard count > 0 else {
-            throw IndexError.invalidStructure("Sum index count must be positive")
+            throw AggregationIndexError.invalidStructure("Sum index count must be positive")
         }
         return try readStoredNumericValue(sumBytes).fieldValue
     }
@@ -216,7 +217,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
             let identity = decodedKey.groupingIdentity
             guard decodedKey.groupingElements.count
                     == index.rootExpression.columnCount - 1 else {
-                throw IndexError.invalidStructure(
+                throw AggregationIndexError.invalidStructure(
                     "Sum index key has an invalid grouping field count"
                 )
             }
@@ -234,11 +235,11 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
             case "count":
                 let count = try readInt64Value(value)
                 guard count > 0 else {
-                    throw IndexError.invalidStructure("Sum index count must be positive")
+                    throw AggregationIndexError.invalidStructure("Sum index count must be positive")
                 }
                 counts[identity] = count
             default:
-                throw IndexError.invalidStructure(
+                throw AggregationIndexError.invalidStructure(
                     "Sum index key has an unknown value marker: \(decodedKey.marker)"
                 )
             }
@@ -248,12 +249,12 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
         results.reserveCapacity(sums.count)
         for (identity, sum) in sums {
             guard let grouping = groupingByIdentity[identity], counts[identity] != nil else {
-                throw IndexError.invalidStructure("Sum index value is missing its count")
+                throw AggregationIndexError.invalidStructure("Sum index value is missing its count")
             }
             results.append((grouping: grouping, sum: sum))
         }
         for identity in counts.keys where sums[identity] == nil {
-            throw IndexError.invalidStructure("Sum index count is missing its value")
+            throw AggregationIndexError.invalidStructure("Sum index count is missing its value")
         }
         return results
     }
@@ -373,7 +374,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
     private func validateGroupingCount(_ count: Int) throws {
         guard index.rootExpression.columnCount >= 1,
               count == index.rootExpression.columnCount - 1 else {
-            throw IndexError.invalidArgument(
+            throw AggregationIndexError.invalidArgument(
                 "Grouping value count does not match sum index '\(index.name)'"
             )
         }

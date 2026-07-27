@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -91,9 +91,12 @@ private struct DistinctIndexContext {
         // Expression: pageId + userId (grouping + distinct value)
         let index = Index(
             name: indexName,
-            kind: DistinctIndexKind<DistinctIndexedPageView>(
-                groupBy: [\.pageId],
-                value: \.userId
+            kind: distinctIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "pageId", number: 2)
+                ],
+                valueField: FieldIdentity(name: "userId", number: 3),
+                precision: 14
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "pageId"),

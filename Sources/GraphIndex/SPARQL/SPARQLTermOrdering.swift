@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -25,8 +25,8 @@ enum SPARQLTermOrdering {
     }
 
     static func compare(
-        _ left: DatabaseRDFTerm,
-        _ right: DatabaseRDFTerm
+        _ left: RDFTerm,
+        _ right: RDFTerm
     ) throws -> ComparisonResult {
         let leftRank = rank(left)
         let rightRank = rank(right)
@@ -35,9 +35,10 @@ enum SPARQLTermOrdering {
         }
 
         switch (left, right) {
-        case (.blankNode(let lhs), .blankNode(let rhs)),
-             (.iri(let lhs), .iri(let rhs)):
-            return compareStrings(lhs, rhs)
+        case (.blankNode(let lhs), .blankNode(let rhs)):
+            return compareStrings(lhs.rawValue, rhs.rawValue)
+        case (.iri(let lhs), .iri(let rhs)):
+            return compareStrings(lhs.rawValue, rhs.rawValue)
 
         case (.literal(let lhs), .literal(let rhs)):
             switch try SPARQLValueComparator().compare(lhs, rhs) {
@@ -57,9 +58,12 @@ enum SPARQLTermOrdering {
             .tripleTerm(let leftSubject, let leftPredicate, let leftObject),
             .tripleTerm(let rightSubject, let rightPredicate, let rightObject)
         ):
-            let subject = try compare(leftSubject, rightSubject)
+            let subject = try compare(leftSubject.term, rightSubject.term)
             if subject != .orderedSame { return subject }
-            let predicate = try compare(leftPredicate, rightPredicate)
+            let predicate = try compare(
+                leftPredicate.term,
+                rightPredicate.term
+            )
             if predicate != .orderedSame { return predicate }
             return try compare(leftObject, rightObject)
 
@@ -70,7 +74,7 @@ enum SPARQLTermOrdering {
         }
     }
 
-    private static func rank(_ term: DatabaseRDFTerm) -> UInt8 {
+    private static func rank(_ term: RDFTerm) -> UInt8 {
         switch term {
         case .blankNode: return 0
         case .iri: return 1

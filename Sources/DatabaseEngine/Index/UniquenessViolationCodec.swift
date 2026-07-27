@@ -1,5 +1,4 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -14,20 +13,20 @@ enum UniquenessViolationCodec {
 
     static func encode(
         _ violation: UniquenessViolation,
-        limits: DatabaseWireLimits = .default
-    ) throws(DatabaseWireError) -> Bytes {
-        let encoded = try DatabaseWireWriter.encode(limits: limits) {
-            (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
+        limits: StorageFrameLimits = .default
+    ) throws(StorageFrameError) -> Bytes {
+        let encoded = try StorageFrameEncoder.encode(limits: limits) {
+            (writer: inout StorageFrameEncoder) throws(StorageFrameError) in
             for byte in magic {
                 writer.writeUInt8(byte)
             }
             writer.writeUInt16(version)
             try writer.writeString(violation.indexName)
             try writer.writeString(violation.persistableType)
-            try writer.writeBytes(DatabaseBytes(retaining: violation.valueKey))
+            try writer.writeBytes(ByteString(retaining: violation.valueKey))
             try writer.writeCount(violation.primaryKeys.count)
             for primaryKey in violation.primaryKeys {
-                try writer.writeBytes(DatabaseBytes(retaining: primaryKey))
+                try writer.writeBytes(ByteString(retaining: primaryKey))
             }
             writer.writeDouble(violation.detectedAt.timeIntervalSince1970)
         }
@@ -36,20 +35,20 @@ enum UniquenessViolationCodec {
 
     static func decode(
         _ bytes: Bytes,
-        limits: DatabaseWireLimits = .default
+        limits: StorageFrameLimits = .default
     ) throws -> UniquenessViolation {
-        var reader = DatabaseWireReader(
-            DatabaseBytes(retaining: bytes),
+        var reader = try StorageFrameDecoder(
+            ByteString(retaining: bytes),
             limits: limits
         )
         for byte in magic {
             guard try reader.readUInt8() == byte else {
-                throw DatabaseWireError.invalidMagic
+                throw StorageFrameError.invalidMagic
             }
         }
         let decodedVersion = try reader.readUInt16()
         guard decodedVersion == version else {
-            throw DatabaseWireError.unsupportedProtocolVersionValue(decodedVersion)
+            throw StorageFrameError.unsupportedVersion(decodedVersion)
         }
         let indexName = try reader.readString()
         let persistableType = try reader.readString()
@@ -63,7 +62,7 @@ enum UniquenessViolationCodec {
         let detectedInterval = try reader.readDouble()
         try reader.ensureFullyRead()
         guard detectedInterval.isFinite else {
-            throw DatabaseWireError.invalidTimestamp
+            throw StorageFrameError.invalidTimestamp
         }
         return UniquenessViolation(
             indexName: indexName,

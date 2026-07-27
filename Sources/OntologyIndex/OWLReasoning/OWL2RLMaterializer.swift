@@ -5,9 +5,9 @@
 //
 // Reference: W3C OWL 2 RL Profile https://www.w3.org/TR/owl2-profiles/#OWL_2_RL
 
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
-import Graph
+import DatabaseKit
 
 /// OWL 2 RL Materializer for forward-chaining inference
 ///
@@ -179,7 +179,7 @@ public struct OWL2RLMaterializer: Sendable {
     /// When x rdf:type C is asserted, for every superclass S of C,
     /// infer x rdf:type S.
     private func materializeClassHierarchy(
-        individual: DatabaseRDFTerm,
+        individual: RDFSubject,
         classIRI: String,
         ontologyIRI: String,
         baseTriple: ReasoningTriple,
@@ -200,7 +200,7 @@ public struct OWL2RLMaterializer: Sendable {
             let inferredTriple = try reasoningTriple(
                 subject: individual,
                 predicateIRI: WellKnownIRI.rdfType,
-                object: .iri(superClass)
+                object: try iriTerm(superClass)
             )
 
             // Create provenance
@@ -231,7 +231,7 @@ public struct OWL2RLMaterializer: Sendable {
             let inferredTriple = try reasoningTriple(
                 subject: individual,
                 predicateIRI: WellKnownIRI.rdfType,
-                object: .iri(equivalentClass)
+                object: try iriTerm(equivalentClass)
             )
 
             let provenance = InferenceProvenance(
@@ -344,9 +344,9 @@ public struct OWL2RLMaterializer: Sendable {
 
     /// Materialize inferences for a property assertion
     private func materializePropertyAssertion(
-        subject: DatabaseRDFTerm,
-        predicate: DatabaseRDFPredicateIRI,
-        object: DatabaseRDFTerm,
+        subject: RDFSubject,
+        predicate: RDFPredicateIRI,
+        object: RDFTerm,
         ontologyIRI: String,
         baseTriple: ReasoningTriple,
         transaction: any TransactionAccess,
@@ -400,7 +400,7 @@ public struct OWL2RLMaterializer: Sendable {
             let inferredTriple = try reasoningTriple(
                 subject: reversedSubject,
                 predicateIRI: inverseProperty,
-                object: subject
+                object: subject.term
             )
 
             let provenance = InferenceProvenance(
@@ -429,7 +429,7 @@ public struct OWL2RLMaterializer: Sendable {
             let inferredTriple = try ReasoningTriple(
                 subject: reversedSubject,
                 predicate: predicate,
-                object: subject
+                object: subject.term
             )
 
             let provenance = InferenceProvenance(
@@ -456,7 +456,7 @@ public struct OWL2RLMaterializer: Sendable {
             let inferredTriple = try reasoningTriple(
                 subject: subject,
                 predicateIRI: WellKnownIRI.rdfType,
-                object: .iri(domain)
+                object: try iriTerm(domain)
             )
 
             let provenance = InferenceProvenance(
@@ -489,7 +489,7 @@ public struct OWL2RLMaterializer: Sendable {
             let inferredTriple = try reasoningTriple(
                 subject: rangeSubject,
                 predicateIRI: WellKnownIRI.rdfType,
-                object: .iri(range)
+                object: try iriTerm(range)
             )
 
             let provenance = InferenceProvenance(
@@ -525,15 +525,15 @@ public struct OWL2RLMaterializer: Sendable {
 
     /// Detect inconsistencies from a property assertion
     private func detectInconsistencies(
-        subject: DatabaseRDFTerm,
-        predicate: DatabaseRDFPredicateIRI,
-        object: DatabaseRDFTerm,
+        subject: RDFSubject,
+        predicate: RDFPredicateIRI,
+        object: RDFTerm,
         baseTriple: ReasoningTriple,
         propertyDefinition: StoredPropertyDefinition?,
         result: inout InferenceResult
     ) async throws {
         // prp-irp: Irreflexive property violation
-        if subject == object && propertyDefinition?.isIrreflexive == true {
+        if subject.term == object && propertyDefinition?.isIrreflexive == true {
             result.inconsistencies.append(InconsistencyReport(
                 rule: .prpIrp,
                 involvedTriples: [baseTriple],
@@ -547,9 +547,9 @@ public struct OWL2RLMaterializer: Sendable {
     }
 
     private func reasoningTriple(
-        subject: DatabaseRDFTerm,
+        subject: RDFSubject,
         predicateIRI: String,
-        object: DatabaseRDFTerm
+        object: RDFTerm
     ) throws -> ReasoningTriple {
         do {
             return try ReasoningTriple(
@@ -567,15 +567,19 @@ public struct OWL2RLMaterializer: Sendable {
         predicateIRI: String,
         objectIRI: String
     ) throws -> ReasoningTriple {
-        try reasoningTriple(
-            subject: .iri(subjectIRI),
-            predicateIRI: predicateIRI,
-            object: .iri(objectIRI)
-        )
+        do {
+            return try ReasoningTriple(
+                subjectIRI: subjectIRI,
+                predicateIRI: predicateIRI,
+                objectIRI: objectIRI
+            )
+        } catch let error {
+            throw OWL2RLMaterializationError.invalidGeneratedTriple(error)
+        }
     }
 
     private func requireIRI(
-        _ term: DatabaseRDFTerm,
+        _ term: RDFTerm,
         position: OWL2RLMaterializationPosition,
         rule: OWL2RLRule
     ) throws -> String {
@@ -586,16 +590,33 @@ public struct OWL2RLMaterializer: Sendable {
                 actual: termKind(term)
             )
         }
-        return value
+        return value.rawValue
+    }
+
+    private func requireIRI(
+        _ subject: RDFSubject,
+        position: OWL2RLMaterializationPosition,
+        rule: OWL2RLRule
+    ) throws -> String {
+        guard case .iri(let value) = subject else {
+            throw OWL2RLMaterializationError.expectedIRI(
+                rule: rule,
+                position: position,
+                actual: .blankNode
+            )
+        }
+        return value.rawValue
     }
 
     private func requireRDFSubject(
-        _ term: DatabaseRDFTerm,
+        _ term: RDFTerm,
         rule: OWL2RLRule
-    ) throws -> DatabaseRDFTerm {
+    ) throws -> RDFSubject {
         switch term {
-        case .iri, .blankNode:
-            return term
+        case .iri(let iri):
+            return .iri(iri)
+        case .blankNode(let identifier):
+            return .blankNode(identifier)
         case .literal, .tripleTerm:
             throw OWL2RLMaterializationError.expectedRDFSubject(
                 rule: rule,
@@ -604,12 +625,20 @@ public struct OWL2RLMaterializer: Sendable {
         }
     }
 
-    private func termKind(_ term: DatabaseRDFTerm) -> DatabaseRDFTermKind {
+    private func termKind(_ term: RDFTerm) -> RDFTermKind {
         switch term {
         case .blankNode: .blankNode
         case .iri: .iri
         case .literal: .literal
         case .tripleTerm: .tripleTerm
+        }
+    }
+
+    private func iriTerm(_ value: String) throws -> RDFTerm {
+        do {
+            return .iri(try RDFIRI(value))
+        } catch let error {
+            throw OWL2RLMaterializationError.invalidIRI(error)
         }
     }
 
@@ -629,13 +658,14 @@ public enum OWL2RLMaterializationError: Error, Sendable, Equatable {
     case expectedIRI(
         rule: OWL2RLRule,
         position: OWL2RLMaterializationPosition,
-        actual: DatabaseRDFTermKind
+        actual: RDFTermKind
     )
     case expectedRDFSubject(
         rule: OWL2RLRule,
-        actual: DatabaseRDFTermKind
+        actual: RDFTermKind
     )
     case invalidGeneratedTriple(ReasoningTripleError)
+    case invalidIRI(RDFIRIError)
 }
 
 // MARK: - Well-Known IRIs

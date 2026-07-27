@@ -1,7 +1,7 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public protocol DatabaseOperationHandler: Sendable {
-    associatedtype Operation: DatabaseOperation
+    associatedtype Operation: ServerOperationDeclaration
 
     func handle(
         _ request: Operation.Request,

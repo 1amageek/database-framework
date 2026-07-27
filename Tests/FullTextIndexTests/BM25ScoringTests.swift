@@ -6,68 +6,19 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import FullText
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import FullTextIndex
 
 // MARK: - Test Model
 
-struct BM25Article: Persistable {
-    typealias ID = String
-
+@Persistable
+struct BM25Article {
     var id: String
     var title: String
     var content: String
-
-    init(id: String = UUID().uuidString, title: String, content: String) {
-        self.id = id
-        self.title = title
-        self.content = content
-    }
-
-    static var persistableType: String { "BM25Article" }
-    static var allFields: [String] { ["id", "title", "content"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "title": return title
-        case "content": return content
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BM25Article, Value>) -> String {
-        switch keyPath {
-        case \BM25Article.id: return "id"
-        case \BM25Article.title: return "title"
-        case \BM25Article.content: return "content"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BM25Article>) -> String {
-        switch keyPath {
-        case \BM25Article.id: return "id"
-        case \BM25Article.title: return "title"
-        case \BM25Article.content: return "content"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BM25Article> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - BM25 Scoring Context
@@ -77,7 +28,6 @@ private struct BM25ScoringContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: FullTextIndexMaintainer<BM25Article>
-    let kind: FullTextIndexKind<BM25Article>
 
     init(indexName: String = "BM25Article_content") async throws {
         self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
@@ -85,15 +35,14 @@ private struct BM25ScoringContext {
         self.subspace = Subspace(prefix: Tuple("test", "bm25", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = FullTextIndexKind<BM25Article>(
-            fields: [\.content],
-            tokenizer: .simple,
-            storePositions: false
-        )
-
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: fullTextIndexMetadata(
+                fieldName: "content",
+                fieldNumber: 3,
+                tokenizer: .simple,
+                storePositions: false
+            ),
             rootExpression: FieldKeyExpression(fieldName: "content"),
             subspaceKey: indexName,
             itemTypes: Set(["BM25Article"])
@@ -103,8 +52,8 @@ private struct BM25ScoringContext {
             index: index,
             tokenizer: .simple,
             storePositions: false,
-            ngramSize: kind.ngramSize,
-            minTermLength: kind.minTermLength,
+            ngramSize: 3,
+            minTermLength: 2,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

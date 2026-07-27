@@ -10,7 +10,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Graph
+import DatabaseKit
 
 /// Stored class definition for persistent TBox storage
 ///

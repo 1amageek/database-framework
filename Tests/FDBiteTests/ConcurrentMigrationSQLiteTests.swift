@@ -31,24 +31,34 @@ private let concurrentMigrationCounter = ConcurrentMigrationCounter()
 
 @Persistable(type: "SQLiteConcurrentMigrationUser")
 struct SQLiteConcurrentMigrationUserV1 {
+    var id: String = ""
     var name: String
     var email: String
 }
 
 @Persistable(type: "SQLiteConcurrentMigrationUser")
 struct SQLiteConcurrentMigrationUserV2 {
+    var id: String = ""
     var fullName: String
     var email: String
 }
 
 enum SQLiteConcurrentMigrationSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteConcurrentMigrationUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteConcurrentMigrationUserV1.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteConcurrentMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteConcurrentMigrationUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteConcurrentMigrationUserV2.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteConcurrentMigrationPlan: SchemaMigrationPlan {
@@ -181,14 +191,14 @@ struct ConcurrentMigrationSQLiteTests {
         )
         let users = try await verificationContainer.newContext()
             .fetch(SQLiteConcurrentMigrationUserV2.self)
-            .orderBy(\.fullName)
+            .orderBy(SQLiteConcurrentMigrationUserV2.fields.fullName)
             .execute()
 
         #expect(versionA == Schema.Version(2, 0, 0))
         #expect(versionB == Schema.Version(2, 0, 0))
         #expect(users.count == 5)
-        #expect(users.map(\.fullName) == ["User0", "User1", "User2", "User3", "User4"])
-        #expect(users.map(\.email) == [
+        #expect(users.map { $0.fullName } == ["User0", "User1", "User2", "User3", "User4"])
+        #expect(users.map { $0.email } == [
             "user0@example.com", "user1@example.com", "user2@example.com",
             "user3@example.com", "user4@example.com"
         ])

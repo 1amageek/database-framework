@@ -1,5 +1,5 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 
 /// Performs endpoint-pattern compatibility checks without allocating a binding
 /// Dictionary or a retained scratch collection. Repeated variables are checked
@@ -8,9 +8,9 @@ import DatabaseValue
 enum SPARQLPropertyPathEndpointCompatibility {
     static func matches(
         subject: ExecutionTerm,
-        start: DatabaseRDFTerm,
+        start: RDFTerm,
         object: ExecutionTerm,
-        end: DatabaseRDFTerm,
+        end: RDFTerm,
         workMeter: DatabaseWorkMeter
     ) throws -> Bool {
         try termMatches(
@@ -34,11 +34,11 @@ enum SPARQLPropertyPathEndpointCompatibility {
 
     private static func termMatches(
         _ pattern: ExecutionTerm,
-        _ term: DatabaseRDFTerm,
+        _ term: RDFTerm,
         rootSubject: ExecutionTerm,
-        rootStart: DatabaseRDFTerm,
+        rootStart: RDFTerm,
         rootObject: ExecutionTerm,
-        rootEnd: DatabaseRDFTerm,
+        rootEnd: RDFTerm,
         workMeter: DatabaseWorkMeter
     ) throws -> Bool {
         try workMeter.consume(at: .pathExpansion)
@@ -76,7 +76,7 @@ enum SPARQLPropertyPathEndpointCompatibility {
             }
             return try termMatches(
                 subject,
-                storedSubject,
+                storedSubject.term,
                 rootSubject: rootSubject,
                 rootStart: rootStart,
                 rootObject: rootObject,
@@ -84,7 +84,7 @@ enum SPARQLPropertyPathEndpointCompatibility {
                 workMeter: workMeter
             ) && termMatches(
                 predicate,
-                storedPredicate,
+                storedPredicate.term,
                 rootSubject: rootSubject,
                 rootStart: rootStart,
                 rootObject: rootObject,
@@ -104,9 +104,9 @@ enum SPARQLPropertyPathEndpointCompatibility {
 
     private static func occurrencesMatch(
         variable: String,
-        expected: DatabaseRDFTerm,
+        expected: RDFTerm,
         pattern: ExecutionTerm,
-        term: DatabaseRDFTerm,
+        term: RDFTerm,
         workMeter: DatabaseWorkMeter
     ) throws -> Bool {
         try workMeter.consume(at: .deduplication)
@@ -132,13 +132,13 @@ enum SPARQLPropertyPathEndpointCompatibility {
                 variable: variable,
                 expected: expected,
                 pattern: subject,
-                term: storedSubject,
+                term: storedSubject.term,
                 workMeter: workMeter
             ) && occurrencesMatch(
                 variable: variable,
                 expected: expected,
                 pattern: predicate,
-                term: storedPredicate,
+                term: storedPredicate.term,
                 workMeter: workMeter
             ) && occurrencesMatch(
                 variable: variable,
@@ -151,14 +151,15 @@ enum SPARQLPropertyPathEndpointCompatibility {
     }
 
     private static func rdfTermsEqual(
-        _ lhs: DatabaseRDFTerm,
-        _ rhs: DatabaseRDFTerm,
+        _ lhs: RDFTerm,
+        _ rhs: RDFTerm,
         workMeter: DatabaseWorkMeter
     ) throws -> Bool {
         try workMeter.consume(at: .deduplication)
         switch (lhs, rhs) {
-        case (.iri(let lhs), .iri(let rhs)),
-             (.blankNode(let lhs), .blankNode(let rhs)):
+        case (.iri(let lhs), .iri(let rhs)):
+            return lhs == rhs
+        case (.blankNode(let lhs), .blankNode(let rhs)):
             return lhs == rhs
         case (.literal(let lhs), .literal(let rhs)):
             return lhs == rhs
@@ -167,12 +168,12 @@ enum SPARQLPropertyPathEndpointCompatibility {
             .tripleTerm(let rhsSubject, let rhsPredicate, let rhsObject)
         ):
             return try rdfTermsEqual(
-                lhsSubject,
-                rhsSubject,
+                lhsSubject.term,
+                rhsSubject.term,
                 workMeter: workMeter
             ) && rdfTermsEqual(
-                lhsPredicate,
-                rhsPredicate,
+                lhsPredicate.term,
+                rhsPredicate.term,
                 workMeter: workMeter
             ) && rdfTermsEqual(
                 lhsObject,

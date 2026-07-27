@@ -9,7 +9,7 @@ import Testing
 import TestHeartbeat
 import StorageKit
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 
 // MARK: - Index State Tests for Multi-Target
 
@@ -175,7 +175,7 @@ struct MultiTargetIndexerMetricsTests {
         ]
 
         for name in expectedNames {
-            #expect(name.hasPrefix("fdb_"))
+            #expect(name.hasPrefix("database_"))
             #expect(name.contains("multi_indexer"))
         }
     }

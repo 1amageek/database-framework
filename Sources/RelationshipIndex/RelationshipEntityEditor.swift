@@ -1,6 +1,5 @@
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
 
 /// Applies delete-rule projections to compiled entities through the canonical entity codec.
 public struct RelationshipEntityEditor: Sendable {
@@ -11,7 +10,7 @@ public struct RelationshipEntityEditor: Sendable {
     }
 
     public func removingReference(
-        to target: PersistableIdentity,
+        to target: EntityReference,
         from model: any Persistable,
         descriptor: RelationshipDescriptor
     ) throws -> any Persistable {
@@ -28,7 +27,7 @@ public struct RelationshipEntityEditor: Sendable {
             )
         }
 
-        let replacement: DatabaseValue
+        let replacement: FieldValue
         if descriptor.isToMany {
             guard case .array(let values) = fields[fieldIndex].value else {
                 throw RelationshipReferenceError.invalidRelationshipValue(
@@ -54,7 +53,7 @@ public struct RelationshipEntityEditor: Sendable {
             replacement = .null
         }
 
-        fields[fieldIndex] = DatabaseObjectField(
+        fields[fieldIndex] = try PersistableField(
             number: fields[fieldIndex].number,
             name: fields[fieldIndex].name,
             value: replacement

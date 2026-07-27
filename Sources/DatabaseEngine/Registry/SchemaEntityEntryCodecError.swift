@@ -1,5 +1,3 @@
-import DatabaseWire
-
 enum SchemaEntityEntryCodecError: Error, Sendable, CustomStringConvertible {
     case invalidMagic(UInt32)
     case unsupportedVersion(UInt16)

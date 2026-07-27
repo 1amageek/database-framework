@@ -1,8 +1,8 @@
-import Core
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseEngine
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import StorageKit
 import Testing
@@ -35,25 +35,27 @@ struct DatabaseEndpointTests {
             admissionPolicy: Self.unrestrictedAdmissionPolicy
         )
         let request = try makeRequest(
-            operation: CapabilitiesDescribeOperation.self,
+            operation: DatabaseOperations.capabilitiesDescribe,
             requestID: 9_223_372_036_854_775_001,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 traceID: "trace-canonical",
                 idempotencyKey: "request-canonical"
             ),
-            payload: DatabaseEmpty()
+            payload: EmptyOperationPayload()
         )
 
         let responseBytes = try await endpoint.execute(request)
-        let response = try DatabaseEnvelopeCodec.decodeResponse(responseBytes)
-        let payload = try successPayload(response)
-        let decoded = try DatabaseEnvelopeCodec.decode(
-            CapabilitiesDescribeOperation.Response.self,
-            from: payload
+        let header = try DatabaseWireDecoder().decodeResponseHeader(
+            responseBytes
+        )
+        let decoded = try successfulResponse(
+            DatabaseOperations.capabilitiesDescribe,
+            responseBytes: responseBytes,
+            requestID: 9_223_372_036_854_775_001
         )
 
-        #expect(response.requestID == 9_223_372_036_854_775_001)
-        #expect(response.operation == .capabilitiesDescribe)
+        #expect(header.requestID == 9_223_372_036_854_775_001)
+        #expect(header.operation == .capabilitiesDescribe)
         #expect(decoded.runtimeVersion == "request-9223372036854775001-trace-canonical")
         #expect(decoded.features == [
             CapabilitiesDescribeOperation.Feature(
@@ -86,10 +88,10 @@ struct DatabaseEndpointTests {
             middlewares: [AnyDatabaseRequestMiddleware(middleware)]
         )
         let request = try makeRequest(
-            operation: CapabilitiesDescribeOperation.self,
+            operation: DatabaseOperations.capabilitiesDescribe,
             requestID: 42,
-            metadata: DatabaseRequestMetadata(traceID: "trace-middleware"),
-            payload: DatabaseEmpty()
+            metadata: OperationRequestMetadata(traceID: "trace-middleware"),
+            payload: EmptyOperationPayload()
         )
 
         _ = try await endpoint.execute(request)
@@ -119,9 +121,9 @@ struct DatabaseEndpointTests {
             admissionPolicy: Self.unrestrictedAdmissionPolicy
         )
         let request = try makeRequest(
-            operation: CapabilitiesDescribeOperation.self,
+            operation: DatabaseOperations.capabilitiesDescribe,
             requestID: 43,
-            payload: DatabaseEmpty()
+            payload: EmptyOperationPayload()
         )
 
         await #expect(throws: CancellationError.self) {
@@ -153,20 +155,21 @@ struct DatabaseEndpointTests {
             registry: registry,
             admissionPolicy: Self.unrestrictedAdmissionPolicy,
             limits: limits,
-            errorMapper: OversizedEndpointErrorMapper()
+            errorMapper: try OversizedEndpointErrorMapper()
         )
         let request = try makeRequest(
-            operation: CapabilitiesDescribeOperation.self,
+            operation: DatabaseOperations.capabilitiesDescribe,
             requestID: 44,
-            payload: DatabaseEmpty()
+            payload: EmptyOperationPayload()
         )
 
         let responseBytes = try await endpoint.execute(request)
-        let response = try DatabaseEnvelopeCodec.decodeResponse(
-            responseBytes,
-            limits: limits
+        let decoded = try DatabaseWireDecoder(limits: limits).decodeResponse(
+            DatabaseOperations.capabilitiesDescribe,
+            from: responseBytes,
+            matching: 44
         )
-        guard case .failure(let error) = response.payload else {
+        guard case .failure(let error) = decoded else {
             Issue.record("Expected a failure response")
             return
         }
@@ -180,13 +183,13 @@ struct DatabaseEndpointTests {
     func truncatedFrameIsRejected() async throws {
         let endpoint = try await makeDescribeEndpoint()
         let valid = try makeRequest(
-            operation: CapabilitiesDescribeOperation.self,
+            operation: DatabaseOperations.capabilitiesDescribe,
             requestID: 7,
-            payload: DatabaseEmpty()
+            payload: EmptyOperationPayload()
         )
 
         await expectInvalidRequestFrame(
-            valid.slice(0..<(valid.count - 1)),
+            valid[0..<(valid.count - 1)],
             endpoint: endpoint
         )
     }
@@ -195,14 +198,14 @@ struct DatabaseEndpointTests {
     func invalidMagicIsRejected() async throws {
         let endpoint = try await makeDescribeEndpoint()
         var invalid = try makeRequest(
-            operation: CapabilitiesDescribeOperation.self,
+            operation: DatabaseOperations.capabilitiesDescribe,
             requestID: 8,
-            payload: DatabaseEmpty()
-        ).contiguousArray()
+            payload: EmptyOperationPayload()
+        ).copyBytes()
         invalid[0] = 0
 
         await expectInvalidRequestFrame(
-            DatabaseBytes(invalid),
+            ByteString(invalid),
             endpoint: endpoint
         )
     }
@@ -217,8 +220,8 @@ struct DatabaseEndpointTests {
                     CapabilitiesDescribeHandler(
                         identity: identity,
                         jobOperations: [
-                            try DatabaseJobOperationIdentifier(
-                                family: .commandWrite,
+                            try JobOperationIdentifier(
+                                family: .commandExecute,
                                 kind: "calendar.import.validate"
                             ),
                         ]
@@ -237,12 +240,12 @@ struct DatabaseEndpointTests {
         )
 
         let capabilities: CapabilitiesDescribeOperation.Response = try await invoke(
-            CapabilitiesDescribeOperation.self,
+            DatabaseOperations.capabilitiesDescribe,
             requestID: 100,
             endpoint: endpoint
         )
         let schema: SchemaDescribeOperation.Response = try await invoke(
-            SchemaDescribeOperation.self,
+            DatabaseOperations.schemaDescribe,
             requestID: 101,
             endpoint: endpoint
         )
@@ -257,8 +260,7 @@ struct DatabaseEndpointTests {
                 "graph.algorithm",
                 "ontology.execute",
                 "shacl.execute",
-                "command.read",
-                "command.write",
+                "command.execute",
                 "maintenance.execute",
                 "job.start",
                 "job.status",
@@ -269,8 +271,8 @@ struct DatabaseEndpointTests {
         #expect(capabilities.features.allSatisfy { $0.version == 1 })
         #expect(
             capabilities.jobOperations == [
-                try DatabaseJobOperationIdentifier(
-                    family: .commandWrite,
+                try JobOperationIdentifier(
+                    family: .commandExecute,
                     kind: "calendar.import.validate"
                 ),
             ]
@@ -325,13 +327,13 @@ struct DatabaseEndpointTests {
         )
     }
 
-    private func makeRequest<Operation: DatabaseOperation>(
-        operation: Operation.Type,
+    private func makeRequest<Request, Response>(
+        operation: DatabaseOperation<Request, Response>,
         requestID: UInt64,
-        metadata: DatabaseRequestMetadata = DatabaseRequestMetadata(),
-        payload: Operation.Request
-    ) throws -> DatabaseBytes {
-        try DatabaseEnvelopeCodec.encodeRequest(
+        metadata: OperationRequestMetadata = OperationRequestMetadata(),
+        payload: Request
+    ) throws -> ByteString {
+        try DatabaseWireEncoder().encodeRequest(
             operation,
             requestID: requestID,
             metadata: metadata,
@@ -339,32 +341,41 @@ struct DatabaseEndpointTests {
         )
     }
 
-    private func invoke<Operation: DatabaseOperation>(
-        _ operation: Operation.Type,
+    private func invoke<Response>(
+        _ operation: DatabaseOperation<EmptyOperationPayload, Response>,
         requestID: UInt64,
         endpoint: DatabaseEndpoint
-    ) async throws -> Operation.Response where Operation.Request == DatabaseEmpty {
+    ) async throws -> Response {
         let request = try makeRequest(
             operation: operation,
             requestID: requestID,
-            payload: DatabaseEmpty()
+            payload: EmptyOperationPayload()
         )
         let responseBytes = try await endpoint.execute(request)
-        let response = try DatabaseEnvelopeCodec.decodeResponse(responseBytes)
-        #expect(response.requestID == requestID)
-        #expect(response.operation == Operation.identifier)
-        return try DatabaseEnvelopeCodec.decode(
-            Operation.Response.self,
-            from: successPayload(response)
+        let header = try DatabaseWireDecoder().decodeResponseHeader(
+            responseBytes
+        )
+        #expect(header.requestID == requestID)
+        #expect(header.operation == operation.identifier)
+        return try successfulResponse(
+            operation,
+            responseBytes: responseBytes,
+            requestID: requestID
         )
     }
 
-    private func successPayload(
-        _ response: DatabaseWireResponseEnvelope
-    ) throws -> DatabaseBytes {
-        switch response.payload {
-        case .success(let payload):
-            return payload
+    private func successfulResponse<Request, Response>(
+        _ operation: DatabaseOperation<Request, Response>,
+        responseBytes: ByteString,
+        requestID: UInt64
+    ) throws -> Response {
+        switch try DatabaseWireDecoder().decodeResponse(
+            operation,
+            from: responseBytes,
+            matching: requestID
+        ) {
+        case .success(let response):
+            return response
         case .failure(let error):
             Issue.record("Expected success, received \(error.code): \(error.message)")
             throw EndpointInvocationFailure.remoteFailure
@@ -372,7 +383,7 @@ struct DatabaseEndpointTests {
     }
 
     private func expectInvalidRequestFrame(
-        _ request: DatabaseBytes,
+        _ request: ByteString,
         endpoint: DatabaseEndpoint
     ) async {
         do {
@@ -386,23 +397,30 @@ struct DatabaseEndpointTests {
 }
 
 private struct OversizedEndpointErrorMapper: DatabaseErrorMapper {
+    private let details: FieldObject
+
+    init() throws {
+        details = try FieldObject(
+            (0..<100).map { index in
+                (
+                    key: "detail\(index)",
+                    value: FieldValue.string("value")
+                )
+            }
+        )
+    }
+
     func remoteError(
         for error: any Error,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
-    ) -> DatabaseRemoteError {
-        DatabaseRemoteError(
+    ) -> RemoteOperationError {
+        RemoteOperationError(
             category: .internalFailure,
             code: "OVERSIZED_TEST_FAILURE",
             message: "Mapped failure",
             retryability: .never,
-            details: (0..<100).map { index in
-                DatabaseObjectField(
-                    number: UInt32(index + 1),
-                    name: "detail",
-                    value: .string("value")
-                )
-            }
+            details: details
         )
     }
 }

@@ -1,11 +1,12 @@
-import DatabaseWire
+import DatabaseKit
+@_spi(DatabaseServer) import DatabaseWire
 import GraphIndex
 import StorageKit
 
 public protocol DatabaseSHACLProcessor: Sendable {
     func validateShapes(
         graph: String,
-        quads: [DatabaseRDFQuad],
+        quads: [RDFQuad],
         workBudget: SHACLValidationWorkBudget
     ) throws
 
@@ -17,5 +18,5 @@ public protocol DatabaseSHACLProcessor: Sendable {
         page: QueryExecuteOperation.Page,
         workBudget: SHACLValidationWorkBudget,
         transaction: any TransactionAccess
-    ) async throws -> DatabaseValidationReport
+    ) async throws -> ValidationReport
 }

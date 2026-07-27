@@ -2,10 +2,15 @@ public enum LiteralConversionError: Error, Sendable, Equatable,
     CustomStringConvertible
 {
     public enum FieldValueUnsupportedLiteralKind: String, Sendable, Equatable {
-        case decimal
-        case date
-        case timestamp
-        case uuid
+        case object
+        case reference
+        case time
+        case dateTime
+        case timeSpan
+        case calendarPeriod
+        case geographicPoint
+        case geographicPosition
+        case vector
     }
 
     case invalidRDFLiteral(datatype: String)
@@ -23,7 +28,7 @@ public enum LiteralConversionError: Error, Sendable, Equatable,
         case .invalidBaseDirection(let direction):
             return "Invalid RDF base direction: \(direction)"
         case .fieldValueUnsupported(let kind):
-            return "FieldValue cannot preserve QueryIR literal kind: \(kind.rawValue)"
+            return "FieldValue kind has no QueryIR literal representation: \(kind.rawValue)"
         case .fieldValueConversionInvariantViolation:
             return "Literal conversion produced a non-RDF canonical value for an RDF literal"
         }

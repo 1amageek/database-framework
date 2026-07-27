@@ -5,8 +5,8 @@ import Testing
 import TestHeartbeat
 import Foundation
 import StorageKit
-import Core
-import Vector
+import DatabaseKit
+import DatabaseTypes
 @testable import DatabaseEngine
 @testable import VectorIndex
 
@@ -25,10 +25,11 @@ struct VectorAlgorithmMaintainerTests {
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: IVFParameters(nlist: 2, nprobe: 2, kmeansIterations: 3)
         )
-        let docs = algorithmDocuments()
+        let docs = try algorithmDocuments()
+        let trainingVectors = try docs.map { try float32Elements(of: $0.embedding) }
 
         try await database.withTransaction { transaction in
-            try await maintainer.train(vectors: docs.map(\.embedding), transaction: transaction)
+            try await maintainer.train(vectors: trainingVectors, transaction: transaction)
             try await maintainer.scanItems(
                 docs.map { (item: $0, id: Tuple($0.id)) },
                 transaction: transaction
@@ -62,10 +63,11 @@ struct VectorAlgorithmMaintainerTests {
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: IVFParameters(nlist: 2, nprobe: 2, kmeansIterations: 3)
         )
-        let docs = algorithmDocuments()
+        let docs = try algorithmDocuments()
+        let trainingVectors = try docs.map { try float32Elements(of: $0.embedding) }
 
         try await database.withTransaction { transaction in
-            try await maintainer.train(vectors: docs.map(\.embedding), transaction: transaction)
+            try await maintainer.train(vectors: trainingVectors, transaction: transaction)
             try await maintainer.scanItems(
                 docs.map { (item: $0, id: Tuple($0.id)) },
                 transaction: transaction
@@ -103,7 +105,7 @@ struct VectorAlgorithmMaintainerTests {
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: PQParameters(m: 2, niter: 2)
         )
-        let docs = algorithmDocuments()
+        let docs = try algorithmDocuments()
 
         try await database.withTransaction { transaction in
             try await maintainer.scanItems(
@@ -144,7 +146,7 @@ struct VectorAlgorithmMaintainerTests {
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: PQParameters(m: 2, niter: 2)
         )
-        let docs = algorithmDocuments()
+        let docs = try algorithmDocuments()
 
         try await database.withTransaction { transaction in
             try await maintainer.scanItems(
@@ -177,10 +179,9 @@ struct VectorAlgorithmMaintainerTests {
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "vector-algorithm", name, String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWDocument_embedding")
-        let kind = VectorIndexKind<HNSWDocument>(embedding: \.embedding, dimensions: 4, metric: .euclidean)
         let index = Index(
             name: "HNSWDocument_embedding",
-            kind: kind,
+            kind: vectorIndexMetadata(dimensions: 4, metric: .euclidean),
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
             subspaceKey: "HNSWDocument_embedding",
             itemTypes: Set(["HNSWDocument"])
@@ -188,12 +189,12 @@ struct VectorAlgorithmMaintainerTests {
         return (index, indexSubspace)
     }
 
-    private func algorithmDocuments() -> [HNSWDocument] {
+    private func algorithmDocuments() throws -> [HNSWDocument] {
         [
-            HNSWDocument(id: "exact", title: "Exact", embedding: [1, 0, 0, 0]),
-            HNSWDocument(id: "near", title: "Near", embedding: [0.9, 0.1, 0, 0]),
-            HNSWDocument(id: "orthogonal", title: "Orthogonal", embedding: [0, 1, 0, 0]),
-            HNSWDocument(id: "opposite", title: "Opposite", embedding: [-1, 0, 0, 0])
+            HNSWDocument(id: "exact", title: "Exact", embedding: try Vector(float32: [1, 0, 0, 0])),
+            HNSWDocument(id: "near", title: "Near", embedding: try Vector(float32: [0.9, 0.1, 0, 0])),
+            HNSWDocument(id: "orthogonal", title: "Orthogonal", embedding: try Vector(float32: [0, 1, 0, 0])),
+            HNSWDocument(id: "opposite", title: "Opposite", embedding: try Vector(float32: [-1, 0, 0, 0]))
         ]
     }
 
@@ -210,5 +211,14 @@ struct VectorAlgorithmMaintainerTests {
             )
             return entries.map(\.1)
         }
+    }
+
+    private func float32Elements(of vector: Vector) throws -> [Float] {
+        guard let elements = vector.withFloat32Elements({ Array($0) }) else {
+            throw VectorIndexError.invalidStructure(
+                "IVF training requires Float32 vectors"
+            )
+        }
+        return elements
     }
 }

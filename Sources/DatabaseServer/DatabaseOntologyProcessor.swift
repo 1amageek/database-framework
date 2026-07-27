@@ -1,16 +1,17 @@
-import DatabaseWire
+import DatabaseKit
+@_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 
 public protocol DatabaseOntologyProcessor: Sendable {
     func replace(
         _ document: OntologyExecuteOperation.Document,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
     ) async throws
 
     func delete(
         ontology: String,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
     ) async throws
 
@@ -18,7 +19,7 @@ public protocol DatabaseOntologyProcessor: Sendable {
         ontology: String,
         profile: OntologyExecuteOperation.ReasoningProfile,
         page: QueryExecuteOperation.Page,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
     ) async throws -> OntologyExecuteOperation.InferencePage
 
@@ -29,14 +30,14 @@ public protocol DatabaseOntologyProcessor: Sendable {
         direction: OntologyExecuteOperation.HierarchyDirection,
         maximumDepth: UInt32,
         page: QueryExecuteOperation.Page,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
     ) async throws -> OntologyExecuteOperation.HierarchyPage
 
     func validateSchema(
         ontology: String,
         page: QueryExecuteOperation.Page,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
-    ) async throws -> DatabaseValidationReport
+    ) async throws -> ValidationReport
 }

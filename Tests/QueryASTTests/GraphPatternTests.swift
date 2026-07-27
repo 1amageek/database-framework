@@ -4,7 +4,7 @@
 
 import Testing
 import TestHeartbeat
-import DatabaseValue
+import DatabaseTypes
 @testable import QueryAST
 
 // MARK: - GraphPattern Builder Tests
@@ -178,7 +178,7 @@ struct GraphPatternBuilderTests {
         let path = GraphPattern.path(
             subject: .variable("s"),
             path: .oneOrMore(
-                .iri(try DatabaseRDFPredicateIRI("http://example.org/knows"))
+                .iri(try RDFPredicateIRI("http://example.org/knows"))
             ),
             object: .variable("o")
         )
@@ -311,7 +311,7 @@ struct GraphPatternAnalysisTests {
         let path = GraphPattern.propertyPath(
             subject: .variable("start"),
             path: .zeroOrMore(
-                .iri(try DatabaseRDFPredicateIRI("http://example.org/link"))
+                .iri(try RDFPredicateIRI("http://example.org/link"))
             ),
             object: .variable("end")
         )
@@ -381,28 +381,12 @@ struct GraphPatternAnalysisTests {
 
         let path = GraphPattern.propertyPath(
             subject: .variable("s"),
-            path: .iri(try DatabaseRDFPredicateIRI("http://example.org/p")),
+            path: .iri(try RDFPredicateIRI("http://example.org/p")),
             object: .variable("o")
         )
         #expect(path.tripleCount == 1)
     }
 
-    @Test("complexity")
-    func testComplexity() throws {
-        let basic = GraphPattern.basic([
-            TriplePattern(subject: .variable("s"), predicate: .variable("p"), object: .variable("o"))
-        ])
-        #expect(basic.complexity == 1)
-
-        let joined = GraphPattern.join(basic, basic)
-        #expect(joined.complexity == 1)  // 1 * 1
-
-        let union = GraphPattern.union(basic, basic)
-        #expect(union.complexity == 2)  // 1 + 1
-
-        let service = GraphPattern.service(endpoint: "http://example.org", pattern: basic, silent: false)
-        #expect(service.complexity == 10)  // Network overhead
-    }
 }
 
 // MARK: - GraphPattern SPARQL Serialization Tests
@@ -530,7 +514,7 @@ struct GraphPatternSPARQLSerializationTests {
         let path = GraphPattern.propertyPath(
             subject: .variable("s"),
             path: .oneOrMore(
-                .iri(try DatabaseRDFPredicateIRI("http://example.org/knows"))
+                .iri(try RDFPredicateIRI("http://example.org/knows"))
             ),
             object: .variable("o")
         )

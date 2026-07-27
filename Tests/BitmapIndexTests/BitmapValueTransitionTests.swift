@@ -1,6 +1,6 @@
 import Testing
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 @testable import DatabaseEngine
 @testable import BitmapIndex

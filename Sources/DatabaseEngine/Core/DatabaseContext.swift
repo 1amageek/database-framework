@@ -4,8 +4,8 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import Synchronization
 
 /// DatabaseContext - Central API for model persistence
@@ -39,8 +39,8 @@ import Synchronization
 ///
 /// // Fetch models with Fluent API
 /// let users = try await context.fetch(User.self)
-///     .where(\.isActive == true)
-///     .orderBy(\.name)
+///     .where(User.fields.isActive == true)
+///     .orderBy(User.fields.name)
 ///     .limit(10)
 ///     .execute()
 ///
@@ -185,18 +185,18 @@ public final class DatabaseContext: Sendable {
     }
 
     private struct StagedMutation: Sendable {
-        let identity: PersistableIdentity
+        let identity: EntityReference
         let intent: StagedMutationIntent
     }
 
     private struct ActiveSave: Sendable {
         let identifier: UInt64
-        let capturedMutations: [PersistableIdentity: PendingMutation]
+        let capturedMutations: [EntityReference: PendingMutation]
         var followupMutations: [StagedMutation]
 
         init(
             identifier: UInt64,
-            capturedMutations: [PersistableIdentity: PendingMutation]
+            capturedMutations: [EntityReference: PendingMutation]
         ) {
             self.identifier = identifier
             self.capturedMutations = capturedMutations
@@ -205,7 +205,7 @@ public final class DatabaseContext: Sendable {
     }
 
     private struct ContextState: Sendable {
-        var pending: [PersistableIdentity: PendingMutation] = [:]
+        var pending: [EntityReference: PendingMutation] = [:]
         var activeSave: ActiveSave?
         var nextSaveIdentifier: UInt64 = 1
         var commitOutcomeUnknown = false
@@ -288,9 +288,9 @@ public final class DatabaseContext: Sendable {
     private func pendingModelLookup<T: Persistable>(
         for id: T.ID,
         as type: T.Type,
-        partitions: [DatabaseObjectField]
-    ) -> (inserted: T?, isDeleted: Bool) {
-        pendingModelLookup(
+        partitions: FieldObject
+    ) throws -> (inserted: T?, isDeleted: Bool) {
+        try pendingModelLookup(
             for: id.persistableIdentifierValue,
             as: type,
             partitions: partitions
@@ -298,16 +298,16 @@ public final class DatabaseContext: Sendable {
     }
 
     private func pendingModelLookup<T: Persistable>(
-        for identifier: PersistableIdentifierValue,
+        for identifier: ReferenceIdentifier,
         as type: T.Type,
-        partitions: [DatabaseObjectField]
-    ) -> (inserted: T?, isDeleted: Bool) {
-        stateLock.withLock { state in
+        partitions: FieldObject
+    ) throws -> (inserted: T?, isDeleted: Bool) {
+        try stateLock.withLock { state in
             guard state.hasChanges else {
                 return (nil, false)
             }
 
-            let identity = PersistableIdentity(
+            let identity = try EntityReference(
                 entity: T.persistableType,
                 id: identifier,
                 partitions: partitions
@@ -390,7 +390,7 @@ public final class DatabaseContext: Sendable {
 
     private func stage(_ intent: StagedMutationIntent) throws {
         let stagedMutation = StagedMutation(
-            identity: try PersistableIdentityEncoder.encode(intent.model),
+            identity: try EntityReferenceEncoder.encode(intent.model),
             intent: intent
         )
         let shouldScheduleAutosave = try stateLock.withLock {
@@ -420,7 +420,7 @@ public final class DatabaseContext: Sendable {
 
     private static func apply(
         _ stagedMutation: StagedMutation,
-        to mutations: inout [PersistableIdentity: PendingMutation]
+        to mutations: inout [EntityReference: PendingMutation]
     ) {
         let identity = stagedMutation.identity
         switch stagedMutation.intent {
@@ -498,12 +498,12 @@ public final class DatabaseContext: Sendable {
     /// try await context.deleteAll(Order.self, partition: \.tenantID, equals: "tenant_123")
     /// try await context.save()
     /// ```
-    public func deleteAll<T: Persistable, V: Sendable & Equatable & FieldValueConvertible>(
+    public func deleteAll<T: Persistable, V: Sendable & Equatable & FieldValueRepresentable>(
         _ type: T.Type,
-        partition keyPath: KeyPath<T, V> & Sendable,
+        partition field: Field<T, V>,
         equals value: V
     ) async throws {
-        let models = try await fetch(Query<T>().partition(keyPath, equals: value))
+        let models = try await fetch(Query<T>().partition(field, equals: value))
         for model in models {
             try delete(model)
         }
@@ -527,8 +527,8 @@ public final class DatabaseContext: Sendable {
     /// ```swift
     /// // First page
     /// let result = try await context.cursor(User.self)
-    ///     .where(\.isActive == true)
-    ///     .orderBy(\.createdAt, .descending)
+    ///     .where(User.fields.isActive == true)
+    ///     .orderBy(User.fields.createdAt, .descending)
     ///     .batchSize(20)
     ///     .next()
     ///
@@ -544,7 +544,7 @@ public final class DatabaseContext: Sendable {
     ///   - type: The Persistable type to query
     ///   - continuation: Optional continuation token to resume from
     /// - Returns: A CursorQueryBuilder for configuring the query
-    public func cursor<T: Persistable & Codable>(
+    public func cursor<T: Persistable>(
         _ type: T.Type,
         continuation: ContinuationToken? = nil
     ) -> CursorQueryBuilder<T> {
@@ -714,10 +714,10 @@ public final class DatabaseContext: Sendable {
             )
         }
 
-        let pendingResult = pendingModelLookup(
+        let pendingResult = try pendingModelLookup(
             for: id,
             as: type,
-            partitions: []
+            partitions: FieldObject()
         )
 
         if let inserted = pendingResult.inserted {
@@ -770,10 +770,10 @@ public final class DatabaseContext: Sendable {
             from: identifierTuple,
             expectedType: T.persistableIdentifierType
         )
-        let pendingResult = pendingModelLookup(
+        let pendingResult = try pendingModelLookup(
             for: identifier,
             as: type,
-            partitions: []
+            partitions: FieldObject()
         )
 
         if let inserted = pendingResult.inserted {
@@ -835,7 +835,7 @@ public final class DatabaseContext: Sendable {
     ) async throws -> T? {
         try ensureUsable()
 
-        let pendingResult = pendingModelLookup(
+        let pendingResult = try pendingModelLookup(
             for: id,
             as: type,
             partitions: try path.canonicalPartitions()
@@ -881,7 +881,7 @@ public final class DatabaseContext: Sendable {
             expectedType: T.persistableIdentifierType
         )
         let partitions = try path.canonicalPartitions()
-        let pendingResult = pendingModelLookup(
+        let pendingResult = try pendingModelLookup(
             for: identifier,
             as: type,
             partitions: partitions
@@ -931,7 +931,7 @@ public final class DatabaseContext: Sendable {
             case identifierExhausted
             case start(
                 identifier: UInt64,
-                mutations: [PersistableIdentity: PendingMutation]
+                mutations: [EntityReference: PendingMutation]
             )
         }
 
@@ -1019,7 +1019,7 @@ public final class DatabaseContext: Sendable {
     }
 
     private static func persistableMutations(
-        from mutations: [PersistableIdentity: PendingMutation]
+        from mutations: [EntityReference: PendingMutation]
     ) -> [PersistableMutation] {
         var result: [PersistableMutation] = []
         result.reserveCapacity(mutations.count)
@@ -1175,16 +1175,16 @@ public final class DatabaseContext: Sendable {
     ///     print(order.id)
     /// }
     /// ```
-    public func enumerate<T: Persistable, V: Sendable & Equatable & FieldValueConvertible>(
+    public func enumerate<T: Persistable, V: Sendable & Equatable & FieldValueRepresentable>(
         _ type: T.Type,
-        partition keyPath: KeyPath<T, V>,
+        partition field: Field<T, V>,
         equals value: V,
         block: (T) throws -> Void
     ) async throws {
         try ensureUsable()
 
         var binding = DirectoryPath<T>()
-        binding.set(keyPath, to: value)
+        binding.set(field, to: value)
         let store = try await cachedStore(for: type, path: binding)
         let models = try await store.fetchAll(type)
         for model in models {
@@ -1435,7 +1435,14 @@ extension DatabaseContext {
     /// }
     ///
     /// // Conforming types are automatically discovered from Schema
-    /// let schema = Schema([Article.self, Report.self, User.self])
+    /// let schema = try Schema(
+    ///     entities: [
+    ///         try Article.schemaEntity,
+    ///         try Report.schemaEntity,
+    ///         try User.schemaEntity,
+    ///     ],
+    ///     version: .init(1, 0, 0)
+    /// )
     ///
     /// // Fetch all documents
     /// let docs = try await context.fetchPolymorphic(Document.self)
@@ -1455,75 +1462,17 @@ extension DatabaseContext {
     /// - Parameter protocolType: The Polymorphable protocol to query
     /// - Returns: Array of all items conforming to the protocol
     /// - Throws: Error if no types are found or if fetch fails
-    public func fetchPolymorphic<P: Polymorphable>(_ protocolType: P.Type) async throws -> [any Persistable] {
-        // Find entities that conform to this polymorphic protocol
-        let conformingEntities = container.schema.entities.filter { entity in
-            guard let polyType = entity.persistableType as? any Polymorphable.Type else { return false }
-            return polyType.polymorphableType == P.polymorphableType
-        }
-
-        guard !conformingEntities.isEmpty else {
-            throw DatabaseRuntimeError.internalError(
-                "No types found in Schema for polymorphic protocol '\(P.polymorphableType)'. " +
-                "Ensure conforming types are included in Schema initialization."
+    public func fetchPolymorphic<P: Polymorphable>(
+        _ protocolType: P.Type
+    ) async throws -> [any Persistable] {
+        guard let group = container.schema.polymorphicGroup(
+            identifier: P.polymorphableType
+        ) else {
+            throw PolymorphicRuntimeError.missingGroup(
+                identifier: P.polymorphableType
             )
         }
-
-        // Security: Evaluate LIST for each conforming type
-        for entity in conformingEntities {
-            guard let persistableType = entity.persistableType else { continue }
-            try container.securityDelegate?.evaluateList(
-                type: persistableType,
-                limit: nil,
-                offset: nil,
-                orderBy: nil
-            )
-        }
-
-        let results: [any Persistable] = try await self.withStorageAccess(configuration: .default) { transaction in
-            guard let subspace = try await self.container
-                .openPolymorphicDirectory(
-                    for: P.polymorphableType,
-                    transaction: transaction
-                ) else {
-                return []
-            }
-            let itemSubspace = subspace.subspace(SubspaceKey.items)
-            let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-            // Use ItemStorage.scan to properly handle external (large) values
-            let storage = self.container.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace
-            )
-
-            var items: [any Persistable] = []
-
-            // Scan all type codes for this protocol
-            for entity in conformingEntities {
-                guard let persistableType = entity.persistableType,
-                      let polyType = persistableType as? any Polymorphable.Type else { continue }
-                let typeCode = polyType.typeCode(for: entity.name)
-                let codableType = persistableType
-
-                let typeSubspace = itemSubspace.subspace(typeCode)
-                let (begin, end) = typeSubspace.range()
-
-                // ItemStorage.scan handles both inline and external (split) values transparently
-                for try await (_, data) in storage.scan(begin: begin, end: end, snapshot: true) {
-                    let item = try self.deserializePolymorphic(
-                        bytes: data,
-                        as: codableType
-                    )
-                    // Security: Evaluate GET for each retrieved item
-                    try self.container.securityDelegate?.evaluateGet(item)
-                    items.append(item)
-                }
-            }
-
-            return items
-        }
-
-        return results
+        return try await scanPolymorphicItems(group: group).map(\.item)
     }
 
     /// Fetch a specific polymorphic item by ID
@@ -1538,71 +1487,20 @@ extension DatabaseContext {
         _ protocolType: P.Type,
         id: String
     ) async throws -> (any Persistable)? {
-        // Find entities that conform to this polymorphic protocol
-        let conformingEntities = container.schema.entities.filter { entity in
-            guard let polyType = entity.persistableType as? any Polymorphable.Type else { return false }
-            return polyType.polymorphableType == P.polymorphableType
-        }
-
-        guard !conformingEntities.isEmpty else {
-            return nil
-        }
-
-        let idTuple = Tuple([id])
-
-        // Search all type subspaces for this ID
-        let result: (any Persistable)? = try await self.withStorageAccess(configuration: .default) { transaction in
-            guard let subspace = try await self.container
-                .openPolymorphicDirectory(
-                    for: P.polymorphableType,
-                    transaction: transaction
-                ) else {
-                return nil
-            }
-            let itemSubspace = subspace.subspace(SubspaceKey.items)
-            let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-            // Use ItemStorage for proper handling of large values
-            let storage = self.container.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace
+        guard let group = container.schema.polymorphicGroup(
+            identifier: P.polymorphableType
+        ) else {
+            throw PolymorphicRuntimeError.missingGroup(
+                identifier: P.polymorphableType
             )
-
-            for entity in conformingEntities {
-                guard let persistableType = entity.persistableType,
-                      let polyType = persistableType as? any Polymorphable.Type else { continue }
-                let typeCode = polyType.typeCode(for: entity.name)
-                let codableType = persistableType
-
-                let typeSubspace = itemSubspace.subspace(typeCode)
-                let key = typeSubspace.pack(idTuple)
-
-                if let data = try await storage.read(for: key) {
-                    let item = try self.deserializePolymorphic(
-                        bytes: data,
-                        as: codableType
-                    )
-                    return item
-                }
-            }
-            return nil
         }
-
-        // Security: Evaluate GET for the retrieved item
-        if let item = result {
-            try container.securityDelegate?.evaluateGet(item)
+        let identifiers = try polymorphicTypeMap(for: group).keys.map {
+            Tuple([$0, id])
         }
-
-        return result
-    }
-
-    /// Deserialize bytes into a concrete Persistable type
-    private func deserializePolymorphic(
-        bytes: Bytes,
-        as type: any Persistable.Type
-    ) throws -> any Persistable {
-        // Persistable types are always Codable (via @Persistable macro)
-        // The type system sees `any Persistable.Type` as `any (Persistable & Codable).Type`
-        try DataAccess.deserializeAny(bytes, as: type)
+        return try await fetchPolymorphicItems(
+            group: group,
+            ids: identifiers
+        ).first?.item
     }
 
 }

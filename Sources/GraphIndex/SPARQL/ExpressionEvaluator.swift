@@ -1,20 +1,18 @@
 // ExpressionEvaluator.swift
-// GraphIndex - Evaluates QueryIR.Expression against VariableBinding
+// GraphIndex - Evaluates DatabaseKit.Expression against VariableBinding
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
 import Foundation
 #endif
-import DatabaseDigest
-import QueryIR
-import Core
-import DatabaseValue
+import DatabaseWire
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
-import Graph
 import OntologyIndex
 
-/// Evaluates QueryIR.Expression against a VariableBinding (SPARQL solution row).
+/// Evaluates DatabaseKit.Expression against a VariableBinding (SPARQL solution row).
 ///
 /// Applies VariableBinding-based evaluation to QueryIR's unified expressions.
 /// Used for FILTER clause evaluation
@@ -28,7 +26,7 @@ public struct ExpressionEvaluator: Sendable {
     private init() {}
 
     /// Convert a canonical sigil-free QueryIR variable into a binding key.
-    private static func bindingKey(_ v: QueryIR.Variable) -> String {
+    private static func bindingKey(_ v: Variable) -> String {
         "?\(v.name)"
     }
 
@@ -39,7 +37,7 @@ public struct ExpressionEvaluator: Sendable {
     /// Per SPARQL §17.2, evaluation errors yield `false`.
     /// This is the primary entry point for FILTER clause evaluation.
     public static func evaluateAsBoolean(
-        _ expr: QueryIR.Expression,
+        _ expr: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> Bool {
         do {
@@ -55,7 +53,7 @@ public struct ExpressionEvaluator: Sendable {
     /// Evaluates an ORDER BY expression. SPARQL expression errors produce an
     /// unbound sort key; resource and runtime failures remain thrown.
     public static func evaluateForOrdering(
-        _ expr: QueryIR.Expression,
+        _ expr: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> FieldValue? {
         do {
@@ -70,9 +68,9 @@ public struct ExpressionEvaluator: Sendable {
 
     /// Evaluate an expression to a FieldValue.
     ///
-    /// Expression errors are typed and never collapsed into an absent value.
+    /// DatabaseKit.Expression errors are typed and never collapsed into an absent value.
     public static func evaluate(
-        _ expr: QueryIR.Expression,
+        _ expr: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> FieldValue {
         switch expr {
@@ -232,16 +230,27 @@ public struct ExpressionEvaluator: Sendable {
             guard
                   case .rdfTerm(let subject) = sv,
                   case .rdfTerm(let predicate) = pv,
-                  case .rdfTerm(let object) = ov,
-                  subject.isRDFSubject,
-                  predicate.isRDFPredicate,
-                  object.isRDFObject else {
+                  case .rdfTerm(let object) = ov else {
                 throw typeError("TRIPLE requires RDF subject, predicate, and object terms")
+            }
+            let validatedSubject: RDFSubject
+            switch subject {
+            case .iri(let iri):
+                validatedSubject = .iri(iri)
+            case .blankNode(let identifier):
+                validatedSubject = .blankNode(identifier)
+            case .literal, .tripleTerm:
+                throw typeError(
+                    "TRIPLE requires an IRI or blank-node subject"
+                )
+            }
+            guard case .iri(let predicateIRI) = predicate else {
+                throw typeError("TRIPLE requires an IRI predicate")
             }
             return .rdfTerm(
                 .tripleTerm(
-                    subject: subject,
-                    predicate: predicate,
+                    subject: validatedSubject,
+                    predicate: RDFPredicateIRI(predicateIRI),
                     object: object
                 )
             )
@@ -258,14 +267,14 @@ public struct ExpressionEvaluator: Sendable {
             guard case .rdfTerm(.tripleTerm(let subject, _, _)) = value else {
                 throw typeError("SUBJECT requires an RDF triple term")
             }
-            return .rdfTerm(subject)
+            return .rdfTerm(subject.term)
 
         case .predicate(let e):
             let value = try evaluate(e, binding: binding)
             guard case .rdfTerm(.tripleTerm(_, let predicate, _)) = value else {
                 throw typeError("PREDICATE requires an RDF triple term")
             }
-            return .rdfTerm(predicate)
+            return .rdfTerm(predicate.term)
 
         case .object(let e):
             let value = try evaluate(e, binding: binding)
@@ -291,7 +300,7 @@ public struct ExpressionEvaluator: Sendable {
     // MARK: - Built-in Functions
 
     private static func evaluateFunction(
-        _ call: QueryIR.FunctionCall,
+        _ call: FunctionCall,
         binding: VariableBinding
     ) throws -> FieldValue {
         let args = call.arguments
@@ -330,7 +339,7 @@ public struct ExpressionEvaluator: Sendable {
 
     private static func evaluateBuiltIn(
         _ builtIn: SPARQLFunctionIdentifier.BuiltIn,
-        arguments args: [QueryIR.Expression],
+        arguments args: [DatabaseKit.Expression],
         binding: VariableBinding
     ) throws -> FieldValue {
         let name = builtIn.rawValue
@@ -370,7 +379,7 @@ public struct ExpressionEvaluator: Sendable {
                 throw typeError("CONTAINS arguments have incompatible language annotations")
             }
             return try booleanValue(
-                DatabaseText.contains(
+                TextSearch.contains(
                     substring.lexicalForm,
                     in: string.lexicalForm
                 )
@@ -484,7 +493,7 @@ public struct ExpressionEvaluator: Sendable {
             guard source.acceptsArgument(search) else {
                 throw typeError("\(name) arguments have incompatible language annotations")
             }
-            guard let range = DatabaseText.firstRange(
+            guard let range = TextSearch.firstRange(
                 of: search.lexicalForm,
                 in: source.lexicalForm
             ) else {
@@ -514,7 +523,7 @@ public struct ExpressionEvaluator: Sendable {
                 throw typeError("\(name) requires an IRI or xsd:string argument")
             }
             do {
-                return .rdfTerm(.iri(try DatabaseRDFIRI(string.lexicalForm).rawValue))
+                return .rdfTerm(.iri(try RDFIRI(string.lexicalForm)))
             } catch {
                 throw typeError("\(name) requires an absolute IRI when no base IRI is configured")
             }
@@ -544,9 +553,9 @@ public struct ExpressionEvaluator: Sendable {
                 throw typeError("STRDT requires xsd:string and IRI arguments")
             }
             do {
-                return try QueryIR.Literal.typedLiteral(
+                return try Literal.typedLiteral(
                     value: lexical.lexicalForm,
-                    datatype: datatypeIRI
+                    datatype: datatypeIRI.rawValue
                 ).toSPARQLFieldValue()
             } catch let error as SPARQLLiteralConversionError {
                 throw mapLiteralConversionError(error)
@@ -560,7 +569,7 @@ public struct ExpressionEvaluator: Sendable {
                 throw typeError("STRLANG requires xsd:string arguments")
             }
             do {
-                return try QueryIR.Literal.langLiteral(
+                return try Literal.langLiteral(
                     value: lexical.lexicalForm,
                     language: language.lexicalForm
                 ).toSPARQLFieldValue()
@@ -686,7 +695,7 @@ public struct ExpressionEvaluator: Sendable {
             guard let datatype = xsdDatatype(value) else {
                 throw typeError("DATATYPE requires a literal")
             }
-            return .rdfTerm(.iri(datatype))
+            return .rdfTerm(.iri(try RDFIRI(datatype)))
 
         case "LANG":
             try requireArgumentCount(args, count: 1, function: name)
@@ -694,7 +703,7 @@ public struct ExpressionEvaluator: Sendable {
             guard case .rdfTerm(.literal(let literal)) = value else {
                 throw typeError("LANG requires an RDF literal")
             }
-            return try stringValue(literal.language ?? "")
+            return try stringValue(literal.languageTag?.rawValue ?? "")
 
         case "LANGDIR":
             try requireArgumentCount(args, count: 1, function: name)
@@ -702,7 +711,7 @@ public struct ExpressionEvaluator: Sendable {
             guard case .rdfTerm(.literal(let literal)) = value else {
                 throw typeError("LANGDIR requires an RDF literal")
             }
-            return try stringValue(literal.direction ?? "")
+            return try stringValue(literal.baseDirection?.rawValue ?? "")
 
         case "HASLANG":
             try requireArgumentCount(args, count: 1, function: name)
@@ -710,7 +719,7 @@ public struct ExpressionEvaluator: Sendable {
             guard case .rdfTerm(.literal(let literal)) = value else {
                 return try booleanValue(false)
             }
-            return try booleanValue(literal.language != nil)
+            return try booleanValue(literal.languageTag != nil)
 
         case "HASLANGDIR":
             try requireArgumentCount(args, count: 1, function: name)
@@ -718,14 +727,14 @@ public struct ExpressionEvaluator: Sendable {
             guard case .rdfTerm(.literal(let literal)) = value else {
                 return try booleanValue(false)
             }
-            return try booleanValue(literal.direction != nil)
+            return try booleanValue(literal.baseDirection != nil)
 
         case "TRIGRAM_SIM":
             try requireArgumentCount(args, count: 2, function: name)
             let string = try evaluateAsString(args[0], binding: binding)
             let pattern = try evaluateAsString(args[1], binding: binding)
             guard let numeric = SPARQLNumericValue(
-                .double(TrigramSimilarity.score(string, pattern))
+                .float64(TrigramSimilarity.score(string, pattern))
             ) else {
                 throw SPARQLExpressionEvaluationError.runtimeInvariant(
                     "TRIGRAM_SIM result was not numeric"
@@ -739,15 +748,15 @@ public struct ExpressionEvaluator: Sendable {
             let languageValue = try evaluateAsString(args[1], binding: binding)
             let directionValue = try evaluateAsString(args[2], binding: binding)
             do {
-                let language = try DatabaseRDFLanguageTag(languageValue)
-                guard let direction = DatabaseRDFDirection(rawValue: directionValue) else {
+                let language = try RDFLanguageTag(languageValue)
+                guard let direction = RDFDirection(rawValue: directionValue) else {
                     throw SPARQLExpressionEvaluationError.typeError(
                         "STRLANGDIR direction must be ltr or rtl"
                     )
                 }
                 return .rdfTerm(
                     .literal(
-                        DatabaseRDFLiteral(
+                        RDFLiteral(
                             lexicalForm: string,
                             language: language,
                             direction: direction
@@ -796,14 +805,14 @@ public struct ExpressionEvaluator: Sendable {
     // MARK: - Helpers
 
     private static func evaluateAsString(
-        _ expr: QueryIR.Expression,
+        _ expr: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> String {
         try evaluateStringValue(expr, binding: binding).lexicalForm
     }
 
     private static func evaluateStringValue(
-        _ expr: QueryIR.Expression,
+        _ expr: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> SPARQLStringValue {
         let value = try evaluate(expr, binding: binding)
@@ -814,7 +823,7 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func evaluateAsInt64(
-        _ expr: QueryIR.Expression,
+        _ expr: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> Int64 {
         let value = try evaluate(expr, binding: binding)
@@ -827,13 +836,38 @@ public struct ExpressionEvaluator: Sendable {
     private static func stringRepresentation(_ value: FieldValue) -> String? {
         switch value {
         case .string(let s): return s
+        case .int8(let v): return String(v)
+        case .int16(let v): return String(v)
+        case .int32(let v): return String(v)
         case .int64(let v): return String(v)
+        case .uint8(let v): return String(v)
+        case .uint16(let v): return String(v)
+        case .uint32(let v): return String(v)
         case .uint64(let v): return String(v)
-        case .double(let v): return String(v)
+        case .float32(let v): return String(v)
+        case .float64(let v): return String(v)
+        case .decimal(let decimal):
+            do {
+                return try decimal.decimalLexicalForm(
+                    maximumUTF8Count:
+                        SPARQLExecutionLimits.maximumLiteralUTF8Count
+                )
+            } catch {
+                return nil
+            }
         case .bool(let v): return v ? "true" : "false"
-        case .rdfTerm(.iri(let iri)): return iri
+        case .date(let value):
+            return QueryLiteralEncoding.iso8601(value)
+        case .timestamp(let value):
+            return QueryLiteralEncoding.iso8601(value)
+        case .uuid(let value):
+            return value.description
+        case .rdfTerm(.iri(let iri)): return iri.rawValue
         case .rdfTerm(.literal(let literal)): return literal.lexicalForm
-        case .data, .rdfTerm, .null, .array: return nil
+        case .bytes, .time, .dateTime, .timeSpan, .calendarPeriod,
+             .geographicPoint, .geographicPosition, .vector, .object,
+             .reference, .rdfTerm, .null, .array:
+            return nil
         }
     }
 
@@ -844,7 +878,7 @@ public struct ExpressionEvaluator: Sendable {
         case .bool(let v): return v
         case .string(let s): return !s.isEmpty
         case .rdfTerm(.literal(let literal)):
-            if literal.datatype == xsdNamespace + "boolean" {
+            if literal.datatypeIRI.rawValue == xsdNamespace + "boolean" {
                 switch literal.lexicalForm {
                 case "true", "1": return true
                 case "false", "0": return false
@@ -852,7 +886,7 @@ public struct ExpressionEvaluator: Sendable {
                     throw typeError("invalid xsd:boolean lexical form")
                 }
             }
-            if literal.datatype == xsdNamespace + "string"
+            if literal.datatypeIRI.rawValue == xsdNamespace + "string"
             {
                 return !literal.lexicalForm.isEmpty
             }
@@ -876,7 +910,7 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func recoverableEffectiveBooleanValue(
-        _ expression: QueryIR.Expression,
+        _ expression: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> EffectiveBooleanResult {
         do {
@@ -890,8 +924,8 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func evaluateLogicalAnd(
-        _ lhs: QueryIR.Expression,
-        _ rhs: QueryIR.Expression,
+        _ lhs: DatabaseKit.Expression,
+        _ rhs: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> FieldValue {
         let left = try recoverableEffectiveBooleanValue(lhs, binding: binding)
@@ -912,8 +946,8 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func evaluateLogicalOr(
-        _ lhs: QueryIR.Expression,
-        _ rhs: QueryIR.Expression,
+        _ lhs: DatabaseKit.Expression,
+        _ rhs: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> FieldValue {
         let left = try recoverableEffectiveBooleanValue(lhs, binding: binding)
@@ -934,8 +968,8 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func evaluateInList(
-        _ expression: QueryIR.Expression,
-        values: [QueryIR.Expression],
+        _ expression: DatabaseKit.Expression,
+        values: [DatabaseKit.Expression],
         binding: VariableBinding,
         negated: Bool
     ) throws -> FieldValue {
@@ -957,8 +991,8 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func equalValues(
-        _ lhs: QueryIR.Expression,
-        _ rhs: QueryIR.Expression,
+        _ lhs: DatabaseKit.Expression,
+        _ rhs: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> Bool {
         try equalFieldValues(
@@ -968,8 +1002,8 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func compareValues(
-        _ lhs: QueryIR.Expression,
-        _ rhs: QueryIR.Expression,
+        _ lhs: DatabaseKit.Expression,
+        _ rhs: DatabaseKit.Expression,
         binding: VariableBinding
     ) throws -> ComparisonResult? {
         try compareFieldValues(
@@ -1020,7 +1054,14 @@ public struct ExpressionEvaluator: Sendable {
         guard let comparison = left.compare(to: right) else {
             throw typeError("values are not order-comparable")
         }
-        return comparison
+        switch comparison {
+        case .lessThan:
+            return .orderedAscending
+        case .equal:
+            return .orderedSame
+        case .greaterThan:
+            return .orderedDescending
+        }
     }
 
     static func equalFieldValues(
@@ -1045,8 +1086,8 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func equalRDFTerms(
-        _ left: DatabaseRDFTerm,
-        _ right: DatabaseRDFTerm
+        _ left: RDFTerm,
+        _ right: RDFTerm
     ) throws -> Bool {
         switch (left, right) {
         case (.iri(let lhs), .iri(let rhs)):
@@ -1054,8 +1095,8 @@ public struct ExpressionEvaluator: Sendable {
         case (.blankNode(let lhs), .blankNode(let rhs)):
             return lhs == rhs
         case (.literal(let lhs), .literal(let rhs)):
-            if lhs.language != nil || rhs.language != nil
-                || lhs.direction != nil || rhs.direction != nil {
+            if lhs.languageTag != nil || rhs.languageTag != nil
+                || lhs.baseDirection != nil || rhs.baseDirection != nil {
                 return lhs == rhs
             }
             do {
@@ -1072,8 +1113,8 @@ public struct ExpressionEvaluator: Sendable {
             .tripleTerm(let leftSubject, let leftPredicate, let leftObject),
             .tripleTerm(let rightSubject, let rightPredicate, let rightObject)
         ):
-            return try equalRDFTerms(leftSubject, rightSubject)
-                && equalRDFTerms(leftPredicate, rightPredicate)
+            return try equalRDFTerms(leftSubject.term, rightSubject.term)
+                && equalRDFTerms(leftPredicate.term, rightPredicate.term)
                 && equalRDFTerms(leftObject, rightObject)
         default:
             return false
@@ -1081,8 +1122,8 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func numericBinary(
-        _ lhs: QueryIR.Expression,
-        _ rhs: QueryIR.Expression,
+        _ lhs: DatabaseKit.Expression,
+        _ rhs: DatabaseKit.Expression,
         binding: VariableBinding,
         operation: SPARQLNumericValue.ArithmeticOperation
     ) throws -> FieldValue {
@@ -1100,7 +1141,7 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func requireArgumentCount(
-        _ arguments: [QueryIR.Expression],
+        _ arguments: [DatabaseKit.Expression],
         count: Int,
         function: String
     ) throws {
@@ -1148,7 +1189,7 @@ public struct ExpressionEvaluator: Sendable {
         do {
             return .rdfTerm(
                 .literal(
-                    try DatabaseRDFLiteral(
+                    try RDFLiteral(
                         lexicalForm: lexicalForm,
                         datatype: datatype
                     )
@@ -1394,12 +1435,24 @@ public struct ExpressionEvaluator: Sendable {
     private static func xsdDatatype(_ value: FieldValue) -> String? {
         switch value {
         case .bool: return "http://www.w3.org/2001/XMLSchema#boolean"
-        case .int64: return "http://www.w3.org/2001/XMLSchema#integer"
-        case .uint64: return "http://www.w3.org/2001/XMLSchema#unsignedLong"
-        case .double: return "http://www.w3.org/2001/XMLSchema#double"
+        case .int8, .int16, .int32, .int64:
+            return "http://www.w3.org/2001/XMLSchema#integer"
+        case .uint8, .uint16, .uint32, .uint64:
+            return "http://www.w3.org/2001/XMLSchema#unsignedLong"
+        case .decimal: return "http://www.w3.org/2001/XMLSchema#decimal"
+        case .float32: return "http://www.w3.org/2001/XMLSchema#float"
+        case .float64: return "http://www.w3.org/2001/XMLSchema#double"
         case .string: return "http://www.w3.org/2001/XMLSchema#string"
-        case .data: return "http://www.w3.org/2001/XMLSchema#base64Binary"
-        case .rdfTerm(.literal(let literal)): return literal.datatype
+        case .bytes: return "http://www.w3.org/2001/XMLSchema#base64Binary"
+        case .date: return "http://www.w3.org/2001/XMLSchema#date"
+        case .timestamp:
+            return "http://www.w3.org/2001/XMLSchema#dateTime"
+        case .uuid, .time, .dateTime, .timeSpan, .calendarPeriod,
+             .geographicPoint, .geographicPosition, .vector, .object,
+             .reference:
+            return nil
+        case .rdfTerm(.literal(let literal)):
+            return literal.datatypeIRI.rawValue
         case .rdfTerm, .null, .array: return nil
         }
     }

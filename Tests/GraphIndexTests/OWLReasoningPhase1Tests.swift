@@ -7,8 +7,8 @@
 import Testing
 import TestHeartbeat
 import Foundation
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 @testable import GraphIndex
 @testable import OntologyIndex
 
@@ -406,19 +406,31 @@ struct InferenceProvenanceTests {
             predicateIRI: "rdf:type",
             objectIRI: "ex:Person"
         )
+        let expectedSubject = RDFSubject.iri(
+            try RDFIRI("ex:Alice")
+        )
+        let expectedObject = try RDFTerm.iri(
+            validating: "ex:Person"
+        )
 
-        #expect(key.subject == .iri("ex:Alice"))
+        #expect(key.subject == expectedSubject)
         #expect(key.predicate.rawValue == "rdf:type")
-        #expect(key.object == .iri("ex:Person"))
+        #expect(key.object == expectedObject)
     }
 
     @Test("Triple key convenience initializer")
     func tripleKeyConvenience() throws {
         let key = try ReasoningTriple("ex:Bob", "ex:knows", "ex:Alice")
+        let expectedSubject = RDFSubject.iri(
+            try RDFIRI("ex:Bob")
+        )
+        let expectedObject = try RDFTerm.iri(
+            validating: "ex:Alice"
+        )
 
-        #expect(key.subject == .iri("ex:Bob"))
+        #expect(key.subject == expectedSubject)
         #expect(key.predicate.rawValue == "ex:knows")
-        #expect(key.object == .iri("ex:Alice"))
+        #expect(key.object == expectedObject)
     }
 
     @Test("Triple key hashable")
@@ -452,15 +464,16 @@ struct InferenceProvenanceTests {
 
     @Test("Typed RDF terms remain distinct reasoning identities")
     func typedTermsRemainDistinct() throws {
+        let subject = RDFSubject.iri(try RDFIRI("ex:A"))
         let iriObject = try ReasoningTriple(
-            subject: .iri("ex:A"),
+            subject: subject,
             predicateIRI: "ex:p",
-            object: .iri("ex:value")
+            object: .iri(validating: "ex:value")
         )
         let literalObject = try ReasoningTriple(
-            subject: .iri("ex:A"),
+            subject: subject,
             predicateIRI: "ex:p",
-            object: .literal(DatabaseRDFLiteral(
+            object: .literal(RDFLiteral(
                 lexicalForm: "ex:value",
                 datatype: .xsdString
             ))

@@ -109,6 +109,35 @@ struct DatabaseRuntimeConfigurationValidationTests {
         }
     }
 
+    @Test("Schema validation rejects uniqueness without maintainer support")
+    func missingUniquenessSupportFailsValidation() throws {
+        let schema = try Schema(
+            entities: [
+                try Schema.Entity(
+                    from: RuntimeConfigurationUniqueVectorEntity.self
+                )
+            ]
+        )
+        let configuration = try DatabaseFrameworkRuntime.configuration(
+            persistableTypes: [RuntimeConfigurationUniqueVectorEntity.self]
+        )
+        let descriptor = try RuntimeConfigurationUniqueVectorEntity
+            .indexDescriptors[0]
+
+        #expect(
+            throws: DatabaseRuntimeConfigurationError
+                .missingIndexUniquenessSupport(
+                    source: .entity(
+                        RuntimeConfigurationUniqueVectorEntity.persistableType
+                    ),
+                    indexName: descriptor.name,
+                    kindIdentifier: descriptor.kindIdentifier
+                )
+        ) {
+            try configuration.validate(schema: schema)
+        }
+    }
+
     @Test("Schema validation rejects a missing entity mutation maintainer")
     func missingPersistableMutationMaintainerFailsValidation() throws {
         let descriptor = RuntimeConfigurationRelationshipOwner.relationshipDescriptors[0]

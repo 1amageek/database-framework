@@ -1,10 +1,11 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
 /// Canonical runtime provider for scalar indexes.
 public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
     public let kindIdentifier = "scalar"
+    public let supportsUniquenessConstraints = true
 
     public var physicalEntryCapabilities: IndexPhysicalEntryCapabilities? {
         IndexPhysicalEntryCapabilities(
@@ -20,7 +21,7 @@ public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
         guard index.kind.identifier == kindIdentifier else {
             throw IndexMaintainerProviderError.kindMismatch(

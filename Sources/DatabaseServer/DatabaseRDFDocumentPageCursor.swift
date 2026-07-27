@@ -1,5 +1,5 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 struct DatabaseRDFDocumentPageCursor: Sendable, Hashable {
     private static let formatVersion: UInt16 = 1
@@ -14,7 +14,7 @@ struct DatabaseRDFDocumentPageCursor: Sendable, Hashable {
     let revision: UInt64
     let offset: UInt64
 
-    func encode(limits: DatabaseWireLimits) throws -> DatabaseBytes {
+    func encode(limits: DatabaseWireLimits) throws -> ByteString {
         do {
             return try DatabaseWireWriter.encode(limits: limits) {
                 (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
@@ -30,7 +30,7 @@ struct DatabaseRDFDocumentPageCursor: Sendable, Hashable {
     }
 
     static func decode(
-        _ bytes: DatabaseBytes,
+        _ bytes: ByteString,
         domain: Domain,
         identifier: String,
         limits: DatabaseWireLimits

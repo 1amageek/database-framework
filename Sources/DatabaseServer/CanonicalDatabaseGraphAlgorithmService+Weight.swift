@@ -1,4 +1,5 @@
-import DatabaseValue
+import DatabaseTypes
+import DatabaseMath
 import GraphIndex
 
 actor DatabaseIndexedWeightedGraphNeighborSource: WeightedGraphNeighborSource {
@@ -80,7 +81,36 @@ actor DatabaseIndexedWeightedGraphNeighborSource: WeightedGraphNeighborSource {
         return allNeighbors[source] ?? []
     }
 
-    private func numericWeight(_ value: DatabaseValue) -> Double? {
-        value.numericDoubleValue
+    private func numericWeight(_ value: FieldValue) -> Double? {
+        switch value {
+        case .int8(let value):
+            return Double(value)
+        case .int16(let value):
+            return Double(value)
+        case .int32(let value):
+            return Double(value)
+        case .int64(let value):
+            return Double(value)
+        case .uint8(let value):
+            return Double(value)
+        case .uint16(let value):
+            return Double(value)
+        case .uint32(let value):
+            return Double(value)
+        case .uint64(let value):
+            return Double(value)
+        case .float32(let value):
+            return Double(value)
+        case .float64(let value):
+            return value
+        case .decimal(let value):
+            return Double(value.coefficient)
+                * DatabaseMath.power(10, -Double(value.scale))
+        case .null, .bool, .string, .bytes, .date, .time, .dateTime,
+             .timestamp, .timeSpan, .calendarPeriod, .geographicPoint,
+             .geographicPosition, .vector, .uuid, .array, .object,
+             .reference, .rdfTerm:
+            return nil
+        }
     }
 }

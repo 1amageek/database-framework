@@ -1,12 +1,12 @@
-import QueryIR
+import DatabaseKit
 
 struct SPARQLAggregateRewriter {
     private(set) var aggregateBindings: [AggregateBinding] = []
     private(set) var aggregateOccurrenceCount: UInt64 = 0
 
     mutating func rewrite(
-        _ expression: QueryIR.Expression
-    ) throws -> QueryIR.Expression {
+        _ expression: Expression
+    ) throws -> Expression {
         switch expression {
         case .literal, .column, .variable, .parameter, .bound:
             return expression

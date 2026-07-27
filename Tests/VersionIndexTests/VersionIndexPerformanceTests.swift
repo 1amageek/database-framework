@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import VersionIndex
@@ -116,7 +116,6 @@ private struct VersionIndexBenchmarkContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: VersionIndexMaintainer<VersionedBenchmarkDocument>
-    let kind: VersionIndexKind<VersionedBenchmarkDocument>
 
     init(strategy: VersionHistoryStrategy = .keepAll, testId: String? = nil) async throws {
         self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
@@ -125,11 +124,9 @@ private struct VersionIndexBenchmarkContext {
         let indexName = "VersionedBenchmarkDocument_version"
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = VersionIndexKind<VersionedBenchmarkDocument>(field: \.id, strategy: strategy)
-
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: versionIndexMetadata(strategy: strategy),
             rootExpression: FieldKeyExpression(fieldName: "id"),
             subspaceKey: indexName,
             itemTypes: Set(["VersionedBenchmarkDocument"])
@@ -137,7 +134,7 @@ private struct VersionIndexBenchmarkContext {
 
         self.maintainer = VersionIndexMaintainer<VersionedBenchmarkDocument>(
             index: index,
-            strategy: kind.strategy,
+            strategy: strategy,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

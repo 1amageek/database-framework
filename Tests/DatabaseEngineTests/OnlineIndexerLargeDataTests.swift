@@ -12,12 +12,12 @@ import Testing
 import Foundation
 @testable import DatabaseEngine
 import DatabaseRuntime
-@testable import Core
+@testable import DatabaseKit
 import StorageKit
 import FDBStorage
 import TestSupport
 
-@Suite("OnlineIndexer Large Data Tests", .tags(.requiresFDB), .serialized, .heartbeat)
+@Suite("OnlineIndexer Large Data Tests", .tags(.requiresFDB), .foundationDBScenario, .serialized, .heartbeat)
 struct OnlineIndexerLargeDataTests {
 
     init() async throws {
@@ -108,7 +108,7 @@ struct OnlineIndexerLargeDataTests {
 
             try await lifecycleStore.enable(index.name)
 
-        let indexer = OnlineIndexer(
+        let indexer = try OnlineIndexer(
             container: ctx.container,
             storeSubspace: ctx.testSubspace,
             itemType: Player.persistableType,
@@ -156,7 +156,7 @@ struct OnlineIndexerLargeDataTests {
 
             try await lifecycleStore.enable(index.name)
 
-        let indexer = OnlineIndexer(
+        let indexer = try OnlineIndexer(
             container: ctx.container,
             storeSubspace: ctx.testSubspace,
             itemType: Player.persistableType,
@@ -210,11 +210,9 @@ struct OnlineIndexerLargeDataTests {
                 IndexBuildTarget(index: index2, maintainer: maintainer2),
             ]
 
-            let indexer = MultiTargetOnlineIndexer(
+            let indexer = try MultiTargetOnlineIndexer(
                 container: ctx.container,
-                itemSubspace: ctx.itemSubspace,
-                indexSubspace: ctx.indexSubspace,
-                blobsSubspace: ctx.blobsSubspace,
+                storeSubspace: ctx.testSubspace,
                 itemType: Player.persistableType,
                 targets: targets,
                 lifecycleStore: lifecycleStore,
@@ -253,7 +251,7 @@ struct OnlineIndexerLargeDataTests {
 
             try await lifecycleStore.enable(index.name)
 
-            let indexer = OnlineIndexer(
+            let indexer = try OnlineIndexer(
                 container: ctx.container,
                 storeSubspace: ctx.testSubspace,
                 itemType: Player.persistableType,
@@ -293,7 +291,7 @@ struct OnlineIndexerLargeDataTests {
 
         try await lifecycleStore.enable(index.name)
 
-        let indexer = OnlineIndexer(
+        let indexer = try OnlineIndexer(
             container: ctx.container,
             storeSubspace: ctx.testSubspace,
             itemType: Player.persistableType,

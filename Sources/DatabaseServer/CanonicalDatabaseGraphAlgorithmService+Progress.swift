@@ -1,13 +1,13 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 extension CanonicalDatabaseGraphAlgorithmService {
     func progress(
         isComplete: Bool,
         limitReason: DatabaseEngine.LimitReason?,
         resultPageComplete: Bool = true,
-        continuation: DatabaseBytes? = nil
+        continuation: ByteString? = nil
     ) throws -> GraphAlgorithmOperation.Progress {
         guard isComplete == (limitReason == nil) else {
             throw DatabaseGraphAlgorithmError.inconsistentAlgorithmResult(

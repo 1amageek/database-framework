@@ -12,7 +12,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Core
+import DatabaseKit
 import Metrics
 import Synchronization
 

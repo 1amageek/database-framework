@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -58,7 +58,7 @@ extension Data: HashBytesConvertible {
     }
 }
 
-extension DatabaseBytes: HashBytesConvertible {
+extension ByteString: HashBytesConvertible {
     @usableFromInline
     func appendHashBytes(to stream: inout MurmurHash3.Stream) {
         stream.update(self)

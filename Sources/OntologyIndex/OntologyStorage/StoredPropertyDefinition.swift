@@ -10,7 +10,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Graph
+import DatabaseKit
 
 /// Property type enumeration
 public enum StoredPropertyType: String, Codable, Sendable {

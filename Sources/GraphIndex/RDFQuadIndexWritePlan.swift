@@ -1,26 +1,27 @@
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
+import DatabaseEngine
 
 /// One validated component ready for direct emission into an RDF index key.
 package enum RDFQuadIndexComponentWritePlan: Sendable {
     case term(
-        role: DatabaseRDFTermRole,
-        encoding: DatabaseRDFTermEncodingPlan
+        role: RDFTermRole,
+        encoding: RDFTermStorageEncoding
     )
     case canonicalBytes(
-        role: DatabaseRDFTermRole,
-        bytes: DatabaseBytes
+        role: RDFTermRole,
+        bytes: ByteString
     )
     case defaultGraph
 
     package init(
-        term: DatabaseRDFTerm,
-        role: DatabaseRDFTermRole,
-        limits: DatabaseRDFTermCodecLimits = .default
-    ) throws(DatabaseRDFTermCodecError) {
+        term: RDFTerm,
+        role: RDFTermRole,
+        limits: RDFTermStorageLimits = .default
+    ) throws(RDFTermStorageError) {
         self = .term(
             role: role,
-            encoding: try DatabaseRDFTermCodec.encodingPlan(
+            encoding: try RDFTermStorageFormat.encodingPlan(
                 term,
                 role: role,
                 limits: limits
@@ -29,11 +30,11 @@ package enum RDFQuadIndexComponentWritePlan: Sendable {
     }
 
     package init(
-        canonicalBytes: DatabaseBytes,
-        role: DatabaseRDFTermRole,
-        limits: DatabaseRDFTermCodecLimits = .default
-    ) throws(DatabaseRDFTermCodecError) {
-        _ = try DatabaseRDFTermCodec.validate(
+        canonicalBytes: ByteString,
+        role: RDFTermRole,
+        limits: RDFTermStorageLimits = .default
+    ) throws(RDFTermStorageError) {
+        _ = try RDFTermStorageFormat.validate(
             canonicalBytes,
             role: role,
             limits: limits
@@ -99,15 +100,15 @@ package struct RDFQuadIndexWritePlan: Sendable {
 
     package init(
         quad: RDFQuad,
-        limits: DatabaseRDFTermCodecLimits = .default
-    ) throws(DatabaseRDFTermCodecError) {
+        limits: RDFTermStorageLimits = .default
+    ) throws(RDFTermStorageError) {
         self.subject = try RDFQuadIndexComponentWritePlan(
-            term: quad.subject,
+            term: quad.subject.term,
             role: .subject,
             limits: limits
         )
         self.predicate = try RDFQuadIndexComponentWritePlan(
-            term: quad.predicate,
+            term: quad.predicate.term,
             role: .predicate,
             limits: limits
         )
@@ -118,7 +119,7 @@ package struct RDFQuadIndexWritePlan: Sendable {
         )
         if let graph = quad.graph {
             self.graph = try RDFQuadIndexComponentWritePlan(
-                term: graph,
+                term: graph.term,
                 role: .graphName,
                 limits: limits
             )
@@ -132,8 +133,8 @@ package struct RDFQuadIndexWritePlan: Sendable {
     /// without materializing RDF strings.
     package init(
         encodedQuad: RDFQuadIndexEncodedQuad,
-        limits: DatabaseRDFTermCodecLimits = .default
-    ) throws(DatabaseRDFTermCodecError) {
+        limits: RDFTermStorageLimits = .default
+    ) throws(RDFTermStorageError) {
         self.subject = try RDFQuadIndexComponentWritePlan(
             canonicalBytes: encodedQuad.subject,
             role: .subject,

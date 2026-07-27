@@ -4,68 +4,19 @@
 import Testing
 import Foundation
 import StorageKit
-import Core
-import DatabaseValue
-import FullText
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import FullTextIndex
 
 // MARK: - Test Model
 
-struct SearchableArticle: Persistable {
-    typealias ID = String
-
+@Persistable
+struct SearchableArticle {
     var id: String
     var title: String
     var content: String
-
-    init(id: String = UUID().uuidString, title: String, content: String) {
-        self.id = id
-        self.title = title
-        self.content = content
-    }
-
-    static var persistableType: String { "SearchableArticle" }
-    static var allFields: [String] { ["id", "title", "content"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "title": return title
-        case "content": return content
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<SearchableArticle, Value>) -> String {
-        switch keyPath {
-        case \SearchableArticle.id: return "id"
-        case \SearchableArticle.title: return "title"
-        case \SearchableArticle.content: return "content"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<SearchableArticle>) -> String {
-        switch keyPath {
-        case \SearchableArticle.id: return "id"
-        case \SearchableArticle.title: return "title"
-        case \SearchableArticle.content: return "content"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<SearchableArticle> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Full-Text Index Context
@@ -75,7 +26,6 @@ private struct FullTextIndexContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: FullTextIndexMaintainer<SearchableArticle>
-    let kind: FullTextIndexKind<SearchableArticle>
 
     init(tokenizer: TokenizationStrategy = .simple, storePositions: Bool = false, indexName: String = "SearchableArticle_content") async throws {
         self.database = InMemoryEngine()
@@ -83,16 +33,15 @@ private struct FullTextIndexContext {
         self.subspace = Subspace(prefix: Tuple("test", "fulltext", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = FullTextIndexKind<SearchableArticle>(
-            fields: [\.content],
-            tokenizer: tokenizer,
-            storePositions: storePositions
-        )
-
         // Expression: content
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: fullTextIndexMetadata(
+                fieldName: "content",
+                fieldNumber: 3,
+                tokenizer: tokenizer,
+                storePositions: storePositions
+            ),
             rootExpression: FieldKeyExpression(fieldName: "content"),
             subspaceKey: indexName,
             itemTypes: Set(["SearchableArticle"])
@@ -102,8 +51,8 @@ private struct FullTextIndexContext {
             index: index,
             tokenizer: tokenizer,
             storePositions: storePositions,
-            ngramSize: kind.ngramSize,
-            minTermLength: kind.minTermLength,
+            ngramSize: 3,
+            minTermLength: 2,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
@@ -155,6 +104,31 @@ private struct FullTextIndexContext {
             return try await transaction.getValue(for: key, snapshot: true)
         }
     }
+}
+
+func fullTextIndexMetadata(
+    fieldName: String,
+    fieldNumber: Int,
+    tokenizer: TokenizationStrategy,
+    storePositions: Bool,
+    ngramSize: Int = 3,
+    minTermLength: Int = 2
+) -> IndexKindMetadata {
+    IndexKindMetadata(
+        identifier: "fulltext",
+        subspaceStructure: .hierarchical,
+        fields: [
+            IndexFieldMetadata(
+                identity: FieldIdentity(name: fieldName, number: fieldNumber)
+            )
+        ],
+        metadata: [
+            "tokenizer": .string(tokenizer.rawValue),
+            "storePositions": .bool(storePositions),
+            "ngramSize": .int64(Int64(ngramSize)),
+            "minTermLength": .int64(Int64(minTermLength)),
+        ]
+    )
 }
 
 // MARK: - Behavior Tests

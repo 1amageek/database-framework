@@ -1,4 +1,5 @@
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -481,7 +482,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
             throw DistinctIndexError.invalidPrecision(precision)
         }
         guard index.rootExpression.columnCount >= 1 else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Distinct index '\(index.name)' requires one value field"
             )
         }
@@ -524,7 +525,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
     where Grouping.Element == any TupleElement {
         let expectedCount = index.rootExpression.columnCount - 1
         guard groupingValues.count == expectedCount else {
-            throw IndexError.invalidArgument(
+            throw AggregationIndexError.invalidArgument(
                 "Grouping value count does not match distinct index '\(index.name)'"
             )
         }
@@ -571,7 +572,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>:
             valueCount += 1
         }
         guard valueCount > 0 else {
-            throw IndexError.invalidArgument(
+            throw AggregationIndexError.invalidArgument(
                 "DISTINCT summary update requires at least one value"
             )
         }
@@ -903,10 +904,40 @@ private func canonicalDistinctValueResult(
     fieldName: String
 ) throws -> CanonicalDistinctValueResult {
     switch value {
+    case .int8(let integer):
+        return CanonicalDistinctValueResult(
+            value: .int64(Int64(integer)),
+            changedRepresentation: true
+        )
+    case .int16(let integer):
+        return CanonicalDistinctValueResult(
+            value: .int64(Int64(integer)),
+            changedRepresentation: true
+        )
+    case .int32(let integer):
+        return CanonicalDistinctValueResult(
+            value: .int64(Int64(integer)),
+            changedRepresentation: true
+        )
     case .int64(let integer):
         return CanonicalDistinctValueResult(
             value: .int64(integer),
             changedRepresentation: false
+        )
+    case .uint8(let integer):
+        return CanonicalDistinctValueResult(
+            value: .int64(Int64(integer)),
+            changedRepresentation: true
+        )
+    case .uint16(let integer):
+        return CanonicalDistinctValueResult(
+            value: .int64(Int64(integer)),
+            changedRepresentation: true
+        )
+    case .uint32(let integer):
+        return CanonicalDistinctValueResult(
+            value: .int64(Int64(integer)),
+            changedRepresentation: true
         )
     case .uint64(let integer):
         if integer <= UInt64(Int64.max) {
@@ -919,7 +950,21 @@ private func canonicalDistinctValueResult(
             value: .uint64(integer),
             changedRepresentation: false
         )
-    case .double(let number):
+    case .float32(let number):
+        guard number.isFinite else {
+            throw DistinctIndexError.invalidDistinctValue(
+                fieldName: fieldName
+            )
+        }
+        let canonical = try canonicalDistinctValue(
+            .float64(Double(number)),
+            fieldName: fieldName
+        )
+        return CanonicalDistinctValueResult(
+            value: canonical,
+            changedRepresentation: canonical != value
+        )
+    case .float64(let number):
         guard number.isFinite else {
             throw DistinctIndexError.invalidDistinctValue(
                 fieldName: fieldName
@@ -942,8 +987,14 @@ private func canonicalDistinctValueResult(
         }
         let normalized = number == 0 ? 0 : number
         return CanonicalDistinctValueResult(
-            value: .double(normalized),
+            value: .float64(normalized),
             changedRepresentation: normalized.bitPattern != number.bitPattern
+        )
+    case .decimal(let decimal):
+        let canonical = canonicalIntegralFieldValue(decimal) ?? .decimal(decimal)
+        return CanonicalDistinctValueResult(
+            value: canonical,
+            changedRepresentation: canonical != value
         )
     case .array(let values):
         var canonical: [FieldValue]?
@@ -969,12 +1020,69 @@ private func canonicalDistinctValueResult(
             value: .array(canonical),
             changedRepresentation: true
         )
-    case .null, .bool, .string, .data, .rdfTerm:
+    case .object(let object):
+        let fields = object.fields
+        var canonical: [(key: String, value: FieldValue)]?
+        for index in fields.indices {
+            let result = try canonicalDistinctValueResult(
+                fields[index].value,
+                fieldName: fieldName
+            )
+            if result.changedRepresentation {
+                if canonical == nil {
+                    canonical = fields
+                }
+                let field = fields[index]
+                canonical?[index] = (
+                    key: field.key,
+                    value: result.value
+                )
+            }
+        }
+        guard let canonical else {
+            return CanonicalDistinctValueResult(
+                value: value,
+                changedRepresentation: false
+            )
+        }
+        return CanonicalDistinctValueResult(
+            value: .object(try FieldObject(canonical)),
+            changedRepresentation: true
+        )
+    case .null, .bool, .string, .bytes, .date, .time, .dateTime,
+         .timestamp, .timeSpan, .calendarPeriod, .geographicPoint,
+         .geographicPosition, .vector, .uuid, .reference, .rdfTerm:
         return CanonicalDistinctValueResult(
             value: value,
             changedRepresentation: false
         )
     }
+}
+
+private func canonicalIntegralFieldValue(
+    _ decimal: ExactDecimal
+) -> FieldValue? {
+    guard decimal.scale <= 0 else { return nil }
+    if decimal.coefficient == 0 {
+        return .int64(0)
+    }
+
+    let exponent = -Int64(decimal.scale)
+    guard exponent <= 19 else { return nil }
+
+    var integer = decimal.coefficient
+    for _ in 0..<exponent {
+        let product = integer.multipliedReportingOverflow(by: 10)
+        guard !product.overflow else { return nil }
+        integer = product.partialValue
+    }
+    if let signed = Int64(exactly: integer) {
+        return .int64(signed)
+    }
+    if integer >= 0, let unsigned = UInt64(exactly: integer) {
+        return .uint64(unsigned)
+    }
+    return nil
 }
 
 private func checkedDistinctScannedBytes(

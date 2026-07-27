@@ -1,7 +1,7 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import StorageKit
 import TestHeartbeat
 import Testing
@@ -13,9 +13,9 @@ struct RDFDatasetScanReservationTests {
         let quad: RDFQuad
 
         func scan(
-            subject: DatabaseRDFTerm?,
-            predicate: DatabaseRDFTerm?,
-            object: DatabaseRDFTerm?,
+            subject: RDFTerm?,
+            predicate: RDFTerm?,
+            object: RDFTerm?,
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
@@ -58,7 +58,7 @@ struct RDFDatasetScanReservationTests {
         let engine = InMemoryEngine()
         let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
         let graph = try makeGraph("lifetime")
-        let quad = makeQuad(graph: graph, suffix: "retained")
+        let quad = try makeQuad(graph: graph, suffix: "retained")
         try await insert([quad], into: store, database: engine)
 
         let meter = makeMeter()
@@ -74,19 +74,13 @@ struct RDFDatasetScanReservationTests {
             quad,
             mergesNamedGraphs: false
         )
-        let scratchRows = RDFDatasetScanRetainedMetrics.initialWorklistCapacity
-        let scratchBytes = try scratchByteCount(capacity: scratchRows)
-
         #expect(result?.count == 1)
         var retainedRow = result?.first
         #expect(retainedRow?.quad == quad)
         #expect(meter.retainedIntermediateRows == metrics.rowCount)
         #expect(meter.retainedIntermediateBytes == metrics.retainedByteCount)
-        #expect(meter.peakIntermediateRows == scratchRows + metrics.rowCount)
-        #expect(
-            meter.peakIntermediateBytes
-                == scratchBytes + metrics.retainedByteCount
-        )
+        #expect(meter.peakIntermediateRows == metrics.rowCount)
+        #expect(meter.peakIntermediateBytes == metrics.retainedByteCount)
 
         var resultCopy = result
         var iterator = result?.makeIterator()
@@ -110,9 +104,9 @@ struct RDFDatasetScanReservationTests {
     @Test("SPARQL consumption releases the scan owner after projection")
     func sparqlConsumptionRetainsResultOwner() async throws {
         let quad = RDFQuad(
-            subject: .iri("https://example.com/subject"),
-            predicate: .iri("https://example.com/predicate"),
-            object: .iri("https://example.com/object")
+            subject: .iri(.xsdString),
+            predicate: RDFPredicateIRI(.rdfLanguageString),
+            object: .iri(.rdfDirectionalLanguageString)
         )
         let meter = makeMeter()
         let executor = SPARQLQueryExecutor(
@@ -135,7 +129,10 @@ struct RDFDatasetScanReservationTests {
         )
 
         #expect(result.0.count == 1)
-        #expect(result.0[0]["?subject"] == .rdfTerm(quad.subject))
+        #expect(
+            result.0[0]["?subject"]
+                == .rdfTerm(quad.subject.term)
+        )
         #expect(meter.peakIntermediateRows >= 2)
         #expect(meter.peakIntermediateBytes >= 256)
         #expect(meter.retainedIntermediateRows == 0)
@@ -147,13 +144,12 @@ struct RDFDatasetScanReservationTests {
         let engine = InMemoryEngine()
         let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
         let graph = try makeGraph("row-budget")
-        let first = makeQuad(graph: graph, suffix: "first")
-        let second = makeQuad(graph: graph, suffix: "other")
+        let first = try makeQuad(graph: graph, suffix: "first")
+        let second = try makeQuad(graph: graph, suffix: "other")
         try await insert([first, second], into: store, database: engine)
 
         let metrics = try measure(first, mergesNamedGraphs: false)
-        let scratchRows = RDFDatasetScanRetainedMetrics.initialWorklistCapacity
-        let maximumRows = scratchRows + metrics.rowCount + 1
+        let maximumRows = metrics.rowCount + 1
         let meter = makeMeter(
             maximumIntermediateRows: UInt32(maximumRows)
         )
@@ -170,13 +166,13 @@ struct RDFDatasetScanReservationTests {
         } catch let error as DatabaseWorkLimitError {
             #expect(error == .maximumIntermediateRows(
                 stage: .deduplication,
-                consumed: scratchRows + metrics.rowCount,
+                consumed: metrics.rowCount,
                 requested: metrics.rowCount,
                 maximum: maximumRows
             ))
         }
 
-        #expect(meter.peakIntermediateRows == scratchRows + metrics.rowCount)
+        #expect(meter.peakIntermediateRows == metrics.rowCount)
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -186,8 +182,8 @@ struct RDFDatasetScanReservationTests {
         let engine = InMemoryEngine()
         let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
         let graph = try makeGraph("byte-budget")
-        let first = makeQuad(graph: graph, suffix: "first")
-        let second = makeQuad(graph: graph, suffix: "other")
+        let first = try makeQuad(graph: graph, suffix: "first")
+        let second = try makeQuad(graph: graph, suffix: "other")
         try await insert([first, second], into: store, database: engine)
 
         let metrics = try measure(
@@ -199,10 +195,7 @@ struct RDFDatasetScanReservationTests {
             mergesNamedGraphs: false
         )
         #expect(metrics == secondMetrics)
-        let scratchBytes = try scratchByteCount(
-            capacity: RDFDatasetScanRetainedMetrics.initialWorklistCapacity
-        )
-        let maximumBytes = scratchBytes + metrics.retainedByteCount * 2 - 1
+        let maximumBytes = metrics.retainedByteCount * 2 - 1
         let meter = makeMeter(maximumIntermediateBytes: maximumBytes)
 
         do {
@@ -218,16 +211,13 @@ struct RDFDatasetScanReservationTests {
         } catch let error as DatabaseWorkLimitError {
             #expect(error == .maximumIntermediateBytes(
                 stage: .deduplication,
-                consumed: scratchBytes + metrics.retainedByteCount,
+                consumed: metrics.retainedByteCount,
                 requested: metrics.retainedByteCount,
                 maximum: maximumBytes
             ))
         }
 
-        #expect(
-            meter.peakIntermediateBytes
-                == scratchBytes + metrics.retainedByteCount
-        )
+        #expect(meter.peakIntermediateBytes == metrics.retainedByteCount)
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -237,7 +227,7 @@ struct RDFDatasetScanReservationTests {
         let engine = InMemoryEngine()
         let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
         let graph = try makeGraph("duplicate")
-        let quad = makeQuad(graph: graph, suffix: "shared")
+        let quad = try makeQuad(graph: graph, suffix: "shared")
         try await insert([quad], into: store, database: engine)
 
         let meter = makeMeter()
@@ -253,17 +243,11 @@ struct RDFDatasetScanReservationTests {
             quad,
             mergesNamedGraphs: false
         )
-        let scratchRows = RDFDatasetScanRetainedMetrics.initialWorklistCapacity
-        let scratchBytes = try scratchByteCount(capacity: scratchRows)
-
         #expect(result?.count == 1)
         #expect(result?.first?.quad == quad)
         #expect(result?.physicalScanCount == 2)
-        #expect(meter.peakIntermediateRows == scratchRows + metrics.rowCount)
-        #expect(
-            meter.peakIntermediateBytes
-                == scratchBytes + metrics.retainedByteCount
-        )
+        #expect(meter.peakIntermediateRows == metrics.rowCount)
+        #expect(meter.peakIntermediateBytes == metrics.retainedByteCount)
 
         result = nil
         #expect(meter.retainedIntermediateRows == 0)
@@ -276,12 +260,15 @@ struct RDFDatasetScanReservationTests {
         let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
         let firstGraph = try makeGraph("union-a")
         let secondGraph = try makeGraph("union-b")
-        let first = makeQuad(graph: firstGraph, suffix: "merged")
+        let first = try makeQuad(
+            graph: firstGraph,
+            suffix: "merged"
+        )
         let second = RDFQuad(
             subject: first.subject,
             predicate: first.predicate,
             object: first.object,
-            graph: secondGraph.term
+            graph: secondGraph
         )
         try await insert([first, second], into: store, database: engine)
 
@@ -298,37 +285,34 @@ struct RDFDatasetScanReservationTests {
             first,
             mergesNamedGraphs: true
         )
-        let scratchRows = RDFDatasetScanRetainedMetrics.initialWorklistCapacity
-        let scratchBytes = try scratchByteCount(capacity: scratchRows)
-
         #expect(result?.count == 1)
         #expect(result?.first?.quad == first.triple.quad)
         #expect(result?.physicalScanCount == 2)
-        #expect(meter.peakIntermediateRows == scratchRows + metrics.rowCount)
-        #expect(
-            meter.peakIntermediateBytes
-                == scratchBytes + metrics.retainedByteCount
-        )
+        #expect(meter.peakIntermediateRows == metrics.rowCount)
+        #expect(meter.peakIntermediateBytes == metrics.retainedByteCount)
 
         result = nil
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
-    @Test("Nested RDF-star terms are measured with an iterative worklist")
-    func deeplyNestedTripleTermsAreMeasuredIteratively() throws {
-        var nested = DatabaseRDFTerm.iri("https://example.com/root")
+    @Test("Nested RDF-star terms are measured with a constant-space cursor")
+    func deeplyNestedTripleTermsUseConstantTraversalStorage() throws {
+        let tripleSubject = RDFSubject.iri(.xsdString)
+        var nested = RDFTerm.iri(.rdfDirectionalLanguageString)
         for index in 0..<512 {
             nested = .tripleTerm(
-                subject: nested,
-                predicate: .iri("https://example.com/predicate/\(index)"),
-                object: .blankNode("node-\(index)")
+                subject: tripleSubject,
+                predicate: try RDFPredicateIRI(
+                    "https://example.com/predicate/\(index)"
+                ),
+                object: nested
             )
         }
         let quad = RDFQuad(
-            subject: nested,
-            predicate: .iri("https://example.com/predicate"),
-            object: .iri("https://example.com/object")
+            subject: tripleSubject,
+            predicate: RDFPredicateIRI(.rdfLanguageString),
+            object: nested
         )
 
         let metrics = try measure(
@@ -339,45 +323,33 @@ struct RDFDatasetScanReservationTests {
         #expect(metrics.retainedByteCount > 50_000)
     }
 
-    @Test("RDF-star traversal admits scratch growth before allocation")
-    func deeplyNestedTripleTermScratchRejectsBeforeGrowth() throws {
-        var nested = DatabaseRDFTerm.iri("https://example.com/root")
+    @Test("RDF-star traversal does not reserve depth-proportional scratch")
+    func deeplyNestedTripleTermDoesNotReserveScratch() throws {
+        let tripleSubject = RDFSubject.iri(.xsdString)
+        var nested = RDFTerm.iri(.rdfDirectionalLanguageString)
         for index in 0..<512 {
             nested = .tripleTerm(
-                subject: nested,
-                predicate: .iri("https://example.com/predicate/\(index)"),
-                object: .blankNode("node-\(index)")
+                subject: tripleSubject,
+                predicate: try RDFPredicateIRI(
+                    "https://example.com/predicate/\(index)"
+                ),
+                object: nested
             )
         }
         let quad = RDFQuad(
-            subject: nested,
-            predicate: .iri("https://example.com/predicate"),
-            object: .iri("https://example.com/object")
+            subject: tripleSubject,
+            predicate: RDFPredicateIRI(.rdfLanguageString),
+            object: nested
         )
-        let admittedCapacity: UInt64 = 8
-        let admittedBytes = try scratchByteCount(
-            capacity: admittedCapacity
-        )
-        let rejectedBytes = try RDFDatasetScanRetainedMetrics.checkedMultiply(
-            admittedCapacity,
-            RDFDatasetScanRetainedMetrics.worklistSlotByteCount
-        )
-        let meter = makeMeter(maximumIntermediateBytes: admittedBytes)
+        let meter = makeMeter(maximumIntermediateBytes: 1)
 
-        #expect(throws: DatabaseWorkLimitError.maximumIntermediateBytes(
-            stage: .deduplication,
-            consumed: admittedBytes,
-            requested: rejectedBytes,
-            maximum: admittedBytes
-        )) {
-            _ = try measure(
-                quad,
-                mergesNamedGraphs: false,
-                workMeter: meter
-            )
-        }
-        #expect(meter.peakIntermediateRows == 8)
-        #expect(meter.peakIntermediateBytes == admittedBytes)
+        let metrics = try measure(
+            quad,
+            mergesNamedGraphs: false
+        )
+        #expect(metrics.retainedByteCount > 50_000)
+        #expect(meter.peakIntermediateRows == 0)
+        #expect(meter.peakIntermediateBytes == 0)
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -402,34 +374,11 @@ struct RDFDatasetScanReservationTests {
 
     private func measure(
         _ quad: RDFQuad,
-        mergesNamedGraphs: Bool,
-        workMeter: DatabaseWorkMeter? = nil
+        mergesNamedGraphs: Bool
     ) throws -> RDFDatasetScanRetainedMetrics {
-        let meter = workMeter ?? makeMeter()
-        var worklist: [DatabaseRDFTerm] = []
-        var modeledCapacity: UInt64 = 0
-        var scratchReservation: DatabaseIntermediateReservation?
-        defer {
-            worklist.removeAll(keepingCapacity: false)
-            scratchReservation?.release()
-        }
-        return try RDFDatasetScanRetainedMetrics.measure(
+        try RDFDatasetScanRetainedMetrics.measure(
             quad,
-            mergesNamedGraphs: mergesNamedGraphs,
-            worklist: &worklist,
-            modeledWorklistCapacity: &modeledCapacity,
-            scratchReservation: &scratchReservation,
-            workMeter: meter
-        )
-    }
-
-    private func scratchByteCount(capacity: UInt64) throws -> UInt64 {
-        try RDFDatasetScanRetainedMetrics.checkedAdd(
-            RDFDatasetScanRetainedMetrics.worklistContainerByteCount,
-            RDFDatasetScanRetainedMetrics.checkedMultiply(
-                capacity,
-                RDFDatasetScanRetainedMetrics.worklistSlotByteCount
-            )
+            mergesNamedGraphs: mergesNamedGraphs
         )
     }
 
@@ -477,7 +426,7 @@ struct RDFDatasetScanReservationTests {
         maximumIntermediateBytes: UInt64 = 16 * 1_024 * 1_024
     ) -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 maximumIntermediateRows: maximumIntermediateRows,
@@ -498,12 +447,21 @@ struct RDFDatasetScanReservationTests {
     private func makeQuad(
         graph: RDFGraphName,
         suffix: String
-    ) -> RDFQuad {
+    ) throws -> RDFQuad {
         RDFQuad(
-            subject: .iri("https://example.com/subject/\(suffix)"),
-            predicate: .iri("https://example.com/predicate"),
-            object: .iri("https://example.com/object/\(suffix)"),
-            graph: graph.term
+            subject: .iri(
+                try RDFIRI(
+                    "https://example.com/subject/\(suffix)"
+                )
+            ),
+            predicate: try RDFPredicateIRI(
+                "https://example.com/predicate"
+            ),
+            object: try .iri(
+                validating:
+                    "https://example.com/object/\(suffix)"
+            ),
+            graph: graph
         )
     }
 }

@@ -9,6 +9,7 @@ import DatabaseRuntime
 struct SQLiteFacadeUserV1 {
     #Directory<SQLiteFacadeUserV1>("sqlite", "facade", "users")
 
+    var id: String = ""
     var name: String
 }
 
@@ -16,18 +17,27 @@ struct SQLiteFacadeUserV1 {
 struct SQLiteFacadeUserV2 {
     #Directory<SQLiteFacadeUserV2>("sqlite", "facade", "users")
 
+    var id: String = ""
     var name: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 enum SQLiteFacadeSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteFacadeUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteFacadeUserV1.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteFacadeSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [SQLiteFacadeUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try SQLiteFacadeUserV2.schemaEntity]
+        }
+    }
 }
 
 enum SQLiteFacadeMigrationPlan: SchemaMigrationPlan {

@@ -15,30 +15,31 @@ default for compatibility, but the execution layer is not FoundationDB-only.
 All application data access passes through the same conceptual path:
 
 ~~~text
-DBContainer -> FDBContext -> StorageEngine -> Transaction
+DBContainer -> DatabaseContext -> StorageEngine -> Transaction
 ~~~
 
-The FDBContext name is historical. It does not select a FoundationDB backend.
+DatabaseContext is backend-neutral. The DBConfiguration supplied to
+DBContainer selects the storage engine.
 
 ## SwiftPM Traits
 
 ~~~bash
 swift build
-swift test
+xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
 ~~~
 
 The default build enables FoundationDB.
 
 ~~~bash
 swift build --traits SQLite
-swift test --traits SQLite
+xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
 ~~~
 
 SQLite builds do not link libfdb_c.
 
 ~~~bash
 swift build --traits PostgreSQL
-swift test --traits PostgreSQL
+xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
 ~~~
 
 PostgreSQL builds require the PostgreSQL dependency but not a running server
@@ -49,7 +50,10 @@ for compilation. Integration tests require a reachable test database.
 ~~~swift
 import Database
 
-let container = try await DBContainer(for: schema)
+let container = try await DBContainer.open(
+    for: schema,
+    runtimeConfiguration: runtime
+)
 ~~~
 
 Use DBConfiguration(backend: .fdb(...)) when a custom FoundationDB
@@ -62,11 +66,12 @@ native versionstamps, and the dynamic DirectoryLayer.
 import Database
 import SQLiteStorage
 
-let container = try await DBContainer(
+let container = try await DBContainer.open(
     for: schema,
     configuration: SQLiteStorageEngine.Configuration.file(
         "/path/to/application.sqlite"
-    )
+    ),
+    runtimeConfiguration: runtime
 )
 ~~~
 
@@ -88,9 +93,10 @@ let configuration = PostgreSQLConfiguration(
     schemaManagement: .assumeExists
 )
 
-let container = try await DBContainer(
+let container = try await DBContainer.open(
     for: schema,
-    configuration: configuration
+    configuration: configuration,
+    runtimeConfiguration: runtime
 )
 ~~~
 
@@ -108,9 +114,10 @@ import Database
 import StorageKit
 
 let engine = InMemoryEngine()
-let container = try await DBContainer(
+let container = try await DBContainer.open(
     for: schema,
-    configuration: DBConfiguration(backend: .custom(engine))
+    configuration: DBConfiguration(backend: .custom(engine)),
+    runtimeConfiguration: runtime
 )
 ~~~
 

@@ -1,200 +1,113 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-/// IndexDescriptorMetadataTests.swift
-/// Tests for IndexKindMetadata and IndexDescriptorMetadata type erasure
-
+import Foundation
 import Testing
 import TestHeartbeat
-import Foundation
-@testable import Core
+import DatabaseTypes
+@testable import DatabaseKit
 @testable import DatabaseEngine
 
-@Suite("IndexDescriptorMetadata", .heartbeat)
+@Suite("Index descriptor metadata", .heartbeat)
 struct IndexDescriptorMetadataTests {
-
-    // MARK: - Test Model
-
     @Persistable
-    struct IndexDescriptorProduct {
-        #Directory<IndexDescriptorProduct>("test", "index_descriptor_metadata")
+    struct Product {
+        #Directory<Product>("test", "index_descriptor_metadata")
 
         var id: String = UUID().uuidString
         var name: String = ""
         var category: String = ""
-        var price: Double = 0.0
-        var embedding: [Float] = []
+        var price: Double = 0
 
-        #Index(ScalarIndexKind<IndexDescriptorProduct>(fields: [\IndexDescriptorProduct.category]), name: "TestProduct_category")
-        #Index(ScalarIndexKind<IndexDescriptorProduct>(fields: [\IndexDescriptorProduct.name]), storedFields: [\IndexDescriptorProduct.price], unique: true, name: "TestProduct_name")
+        #Index(
+            .scalar,
+            fields: [\Product.category],
+            name: "Product_category"
+        )
+        #Index(
+            .scalar,
+            fields: [\Product.name],
+            storedFields: [\Product.price],
+            unique: true,
+            name: "Product_name"
+        )
     }
 
-    // MARK: - IndexKindMetadata Tests
-
-    @Test func indexKindMetadataPropertiesExtracted() {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let categoryDesc = descriptors.first { $0.name.contains("category") }!
-
-        let kindMetadata = categoryDesc.kind
-
-        #expect(kindMetadata.identifier == "scalar")
-        #expect(kindMetadata.fieldNames == ["category"])
-        #expect(kindMetadata.subspaceStructure == .flat)
+    private enum TestError: Error {
+        case missingDescriptor(String)
     }
 
-    @Test func indexKindMetadataMetadataEmptyForScalar() {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let categoryDesc = descriptors.first { $0.name.contains("category") }!
-
-        let kindMetadata = categoryDesc.kind
-
-        // ScalarIndexKind has no kind-specific metadata (only fieldNames which is filtered)
-        #expect(kindMetadata.metadata.isEmpty)
-    }
-
-    @Test func indexKindMetadataIsHashable() {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let categoryDesc = descriptors.first { $0.name.contains("category") }!
-
-        let kindMetadata1 = categoryDesc.kind
-        let kindMetadata2 = categoryDesc.kind
-
-        #expect(kindMetadata1 == kindMetadata2)
-        #expect(kindMetadata1.hashValue == kindMetadata2.hashValue)
-    }
-
-    // MARK: - IndexDescriptorMetadata Tests
-
-    @Test func indexDescriptorMetadataPropertiesExtracted() {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let categoryDesc = descriptors.first { $0.name.contains("category") }!
-
-        let anyDesc = IndexDescriptorMetadata(categoryDesc)
-
-        #expect(anyDesc.name == categoryDesc.name)
-        #expect(anyDesc.kindIdentifier == "scalar")
-        #expect(anyDesc.fieldNames == ["category"])
-        #expect(anyDesc.subspaceStructure == .flat)
-    }
-
-    @Test func indexDescriptorMetadataKindSeparated() {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let categoryDesc = descriptors.first { $0.name.contains("category") }!
-
-        let anyDesc = IndexDescriptorMetadata(categoryDesc)
-
-        // kind is a separate IndexKindMetadata
-        #expect(anyDesc.kind.identifier == "scalar")
-        #expect(anyDesc.kind.fieldNames == ["category"])
-        #expect(anyDesc.kind.subspaceStructure == .flat)
-    }
-
-    // MARK: - CommonMetadata Tests
-
-    @Test func uniqueInCommonMetadata() {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let nameDesc = descriptors.first { $0.name.contains("name") }!
-
-        let anyDesc = IndexDescriptorMetadata(nameDesc)
-
-        let unique = anyDesc.commonMetadata["unique"]?.boolValue
-        #expect(unique == true)
-    }
-
-    @Test func sparseInCommonMetadata() {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let categoryDesc = descriptors.first { $0.name.contains("category") }!
-
-        let anyDesc = IndexDescriptorMetadata(categoryDesc)
-
-        let sparse = anyDesc.commonMetadata["sparse"]?.boolValue
-        #expect(sparse == false)
-    }
-
-    @Test func storedFieldNamesInCommonMetadata() {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let nameDesc = descriptors.first { $0.name.contains("name") }!
-
-        let anyDesc = IndexDescriptorMetadata(nameDesc)
-
-        let storedFields = anyDesc.commonMetadata["storedFieldNames"]?.stringArrayValue
-        #expect(storedFields == ["price"])
-    }
-
-    @Test func nonUniqueIndexHasUniqueFalse() {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let categoryDesc = descriptors.first { $0.name.contains("category") }!
-
-        let anyDesc = IndexDescriptorMetadata(categoryDesc)
-
-        let unique = anyDesc.commonMetadata["unique"]?.boolValue
-        #expect(unique == false)
-    }
-
-    // MARK: - Sendable & Hashable Tests
-
-    @Test func isSendable() async {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let anyDesc = IndexDescriptorMetadata(descriptors.first!)
-
-        let task = Task {
-            return anyDesc.name
+    private func descriptor(
+        named name: String
+    ) throws -> IndexDescriptor {
+        guard let descriptor = try Product.indexDescriptors.first(
+            where: { $0.name == name }
+        ) else {
+            throw TestError.missingDescriptor(name)
         }
-        let name = await task.value
-        #expect(!name.isEmpty)
+        return descriptor
     }
 
-    @Test func isHashable() {
-        let descriptors = IndexDescriptorProduct.indexDescriptors
-        let anyDesc1 = IndexDescriptorMetadata(descriptors.first!)
-        let anyDesc2 = IndexDescriptorMetadata(descriptors.first!)
+    @Test("Kind metadata preserves canonical field identity")
+    func kindMetadataPreservesFields() throws {
+        let metadata = try descriptor(named: "Product_category").kind
 
-        #expect(anyDesc1 == anyDesc2)
-        #expect(anyDesc1.hashValue == anyDesc2.hashValue)
-
-        var set: Set<IndexDescriptorMetadata> = []
-        set.insert(anyDesc1)
-        set.insert(anyDesc2)
-        #expect(set.count == 1)
+        #expect(metadata.identifier == "scalar")
+        #expect(metadata.fieldNames == ["category"])
+        #expect(metadata.fields.first?.identity == Product.fields.category.identity)
+        #expect(metadata.subspaceStructure == .flat)
+        #expect(metadata.metadata.isEmpty)
     }
 
-    // MARK: - IndexMetadataValue Tests
+    @Test("Descriptor metadata preserves common options")
+    func descriptorMetadataPreservesCommonOptions() throws {
+        let descriptor = try descriptor(named: "Product_name")
+        let metadata = IndexDescriptorMetadata(descriptor)
 
-    @Test func metadataValueString() {
-        let value = IndexMetadataValue.string("test")
-        #expect(value.stringValue == "test")
-        #expect(value.intValue == nil)
+        #expect(metadata.entityName == Product.persistableType)
+        #expect(metadata.name == descriptor.name)
+        #expect(metadata.kindIdentifier == "scalar")
+        #expect(metadata.fieldNames == ["name"])
+        #expect(metadata.unique)
+        #expect(!metadata.sparse)
+        #expect(metadata.storedFieldNames == ["price"])
     }
 
-    @Test func metadataValueInt() {
-        let value = IndexMetadataValue.int(42)
-        #expect(value.intValue == 42)
-        #expect(value.stringValue == nil)
+    @Test("Descriptor metadata remains hashable and sendable")
+    func descriptorMetadataIsHashableAndSendable() async throws {
+        let metadata = IndexDescriptorMetadata(
+            try descriptor(named: "Product_category")
+        )
+        let equalMetadata = metadata
+
+        #expect(metadata == equalMetadata)
+        #expect(Set([metadata, equalMetadata]).count == 1)
+
+        let transferredName = await Task { metadata.name }.value
+        #expect(transferredName == "Product_category")
     }
 
-    @Test func metadataValueDouble() {
-        let value = IndexMetadataValue.double(3.14)
-        #expect(value.doubleValue == 3.14)
-        #expect(value.intValue == nil)
-    }
+    @Test("Kind-specific metadata uses FieldValue primitives")
+    func kindSpecificMetadataUsesFieldValue() {
+        let metadata = IndexKindMetadata(
+            identifier: "vector",
+            subspaceStructure: .hierarchical,
+            fields: [Product.fields.price.ascending.metadata],
+            metadata: [
+                "dimensions": .int64(384),
+                "metric": .string("cosine"),
+                "normalized": .bool(true),
+                "weights": .array([.float32(0.25), .float32(0.75)]),
+            ]
+        )
 
-    @Test func metadataValueBool() {
-        let value = IndexMetadataValue.bool(true)
-        #expect(value.boolValue == true)
-        #expect(value.stringValue == nil)
-    }
-
-    @Test func metadataValueStringArray() {
-        let value = IndexMetadataValue.stringArray(["a", "b", "c"])
-        #expect(value.stringArrayValue == ["a", "b", "c"])
-        #expect(value.intArrayValue == nil)
-    }
-
-    @Test func metadataValueIntArray() {
-        let value = IndexMetadataValue.intArray([1, 2, 3])
-        #expect(value.intArrayValue == [1, 2, 3])
-        #expect(value.stringArrayValue == nil)
+        #expect(metadata.metadata["dimensions"] == .int64(384))
+        #expect(metadata.metadata["metric"] == .string("cosine"))
+        #expect(metadata.metadata["normalized"] == .bool(true))
+        #expect(
+            metadata.metadata["weights"]
+                == .array([.float32(0.25), .float32(0.75)])
+        )
     }
 }
 #endif
-
 #endif

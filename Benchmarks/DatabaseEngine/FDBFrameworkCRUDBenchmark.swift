@@ -1,92 +1,28 @@
 #if FOUNDATION_DB
 import Testing
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 
-struct CRUDBenchmarkEntity: Persistable {
-    typealias ID = String
+@Persistable
+struct CRUDBenchmarkEntity {
+    #Directory<CRUDBenchmarkEntity>(
+        "test",
+        "performance",
+        \CRUDBenchmarkEntity.runID,
+        "crud-entities",
+        layer: .partition
+    )
 
-    var id: String
-    var runID: String
-    var name: String
-    var age: Int
-    var score: Double
-
-    init(
-        id: String = UUID().uuidString,
-        runID: String = "",
-        name: String = "",
-        age: Int = 0,
-        score: Double = 0
-    ) {
-        self.id = id
-        self.runID = runID
-        self.name = name
-        self.age = age
-        self.score = score
-    }
-
-    static var persistableType: String { "CRUDBenchmarkEntity" }
-
-    static var allFields: [String] {
-        ["id", "runID", "name", "age", "score"]
-    }
-
-    static var directoryPathComponents: [DirectoryPathComponent] {
-        [
-            .staticPath("test"),
-            .staticPath("performance"),
-            .dynamicField(fieldName: "runID"),
-            .staticPath("crud-entities"),
-        ]
-    }
-
-    static var directoryLayer: DirectoryLayer { .partition }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "runID": return runID
-        case "name": return name
-        case "age": return age
-        case "score": return score
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<CRUDBenchmarkEntity, Value>) -> String {
-        switch keyPath {
-        case \CRUDBenchmarkEntity.id: return "id"
-        case \CRUDBenchmarkEntity.runID: return "runID"
-        case \CRUDBenchmarkEntity.name: return "name"
-        case \CRUDBenchmarkEntity.age: return "age"
-        case \CRUDBenchmarkEntity.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<CRUDBenchmarkEntity>) -> String {
-        switch keyPath {
-        case \CRUDBenchmarkEntity.id: return "id"
-        case \CRUDBenchmarkEntity.runID: return "runID"
-        case \CRUDBenchmarkEntity.name: return "name"
-        case \CRUDBenchmarkEntity.age: return "age"
-        case \CRUDBenchmarkEntity.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<CRUDBenchmarkEntity> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var id: String = UUID().uuidString
+    var runID: String = ""
+    var name: String = ""
+    var age: Int64 = 0
+    var score: Double = 0
 }
 
 private struct CRUDBenchmarkContext: Sendable {
@@ -101,15 +37,20 @@ private struct CRUDBenchmarkContext: Sendable {
         self.runID = runID
 
         var path = DirectoryPath<CRUDBenchmarkEntity>()
-        path.set(\.runID, to: runID)
+        path.set(CRUDBenchmarkEntity.fields.runID, to: runID)
         self.path = path
         self.rawSubspace = Subspace(prefix: Tuple(["test", "performance", "raw-crud", runID]).pack())
 
-        let schema = Schema([CRUDBenchmarkEntity.self], version: .init(1, 0, 0))
+        let schema = try Schema(
+            entities: [try CRUDBenchmarkEntity.schemaEntity],
+            version: .init(1, 0, 0)
+        )
         self.container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [CRUDBenchmarkEntity.self]
+            ),
             security: .disabled
         )
     }
@@ -132,7 +73,7 @@ private struct CRUDBenchmarkContext: Sendable {
             id: id,
             runID: runID,
             name: name,
-            age: 20 + (seed % 50),
+            age: Int64(20 + (seed % 50)),
             score: Double(60 + (seed % 40))
         )
     }

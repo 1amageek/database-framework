@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 @testable import DatabaseEngine
 import StorageKit
 import Synchronization
@@ -10,11 +10,6 @@ private struct TransactionLifecycleParent: Equatable {
 
     var id: String = ""
     var value: String = ""
-
-    init(id: String, value: String) {
-        self.id = id
-        self.value = value
-    }
 }
 
 @Persistable
@@ -23,11 +18,6 @@ private struct TransactionLifecycleChild: Equatable {
 
     var id: String = ""
     var parentID: String = ""
-
-    init(id: String, parentID: String) {
-        self.id = id
-        self.parentID = parentID
-    }
 }
 
 @Suite("Database transaction lifecycle")
@@ -308,7 +298,7 @@ struct DatabaseTransactionLifecycleTests {
     func deletingMissingIdentityFails() async throws {
         let container = try await makeContainer()
         let context = container.newContext()
-        let identity = PersistableIdentity(
+        let identity = try EntityReference(
             entity: TransactionLifecycleParent.persistableType,
             id: .string("missing-parent")
         )
@@ -406,10 +396,10 @@ struct DatabaseTransactionLifecycleTests {
         maintainers: [any PersistableMutationMaintainer]
     ) async throws -> DBContainer {
         try await DBContainer.open(
-            testing: Schema(
-                [
-                    TransactionLifecycleParent.self,
-                    TransactionLifecycleChild.self,
+            testing: try Schema(
+                entities: [
+                    try TransactionLifecycleParent.schemaEntity,
+                    try TransactionLifecycleChild.schemaEntity,
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
@@ -417,7 +407,11 @@ struct DatabaseTransactionLifecycleTests {
                 backend: .custom(engine)
             ),
             runtimeConfiguration: try DatabaseRuntimeConfiguration(
-                persistableMutationMaintainers: maintainers
+                persistableMutationMaintainers: maintainers,
+                persistableTypes: [
+                    TransactionLifecycleParent.self,
+                    TransactionLifecycleChild.self,
+                ]
             ),
             security: .disabled
         )

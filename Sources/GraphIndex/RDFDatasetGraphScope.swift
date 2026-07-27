@@ -1,10 +1,10 @@
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 
 package enum RDFDatasetGraphScope: Sendable, Equatable {
     case defaultGraph
     case entityField(String)
-    case fixed(DatabaseRDFTerm)
+    case fixed(RDFTerm)
 
     package var sourceCoverage: RDFDatasetSourceCoverage {
         get throws {

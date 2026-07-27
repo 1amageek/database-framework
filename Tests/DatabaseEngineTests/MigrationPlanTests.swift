@@ -4,10 +4,10 @@ import Testing
 import TestHeartbeat
 import Foundation
 import StorageKit
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 @testable import DatabaseEngine
 
 // MARK: - Test Models (File Scope for @Persistable macro)
@@ -15,8 +15,9 @@ import DatabaseValue
 /// V1: Basic user with email index
 @Persistable(type: "TestUser")
 struct UserV1 {
-    #Index(ScalarIndexKind<UserV1>(fields: [\.email]), unique: true, name: "TestUser_email")
+    #Index(.scalar, fields: [\UserV1.email], unique: true, name: "TestUser_email")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -24,31 +25,34 @@ struct UserV1 {
 /// V2: User with additional age field and index
 @Persistable(type: "TestUser")
 struct UserV2 {
-    #Index(ScalarIndexKind<UserV2>(fields: [\.email]), unique: true, name: "TestUser_email")
-    #Index(ScalarIndexKind<UserV2>(fields: [\.age]), name: "TestUser_age")
+    #Index(.scalar, fields: [\UserV2.email], unique: true, name: "TestUser_email")
+    #Index(.scalar, fields: [\UserV2.age], name: "TestUser_age")
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 /// V3: User with removed age index, added createdAt
 @Persistable(type: "TestUser")
 struct UserV3 {
-    #Index(ScalarIndexKind<UserV3>(fields: [\.email]), unique: true, name: "TestUser_email")
-    #Index(ScalarIndexKind<UserV3>(fields: [\.createdAt]), name: "TestUser_createdAt")
+    #Index(.scalar, fields: [\UserV3.email], unique: true, name: "TestUser_email")
+    #Index(.scalar, fields: [\UserV3.createdAt], name: "TestUser_createdAt")
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
     var createdAt: Double = 0
 }
 
 /// V2b: User with reordered fields (unsafe without explicit migration)
 @Persistable(type: "TestUser")
 struct UserV2Reordered {
-    #Index(ScalarIndexKind<UserV2Reordered>(fields: [\.email]), unique: true, name: "TestUser_email")
+    #Index(.scalar, fields: [\UserV2Reordered.email], unique: true, name: "TestUser_email")
 
+    var id: String = ""
     var email: String
     var name: String
 }
@@ -68,24 +72,32 @@ struct MigrationPlanTests {
     /// Schema V1: Basic user with email index
     enum MigrationSchemaV1: VersionedSchema {
         static let versionIdentifier = Schema.Version(1, 0, 0)
-        static let models: [any Persistable.Type] = [UserV1.self]
+        static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try UserV1.schemaEntity] }
+    }
     }
 
     /// Schema V2: User with additional age field and index
     enum MigrationSchemaV2: VersionedSchema {
         static let versionIdentifier = Schema.Version(2, 0, 0)
-        static let models: [any Persistable.Type] = [UserV2.self]
+        static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try UserV2.schemaEntity] }
+    }
     }
 
     /// Schema V3: User with removed age index, added createdAt
     enum MigrationSchemaV3: VersionedSchema {
         static let versionIdentifier = Schema.Version(3, 0, 0)
-        static let models: [any Persistable.Type] = [UserV3.self]
+        static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try UserV3.schemaEntity] }
+    }
     }
 
     enum MigrationSchemaV2Reordered: VersionedSchema {
         static let versionIdentifier = Schema.Version(2, 1, 0)
-        static let models: [any Persistable.Type] = [UserV2Reordered.self]
+        static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try UserV2Reordered.schemaEntity] }
+    }
     }
 
     // MARK: - Test Migration Plans
@@ -144,8 +156,8 @@ struct MigrationPlanTests {
 
     /// Test: VersionedSchema creates Schema correctly
     @Test("VersionedSchema creates Schema correctly")
-    func versionedSchemaCreatesSchema() {
-        let schema = MigrationSchemaV1.makeSchema()
+    func versionedSchemaCreatesSchema() throws {
+        let schema = try MigrationSchemaV1.makeSchema()
 
         #expect(schema.version == Schema.Version(1, 0, 0))
         #expect(schema.entities.count == 1)
@@ -154,8 +166,8 @@ struct MigrationPlanTests {
 
     /// Test: VersionedSchema collects all index descriptors
     @Test("VersionedSchema collects all index descriptors")
-    func versionedSchemaCollectsIndexDescriptors() {
-        let descriptors = MigrationSchemaV2.allIndexDescriptors
+    func versionedSchemaCollectsIndexDescriptors() throws {
+        let descriptors = try MigrationSchemaV2.allIndexDescriptors
 
         #expect(descriptors.count == 2)
         #expect(descriptors.contains(where: { $0.name == "TestUser_email" }))
@@ -164,8 +176,10 @@ struct MigrationPlanTests {
 
     /// Test: VersionedSchema detects index changes
     @Test("VersionedSchema detects index changes")
-    func versionedSchemaDetectsIndexChanges() {
-        let changes = MigrationSchemaV2.indexChanges(from: MigrationSchemaV1.self)
+    func versionedSchemaDetectsIndexChanges() throws {
+        let changes = try MigrationSchemaV2.indexChanges(
+            from: MigrationSchemaV1.self
+        )
 
         #expect(changes.added == Set(["TestUser_age"]))
         #expect(changes.removed.isEmpty)
@@ -173,12 +187,20 @@ struct MigrationPlanTests {
 
     /// Test: VersionedSchema detects lightweight migration possibility
     @Test("VersionedSchema detects lightweight migration possibility")
-    func versionedSchemaDetectsLightweightMigration() {
+    func versionedSchemaDetectsLightweightMigration() throws {
         // V1 -> V2: Adding field and index (lightweight)
-        #expect(MigrationSchemaV2.canLightweightMigrate(from: MigrationSchemaV1.self))
+        #expect(
+            try MigrationSchemaV2.canLightweightMigrate(
+                from: MigrationSchemaV1.self
+            )
+        )
 
         // V2 -> V3: Adding field and index, removing index (lightweight)
-        #expect(MigrationSchemaV3.canLightweightMigrate(from: MigrationSchemaV2.self))
+        #expect(
+            try MigrationSchemaV3.canLightweightMigrate(
+                from: MigrationSchemaV2.self
+            )
+        )
     }
 
     // MARK: - SchemaMigrationPlan Tests
@@ -282,38 +304,38 @@ struct MigrationPlanTests {
 
     /// Test: MigrationStage detects index changes
     @Test("MigrationStage detects index changes")
-    func stageDetectsIndexChanges() {
+    func stageDetectsIndexChanges() throws {
         let stage = MigrationStage.lightweight(
             fromVersion: MigrationSchemaV1.self,
             toVersion: MigrationSchemaV2.self
         )
 
-        let changes = stage.indexChanges
+        let changes = try stage.indexChanges
         #expect(changes.added == Set(["TestUser_age"]))
         #expect(changes.removed.isEmpty)
 
-        let addedDescriptors = stage.addedIndexDescriptors
+        let addedDescriptors = try stage.addedIndexDescriptors
         #expect(addedDescriptors.count == 1)
         #expect(addedDescriptors.first?.name == "TestUser_age")
     }
 
     /// Test: MigrationStage detects index removal
     @Test("MigrationStage detects index removal")
-    func stageDetectsIndexRemoval() {
+    func stageDetectsIndexRemoval() throws {
         let stage = MigrationStage.lightweight(
             fromVersion: MigrationSchemaV2.self,
             toVersion: MigrationSchemaV3.self
         )
 
-        let changes = stage.indexChanges
+        let changes = try stage.indexChanges
         #expect(changes.added == Set(["TestUser_createdAt"]))
         #expect(changes.removed == Set(["TestUser_age"]))
     }
 
     /// Test: MigrationStage.automatic selects lightweight when possible
     @Test("MigrationStage.automatic selects lightweight when possible")
-    func automaticSelectsLightweight() {
-        let stage = MigrationStage.automatic(
+    func automaticSelectsLightweight() throws {
+        let stage = try MigrationStage.automatic(
             from: MigrationSchemaV1.self,
             to: MigrationSchemaV2.self
         )
@@ -323,8 +345,8 @@ struct MigrationPlanTests {
 
     /// Test: MigrationStage.automatic selects custom when hooks provided
     @Test("MigrationStage.automatic selects custom when hooks provided")
-    func automaticSelectsCustomWithHooks() {
-        let stage = MigrationStage.automatic(
+    func automaticSelectsCustomWithHooks() throws {
+        let stage = try MigrationStage.automatic(
             from: MigrationSchemaV1.self,
             to: MigrationSchemaV2.self,
             willMigrate: { _ in }
@@ -334,17 +356,22 @@ struct MigrationPlanTests {
     }
 
     @Test("Unsafe field reordering is not lightweight")
-    func unsafeFieldReorderingIsNotLightweight() {
-        #expect(!MigrationSchemaV2Reordered.canLightweightMigrate(from: MigrationSchemaV1.self))
+    func unsafeFieldReorderingIsNotLightweight() throws {
+        #expect(
+            try !MigrationSchemaV2Reordered.canLightweightMigrate(
+                from: MigrationSchemaV1.self
+            )
+        )
 
-        let stage = MigrationStage.automatic(
+        let stage = try MigrationStage.automatic(
             from: MigrationSchemaV1.self,
             to: MigrationSchemaV2Reordered.self
         )
 
         #expect(!stage.isLightweight)
+        let report = try stage.schemaCompatibilityReport
         #expect(
-            stage.schemaCompatibilityReport.allIssues.contains(
+            report.allIssues.contains(
                 .renumberedField(
                     entityName: "TestUser",
                     fieldName: "email",

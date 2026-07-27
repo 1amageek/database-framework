@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import BitmapIndex
@@ -91,7 +91,10 @@ private struct BitmapBenchmarkContext {
         let indexSubspace = subspace.subspace("I").subspace(indexName)
         let index = Index(
             name: indexName,
-            kind: BitmapIndexKind<BitmapBenchmarkProduct>(field: \.category),
+            kind: bitmapIndexMetadata(
+                fieldName: "category",
+                fieldNumber: 2
+            ),
             rootExpression: FieldKeyExpression(fieldName: "category"),
             subspaceKey: indexName,
             itemTypes: Set(["BitmapBenchmarkProduct"])
@@ -495,7 +498,10 @@ struct BitmapIndexFDBPerformanceTests {
         let categoryMaintainer = BitmapIndexMaintainer<BitmapBenchmarkProduct>(
             index: Index(
                 name: "category_idx",
-                kind: BitmapIndexKind<BitmapBenchmarkProduct>(field: \.category),
+                kind: bitmapIndexMetadata(
+                    fieldName: "category",
+                    fieldNumber: 2
+                ),
                 rootExpression: FieldKeyExpression(fieldName: "category"),
                 subspaceKey: "category_idx",
                 itemTypes: Set(["BitmapBenchmarkProduct"])
@@ -507,7 +513,10 @@ struct BitmapIndexFDBPerformanceTests {
         let brandMaintainer = BitmapIndexMaintainer<BitmapBenchmarkProduct>(
             index: Index(
                 name: "brand_idx",
-                kind: BitmapIndexKind<BitmapBenchmarkProduct>(field: \.brand),
+                kind: bitmapIndexMetadata(
+                    fieldName: "brand",
+                    fieldNumber: 3
+                ),
                 rootExpression: FieldKeyExpression(fieldName: "brand"),
                 subspaceKey: "brand_idx",
                 itemTypes: Set(["BitmapBenchmarkProduct"])

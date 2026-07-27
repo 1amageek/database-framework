@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -12,12 +12,11 @@ public struct SumIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
         let valueType = try validate(kind: index.kind)
         switch valueType {
-        case .int:
-            return SumIndexMaintainer<Item, Int>(index: index, subspace: subspace, idExpression: idExpression)
+
         case .int8:
             return SumIndexMaintainer<Item, Int8>(index: index, subspace: subspace, idExpression: idExpression)
         case .int16:
@@ -26,8 +25,7 @@ public struct SumIndexMaintainerProvider: IndexMaintainerProvider {
             return SumIndexMaintainer<Item, Int32>(index: index, subspace: subspace, idExpression: idExpression)
         case .int64:
             return SumIndexMaintainer<Item, Int64>(index: index, subspace: subspace, idExpression: idExpression)
-        case .uint:
-            return SumIndexMaintainer<Item, UInt>(index: index, subspace: subspace, idExpression: idExpression)
+
         case .uint8:
             return SumIndexMaintainer<Item, UInt8>(index: index, subspace: subspace, idExpression: idExpression)
         case .uint16:
@@ -36,11 +34,11 @@ public struct SumIndexMaintainerProvider: IndexMaintainerProvider {
             return SumIndexMaintainer<Item, UInt32>(index: index, subspace: subspace, idExpression: idExpression)
         case .uint64:
             return SumIndexMaintainer<Item, UInt64>(index: index, subspace: subspace, idExpression: idExpression)
-        case .float:
+        case .float32:
             return SumIndexMaintainer<Item, Float>(index: index, subspace: subspace, idExpression: idExpression)
-        case .double:
+        case .float64:
             return SumIndexMaintainer<Item, Double>(index: index, subspace: subspace, idExpression: idExpression)
-        case .string, .date:
+        case .string, .date, .timestamp:
             throw IndexMaintainerProviderError.invalidMetadata(
                 kindIdentifier: kindIdentifier,
                 key: "valueType"

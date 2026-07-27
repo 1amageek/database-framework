@@ -4,31 +4,32 @@
 
 import Testing
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseRuntime
-import Graph
 import StorageKit
 import FDBStorage
 import TestSupport
-import QueryIR
 @testable import DatabaseEngine
 @testable import GraphIndex
 
 // MARK: - Test Models
 
-/// Type without GraphIndexKind (for error testing)
+/// Type without a property-graph index (for error testing)
 @Persistable
 fileprivate struct NoGraphIndexType {
     #Directory<NoGraphIndexType>("graph_table_no_graph_index")
     var id: String = UUID().uuidString
     var name: String = ""
 
-    // No GraphIndexKind - only ScalarIndexKind
-    #Index(ScalarIndexKind<NoGraphIndexType>(fieldNames: ["name"]), name: "name_index")
+    #Index(
+        .scalar,
+        fields: [\NoGraphIndexType.name],
+        name: "name_index"
+    )
 }
 
-@Suite("GraphTable Executor Integration Tests", .serialized, .heartbeat)
+@Suite("GraphTable Executor Integration Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct GraphTableExecutorTests {
 
     // MARK: - Test Model
@@ -41,17 +42,22 @@ struct GraphTableExecutorTests {
         var from: String = ""
         var target: String = ""
         var label: String = ""
-        var since: Int = 0
+        var since: Int64 = 0
         var status: String? = nil
         var score: Double = 0.0
 
-        #Index(GraphIndexKind<SocialEdge>(
-            from: \.from,
-            edge: \.label,
-            to: \.target,
-            graph: nil,
-            strategy: .tripleStore
-        ), storedFields: [\SocialEdge.since, \SocialEdge.status, \SocialEdge.score], name: "social_executor_index")
+        #Index(
+            .propertyGraph(strategy: .tripleStore),
+            from: \SocialEdge.from,
+            edge: \SocialEdge.label,
+            to: \SocialEdge.target,
+            storedFields: [
+                \SocialEdge.since,
+                \SocialEdge.status,
+                \SocialEdge.score,
+            ],
+            name: "social_executor_index"
+        )
     }
 
     // MARK: - Setup
@@ -64,13 +70,18 @@ struct GraphTableExecutorTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func makeEdge(from: String, target: String, label: String, since: Int, status: String?, score: Double) -> SocialEdge {
+    private func makeEdge(from: String, target: String, label: String, since: Int64, status: String?, score: Double) -> SocialEdge {
         SocialEdge(from: from, target: target, label: label, since: since, status: status, score: score)
     }
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try SocialEdge.schemaEntity
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
@@ -154,10 +165,8 @@ struct GraphTableExecutorTests {
         let rows = try await context.graphTable(SocialEdge.self, source: source)
 
         #expect(rows.count == 1)
-        // Properties are stored as TupleElement types, need to check actual value
         if let since = rows.first?.properties["since"] {
-            let sinceInt = TypeConversion.asInt64(since)
-            #expect(sinceInt == 2020)
+            #expect(since.int64Value == 2020)
         } else {
             Issue.record("Property 'since' not found in result")
         }
@@ -170,7 +179,7 @@ struct GraphTableExecutorTests {
 
         let alice = uniqueID("alice")
 
-        for year in [2018, 2019, 2020, 2021, 2022] {
+        for year: Int64 in [2018, 2019, 2020, 2021, 2022] {
             try context.insert(makeEdge(from: alice, target: uniqueID("user-\(year)"), label: "KNOWS", since: year, status: "active", score: 0.5))
         }
         try await context.save()
@@ -195,10 +204,8 @@ struct GraphTableExecutorTests {
 
         #expect(rows.count == 3)  // 2020, 2021, 2022
         #expect(rows.allSatisfy {
-            if let sinceValue = $0.properties["since"] {
-                return (TypeConversion.asInt64(sinceValue) ?? 0) >= 2020
-            }
-            return false
+            guard let since = $0.properties["since"]?.int64Value else { return false }
+            return since >= 2020
         })
     }
 
@@ -242,72 +249,6 @@ struct GraphTableExecutorTests {
         #expect(rows.first?.target == bob)
     }
 
-    // MARK: - SPARQL RDF Literal Conversion Tests
-
-    @Test("Convert SPARQL IRI literal")
-    func testConvertIRILiteral() async throws {
-        let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
-
-        let alice = uniqueID("alice")
-        let bob = uniqueID("bob")
-
-        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "http://example.org/active", score: 0.9))
-        try await context.save()
-
-        // Property filter with IRI literal
-        let source = GraphTableSource(
-            graphName: "SocialGraph",
-            matchPattern: MatchPattern(paths: [
-                PathPattern(elements: [
-                    .node(NodePattern(variable: "a")),
-                    .edge(EdgePattern(
-                        labels: ["KNOWS"],
-                        properties: [PropertyBinding(key: "status", value: .literal(.iri("http://example.org/active")))],
-                        direction: .outgoing
-                    )),
-                    .node(NodePattern(variable: "b"))
-                ])
-            ])
-        )
-
-        let rows = try await context.graphTable(SocialEdge.self, source: source)
-
-        #expect(rows.count == 1)
-    }
-
-    @Test("Convert typed literal")
-    func testConvertTypedLiteral() async throws {
-        let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
-
-        let alice = uniqueID("alice")
-        let bob = uniqueID("bob")
-
-        try context.insert(makeEdge(from: alice, target: bob, label: "KNOWS", since: 2020, status: "premium", score: 0.9))
-        try await context.save()
-
-        // Typed literal (xsd:string)
-        let source = GraphTableSource(
-            graphName: "SocialGraph",
-            matchPattern: MatchPattern(paths: [
-                PathPattern(elements: [
-                    .node(NodePattern(variable: "a")),
-                    .edge(EdgePattern(
-                        labels: ["KNOWS"],
-                        properties: [PropertyBinding(key: "status", value: .literal(.typedLiteral(value: "premium", datatype: "http://www.w3.org/2001/XMLSchema#string")))],
-                        direction: .outgoing
-                    )),
-                    .node(NodePattern(variable: "b"))
-                ])
-            ])
-        )
-
-        let rows = try await context.graphTable(SocialEdge.self, source: source)
-
-        #expect(rows.count == 1)
-    }
-
     // MARK: - Error Handling Tests
 
     @Test("Error: complex property expression")
@@ -349,7 +290,12 @@ struct GraphTableExecutorTests {
     @Test("Error: graph index not found")
     func testErrorIndexNotFound() async throws {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([NoGraphIndexType.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try NoGraphIndexType.schemaEntity
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
@@ -374,7 +320,7 @@ struct GraphTableExecutorTests {
         )
 
         do {
-            // This should fail because NoGraphIndexType has no GraphIndexKind
+            // This should fail because the type has no property-graph index.
             _ = try await GraphTableExecutor<NoGraphIndexType>(
                 container: container,
                 graphTableSource: source
@@ -390,12 +336,23 @@ struct GraphTableExecutorTests {
         }
     }
 
-    @Test("Error: type mismatch (array literal)")
-    func testErrorTypeMismatch() async throws {
+    @Test("Array literal does not match scalar property")
+    func testArrayLiteralDoesNotMatchScalarProperty() async throws {
         let container = try await setupContainer()
         let context = DatabaseContext(container: container)
 
-        // Array literal (not supported)
+        try context.insert(
+            makeEdge(
+                from: uniqueID("alice"),
+                target: uniqueID("bob"),
+                label: "KNOWS",
+                since: 2020,
+                status: "active",
+                score: 0.9
+            )
+        )
+        try await context.save()
+
         let source = GraphTableSource(
             graphName: "SocialGraph",
             matchPattern: MatchPattern(paths: [
@@ -411,22 +368,14 @@ struct GraphTableExecutorTests {
             ])
         )
 
-        do {
-            _ = try await context.graphTable(SocialEdge.self, source: source)
-            Issue.record("Should throw typeMismatch error")
-        } catch let error as GraphTableError {
-            if case .typeMismatch(let message) = error {
-                #expect(message.contains("Array"))
-            } else {
-                Issue.record("Expected typeMismatch error, got \(error)")
-            }
-        }
+        let rows = try await context.graphTable(SocialEdge.self, source: source)
+        #expect(rows.isEmpty)
     }
 
     // MARK: - Performance Validation
 
-    @Test("Property filter reduces scanned edges")
-    func testPropertyFilterReducesScan() async throws {
+    @Test("Property filter emits matching edges only")
+    func testPropertyFilterEmitsMatchingEdgesOnly() async throws {
         let container = try await setupContainer()
         let context = DatabaseContext(container: container)
 
@@ -434,7 +383,7 @@ struct GraphTableExecutorTests {
 
         // Insert 100 edges with different years (1920-2019)
         for i in 0..<100 {
-            let year = 1920 + i
+            let year = Int64(1920) + Int64(i)
             try context.insert(makeEdge(from: alice, target: uniqueID("user-\(i)"), label: "KNOWS", since: year, status: "active", score: 0.5))
         }
         // Add one edge with year 2020
@@ -461,8 +410,7 @@ struct GraphTableExecutorTests {
 
         #expect(rows.count == 1)
         if let sinceValue = rows.first?.properties["since"] {
-            let since = TypeConversion.asInt64(sinceValue)
-            #expect(since == 2020)
+            #expect(sinceValue.int64Value == 2020)
         } else {
             Issue.record("Property 'since' not found")
         }

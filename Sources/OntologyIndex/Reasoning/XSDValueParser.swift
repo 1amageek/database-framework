@@ -1,4 +1,5 @@
-import Graph
+import DatabaseTypes
+import DatabaseKit
 
 /// Strict parser from an RDF literal lexical form to an XSD value.
 package struct XSDValueParser: Sendable {
@@ -13,8 +14,10 @@ package struct XSDValueParser: Sendable {
         self.limits = limits
     }
 
-    package func parse(_ literal: OWLLiteral) throws -> XSDParsedValue {
+    package func parse(_ literal: RDFLiteral) throws -> XSDParsedValue {
         let lexicalForm = literal.lexicalForm
+        let datatype = literal.datatypeIRI.rawValue
+        let language = literal.languageTag?.rawValue
         guard lexicalForm.utf8.count <= limits.maxLexicalUTF8Bytes else {
             throw XSDValidationFailure.resourceLimitExceeded(
                 resource: "lexicalUTF8Bytes",
@@ -24,18 +27,18 @@ package struct XSDValueParser: Sendable {
         }
         try enforceScalarLimit(lexicalForm)
 
-        guard let kind = XSDDatatypeKind(iri: literal.datatype),
+        guard let kind = XSDDatatypeKind(iri: datatype),
               profile.supports(kind) else {
-            throw XSDValidationFailure.unsupportedDatatype(literal.datatype)
+            throw XSDValidationFailure.unsupportedDatatype(datatype)
         }
-        guard literal.direction == nil else {
+        guard literal.baseDirection == nil else {
             throw invalid(
                 literal,
                 code: "unexpectedDirection",
                 message: "this datatype does not admit an RDF base direction"
             )
         }
-        guard literal.language == nil || kind == .rdfLangString else {
+        guard language == nil || kind == .rdfLangString else {
             throw invalid(
                 literal,
                 code: "unexpectedLanguage",
@@ -153,7 +156,7 @@ package struct XSDValueParser: Sendable {
 
         case .rdfLangString:
             guard XSDUnicodeRules.allXMLCharacters(lexicalForm),
-                  let language = literal.language,
+                  let language,
                   XSDUnicodeRules.isLanguage(language) else {
                 throw invalid(literal, code: "langString",
                               message: "rdf:langString requires a valid language tag")
@@ -266,9 +269,9 @@ package struct XSDValueParser: Sendable {
 
     private func validateRDFLanguageTag(
         _ language: Substring,
-        literal: OWLLiteral
+        literal: RDFLiteral
     ) throws {
-        switch RDFLanguageTag.validate(
+        switch RDFLanguageTagValidator.validate(
             language,
             maximumSubtags: limits.maxLanguageSubtags
         ) {
@@ -425,13 +428,13 @@ package struct XSDValueParser: Sendable {
     }
 
     private func invalid(
-        _ literal: OWLLiteral,
+        _ literal: RDFLiteral,
         code: String,
         message: String
     ) -> XSDValidationFailure {
         .invalidLexicalForm(
             lexicalForm: literal.lexicalForm,
-            datatype: literal.datatype,
+            datatype: literal.datatypeIRI.rawValue,
             diagnostic: XSDDiagnostic(code: code, message: message)
         )
     }

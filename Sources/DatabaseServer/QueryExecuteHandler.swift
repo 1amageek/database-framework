@@ -1,7 +1,7 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
-import QueryIR
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 
 public struct QueryExecuteHandler: DatabaseOperationHandler {
     public typealias Operation = QueryExecuteOperation
@@ -48,7 +48,6 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         workMeter: DatabaseWorkMeter,
         structuralLimits: QueryStructuralLimits
     ) async throws -> QueryExecuteOperation.Response {
-        try validateSolutionModifiers(in: statement)
         switch statement {
         case .select(let query):
             return .rows(
@@ -97,62 +96,13 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         }
     }
 
-    private static func validateSolutionModifiers(
-        in statement: QueryStatement
-    ) throws {
-        switch statement {
-        case .select(let query):
-            try validateNonNegative(
-                limit: query.limit,
-                offset: query.offset
-            )
-        case .ask(let query):
-            try validateNonNegative(
-                limit: query.modifiers.limit,
-                offset: query.modifiers.offset
-            )
-        case .construct(let query):
-            try validateNonNegative(
-                limit: query.modifiers.limit,
-                offset: query.modifiers.offset
-            )
-        case .describe(let query):
-            try validateNonNegative(
-                limit: query.modifiers.limit,
-                offset: query.modifiers.offset
-            )
-        default:
-            return
-        }
-    }
-
-    private static func validateNonNegative(
-        limit: Int?,
-        offset: Int?
-    ) throws {
-        if let limit, limit < 0 {
-            throw DatabaseQueryExecutionError
-                .solutionModifierMustBeNonNegative(
-                    name: "LIMIT",
-                    value: limit
-                )
-        }
-        if let offset, offset < 0 {
-            throw DatabaseQueryExecutionError
-                .solutionModifierMustBeNonNegative(
-                    name: "OFFSET",
-                    value: offset
-                )
-        }
-    }
-
     private static func executeSelect(
         _ query: SelectQuery,
         request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter,
         structuralLimits: QueryStructuralLimits
-    ) async throws -> QueryExecuteOperation.RowPage {
+    ) async throws -> QueryRowPage {
         let response = try await context.container.newContext().query(
             query,
             execution: try readExecution(
@@ -163,7 +113,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             graphPartitions: request.graphPartitions
         )
         let page = try rowPage(response)
-        guard let rowCount = UInt32(exactly: page.rows.count) else {
+        guard let rowCount = UInt32(exactly: page.rowCount) else {
             throw DatabaseWorkLimitError.maximumRows(
                 stage: .resultMaterialization,
                 consumed: workMeter.consumedRows,
@@ -247,26 +197,40 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
 
     private static func continuationScope(
         for request: QueryExecuteOperation.Request
-    ) throws -> DatabaseBytes {
-        let partitions = request.graphPartitions.sorted {
-            ($0.number, $0.name) < ($1.number, $1.name)
+    ) throws -> ByteString {
+        try DatabaseWireWriter.encode {
+            (
+                writer: inout DatabaseWireWriter
+            ) throws(DatabaseWireError) in
+            try request.graphPartitions.encode(into: &writer)
         }
-        var writer = DatabaseWireWriter()
-        try writer.writeCount(partitions.count)
-        for partition in partitions {
-            try partition.encode(into: &writer)
-        }
-        return DatabaseBytes(writer.bytes)
     }
 
     private static func rowPage(
         _ response: QueryResponse
-    ) throws -> QueryExecuteOperation.RowPage {
+    ) throws -> QueryRowPage {
         let snapshotVersion = response.metadata["snapshotVersion"]?.int64Value.flatMap {
             UInt64(exactly: $0)
         }
-        return QueryExecuteOperation.RowPage(
-            rows: try response.rows.map(DatabaseQueryRowEncoder.encode),
+        let columnNames = Set(
+            response.rows.flatMap { $0.fields.keys }
+        ).sorted()
+        let columns = try columnNames.enumerated().map {
+            offset,
+            name -> QueryColumn in
+            guard let number = UInt32(exactly: offset + 1) else {
+                throw DatabaseWireError.byteCountOverflow
+            }
+            return QueryColumn(number: number, name: name)
+        }
+        return try QueryRowPage(
+            columns: columns,
+            rows: try response.rows.map {
+                try DatabaseQueryRowEncoder.encode(
+                    $0,
+                    columnNames: columnNames
+                )
+            },
             continuation: response.continuation.map(\.bytes),
             snapshotVersion: snapshotVersion
         )

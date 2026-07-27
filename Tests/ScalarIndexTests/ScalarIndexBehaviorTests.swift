@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import ScalarIndex
@@ -90,7 +90,9 @@ private struct ScalarIndexContext {
 
         let index = Index(
             name: indexName,
-            kind: ScalarIndexKind<ScalarIndexedUser>(fields: [\.email]),
+            kind: scalarIndexMetadata(
+                fields: [FieldIdentity(name: "email", number: 2)]
+            ),
             rootExpression: FieldKeyExpression(fieldName: "email"),
             subspaceKey: indexName,
             itemTypes: Set(["ScalarIndexedUser"])
@@ -402,7 +404,12 @@ struct ScalarIndexBehaviorTests {
 
         let index = Index(
             name: "ScalarIndexedUser_city_age",
-            kind: ScalarIndexKind<ScalarIndexedUser>(fields: [\.city, \.age]),
+            kind: scalarIndexMetadata(
+                fields: [
+                    FieldIdentity(name: "city", number: 4),
+                    FieldIdentity(name: "age", number: 3),
+                ]
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "city"),
                 FieldKeyExpression(fieldName: "age")

@@ -1,6 +1,8 @@
 #if SQLITE
 import Database
-import DatabaseValue
+import DatabaseRuntime
+import DatabaseTypes
+import DatabaseWire
 import Foundation
 import TestHeartbeat
 import Testing
@@ -13,20 +15,19 @@ private struct SQLiteNamedGraphStatement {
         "statements"
     )
     #Index(
-        RDFQuadIndexKind<SQLiteNamedGraphStatement>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object,
-            graph: \.graph
-        ),
+        .rdfDataset,
+        from: \SQLiteNamedGraphStatement.subject,
+        edge: \SQLiteNamedGraphStatement.predicate,
+        to: \SQLiteNamedGraphStatement.object,
+        graph: \SQLiteNamedGraphStatement.graph,
         name: "rdf_quad"
     )
 
     var id: String = UUID().uuidString
-    var subject: DatabaseRDFTerm = .iri("https://example.com/resource")
-    var predicate: DatabaseRDFTerm = .iri("https://example.com/predicate")
-    var object: DatabaseRDFTerm = .iri("https://example.com/object")
-    var graph: DatabaseRDFTerm? = nil
+    var subject: RDFTerm = .iri(.xsdString)
+    var predicate: RDFTerm = .iri(.xsdString)
+    var object: RDFTerm = .iri(.xsdString)
+    var graph: RDFTerm? = nil
 }
 
 @Suite("Canonical named graph SQLite", .serialized, .heartbeat)
@@ -61,7 +62,7 @@ struct NamedGraphStoreSQLiteTests {
             guard case .rdfTerm(.iri(let iri)) = binding["?predicate"] else {
                 return nil
             }
-            return iri
+            return iri.rawValue
         })
         #expect(predicates == Set([
             amountPredicate,
@@ -76,7 +77,7 @@ struct NamedGraphStoreSQLiteTests {
         let basic = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?subject"),
-                predicate: .value(.rdfTerm(.iri(amountPredicate))),
+                predicate: .value(.rdfTerm(try .iri(validating: amountPredicate))),
                 object: .variable("?object")
             )
         ])
@@ -93,7 +94,7 @@ struct NamedGraphStoreSQLiteTests {
             guard case .rdfTerm(.iri(let iri)) = binding["?graph"] else {
                 return nil
             }
-            return iri
+            return iri.rawValue
         })
         #expect(graphs == Set([invoiceGraphIRI, receiptGraphIRI]))
     }
@@ -105,7 +106,7 @@ struct NamedGraphStoreSQLiteTests {
 
         try await context.container.engine.withTransaction { transaction in
             let meter = DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget(
+                budget: ExecutionBudget(
                     maximumRows: 10_000,
                     maximumWorkUnits: 100_000,
                     timeoutMilliseconds: 30_000
@@ -113,7 +114,7 @@ struct NamedGraphStoreSQLiteTests {
             )
             let result = try await scanner.scan(
                 subject: nil,
-                predicate: .iri(amountPredicate),
+                predicate: try .iri(validating: amountPredicate),
                 object: nil,
                 graphScope: .named(try RDFGraphName(iri: receiptGraphIRI)),
                 limit: nil,
@@ -124,9 +125,9 @@ struct NamedGraphStoreSQLiteTests {
 
             #expect(result.physicalScanCount == 1)
             #expect(result.count == 1)
-            #expect(result[0].subject == .iri("https://example.com/invoice"))
-            #expect(result[0].predicate == .iri(amountPredicate))
-            #expect(result[0].graph == .iri(receiptGraphIRI))
+            #expect(result[0].subject == (try .iri(validating: "https://example.com/invoice")))
+            #expect(result[0].predicate == (try .iri(validating: amountPredicate)))
+            #expect(result[0].graph == (try .iri(validating: receiptGraphIRI)))
         }
     }
 
@@ -136,7 +137,7 @@ struct NamedGraphStoreSQLiteTests {
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?subject"),
-                predicate: .value(.rdfTerm(.iri(amountPredicate))),
+                predicate: .value(.rdfTerm(try .iri(validating: amountPredicate))),
                 object: .variable("?object")
             )
         ])
@@ -150,7 +151,7 @@ struct NamedGraphStoreSQLiteTests {
         #expect(result.count == 1)
         #expect(
             result.first?["?subject"]
-                == .rdfTerm(.iri("https://example.com/default-invoice"))
+                == .rdfTerm(try .iri(validating: "https://example.com/default-invoice"))
         )
     }
 
@@ -161,7 +162,7 @@ struct NamedGraphStoreSQLiteTests {
 
         try await context.container.engine.withTransaction { transaction in
             let meter = DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget(
+                budget: ExecutionBudget(
                     maximumRows: 10_000,
                     maximumWorkUnits: 100_000,
                     timeoutMilliseconds: 30_000
@@ -181,11 +182,13 @@ struct NamedGraphStoreSQLiteTests {
             ]))
             #expect(try await scanner.containsNamedGraph(
                 try RDFGraphName(iri: invoiceGraphIRI),
+                readMode: .snapshot,
                 transaction: transaction,
                 workMeter: meter
             ))
             #expect(try await scanner.containsNamedGraph(
                 try RDFGraphName(iri: "https://example.com/graph/missing"),
+                readMode: .snapshot,
                 transaction: transaction,
                 workMeter: meter
             ) == false)
@@ -232,43 +235,43 @@ struct NamedGraphStoreSQLiteTests {
             statement(
                 id: "invoice-amount",
                 graph: try RDFGraphName(iri: invoiceGraphIRI),
-                subject: .iri("https://example.com/invoice"),
-                predicate: .iri(amountPredicate),
+                subject: try .iri(validating: "https://example.com/invoice"),
+                predicate: try .iri(validating: amountPredicate),
                 object: integerLiteral("100000")
             ),
             statement(
                 id: "invoice-issued-to",
                 graph: try RDFGraphName(iri: invoiceGraphIRI),
-                subject: .iri("https://example.com/invoice"),
-                predicate: .iri("https://example.com/issued-to"),
-                object: .iri("https://example.com/acme")
+                subject: try .iri(validating: "https://example.com/invoice"),
+                predicate: try .iri(validating: "https://example.com/issued-to"),
+                object: try .iri(validating: "https://example.com/acme")
             ),
             statement(
                 id: "receipt-settles",
                 graph: try RDFGraphName(iri: receiptGraphIRI),
-                subject: .iri("https://example.com/receipt"),
-                predicate: .iri("https://example.com/settles"),
-                object: .iri("https://example.com/invoice")
+                subject: try .iri(validating: "https://example.com/receipt"),
+                predicate: try .iri(validating: "https://example.com/settles"),
+                object: try .iri(validating: "https://example.com/invoice")
             ),
             statement(
                 id: "receipt-amount",
                 graph: try RDFGraphName(iri: receiptGraphIRI),
-                subject: .iri("https://example.com/invoice"),
-                predicate: .iri(amountPredicate),
+                subject: try .iri(validating: "https://example.com/invoice"),
+                predicate: try .iri(validating: amountPredicate),
                 object: integerLiteral("100000")
             ),
             statement(
                 id: "mail-mentions",
                 graph: try RDFGraphName(iri: mailGraphIRI),
-                subject: .iri("https://example.com/mail"),
-                predicate: .iri("https://example.com/mentions"),
-                object: .iri("https://example.com/invoice")
+                subject: try .iri(validating: "https://example.com/mail"),
+                predicate: try .iri(validating: "https://example.com/mentions"),
+                object: try .iri(validating: "https://example.com/invoice")
             ),
             statement(
                 id: "default-amount",
                 graph: nil,
-                subject: .iri("https://example.com/default-invoice"),
-                predicate: .iri(amountPredicate),
+                subject: try .iri(validating: "https://example.com/default-invoice"),
+                predicate: try .iri(validating: amountPredicate),
                 object: integerLiteral("50000")
             ),
         ]
@@ -277,9 +280,9 @@ struct NamedGraphStoreSQLiteTests {
     private func statement(
         id: String,
         graph: RDFGraphName?,
-        subject: DatabaseRDFTerm,
-        predicate: DatabaseRDFTerm,
-        object: DatabaseRDFTerm
+        subject: RDFTerm,
+        predicate: RDFTerm,
+        object: RDFTerm
     ) -> SQLiteNamedGraphStatement {
         var value = SQLiteNamedGraphStatement()
         value.id = id
@@ -290,11 +293,11 @@ struct NamedGraphStoreSQLiteTests {
         return value
     }
 
-    private func integerLiteral(_ lexicalForm: String) -> DatabaseRDFTerm {
+    private func integerLiteral(_ lexicalForm: String) -> RDFTerm {
         .literal(
-            DatabaseRDFLiteral(
+            RDFLiteral(
                 lexicalForm: lexicalForm,
-                datatype: "http://www.w3.org/2001/XMLSchema#integer"
+                datatype: XSDDatatype.integer.typedLiteralDatatype
             )
         )
     }

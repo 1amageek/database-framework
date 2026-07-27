@@ -1,5 +1,4 @@
-import Core
-import Relationship
+import DatabaseKit
 
 /// A persisted model and the relationships loaded at the same read version.
 @dynamicMemberLookup
@@ -25,29 +24,29 @@ public struct RelationshipSnapshot<Model: Persistable>: Sendable {
     }
 
     public func ref<Related: Persistable>(
-        _ keyPath: KeyPath<Model, DatabaseReference<Related>?>
+        _ field: Field<Model, PersistableReference<Related>?>
     ) throws(RelationshipSnapshotError) -> Related? {
         try loadedToOne(
-            fieldName: Model.fieldName(for: keyPath),
+            fieldName: field.name,
             as: Related.self,
             expectedCardinality: .optionalToOne
         )
     }
 
     public func ref<Related: Persistable>(
-        _ keyPath: KeyPath<Model, DatabaseReference<Related>>
+        _ field: Field<Model, PersistableReference<Related>>
     ) throws(RelationshipSnapshotError) -> Related? {
         try loadedToOne(
-            fieldName: Model.fieldName(for: keyPath),
+            fieldName: field.name,
             as: Related.self,
             expectedCardinality: .requiredToOne
         )
     }
 
     public func refs<Related: Persistable>(
-        _ keyPath: KeyPath<Model, [DatabaseReference<Related>]>
+        _ field: Field<Model, [PersistableReference<Related>]>
     ) throws(RelationshipSnapshotError) -> [Related] {
-        let fieldName = Model.fieldName(for: keyPath)
+        let fieldName = field.name
         guard let loaded = loadedRelationships[fieldName] else {
             throw .relationNotLoaded(
                 owner: Model.persistableType,
@@ -73,31 +72,31 @@ public struct RelationshipSnapshot<Model: Persistable>: Sendable {
     }
 
     func with<Related: Persistable>(
-        _ keyPath: KeyPath<Model, DatabaseReference<Related>?>,
+        _ field: Field<Model, PersistableReference<Related>?>,
         loadedAs value: Related?
     ) -> RelationshipSnapshot<Model> {
         replacingRelationship(
-            named: Model.fieldName(for: keyPath),
+            named: field.name,
             with: value.map(LoadedRelationship.toOne) ?? .absentToOne
         )
     }
 
     func with<Related: Persistable>(
-        _ keyPath: KeyPath<Model, DatabaseReference<Related>>,
+        _ field: Field<Model, PersistableReference<Related>>,
         loadedAs value: Related?
     ) -> RelationshipSnapshot<Model> {
         replacingRelationship(
-            named: Model.fieldName(for: keyPath),
+            named: field.name,
             with: value.map(LoadedRelationship.toOne) ?? .absentToOne
         )
     }
 
     func with<Related: Persistable>(
-        _ keyPath: KeyPath<Model, [DatabaseReference<Related>]>,
+        _ field: Field<Model, [PersistableReference<Related>]>,
         loadedAs value: [Related]
     ) -> RelationshipSnapshot<Model> {
         replacingRelationship(
-            named: Model.fieldName(for: keyPath),
+            named: field.name,
             with: .toMany(value)
         )
     }

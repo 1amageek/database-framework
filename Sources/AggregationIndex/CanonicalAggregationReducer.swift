@@ -1,4 +1,5 @@
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -21,9 +22,27 @@ enum CanonicalAggregationReducer {
         ) throws {
             let operand: Int128
             switch value {
+            case .int8(let integer):
+                operand = Int128(integer)
+                sawSigned = true
+            case .int16(let integer):
+                operand = Int128(integer)
+                sawSigned = true
+            case .int32(let integer):
+                operand = Int128(integer)
+                sawSigned = true
             case .int64(let integer):
                 operand = Int128(integer)
                 sawSigned = true
+            case .uint8(let integer):
+                operand = Int128(integer)
+                sawUnsigned = true
+            case .uint16(let integer):
+                operand = Int128(integer)
+                sawUnsigned = true
+            case .uint32(let integer):
+                operand = Int128(integer)
+                sawUnsigned = true
             case .uint64(let integer):
                 operand = Int128(integer)
                 sawUnsigned = true
@@ -87,7 +106,7 @@ enum CanonicalAggregationReducer {
                     field: field
                 )
             }
-            return .double(value)
+            return .float64(value)
         }
 
         private func integerResult(
@@ -215,7 +234,8 @@ enum CanonicalAggregationReducer {
             switch value {
             case .null:
                 return
-            case .int64, .uint64:
+            case .int8, .int16, .int32, .int64,
+                 .uint8, .uint16, .uint32, .uint64:
                 switch self {
                 case .empty:
                     var accumulator = ExactIntegerAccumulator()
@@ -227,7 +247,31 @@ enum CanonicalAggregationReducer {
                 case .floatingPoint:
                     throw AggregationQueryError.incompatibleNumericKinds(field: field)
                 }
-            case .double(let floatingPoint):
+            case .float32(let floatingPoint):
+                try addFloatingPoint(
+                    Double(floatingPoint),
+                    operation: operation,
+                    field: field
+                )
+            case .float64(let floatingPoint):
+                try addFloatingPoint(
+                    floatingPoint,
+                    operation: operation,
+                    field: field
+                )
+            default:
+                throw AggregationQueryError.nonNumericValue(
+                    field: field,
+                    value: value
+                )
+            }
+        }
+
+        private mutating func addFloatingPoint(
+            _ floatingPoint: Double,
+            operation: String,
+            field: String
+        ) throws {
                 switch self {
                 case .empty:
                     var accumulator = FloatingPointAccumulator()
@@ -247,12 +291,6 @@ enum CanonicalAggregationReducer {
                     )
                     self = .floatingPoint(accumulator)
                 }
-            default:
-                throw AggregationQueryError.nonNumericValue(
-                    field: field,
-                    value: value
-                )
-            }
         }
 
         func sum(field: String) throws -> FieldValue? {
@@ -265,7 +303,7 @@ enum CanonicalAggregationReducer {
                 return try accumulator.total(
                     operation: "sum",
                     field: field
-                ).map(FieldValue.double)
+                ).map(FieldValue.float64)
             }
         }
 
@@ -276,14 +314,14 @@ enum CanonicalAggregationReducer {
             case .integer(let accumulator):
                 return try accumulator.average(field: field)
             case .floatingPoint(let accumulator):
-                return try accumulator.average(field: field).map(FieldValue.double)
+                return try accumulator.average(field: field).map(FieldValue.float64)
             }
         }
     }
 
     static func groupIdentity<T: Persistable>(
         item: T,
-        fields: [String]
+        fields: [FieldIdentity]
     ) throws -> [FieldValue] {
         var identity: [FieldValue] = []
         identity.reserveCapacity(fields.count)
@@ -314,20 +352,20 @@ enum CanonicalAggregationReducer {
                 try accumulator.add(
                     fieldValue(item: item, field: field),
                     operation: "sum",
-                    field: field
+                    field: field.name
                 )
             }
-            return try accumulator.sum(field: field)
+            return try accumulator.sum(field: field.name)
         case .avg(let field):
             var accumulator = NumericAccumulator.empty
             for item in items {
                 try accumulator.add(
                     fieldValue(item: item, field: field),
                     operation: "average",
-                    field: field
+                    field: field.name
                 )
             }
-            return try accumulator.average(field: field)
+            return try accumulator.average(field: field.name)
         case .min(let field):
             return try extremum(items: items, field: field, chooseMinimum: true)
         case .max(let field):
@@ -343,7 +381,7 @@ enum CanonicalAggregationReducer {
             guard let count = Int64(exactly: values.count) else {
                 throw AggregationQueryError.numericOverflow(
                     operation: "distinct",
-                    field: field
+                    field: field.name
                 )
             }
             return .int64(count)
@@ -358,7 +396,7 @@ enum CanonicalAggregationReducer {
                 }
                 guard value.isNumeric else {
                     throw AggregationQueryError.nonNumericValue(
-                        field: field,
+                        field: field.name,
                         value: value
                     )
                 }
@@ -367,7 +405,7 @@ enum CanonicalAggregationReducer {
             return try Self.percentile(
                 values: &values,
                 percentile: percentile,
-                field: field
+                field: field.name
             )
         }
     }
@@ -444,7 +482,7 @@ enum CanonicalAggregationReducer {
                 field: field
             )
         }
-        return .double(result)
+        return .float64(result)
     }
 
     static func average(
@@ -494,7 +532,7 @@ enum CanonicalAggregationReducer {
                 field: field
             )
         }
-        return .double(result)
+        return .float64(result)
     }
 
     static func average(
@@ -523,7 +561,7 @@ enum CanonicalAggregationReducer {
                 field: field
             )
         }
-        return .double(result)
+        return .float64(result)
     }
 
     static func minimum(
@@ -601,7 +639,7 @@ enum CanonicalAggregationReducer {
                 field: field
             )
         }
-        return .double(result)
+        return .float64(result)
     }
 
     static func validate(percentile: Double) throws {
@@ -630,18 +668,36 @@ enum CanonicalAggregationReducer {
 
     private static func fieldValue<T: Persistable>(
         item: T,
-        field: String
+        field: FieldIdentity
     ) throws -> FieldValue {
-        let rawValue = item[dynamicMember: field]
-        guard rawValue != nil || T.allFields.contains(field) else {
-            throw AggregationQueryError.invalidField(field)
+        guard T.fieldSchemas.contains(where: {
+            $0.name == field.name && $0.fieldNumber == field.number
+        }) else {
+            throw AggregationQueryError.invalidField(field.name)
         }
-        return try fieldValue(rawValue, field: field)
+        do {
+            guard let value = try item.persistedFieldValue(for: field) else {
+                throw AggregationQueryError.invalidField(field.name)
+            }
+            try validate(value: value, field: field.name)
+            return value
+        } catch let error as AggregationQueryError {
+            throw error
+        } catch let error as PersistableEncodingError {
+            throw AggregationQueryError.persistedFieldEncodingFailed(
+                field: field.name,
+                reason: error
+            )
+        }
     }
 
     static func validate(value: FieldValue, field: String) throws {
         switch value {
-        case .double(let floatingPoint):
+        case .float32(let floatingPoint):
+            guard floatingPoint.isFinite else {
+                throw AggregationQueryError.nonFiniteNumericValue(field: field)
+            }
+        case .float64(let floatingPoint):
             guard floatingPoint.isFinite else {
                 throw AggregationQueryError.nonFiniteNumericValue(field: field)
             }
@@ -656,7 +712,7 @@ enum CanonicalAggregationReducer {
 
     private static func extremum<T: Persistable>(
         items: [T],
-        field: String,
+        field: FieldIdentity,
         chooseMinimum: Bool
     ) throws -> FieldValue? {
         var selected: FieldValue?
@@ -666,7 +722,7 @@ enum CanonicalAggregationReducer {
                 continue
             }
             if let current = selected {
-                let comparison = try compare(value, current, field: field)
+                let comparison = try compare(value, current, field: field.name)
                 if (chooseMinimum && comparison == .orderedAscending)
                     || (!chooseMinimum && comparison == .orderedDescending) {
                     selected = value
@@ -715,7 +771,10 @@ enum CanonicalAggregationReducer {
         switch (lhs, rhs) {
         case (.string, .string),
              (.bool, .bool),
-             (.data, .data),
+             (.bytes, .bytes),
+             (.date, .date),
+             (.timestamp, .timestamp),
+             (.uuid, .uuid),
              (.rdfTerm, .rdfTerm):
             if lhs == rhs { return .orderedSame }
             return lhs < rhs ? .orderedAscending : .orderedDescending
@@ -734,6 +793,12 @@ enum CanonicalAggregationReducer {
         field: String
     ) throws -> Double {
         switch value {
+        case .int8(let integer):
+            return Double(integer)
+        case .int16(let integer):
+            return Double(integer)
+        case .int32(let integer):
+            return Double(integer)
         case .int64(let integer):
             guard let result = Double(exactly: integer) else {
                 throw AggregationQueryError.resultNotRepresentable(
@@ -742,6 +807,12 @@ enum CanonicalAggregationReducer {
                 )
             }
             return result
+        case .uint8(let integer):
+            return Double(integer)
+        case .uint16(let integer):
+            return Double(integer)
+        case .uint32(let integer):
+            return Double(integer)
         case .uint64(let integer):
             guard let result = Double(exactly: integer) else {
                 throw AggregationQueryError.resultNotRepresentable(
@@ -750,7 +821,12 @@ enum CanonicalAggregationReducer {
                 )
             }
             return result
-        case .double(let floatingPoint):
+        case .float32(let floatingPoint):
+            guard floatingPoint.isFinite else {
+                throw AggregationQueryError.nonFiniteNumericValue(field: field)
+            }
+            return Double(floatingPoint)
+        case .float64(let floatingPoint):
             guard floatingPoint.isFinite else {
                 throw AggregationQueryError.nonFiniteNumericValue(field: field)
             }

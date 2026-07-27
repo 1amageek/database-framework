@@ -1,4 +1,4 @@
-import Relationship
+import DatabaseKit
 
 public enum RelationshipSnapshotError: Error, Sendable, Equatable {
     case relationNotLoaded(owner: String, field: String)

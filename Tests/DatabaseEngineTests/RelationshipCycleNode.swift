@@ -1,8 +1,8 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 
 @Persistable
 struct RelationshipCycleNode {
@@ -11,7 +11,7 @@ struct RelationshipCycleNode {
     var id: String = ""
 
     @Relationship(deleteRule: .cascade)
-    var peer: DatabaseReference<RelationshipCycleNode>
+    var peer: PersistableReference<RelationshipCycleNode>
 }
 #endif
 #endif

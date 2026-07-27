@@ -1,4 +1,4 @@
-import Graph
+import DatabaseKit
 
 /// Selects the named graph that becomes active while evaluating a graph pattern.
 public enum ExecutionGraphSelector: Sendable, Hashable {

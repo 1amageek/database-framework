@@ -1,40 +1,38 @@
 // VectorIndexConfiguration.swift
 // VectorIndex - Runtime configuration for vector indexes
 //
-// Provides IndexConfiguration implementation to select HNSW vs Flat search at runtime.
+// Provides IndexRuntimeConfiguration implementation to select HNSW vs Flat search at runtime.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import Vector
+import DatabaseKit
+import DatabaseEngine
+import DatabaseTypes
 
-// MARK: - Internal Protocol for Type-Safe Casting
+// MARK: - Runtime Configuration Contract
 
-/// Internal protocol for type-safe vector index configuration access
+/// Runtime behavior shared by every typed vector index configuration.
 ///
-/// **Purpose**: Enables type-safe casting in `makeIndexMaintainer` without Mirror reflection.
-/// The underscore prefix indicates this is an implementation detail, not public API.
-///
-/// **Usage in VectorIndexKind+Maintainable**:
+/// **Usage during vector maintainer construction**:
 /// ```swift
-/// if let config = matchingConfig as? _VectorIndexConfiguration {
+/// if let config = matchingConfig as? VectorIndexRuntimeConfiguration {
 ///     switch config.algorithm { ... }
 /// }
 /// ```
-public protocol _VectorIndexConfiguration: IndexConfiguration {
+protocol VectorIndexRuntimeConfiguration: IndexRuntimeConfiguration {
     /// Vector search algorithm selection
     var algorithm: VectorAlgorithm { get }
 
-    /// Subspace key for data isolation (inherited from IndexConfiguration)
+    /// Subspace key for data isolation (inherited from IndexRuntimeConfiguration)
     var subspaceKey: String? { get }
 }
 
 // MARK: - Vector Index Configuration
 
-/// Runtime configuration for VectorIndexKind
+/// Runtime configuration for a declared vector index.
 ///
 /// **Purpose**: Select vector search algorithm at container initialization.
 ///
@@ -47,19 +45,26 @@ public protocol _VectorIndexConfiguration: IndexConfiguration {
 /// // Define model with vector index
 /// @Persistable
 /// struct Product {
+///     #Index(
+///         .vector(dimensions: 384),
+///         embedding: \Product.embedding,
+///         name: "Product_embedding"
+///     )
+///
 ///     var id: Int64
-///     @Index(type: VectorIndexKind(dimensions: 384, metric: .cosine))
-///     var embedding: [Float]
+///     var embedding: Vector
 /// }
 ///
 /// // Configure HNSW at runtime
 /// let config = VectorIndexConfiguration<Product>(
-///     keyPath: \.embedding,
+///     field: Product.fields.embedding,
 ///     algorithm: .hnsw(.default)
 /// )
 ///
-/// let container = try DBContainer.open(
+/// let container = try await DBContainer.open(
 ///     for: schema,
+///     configuration: configuration,
+///     runtimeConfiguration: runtime,
 ///     indexConfigurations: [config]
 /// )
 /// ```
@@ -75,15 +80,16 @@ public protocol _VectorIndexConfiguration: IndexConfiguration {
 /// - Memory-constrained environments
 /// - Development/testing
 ///
-public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfiguration {
-    /// Must match VectorIndexKind.identifier
+public struct VectorIndexConfiguration<Model: Persistable>:
+    VectorIndexRuntimeConfiguration {
+    /// Must match the canonical vector index identifier.
     public static var kindIdentifier: String { "vector" }
 
     /// Canonical target field name from the model's compiled schema.
     public let fieldName: String
 
-    /// Model type name for index name generation
-    public var modelTypeName: String { String(describing: Model.self) }
+    /// Canonical persisted entity name.
+    public var entityName: String { Model.persistableType }
 
     // MARK: - Configuration Properties
 
@@ -101,15 +107,26 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
     /// Create vector index configuration
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the vector field
+    ///   - field: Compiled vector field identity
     ///   - algorithm: Search algorithm to use (default: .auto)
     ///   - subspaceKey: Optional key for subspace isolation (default: nil)
     public init(
-        keyPath: KeyPath<Model, [Float]>,
+        field: Field<Model, Vector>,
         algorithm: VectorAlgorithm = .auto(.default),
         subspaceKey: String? = nil
     ) {
-        self.fieldName = Model.fieldName(for: keyPath)
+        self.fieldName = field.name
+        self.algorithm = algorithm
+        self.subspaceKey = subspaceKey
+    }
+
+    /// Create vector index configuration for an optional vector field.
+    public init(
+        field: Field<Model, Vector?>,
+        algorithm: VectorAlgorithm = .auto(.default),
+        subspaceKey: String? = nil
+    ) {
+        self.fieldName = field.name
         self.algorithm = algorithm
         self.subspaceKey = subspaceKey
     }
@@ -117,15 +134,26 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
     /// Create configuration with HNSW algorithm
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the vector field
+    ///   - field: Compiled vector field identity
     ///   - hnswParameters: HNSW algorithm parameters
     ///   - subspaceKey: Optional key for subspace isolation (default: nil)
     public init(
-        keyPath: KeyPath<Model, [Float]>,
+        field: Field<Model, Vector>,
         hnsw hnswParameters: VectorHNSWParameters,
         subspaceKey: String? = nil
     ) {
-        self.fieldName = Model.fieldName(for: keyPath)
+        self.fieldName = field.name
+        self.algorithm = .hnsw(hnswParameters)
+        self.subspaceKey = subspaceKey
+    }
+
+    /// Create HNSW configuration for an optional vector field.
+    public init(
+        field: Field<Model, Vector?>,
+        hnsw hnswParameters: VectorHNSWParameters,
+        subspaceKey: String? = nil
+    ) {
+        self.fieldName = field.name
         self.algorithm = .hnsw(hnswParameters)
         self.subspaceKey = subspaceKey
     }

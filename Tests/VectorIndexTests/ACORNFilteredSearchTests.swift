@@ -5,83 +5,20 @@ import Testing
 import TestHeartbeat
 import Foundation
 import StorageKit
-import Core
-import DatabaseValue
-import Vector
+import DatabaseKit
+import DatabaseTypes
 @testable import DatabaseEngine
 @testable import VectorIndex
 
 // MARK: - Test Model
 
-struct ACORNProduct: Persistable {
-    typealias ID = String
-
+@Persistable
+struct ACORNProduct {
     var id: String
     var name: String
     var category: String
-    var price: Int
-    var embedding: [Float]
-
-    init(
-        id: String = UUID().uuidString,
-        name: String,
-        category: String,
-        price: Int,
-        embedding: [Float]
-    ) {
-        self.id = id
-        self.name = name
-        self.category = category
-        self.price = price
-        self.embedding = embedding
-    }
-
-    static var persistableType: String { "ACORNProduct" }
-    static var allFields: [String] { ["id", "name", "category", "price", "embedding"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "category": return category
-        case "price": return price
-        case "embedding": return embedding
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<ACORNProduct, Value>) -> String {
-        switch keyPath {
-        case \ACORNProduct.id: return "id"
-        case \ACORNProduct.name: return "name"
-        case \ACORNProduct.category: return "category"
-        case \ACORNProduct.price: return "price"
-        case \ACORNProduct.embedding: return "embedding"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<ACORNProduct>) -> String {
-        switch keyPath {
-        case \ACORNProduct.id: return "id"
-        case \ACORNProduct.name: return "name"
-        case \ACORNProduct.category: return "category"
-        case \ACORNProduct.price: return "price"
-        case \ACORNProduct.embedding: return "embedding"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<ACORNProduct> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var price: Int64
+    var embedding: Vector
 }
 
 // MARK: - ACORN Search Context
@@ -104,15 +41,15 @@ private struct ACORNSearchContext {
         self.itemsSubspace = subspace.subspace("R")
         self.blobsSubspace = subspace.subspace("B")
 
-        let kind = VectorIndexKind<ACORNProduct>(
-            embedding: \.embedding,
+        let metadata = vectorIndexMetadata(
+            fieldNumber: 5,
             dimensions: dimensions,
             metric: .cosine
         )
 
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: metadata,
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
             subspaceKey: indexName,
             itemTypes: Set(["ACORNProduct"])
@@ -141,11 +78,10 @@ private struct ACORNSearchContext {
         try await database.withTransaction { transaction in
             // Store the item using ItemStorage
             let itemKey = itemsSubspace.pack(Tuple(product.id))
-            let encoder = JSONEncoder()
-            let itemData = try encoder.encode(product)
+            let itemData = try PersistableStorageCodec.encode(product)
 
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
-            try await storage.write(Bytes(itemData), for: itemKey)
+            try await storage.write(itemData, for: itemKey)
 
             // Index the vector
             try await maintainer.updateIndex(
@@ -167,8 +103,10 @@ private struct ACORNSearchContext {
             let itemKey = itemsSubspace.pack(Tuple(id))
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             if let data = try await storage.read(for: itemKey) {
-                let decoder = JSONDecoder()
-                return try decoder.decode(ACORNProduct.self, from: Data(data))
+                return try PersistableStorageCodec.decode(
+                    ACORNProduct.self,
+                    from: data
+                )
             }
             return nil
         }
@@ -190,8 +128,10 @@ private struct ACORNSearchContext {
                 let itemKey = self.itemsSubspace.pack(Tuple(id))
                 let storage = ItemStorage(transaction: tx, blobsSubspace: self.blobsSubspace, configuration: .v1)
                 if let data = try await storage.read(for: itemKey) {
-                    let decoder = JSONDecoder()
-                    return try decoder.decode(ACORNProduct.self, from: Data(data))
+                    return try PersistableStorageCodec.decode(
+                        ACORNProduct.self,
+                        from: data
+                    )
                 }
                 return nil
             }
@@ -255,19 +195,19 @@ struct ACORNFilteredSearchTests {
         let products = [
             ACORNProduct(
                 id: "p1", name: "Laptop", category: "electronics", price: 1000,
-                embedding: normalizedVector([1.0, 0.0, 0.0, 0.0])
+                embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))
             ),
             ACORNProduct(
                 id: "p2", name: "Phone", category: "electronics", price: 500,
-                embedding: normalizedVector([0.9, 0.1, 0.0, 0.0])
+                embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0]))
             ),
             ACORNProduct(
                 id: "p3", name: "Chair", category: "furniture", price: 200,
-                embedding: normalizedVector([0.8, 0.2, 0.0, 0.0])
+                embedding: try Vector(float32: normalizedVector([0.8, 0.2, 0.0, 0.0]))
             ),
             ACORNProduct(
                 id: "p4", name: "Desk", category: "furniture", price: 300,
-                embedding: normalizedVector([0.7, 0.3, 0.0, 0.0])
+                embedding: try Vector(float32: normalizedVector([0.7, 0.3, 0.0, 0.0]))
             )
         ]
 
@@ -302,20 +242,20 @@ struct ACORNFilteredSearchTests {
         let products = [
             ACORNProduct(
                 id: "close", name: "Close", category: "electronics", price: 100,
-                embedding: normalizedVector([1.0, 0.0, 0.0, 0.0])
+                embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))
             ),
             ACORNProduct(
                 id: "medium", name: "Medium", category: "electronics", price: 200,
-                embedding: normalizedVector([0.7, 0.7, 0.0, 0.0])
+                embedding: try Vector(float32: normalizedVector([0.7, 0.7, 0.0, 0.0]))
             ),
             ACORNProduct(
                 id: "far", name: "Far", category: "electronics", price: 300,
-                embedding: normalizedVector([0.0, 1.0, 0.0, 0.0])
+                embedding: try Vector(float32: normalizedVector([0.0, 1.0, 0.0, 0.0]))
             ),
             // Furniture (should be filtered out even though close)
             ACORNProduct(
                 id: "furniture", name: "Furniture", category: "furniture", price: 50,
-                embedding: normalizedVector([0.99, 0.01, 0.0, 0.0])
+                embedding: try Vector(float32: normalizedVector([0.99, 0.01, 0.0, 0.0]))
             )
         ]
 
@@ -353,13 +293,13 @@ struct ACORNFilteredSearchTests {
 
         let products = [
             ACORNProduct(id: "p1", name: "Cheap Electronics", category: "electronics", price: 100,
-                             embedding: normalizedVector([1.0, 0.0, 0.0, 0.0])),
+                             embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))),
             ACORNProduct(id: "p2", name: "Expensive Electronics", category: "electronics", price: 2000,
-                             embedding: normalizedVector([0.9, 0.1, 0.0, 0.0])),
+                             embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0]))),
             ACORNProduct(id: "p3", name: "Cheap Furniture", category: "furniture", price: 50,
-                             embedding: normalizedVector([0.8, 0.2, 0.0, 0.0])),
+                             embedding: try Vector(float32: normalizedVector([0.8, 0.2, 0.0, 0.0]))),
             ACORNProduct(id: "p4", name: "Mid Furniture", category: "furniture", price: 500,
-                             embedding: normalizedVector([0.7, 0.3, 0.0, 0.0]))
+                             embedding: try Vector(float32: normalizedVector([0.7, 0.3, 0.0, 0.0])))
         ]
 
         try await ctx.insertProducts(products)
@@ -394,8 +334,8 @@ struct ACORNFilteredSearchTests {
         for i in 0..<10 {
             let angle = Float(i) * 0.1
             products.append(ACORNProduct(
-                id: "p\(i)", name: "Product \(i)", category: "electronics", price: i * 100,
-                embedding: normalizedVector([cos(angle), sin(angle), 0.0, 0.0])
+                id: "p\(i)", name: "Product \(i)", category: "electronics", price: Int64(i * 100),
+                embedding: try Vector(float32: normalizedVector([cos(angle), sin(angle), 0.0, 0.0]))
             ))
         }
 
@@ -421,9 +361,9 @@ struct ACORNFilteredSearchTests {
 
         let products = [
             ACORNProduct(id: "p1", name: "Product 1", category: "electronics", price: 100,
-                             embedding: normalizedVector([1.0, 0.0, 0.0, 0.0])),
+                             embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))),
             ACORNProduct(id: "p2", name: "Product 2", category: "electronics", price: 200,
-                             embedding: normalizedVector([0.9, 0.1, 0.0, 0.0]))
+                             embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0])))
         ]
 
         try await ctx.insertProducts(products)
@@ -452,8 +392,8 @@ struct ACORNFilteredSearchTests {
             let category = i % 3 == 0 ? "target" : "other"
             let angle = Float(i) * 0.15
             products.append(ACORNProduct(
-                id: "p\(i)", name: "Product \(i)", category: category, price: i * 50,
-                embedding: normalizedVector([cos(angle), sin(angle), 0.0, 0.0])
+                id: "p\(i)", name: "Product \(i)", category: category, price: Int64(i * 50),
+                embedding: try Vector(float32: normalizedVector([cos(angle), sin(angle), 0.0, 0.0]))
             ))
         }
 
@@ -495,13 +435,13 @@ struct ACORNFilteredSearchTests {
 
         let products = [
             ACORNProduct(id: "e1", name: "Electronics 1", category: "electronics", price: 100,
-                             embedding: normalizedVector([1.0, 0.0, 0.0, 0.0])),
+                             embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))),
             ACORNProduct(id: "f1", name: "Furniture 1", category: "furniture", price: 200,
-                             embedding: normalizedVector([0.95, 0.05, 0.0, 0.0])),
+                             embedding: try Vector(float32: normalizedVector([0.95, 0.05, 0.0, 0.0]))),
             ACORNProduct(id: "e2", name: "Electronics 2", category: "electronics", price: 300,
-                             embedding: normalizedVector([0.9, 0.1, 0.0, 0.0])),
+                             embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0]))),
             ACORNProduct(id: "f2", name: "Furniture 2", category: "furniture", price: 400,
-                             embedding: normalizedVector([0.85, 0.15, 0.0, 0.0]))
+                             embedding: try Vector(float32: normalizedVector([0.85, 0.15, 0.0, 0.0])))
         ]
 
         try await ctx.insertProducts(products)

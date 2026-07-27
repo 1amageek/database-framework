@@ -4,7 +4,7 @@
 // This protocol provides the database-domain contract for declaring
 // index metadata on persisted models and documents.
 
-import Core
+import DatabaseKit
 
 /// Protocol for types that can provide index metadata.
 ///
@@ -22,10 +22,13 @@ import Core
 /// ```swift
 /// @Persistable
 /// struct User {
-///     #PrimaryKey<User>([\.userID])
-///     #Index([\.email])
+///     #Index(
+///         .scalar,
+///         fields: [\User.email],
+///         name: "User_email"
+///     )
 ///
-///     var userID: Int64
+///     var id: Int64
 ///     var email: String
 /// }
 ///
@@ -33,10 +36,10 @@ import Core
 /// extension User: IndexAnnotatable {
 ///     static var indexDescriptors: [IndexDescriptor] {
 ///         [
-///             IndexDescriptor(
+///             try IndexDescriptor(
 ///                 name: "User_email",
-///                 keyPaths: ["email"],
-///                 kind: .scalar,
+///                 definition: .scalar,
+///                 fields: [User.fields.email.ascending],
 ///                 commonOptions: .init()
 ///             )
 ///         ]

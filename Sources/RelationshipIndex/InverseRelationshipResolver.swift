@@ -1,7 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import Relationship
 import StorageKit
+import DatabaseTypes
 
 /// Performs bounded inverse lookups through the canonical relationship catalog.
 public struct InverseRelationshipResolver: Sendable {
@@ -12,16 +12,16 @@ public struct InverseRelationshipResolver: Sendable {
     }
 
     public func referencedBy<Target: Persistable, Owner: Persistable>(
-        _ target: DatabaseReference<Target>,
+        _ target: PersistableReference<Target>,
         from ownerType: Owner.Type,
-        via keyPath: KeyPath<Owner, DatabaseReference<Target>?>,
+        via field: Field<Owner, PersistableReference<Target>?>,
         limit: Int,
         continuation: Bytes? = nil
     ) async throws -> RelationshipPage<Owner> {
         try await referencedBy(
             target,
             from: ownerType,
-            fieldName: Owner.fieldName(for: keyPath),
+            fieldName: field.name,
             cardinality: .optionalToOne,
             limit: limit,
             continuation: continuation
@@ -29,16 +29,16 @@ public struct InverseRelationshipResolver: Sendable {
     }
 
     public func referencedBy<Target: Persistable, Owner: Persistable>(
-        _ target: DatabaseReference<Target>,
+        _ target: PersistableReference<Target>,
         from ownerType: Owner.Type,
-        via keyPath: KeyPath<Owner, DatabaseReference<Target>>,
+        via field: Field<Owner, PersistableReference<Target>>,
         limit: Int,
         continuation: Bytes? = nil
     ) async throws -> RelationshipPage<Owner> {
         try await referencedBy(
             target,
             from: ownerType,
-            fieldName: Owner.fieldName(for: keyPath),
+            fieldName: field.name,
             cardinality: .requiredToOne,
             limit: limit,
             continuation: continuation
@@ -46,16 +46,16 @@ public struct InverseRelationshipResolver: Sendable {
     }
 
     public func referencedBy<Target: Persistable, Owner: Persistable>(
-        _ target: DatabaseReference<Target>,
+        _ target: PersistableReference<Target>,
         from ownerType: Owner.Type,
-        via keyPath: KeyPath<Owner, [DatabaseReference<Target>]>,
+        via field: Field<Owner, [PersistableReference<Target>]>,
         limit: Int,
         continuation: Bytes? = nil
     ) async throws -> RelationshipPage<Owner> {
         try await referencedBy(
             target,
             from: ownerType,
-            fieldName: Owner.fieldName(for: keyPath),
+            fieldName: field.name,
             cardinality: .toMany,
             limit: limit,
             continuation: continuation
@@ -63,7 +63,7 @@ public struct InverseRelationshipResolver: Sendable {
     }
 
     private func referencedBy<Target: Persistable, Owner: Persistable>(
-        _ target: DatabaseReference<Target>,
+        _ target: PersistableReference<Target>,
         from ownerType: Owner.Type,
         fieldName: String,
         cardinality: RelationshipCardinality,
@@ -91,7 +91,7 @@ public struct InverseRelationshipResolver: Sendable {
         let context = container.newContext()
         return try await context.withTransaction { transaction in
             let page = try await RelationshipReferenceCatalog.referrerPage(
-                of: target.identity,
+                of: target.persistableIdentity,
                 descriptor: descriptor,
                 continuation: continuation,
                 limit: limit,

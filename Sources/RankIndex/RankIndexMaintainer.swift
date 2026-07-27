@@ -8,9 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
-import Rank
 import StorageKit
 
 /// Maintainer for RANK indexes with compile-time type safety
@@ -250,7 +249,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
         transaction: any TransactionAccess
     ) async throws -> Score? {
         guard percentile >= 0.0 && percentile <= 1.0 else {
-            throw RankIndexError.invalidScore("Percentile must be between 0.0 and 1.0")
+            throw RankIndexMaintenanceError.invalidPercentile(percentile)
         }
 
         let totalCount = try await getCount(transaction: transaction)
@@ -307,18 +306,22 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
         }
 
         guard scoreValues.count == 1 else {
-            throw RankIndexError.invalidScore(
-                "Rank index requires exactly one score element; received \(scoreValues.count)"
+            throw RankIndexMaintenanceError.invalidScoreFieldCount(
+                actual: scoreValues.count
             )
         }
 
         // Extract score as Score type (type-safe)
         let score = try TupleDecoder.decode(scoreValues[0], as: Score.self)
-        if let value = score as? Double, value.isNaN {
-            throw RankIndexError.invalidScore("NaN cannot be ordered in a rank index")
+        if let value = score as? Double, !value.isFinite {
+            throw RankIndexMaintenanceError.unorderedFloatingPoint(
+                indexName: index.name
+            )
         }
-        if let value = score as? Float, value.isNaN {
-            throw RankIndexError.invalidScore("NaN cannot be ordered in a rank index")
+        if let value = score as? Float, !value.isFinite {
+            throw RankIndexMaintenanceError.unorderedFloatingPoint(
+                indexName: index.name
+            )
         }
 
         // Extract primary key

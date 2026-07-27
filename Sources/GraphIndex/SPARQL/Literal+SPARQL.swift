@@ -3,11 +3,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 
-extension QueryIR.Literal {
+extension Literal {
     /// Converts a SPARQL term literal without erasing its RDF identity or datatype.
     public func toSPARQLFieldValue() throws -> FieldValue {
         switch self {
@@ -30,20 +29,17 @@ extension QueryIR.Literal {
                 String(value),
                 datatype: "http://www.w3.org/2001/XMLSchema#unsignedLong"
             )
-        case .decimal(let coefficient, let scale):
+        case .decimal(let decimal):
             let lexicalForm: String
             do {
-                lexicalForm = try DatabaseExactDecimal(
-                    coefficient: coefficient,
-                    scale: scale
-                ).decimalLexicalForm(
+                lexicalForm = try decimal.decimalLexicalForm(
                     maximumUTF8Count: SPARQLExecutionLimits.maximumLiteralUTF8Count
                 )
             } catch let error {
                 switch error {
                 case .invalidMaximumUTF8Count:
                     throw SPARQLLiteralConversionError.invalidLexicalForm(
-                        value: String(coefficient),
+                        value: String(decimal.coefficient),
                         datatype: "http://www.w3.org/2001/XMLSchema#decimal"
                     )
                 case .representationTooLarge(let required, let maximum):
@@ -69,17 +65,17 @@ extension QueryIR.Literal {
             )
         case .date(let value):
             return try Self.rdfLiteral(
-                DatabaseLiteralEncoding.iso8601(value),
+                QueryLiteralEncoding.iso8601(value),
                 datatype: "http://www.w3.org/2001/XMLSchema#date"
             )
         case .timestamp(let value):
             return try Self.rdfLiteral(
-                DatabaseLiteralEncoding.iso8601(value),
+                QueryLiteralEncoding.iso8601(value),
                 datatype: "http://www.w3.org/2001/XMLSchema#dateTime"
             )
         case .binary(let bytes):
             return try Self.rdfLiteral(
-                DatabaseLiteralEncoding.base64(bytes),
+                QueryLiteralEncoding.base64(bytes),
                 datatype: "http://www.w3.org/2001/XMLSchema#base64Binary"
             )
         case .uuid(let value):
@@ -88,52 +84,54 @@ extension QueryIR.Literal {
                 datatype: "urn:uuid"
             )
         case .iri(let value):
-            return .rdfTerm(.iri(value))
+            return .rdfTerm(.iri(try RDFIRI(value)))
         case .blankNode(let identifier):
-            return .rdfTerm(.blankNode(identifier))
+            return .rdfTerm(
+                .blankNode(try RDFBlankNodeIdentifier(identifier))
+            )
         case .typedLiteral(let value, let datatype):
             return try Self.rdfLiteral(value, datatype: datatype)
         case .langLiteral(let value, let language):
-            let tag: DatabaseRDFLanguageTag
+            let tag: RDFLanguageTag
             do {
-                tag = try DatabaseRDFLanguageTag(language)
+                tag = try RDFLanguageTag(language)
             } catch {
                 throw SPARQLLiteralConversionError.invalidLexicalForm(
                     value: value,
-                    datatype: DatabaseRDFIRI.rdfLanguageString.rawValue
+                    datatype: RDFIRI.rdfLanguageString.rawValue
                 )
             }
             return .rdfTerm(
                 .literal(
-                    DatabaseRDFLiteral(
+                    RDFLiteral(
                         lexicalForm: value,
                         language: tag
                     )
                 )
             )
         case .dirLangLiteral(let value, let language, let direction):
-            let tag: DatabaseRDFLanguageTag
+            let tag: RDFLanguageTag
             do {
-                tag = try DatabaseRDFLanguageTag(language)
+                tag = try RDFLanguageTag(language)
             } catch {
                 throw SPARQLLiteralConversionError.invalidLexicalForm(
                     value: value,
-                    datatype: DatabaseRDFIRI.rdfDirectionalLanguageString
+                    datatype: RDFIRI.rdfDirectionalLanguageString
                         .rawValue
                 )
             }
-            guard let baseDirection = DatabaseRDFDirection(
+            guard let baseDirection = RDFDirection(
                 rawValue: direction
             ) else {
                 throw SPARQLLiteralConversionError.invalidLexicalForm(
                     value: value,
-                    datatype: DatabaseRDFIRI.rdfDirectionalLanguageString
+                    datatype: RDFIRI.rdfDirectionalLanguageString
                         .rawValue
                 )
             }
             return .rdfTerm(
                 .literal(
-                    DatabaseRDFLiteral(
+                    RDFLiteral(
                         lexicalForm: value,
                         language: tag,
                         direction: baseDirection
@@ -150,7 +148,7 @@ extension QueryIR.Literal {
         datatype: String
     ) throws -> FieldValue {
         do {
-            let literal = try DatabaseRDFLiteral(
+            let literal = try RDFLiteral(
                 lexicalForm: lexicalForm,
                 datatype: datatype
             )
@@ -172,10 +170,10 @@ extension QueryIR.Literal {
     }
 
     private static func isValidKnownLexicalForm(
-        _ literal: DatabaseRDFLiteral
+        _ literal: RDFLiteral
     ) -> Bool {
         let namespace = "http://www.w3.org/2001/XMLSchema#"
-        switch literal.datatype {
+        switch literal.datatypeIRI.rawValue {
         case namespace + "boolean":
             return literal.lexicalForm == "true"
                 || literal.lexicalForm == "false"
@@ -199,9 +197,19 @@ extension QueryIR.Literal {
              namespace + "double":
             return SPARQLNumericValue(.rdfTerm(.literal(literal))) != nil
         case namespace + "date":
-            return DatabaseXSDDateTimeCodec.parseDate(literal.lexicalForm) != nil
+            do {
+                return try SPARQLValueComparator()
+                    .validateLexicalForm(literal)
+            } catch {
+                return false
+            }
         case namespace + "dateTime":
-            return DatabaseXSDDateTimeCodec.parseTimestamp(literal.lexicalForm) != nil
+            do {
+                return try SPARQLValueComparator()
+                    .validateLexicalForm(literal)
+            } catch {
+                return false
+            }
         default:
             return true
         }

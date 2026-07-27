@@ -5,8 +5,8 @@
 /// - W3C SPARQL 1.1 Query Language
 /// - W3C SPARQL 1.2 (Draft)
 
-import DatabaseValue
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 
 /// SPARQL Query Builder for type-safe query construction
 public struct SPARQLQueryBuilder: Sendable {
@@ -16,8 +16,8 @@ public struct SPARQLQueryBuilder: Sendable {
     private var groupByExprs: [Expression]
     private var havingExpr: Expression?
     private var orderByKeys: [SortKey]?
-    private var limitCount: Int?
-    private var offsetCount: Int?
+    private var limitCount: UInt64?
+    private var offsetCount: UInt64?
     private var distinctFlag: Bool
     private var reducedFlag: Bool
 
@@ -161,15 +161,15 @@ extension SPARQLQueryBuilder {
     }
 
     /// Add triple pattern: ?s predicate literal-convertible value
-    public func `where`<Value: DatabaseLiteralConvertible>(
+    public func `where`<Value: QueryLiteralConvertible>(
         subject: String,
         predicate: String,
         literal value: Value
-    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
+    ) throws(QueryLiteralConversionError) -> SPARQLQueryBuilder {
         self.where(
             subject: subject,
             predicate: predicate,
-            literal: try value.databaseLiteral
+            literal: try value.queryLiteral
         )
     }
 
@@ -277,11 +277,11 @@ extension SPARQLQueryBuilder {
     }
 
     /// Add FILTER: ?var = value
-    public func filter<Value: DatabaseLiteralConvertible>(
+    public func filter<Value: QueryLiteralConvertible>(
         _ variable: String,
         equals value: Value
-    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
-        filter(variable, equals: try value.databaseLiteral)
+    ) throws(QueryLiteralConversionError) -> SPARQLQueryBuilder {
+        filter(variable, equals: try value.queryLiteral)
     }
 
     /// Add FILTER: ?var operator literal
@@ -313,12 +313,12 @@ extension SPARQLQueryBuilder {
     }
 
     /// Add FILTER: ?var operator value
-    public func filter<Value: DatabaseLiteralConvertible>(
+    public func filter<Value: QueryLiteralConvertible>(
         _ variable: String,
         _ op: ComparisonOperator,
         _ value: Value
-    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
-        filter(variable, op, try value.databaseLiteral)
+    ) throws(QueryLiteralConversionError) -> SPARQLQueryBuilder {
+        filter(variable, op, try value.queryLiteral)
     }
 
     /// Add FILTER: ?var IN (literals...)
@@ -332,14 +332,14 @@ extension SPARQLQueryBuilder {
     }
 
     /// Add FILTER: ?var IN (values...)
-    public func filterIn<Value: DatabaseLiteralConvertible>(
+    public func filterIn<Value: QueryLiteralConvertible>(
         _ variable: String,
         _ values: [Value]
-    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
+    ) throws(QueryLiteralConversionError) -> SPARQLQueryBuilder {
         var expressions: [Expression] = []
         expressions.reserveCapacity(values.count)
         for value in values {
-            expressions.append(.literal(try value.databaseLiteral))
+            expressions.append(.literal(try value.queryLiteral))
         }
         return filter(
             .inList(
@@ -360,14 +360,14 @@ extension SPARQLQueryBuilder {
     }
 
     /// Add FILTER: ?var NOT IN (values...)
-    public func filterNotIn<Value: DatabaseLiteralConvertible>(
+    public func filterNotIn<Value: QueryLiteralConvertible>(
         _ variable: String,
         _ values: [Value]
-    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
+    ) throws(QueryLiteralConversionError) -> SPARQLQueryBuilder {
         var expressions: [Expression] = []
         expressions.reserveCapacity(values.count)
         for value in values {
-            expressions.append(.literal(try value.databaseLiteral))
+            expressions.append(.literal(try value.queryLiteral))
         }
         return filter(
             .notInList(
@@ -431,10 +431,10 @@ extension SPARQLQueryBuilder {
     }
 
     /// Add a homogeneous VALUES clause while preserving nil as SPARQL UNDEF.
-    public func values<Value: DatabaseLiteralConvertible>(
+    public func values<Value: QueryLiteralConvertible>(
         _ variables: [String],
         _ data: [[Value?]]
-    ) throws(DatabaseLiteralConversionError) -> SPARQLQueryBuilder {
+    ) throws(QueryLiteralConversionError) -> SPARQLQueryBuilder {
         var bindings: [[Literal?]] = []
         bindings.reserveCapacity(data.count)
         for row in data {
@@ -443,7 +443,7 @@ extension SPARQLQueryBuilder {
             for value in row {
                 switch value {
                 case .some(let value):
-                    convertedRow.append(try value.databaseLiteral)
+                    convertedRow.append(try value.queryLiteral)
                 case .none:
                     convertedRow.append(nil)
                 }
@@ -492,7 +492,7 @@ extension SPARQLQueryBuilder {
     /// Add property path: ?s path+ ?o
     public func transitivePath(
         subject: String,
-        predicate: DatabaseRDFPredicateIRI,
+        predicate: RDFPredicateIRI,
         object: String
     ) -> SPARQLQueryBuilder {
         propertyPath(
@@ -505,7 +505,7 @@ extension SPARQLQueryBuilder {
     /// Add property path: ?s path* ?o
     public func transitiveOrSelf(
         subject: String,
-        predicate: DatabaseRDFPredicateIRI,
+        predicate: RDFPredicateIRI,
         object: String
     ) -> SPARQLQueryBuilder {
         propertyPath(
@@ -609,14 +609,14 @@ extension SPARQLQueryBuilder {
 
 extension SPARQLQueryBuilder {
     /// Set LIMIT
-    public func limit(_ count: Int) -> SPARQLQueryBuilder {
+    public func limit(_ count: UInt64) -> SPARQLQueryBuilder {
         var builder = self
         builder.limitCount = count
         return builder
     }
 
     /// Set OFFSET
-    public func offset(_ count: Int) -> SPARQLQueryBuilder {
+    public func offset(_ count: UInt64) -> SPARQLQueryBuilder {
         var builder = self
         builder.offsetCount = count
         return builder

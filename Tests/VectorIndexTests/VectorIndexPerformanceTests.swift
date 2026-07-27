@@ -4,10 +4,10 @@
 import Testing
 import TestHeartbeat
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
-import Vector
+import DatabaseKit
 @testable import DatabaseEngine
 @testable import VectorIndex
 
@@ -84,15 +84,14 @@ private struct BenchmarkContext {
         self.subspace = Subspace(prefix: Tuple("benchmark", "vector", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let kind = VectorIndexKind<BenchmarkDocument>(
-            embedding: \.embedding,
+        let metadata = vectorIndexMetadata(
             dimensions: dimensions,
             metric: metric
         )
 
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: metadata,
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
             subspaceKey: indexName,
             itemTypes: Set(["BenchmarkDocument"])

@@ -9,10 +9,9 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseValue
-import Graph
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -24,20 +23,21 @@ import TestSupport
 struct ExecOrderEdge {
     #Directory<ExecOrderEdge>("sparql_execution_order_tests")
     var id: String = UUID().uuidString
-    var subject: DatabaseRDFTerm = .iri("https://example.invalid/resource/default-subject")
-    var predicate: DatabaseRDFTerm = .iri("https://example.invalid/predicate/default")
-    var object: DatabaseRDFTerm = .string("")
+    var subject: RDFTerm = .iri(.xsdString)
+    var predicate: RDFTerm = .iri(.xsdString)
+    var object: RDFTerm = .string("")
 
-    #Index(RDFQuadIndexKind<ExecOrderEdge>(
-        subject: \.subject,
-        predicate: \.predicate,
-        object: \.object
-    ))
+    #Index(
+        .rdfDataset,
+        from: \ExecOrderEdge.subject,
+        edge: \ExecOrderEdge.predicate,
+        to: \ExecOrderEdge.object
+    )
 }
 
 // MARK: - Test Suite
 
-@Suite("SPARQL Execution Order Tests", .serialized, .heartbeat)
+@Suite("SPARQL Execution Order Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct SPARQLExecutionOrderTests {
 
     init() async throws {
@@ -50,17 +50,22 @@ struct SPARQLExecutionOrderTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func resource(_ identifier: String) -> DatabaseRDFTerm {
-        .iri("https://example.invalid/resource/\(identifier)")
+    private func resource(
+        _ identifier: String
+    ) throws -> RDFTerm {
+        try .iri(
+            validating:
+                "https://example.invalid/resource/\(identifier)"
+        )
     }
 
-    private func predicate(_ identifier: String) throws -> DatabaseRDFPredicateIRI {
-        try DatabaseRDFPredicateIRI(
+    private func predicate(_ identifier: String) throws -> RDFPredicateIRI {
+        try RDFPredicateIRI(
             "https://example.invalid/predicate/\(identifier)"
         )
     }
 
-    private func value(_ term: DatabaseRDFTerm) -> ExecutionTerm {
+    private func value(_ term: RDFTerm) -> ExecutionTerm {
         .value(.rdfTerm(term))
     }
 
@@ -76,7 +81,10 @@ struct SPARQLExecutionOrderTests {
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([ExecOrderEdge.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try ExecOrderEdge.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
@@ -94,11 +102,11 @@ struct SPARQLExecutionOrderTests {
 
     private func makeEdge(
         from: String,
-        edge: DatabaseRDFPredicateIRI,
-        to: DatabaseRDFTerm
-    ) -> ExecOrderEdge {
+        edge: RDFPredicateIRI,
+        to: RDFTerm
+    ) throws -> ExecOrderEdge {
         var statement = ExecOrderEdge()
-        statement.subject = resource(from)
+        statement.subject = try resource(from)
         statement.predicate = edge.term
         statement.object = to
         return statement
@@ -114,10 +122,10 @@ struct SPARQLExecutionOrderTests {
 
         let agePred = try predicate(uniqueID("age"))
         let edges = [
-            makeEdge(from: "Alice", edge: agePred, to: .string("30")),
-            makeEdge(from: "Bob", edge: agePred, to: .string("25")),
-            makeEdge(from: "Charlie", edge: agePred, to: .string("35")),
-            makeEdge(from: "Diana", edge: agePred, to: .string("20")),
+            try makeEdge(from: "Alice", edge: agePred, to: .string("30")),
+            try makeEdge(from: "Bob", edge: agePred, to: .string("25")),
+            try makeEdge(from: "Charlie", edge: agePred, to: .string("35")),
+            try makeEdge(from: "Diana", edge: agePred, to: .string("20")),
         ]
         try await insertEdges(edges, context: context)
 
@@ -143,9 +151,9 @@ struct SPARQLExecutionOrderTests {
 
         let scorePred = try predicate(uniqueID("score"))
         let edges = [
-            makeEdge(from: "P1", edge: scorePred, to: .string("100")),
-            makeEdge(from: "P2", edge: scorePred, to: .string("300")),
-            makeEdge(from: "P3", edge: scorePred, to: .string("200")),
+            try makeEdge(from: "P1", edge: scorePred, to: .string("100")),
+            try makeEdge(from: "P2", edge: scorePred, to: .string("300")),
+            try makeEdge(from: "P3", edge: scorePred, to: .string("200")),
         ]
         try await insertEdges(edges, context: context)
 
@@ -172,11 +180,11 @@ struct SPARQLExecutionOrderTests {
         let rankPred = try predicate(uniqueID("rank"))
         // Create numeric ranks for consistent ordering
         let edges = [
-            makeEdge(from: "ItemA", edge: rankPred, to: .string("3")),
-            makeEdge(from: "ItemB", edge: rankPred, to: .string("1")),
-            makeEdge(from: "ItemC", edge: rankPred, to: .string("5")),
-            makeEdge(from: "ItemD", edge: rankPred, to: .string("2")),
-            makeEdge(from: "ItemE", edge: rankPred, to: .string("4")),
+            try makeEdge(from: "ItemA", edge: rankPred, to: .string("3")),
+            try makeEdge(from: "ItemB", edge: rankPred, to: .string("1")),
+            try makeEdge(from: "ItemC", edge: rankPred, to: .string("5")),
+            try makeEdge(from: "ItemD", edge: rankPred, to: .string("2")),
+            try makeEdge(from: "ItemE", edge: rankPred, to: .string("4")),
         ]
         try await insertEdges(edges, context: context)
 
@@ -206,12 +214,12 @@ struct SPARQLExecutionOrderTests {
         let namePred = try predicate(uniqueID("name"))
 
         let edges = [
-            makeEdge(from: "E1", edge: deptPred, to: .string("Sales")),
-            makeEdge(from: "E1", edge: namePred, to: .string("Zach")),
-            makeEdge(from: "E2", edge: deptPred, to: .string("Sales")),
-            makeEdge(from: "E2", edge: namePred, to: .string("Alice")),
-            makeEdge(from: "E3", edge: deptPred, to: .string("Engineering")),
-            makeEdge(from: "E3", edge: namePred, to: .string("Bob")),
+            try makeEdge(from: "E1", edge: deptPred, to: .string("Sales")),
+            try makeEdge(from: "E1", edge: namePred, to: .string("Zach")),
+            try makeEdge(from: "E2", edge: deptPred, to: .string("Sales")),
+            try makeEdge(from: "E2", edge: namePred, to: .string("Alice")),
+            try makeEdge(from: "E3", edge: deptPred, to: .string("Engineering")),
+            try makeEdge(from: "E3", edge: namePred, to: .string("Bob")),
         ]
         try await insertEdges(edges, context: context)
 
@@ -244,10 +252,26 @@ struct SPARQLExecutionOrderTests {
         let bannedPred = try predicate(uniqueID("banned"))
 
         let edges = [
-            makeEdge(from: "User1", edge: typePred, to: resource("User")),
-            makeEdge(from: "User2", edge: typePred, to: resource("User")),
-            makeEdge(from: "User3", edge: typePred, to: resource("User")),
-            makeEdge(from: "User2", edge: bannedPred, to: .boolean(true)),
+            try makeEdge(
+                from: "User1",
+                edge: typePred,
+                to: resource("User")
+            ),
+            try makeEdge(
+                from: "User2",
+                edge: typePred,
+                to: resource("User")
+            ),
+            try makeEdge(
+                from: "User3",
+                edge: typePred,
+                to: resource("User")
+            ),
+            try makeEdge(
+                from: "User2",
+                edge: bannedPred,
+                to: .boolean(true)
+            ),
         ]
         try await insertEdges(edges, context: context)
 
@@ -256,7 +280,7 @@ struct SPARQLExecutionOrderTests {
             ExecutionTriple(
                 subject: .variable("?person"),
                 predicate: value(typePred.term),
-                object: value(resource("User"))
+                object: value(try resource("User"))
             )
         ])
         let rightPattern = ExecutionPattern.basic([
@@ -275,9 +299,9 @@ struct SPARQLExecutionOrderTests {
 
         let users = Set(result.bindings.compactMap { $0["?person"] })
         #expect(users.count == 2)
-        #expect(users.contains(.rdfTerm(resource("User1"))))
-        #expect(users.contains(.rdfTerm(resource("User3"))))
-        #expect(!users.contains(.rdfTerm(resource("User2"))))
+        #expect(users.contains(.rdfTerm(try resource("User1"))))
+        #expect(users.contains(.rdfTerm(try resource("User3"))))
+        #expect(!users.contains(.rdfTerm(try resource("User2"))))
     }
 
     @Test("MINUS with no shared variables keeps all left bindings")
@@ -290,9 +314,9 @@ struct SPARQLExecutionOrderTests {
         let predB = try predicate(uniqueID("hasB"))
 
         let edges = [
-            makeEdge(from: "X1", edge: predA, to: .string("V1")),
-            makeEdge(from: "X2", edge: predA, to: .string("V2")),
-            makeEdge(from: "Y1", edge: predB, to: .string("V3")),
+            try makeEdge(from: "X1", edge: predA, to: .string("V1")),
+            try makeEdge(from: "X2", edge: predA, to: .string("V2")),
+            try makeEdge(from: "Y1", edge: predB, to: .string("V3")),
         ]
         try await insertEdges(edges, context: context)
 
@@ -332,10 +356,26 @@ struct SPARQLExecutionOrderTests {
         let flagPred = try predicate(uniqueID("flag"))
 
         let edges = [
-            makeEdge(from: "Item1", edge: typePred, to: resource("Widget")),
-            makeEdge(from: "Item2", edge: typePred, to: resource("Widget")),
-            makeEdge(from: "Item1", edge: flagPred, to: .boolean(true)),
-            makeEdge(from: "Item2", edge: flagPred, to: .boolean(true)),
+            try makeEdge(
+                from: "Item1",
+                edge: typePred,
+                to: resource("Widget")
+            ),
+            try makeEdge(
+                from: "Item2",
+                edge: typePred,
+                to: resource("Widget")
+            ),
+            try makeEdge(
+                from: "Item1",
+                edge: flagPred,
+                to: .boolean(true)
+            ),
+            try makeEdge(
+                from: "Item2",
+                edge: flagPred,
+                to: .boolean(true)
+            ),
         ]
         try await insertEdges(edges, context: context)
 
@@ -344,7 +384,7 @@ struct SPARQLExecutionOrderTests {
             ExecutionTriple(
                 subject: .variable("?item"),
                 predicate: value(typePred.term),
-                object: value(resource("Widget"))
+                object: value(try resource("Widget"))
             )
         ])
         let rightPattern = ExecutionPattern.basic([
@@ -481,26 +521,26 @@ struct SPARQLExecutionOrderTests {
         // GroupA: 3 members
         for i in 0..<3 {
             edges.append(
-                makeEdge(
+                try makeEdge(
                     from: "GroupA",
                     edge: memberPred,
-                    to: resource(uniqueID("M\(i)"))
+                    to: try resource(uniqueID("M\(i)"))
                 )
             )
         }
         // GroupB: 5 members
         for i in 0..<5 {
             edges.append(
-                makeEdge(
+                try makeEdge(
                     from: "GroupB",
                     edge: memberPred,
-                    to: resource(uniqueID("M\(i)"))
+                    to: try resource(uniqueID("M\(i)"))
                 )
             )
         }
         // GroupC: 1 member
         edges.append(
-            makeEdge(
+            try makeEdge(
                 from: "GroupC",
                 edge: memberPred,
                 to: resource(uniqueID("M0"))
@@ -545,10 +585,26 @@ struct SPARQLExecutionOrderTests {
         let namePred = try predicate(uniqueID("name"))
 
         let edges = [
-            makeEdge(from: "Alice", edge: knowsPred, to: resource("Bob")),
-            makeEdge(from: "Alice", edge: knowsPred, to: resource("Charlie")),
-            makeEdge(from: "Bob", edge: namePred, to: .string("Robert")),
-            makeEdge(from: "Charlie", edge: namePred, to: .string("Charles")),
+            try makeEdge(
+                from: "Alice",
+                edge: knowsPred,
+                to: resource("Bob")
+            ),
+            try makeEdge(
+                from: "Alice",
+                edge: knowsPred,
+                to: resource("Charlie")
+            ),
+            try makeEdge(
+                from: "Bob",
+                edge: namePred,
+                to: .string("Robert")
+            ),
+            try makeEdge(
+                from: "Charlie",
+                edge: namePred,
+                to: .string("Charles")
+            ),
         ]
         try await insertEdges(edges, context: context)
 
@@ -556,13 +612,20 @@ struct SPARQLExecutionOrderTests {
         // Filter on ?name
         let result = try await context.sparql(ExecOrderEdge.self)
             .defaultIndex()
-            .where(value(resource("Alice")), value(knowsPred.term), .variable("?friend"))
+            .where(
+                value(try resource("Alice")),
+                value(knowsPred.term),
+                .variable("?friend")
+            )
             .where(.variable("?friend"), value(namePred.term), .variable("?name"))
             .filter(.equals("?name", .rdfTerm(.string("Robert"))))
             .execute()
 
         #expect(result.count == 1)
-        #expect(result.bindings.first?["?friend"] == .rdfTerm(resource("Bob")))
+        #expect(
+            result.bindings.first?["?friend"]
+                == .rdfTerm(try resource("Bob"))
+        )
     }
 }
 #endif

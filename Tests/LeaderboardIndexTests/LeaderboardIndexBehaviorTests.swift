@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import LeaderboardIndex
@@ -81,7 +81,6 @@ private struct LeaderboardIndexContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: TimeWindowLeaderboardIndexMaintainer<GameScore>
-    let kind: TimeWindowLeaderboardIndexKind<GameScore>
 
     init(
         indexName: String = "GameScore_leaderboard_score",
@@ -93,19 +92,17 @@ private struct LeaderboardIndexContext {
         self.subspace = Subspace(prefix: Tuple("test", "leaderboard", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = TimeWindowLeaderboardIndexKind<GameScore>(
-            scoreField: \.score,
-            groupBy: [],
-            window: window,
-            windowCount: windowCount
-        )
-
         // Build expression for score field
         let rootExpression: KeyExpression = FieldKeyExpression(fieldName: "score")
 
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: timeWindowLeaderboardIndexMetadata(
+                scoreFieldName: "score",
+                scoreFieldNumber: 3,
+                window: window,
+                windowCount: windowCount
+            ),
             rootExpression: rootExpression,
             subspaceKey: indexName,
             itemTypes: Set(["GameScore"])
@@ -144,6 +141,49 @@ private struct LeaderboardIndexContext {
             try await maintainer.getAvailableWindows(transaction: transaction)
         }
     }
+}
+
+func timeWindowLeaderboardIndexMetadata(
+    scoreFieldName: String,
+    scoreFieldNumber: Int,
+    window: LeaderboardWindowType,
+    windowCount: Int
+) -> IndexKindMetadata {
+    let windowName: String
+    var metadata: [String: FieldValue]
+    switch window {
+    case .hourly:
+        windowName = "hourly"
+        metadata = [:]
+    case .daily:
+        windowName = "daily"
+        metadata = [:]
+    case .weekly:
+        windowName = "weekly"
+        metadata = [:]
+    case .monthly:
+        windowName = "monthly"
+        metadata = [:]
+    case .custom(let duration):
+        windowName = "custom"
+        metadata = ["windowDurationSeconds": .float64(duration)]
+    }
+    metadata["window"] = .string(windowName)
+    metadata["windowCount"] = .int64(Int64(windowCount))
+
+    return IndexKindMetadata(
+        identifier: "time_window_leaderboard",
+        subspaceStructure: .hierarchical,
+        fields: [
+            IndexFieldMetadata(
+                identity: FieldIdentity(
+                    name: scoreFieldName,
+                    number: scoreFieldNumber
+                )
+            )
+        ],
+        metadata: metadata
+    )
 }
 
 // MARK: - Insert Tests

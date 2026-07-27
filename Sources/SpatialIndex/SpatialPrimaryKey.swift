@@ -1,7 +1,7 @@
 // SpatialPrimaryKey.swift
 // SpatialIndex - Stable primary-key extraction for fetched spatial items
 
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 

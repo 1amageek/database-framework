@@ -15,7 +15,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Graph
+import DatabaseTypes
+import DatabaseKit
 
 // MARK: - Node Identifier
 
@@ -79,7 +80,7 @@ enum TrailAction: Sendable {
     case mergedNodes(survivor: NodeID, merged: NodeID, mergedConcepts: Set<OWLClassExpression>, mergedEdges: Set<Edge>, survivorFlags: ProcessedFlags)
     case blocked(node: NodeID)
     case unblocked(node: NodeID)
-    case addedDataValue(node: NodeID, property: String, value: OWLLiteral)
+    case addedDataValue(node: NodeID, property: String, value: RDFLiteral)
     case choicePoint(id: Int)
     case addedProcessedFlag(node: NodeID, flagType: ProcessedFlagType, concept: OWLClassExpression)
 }
@@ -112,7 +113,7 @@ final class CompletionNode {
     var concepts: Set<OWLClassExpression> = []
     var outgoingEdges: [String: Set<NodeID>] = [:]  // role -> targets
     var incomingEdges: [String: Set<NodeID>] = [:]  // role -> sources
-    var dataValues: [String: Set<OWLLiteral>] = [:]
+    var dataValues: [String: Set<RDFLiteral>] = [:]
     var parent: NodeID?
     var depth: Int = 0
 
@@ -411,7 +412,7 @@ public final class CompletionGraph {
 
     /// Add a data value to a node
     @discardableResult
-    func addDataValue(_ value: OWLLiteral, property: String, to nodeID: NodeID) -> Bool {
+    func addDataValue(_ value: RDFLiteral, property: String, to nodeID: NodeID) -> Bool {
         guard let node = nodes[nodeID] else { return false }
         guard !(node.dataValues[property]?.contains(value) ?? false) else { return false }
 

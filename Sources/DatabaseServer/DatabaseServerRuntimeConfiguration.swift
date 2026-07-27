@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public final class DatabaseServerRuntimeConfiguration: Sendable {
     public let identity: DatabaseRuntimeIdentity

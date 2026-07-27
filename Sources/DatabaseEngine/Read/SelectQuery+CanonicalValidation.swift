@@ -1,4 +1,4 @@
-import QueryIR
+import DatabaseKit
 
 extension SelectQuery {
     package func requiredOrderByColumnNames() throws -> [String]? {

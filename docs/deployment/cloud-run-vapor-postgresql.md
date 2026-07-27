@@ -50,17 +50,24 @@ environment variables or secrets:
 ## DBContainer Factory
 
 ```swift
-import Core
-import DatabaseEngine
+import Database
+import DatabaseRuntime
 import PostgreSQLStorage
 
-func makeDatabaseContainer(schema: Schema) async throws -> DBContainer {
+func makeDatabaseContainer(
+    schema: Schema,
+    persistableTypes: [any Persistable.Type]
+) async throws -> DBContainer {
     let postgresConfiguration = try PostgreSQLConfiguration.cloudRunProduction()
     let engine = try await PostgreSQLStorageEngine(configuration: postgresConfiguration)
+    let runtime = try DatabaseFrameworkRuntime.configuration(
+        persistableTypes: persistableTypes
+    )
 
-    return try await DBContainer(
+    return try await DBContainer.open(
         for: schema,
         configuration: DBConfiguration(backend: .custom(engine)),
+        runtimeConfiguration: runtime,
         security: .enabled()
     )
 }
@@ -85,8 +92,14 @@ enum Entrypoint {
             configuration: .init(address: .hostname("0.0.0.0", port: port))
         )
 
-        let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
-        let database = try await makeDatabaseContainer(schema: schema)
+        let schema = try Schema(
+            entities: [try User.schemaEntity],
+            version: .init(1, 0, 0)
+        )
+        let database = try await makeDatabaseContainer(
+            schema: schema,
+            persistableTypes: [User.self]
+        )
         try configureRoutes(app, database: database)
 
         try await app.start()

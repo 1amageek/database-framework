@@ -1,7 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import Relationship
+import DatabaseTypes
 
 /// Enforces relationship delete rules through the canonical inverse-reference catalog.
 public final class RelationshipMaintainer: Sendable {
@@ -36,7 +35,7 @@ public final class RelationshipMaintainer: Sendable {
         context: borrowing PersistableMutationContext,
         state: inout EnforcementState
     ) async throws {
-        let target = try PersistableIdentityEncoder.encode(item)
+        let target = try EntityReferenceEncoder.encode(item)
         guard !state.visited.contains(target),
               try await !RelationshipDeleteMarker.isMarked(
                 target,
@@ -51,8 +50,7 @@ public final class RelationshipMaintainer: Sendable {
         )
 
         for entity in schema.entities {
-            guard let ownerType = entity.persistableType else { continue }
-            for descriptor in ownerType.relationshipDescriptors
+            for descriptor in entity.relationships
                 where descriptor.relatedTypeName == target.entity {
                 guard descriptor.deleteRule != .noAction else { continue }
 
@@ -62,7 +60,7 @@ public final class RelationshipMaintainer: Sendable {
                     context: context,
                     state: &state
                 )
-                var active: [(PersistableIdentity, any Persistable)] = []
+                var active: [(EntityReference, any Persistable)] = []
                 let resolver = RelationshipReferenceResolver(schema: schema)
                 for identity in owners {
                     if try await context.isDeletionScheduled(for: identity) {
@@ -90,7 +88,7 @@ public final class RelationshipMaintainer: Sendable {
                 if descriptor.deleteRule == .deny, !active.isEmpty {
                     throw RelationshipError.deleteRuleDenied(
                         itemType: target.entity,
-                        relationshipType: ownerType.persistableType,
+                        relationshipType: entity.name,
                         propertyName: descriptor.propertyName,
                         count: active.count
                     )
@@ -143,11 +141,11 @@ public final class RelationshipMaintainer: Sendable {
     }
 
     private func referrers(
-        of target: PersistableIdentity,
+        of target: EntityReference,
         descriptor: RelationshipDescriptor,
         context: borrowing PersistableMutationContext,
         state: inout EnforcementState
-    ) async throws -> [PersistableIdentity] {
+    ) async throws -> [EntityReference] {
         let remaining = state.remainingWork
         guard remaining > 0 else {
             throw RelationshipError.workLimitExceeded(
@@ -173,8 +171,8 @@ public final class RelationshipMaintainer: Sendable {
     private struct EnforcementState: Sendable {
         let maximumWorkUnits: UInt64
         var consumedWorkUnits: UInt64 = 0
-        var visited = Set<PersistableIdentity>()
-        var mutations = Set<PersistableIdentity>()
+        var visited = Set<EntityReference>()
+        var mutations = Set<EntityReference>()
 
         var remainingWork: UInt64 {
             maximumWorkUnits - consumedWorkUnits
@@ -190,7 +188,7 @@ public final class RelationshipMaintainer: Sendable {
         }
 
         mutating func markMutation(
-            _ identity: PersistableIdentity,
+            _ identity: EntityReference,
             maximum: Int
         ) throws {
             mutations.insert(identity)

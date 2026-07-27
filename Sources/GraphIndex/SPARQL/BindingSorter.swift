@@ -11,8 +11,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 
 /// A single ORDER BY sort key for VariableBinding sorting
@@ -98,7 +98,7 @@ public struct BindingSorter: Sendable {
     private struct DecoratedBinding: Sendable {
         let originalIndex: Int
         let keyOffset: Int
-        let fingerprint: DatabaseBytes
+        let fingerprint: ByteString
     }
 
     private struct ScratchPlan: Sendable {

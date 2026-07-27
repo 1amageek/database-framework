@@ -3,11 +3,11 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 extension SPARQLQueryExecutor {
@@ -37,23 +37,32 @@ extension SPARQLQueryExecutor {
             stage: .bindingCandidate,
             expectedCount: 0
         )
-        for quad in scanResult {
+        rowLoop: for row in scanResult {
             try requiredWorkMeter().consume(at: .bindingCandidate)
             var binding = VariableBinding()
             guard matchTerm(
                 pattern.subject,
-                against: .rdfTerm(quad.subject),
+                against: .rdfTerm(row.subject),
                 binding: &binding
             ), matchTerm(
                 pattern.predicate,
-                against: .rdfTerm(quad.predicate),
+                against: .rdfTerm(row.predicate),
                 binding: &binding
             ), matchTerm(
                 pattern.object,
-                against: .rdfTerm(quad.object),
+                against: .rdfTerm(row.object),
                 binding: &binding
             ) else {
                 continue
+            }
+            let properties = try row.decodeProperties()
+            for (fieldName, value) in properties {
+                guard binding.merge(
+                    variable: "?\(fieldName)",
+                    value: value
+                ) else {
+                    continue rowLoop
+                }
             }
             if let filter {
                 try requiredWorkMeter().consume(at: .filterEvaluation)
@@ -78,7 +87,7 @@ extension SPARQLQueryExecutor {
 
     func boundRDFTerm(
         _ term: ExecutionTerm
-    ) throws -> DatabaseRDFTerm? {
+    ) throws -> RDFTerm? {
         guard term.isBound else { return nil }
         guard let value = term.literalValue,
               case .rdfTerm(let rdfTerm) = value else {

@@ -4,8 +4,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import ScalarIndex
 import TestSupport
 import TestHeartbeat
@@ -18,6 +18,7 @@ import DatabaseRuntime
 struct DirectoryMigrationUserV1 {
     #Directory<DirectoryMigrationUserV1>("directory_migration_test_legacy")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -26,18 +27,23 @@ struct DirectoryMigrationUserV1 {
 struct DirectoryMigrationUserV2 {
     #Directory<DirectoryMigrationUserV2>("directory_migration_test_current")
 
+    var id: String = ""
     var name: String
     var email: String
 }
 
 enum DirectoryMigrationSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [DirectoryMigrationUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try DirectoryMigrationUserV1.schemaEntity] }
+    }
 }
 
 enum DirectoryMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [DirectoryMigrationUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try DirectoryMigrationUserV2.schemaEntity] }
+    }
 }
 
 // MARK: - Directory change with #Index on both sides
@@ -45,8 +51,9 @@ enum DirectoryMigrationSchemaV2: VersionedSchema {
 @Persistable(type: "DirectoryIndexedUser")
 struct DirectoryIndexedUserV1 {
     #Directory<DirectoryIndexedUserV1>("directory_indexed_migration_test_legacy")
-    #Index(ScalarIndexKind<DirectoryIndexedUserV1>(fields: [\.email]), name: "DirectoryIndexedUser_email")
+    #Index(.scalar, fields: [\DirectoryIndexedUserV1.email], name: "DirectoryIndexedUser_email")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -54,20 +61,25 @@ struct DirectoryIndexedUserV1 {
 @Persistable(type: "DirectoryIndexedUser")
 struct DirectoryIndexedUserV2 {
     #Directory<DirectoryIndexedUserV2>("directory_indexed_migration_test_current")
-    #Index(ScalarIndexKind<DirectoryIndexedUserV2>(fields: [\.email]), name: "DirectoryIndexedUser_email")
+    #Index(.scalar, fields: [\DirectoryIndexedUserV2.email], name: "DirectoryIndexedUser_email")
 
+    var id: String = ""
     var name: String
     var email: String
 }
 
 enum DirectoryIndexedSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [DirectoryIndexedUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try DirectoryIndexedUserV1.schemaEntity] }
+    }
 }
 
 enum DirectoryIndexedSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [DirectoryIndexedUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try DirectoryIndexedUserV2.schemaEntity] }
+    }
 }
 
 enum DirectoryIndexedCopyPlan: SchemaMigrationPlan {
@@ -109,27 +121,33 @@ enum DirectoryIndexedCopyPlan: SchemaMigrationPlan {
 struct DirectoryAddIdxUserV1 {
     #Directory<DirectoryAddIdxUserV1>("directory_add_idx_test_legacy")
 
+    var id: String = ""
     var name: String
-    var score: Int
+    var score: Int64
 }
 
 @Persistable(type: "DirectoryAddIdxUser")
 struct DirectoryAddIdxUserV2 {
     #Directory<DirectoryAddIdxUserV2>("directory_add_idx_test_current")
-    #Index(ScalarIndexKind<DirectoryAddIdxUserV2>(fields: [\.score]), name: "DirectoryAddIdxUser_score")
+    #Index(.scalar, fields: [\DirectoryAddIdxUserV2.score], name: "DirectoryAddIdxUser_score")
 
+    var id: String = ""
     var name: String
-    var score: Int
+    var score: Int64
 }
 
 enum DirectoryAddIdxSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [DirectoryAddIdxUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try DirectoryAddIdxUserV1.schemaEntity] }
+    }
 }
 
 enum DirectoryAddIdxSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [DirectoryAddIdxUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try DirectoryAddIdxUserV2.schemaEntity] }
+    }
 }
 
 enum DirectoryAddIdxPlan: SchemaMigrationPlan {
@@ -169,8 +187,9 @@ enum DirectoryAddIdxPlan: SchemaMigrationPlan {
 @Persistable(type: "DirectoryRemIdxUser")
 struct DirectoryRemIdxUserV1 {
     #Directory<DirectoryRemIdxUserV1>("directory_rem_idx_test_legacy")
-    #Index(ScalarIndexKind<DirectoryRemIdxUserV1>(fields: [\.tag]), name: "DirectoryRemIdxUser_tag")
+    #Index(.scalar, fields: [\DirectoryRemIdxUserV1.tag], name: "DirectoryRemIdxUser_tag")
 
+    var id: String = ""
     var name: String
     var tag: String
 }
@@ -179,18 +198,23 @@ struct DirectoryRemIdxUserV1 {
 struct DirectoryRemIdxUserV2 {
     #Directory<DirectoryRemIdxUserV2>("directory_rem_idx_test_current")
 
+    var id: String = ""
     var name: String
     var tag: String
 }
 
 enum DirectoryRemIdxSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [DirectoryRemIdxUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try DirectoryRemIdxUserV1.schemaEntity] }
+    }
 }
 
 enum DirectoryRemIdxSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [DirectoryRemIdxUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try DirectoryRemIdxUserV2.schemaEntity] }
+    }
 }
 
 enum DirectoryRemIdxPlan: SchemaMigrationPlan {
@@ -231,6 +255,7 @@ enum DirectoryRemIdxPlan: SchemaMigrationPlan {
 struct DirectoryLightweightUserV1 {
     #Directory<DirectoryLightweightUserV1>("directory_lightweight_test_legacy")
 
+    var id: String = ""
     var name: String
 }
 
@@ -238,17 +263,22 @@ struct DirectoryLightweightUserV1 {
 struct DirectoryLightweightUserV2 {
     #Directory<DirectoryLightweightUserV2>("directory_lightweight_test_current")
 
+    var id: String = ""
     var name: String
 }
 
 enum DirectoryLightweightSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [DirectoryLightweightUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try DirectoryLightweightUserV1.schemaEntity] }
+    }
 }
 
 enum DirectoryLightweightSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [DirectoryLightweightUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try DirectoryLightweightUserV2.schemaEntity] }
+    }
 }
 
 enum DirectoryLightweightPlan: SchemaMigrationPlan {
@@ -303,7 +333,7 @@ enum DirectoryMigrationCopyPlan: SchemaMigrationPlan {
 
 // MARK: - Tests
 
-@Suite("Directory Migration Tests", .serialized, .heartbeat)
+@Suite("Directory Migration Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct DirectoryMigrationTests {
     private func makeSystemPriorityEngine() async throws -> any StorageEngine {
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()

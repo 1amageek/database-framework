@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
 @testable import GraphIndex
@@ -101,7 +101,7 @@ struct SPARQLAlgebraFilterTests {
 
     private func makeWorkMeter() -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1_000,
                 maximumWorkUnits: 10_000,
                 timeoutMilliseconds: 30_000

@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Strict dynamic decoder for catalog-driven tools without compiled model types.
@@ -12,7 +12,7 @@ public enum DatabaseCatalogFieldDecoder {
             from: bytes,
             expectedEntity: entity.name
         ).fields
-        _ = try PersistableFieldDecoder(
+        _ = try PersistedFieldCollectionInput(
             entity: entity.name,
             fields: fields,
             schemas: entity.fields
@@ -48,7 +48,7 @@ public enum DatabaseCatalogFieldDecoder {
     }
 
     private static func validate(
-        _ value: DatabaseValue,
+        _ value: FieldValue,
         schema: FieldSchema
     ) throws {
         if case .null = value {
@@ -80,36 +80,49 @@ public enum DatabaseCatalogFieldDecoder {
     }
 
     private static func validateScalar(
-        _ value: DatabaseValue,
+        _ value: FieldValue,
         schema: FieldSchema
     ) throws {
         let valid: Bool
         switch (schema.type, value) {
         case (.bool, .bool),
-             (.int, .int64),
-             (.int8, .int64),
-             (.int16, .int64),
-             (.int32, .int64),
+             (.int8, .int8),
+             (.int16, .int16),
+             (.int32, .int32),
              (.int64, .int64),
-             (.uint, .uint64),
-             (.uint8, .uint64),
-             (.uint16, .uint64),
-             (.uint32, .uint64),
+             (.uint8, .uint8),
+             (.uint16, .uint16),
+             (.uint32, .uint32),
              (.uint64, .uint64),
-             (.double, .double),
-             (.float, .double),
-             (.date, .timestamp),
+             (.float32, .float32),
+             (.float64, .float64),
+             (.decimal, .decimal),
              (.string, .string),
+             (.bytes, .bytes),
+             (.date, .date),
+             (.time, .time),
+             (.dateTime, .dateTime),
+             (.timestamp, .timestamp),
+             (.timeSpan, .timeSpan),
+             (.calendarPeriod, .calendarPeriod),
+             (.geographicPoint, .geographicPoint),
+             (.geographicPosition, .geographicPosition),
+             (.vector, .vector),
              (.uuid, .uuid),
-             (.data, .bytes),
              (.rdfTerm, .rdfTerm):
             valid = true
         case (.enum, .string),
+             (.enum, .int8),
+             (.enum, .int16),
+             (.enum, .int32),
              (.enum, .int64),
+             (.enum, .uint8),
+             (.enum, .uint16),
+             (.enum, .uint32),
              (.enum, .uint64):
             valid = true
-        case (.nested, .object(let fields)):
-            try validateNested(fields)
+        case (.object, .object),
+             (.nested, .object):
             valid = true
         case (.reference, .reference(let identity)):
             valid = schema.referenceTargetEntity == nil
@@ -122,28 +135,6 @@ public enum DatabaseCatalogFieldDecoder {
                 schema,
                 expected: "the canonical \(schema.type.rawValue) representation"
             )
-        }
-    }
-
-    private static func validateNested(
-        _ fields: [DatabaseObjectField]
-    ) throws {
-        var numbers = Set<UInt32>()
-        var names = Set<String>()
-        for field in fields {
-            guard field.number > 0 else {
-                throw PersistableDecodingError.invalidNestedFieldNumber(
-                    field.number
-                )
-            }
-            guard numbers.insert(field.number).inserted else {
-                throw PersistableDecodingError.duplicateFieldNumber(
-                    field.number
-                )
-            }
-            guard names.insert(field.name).inserted else {
-                throw PersistableDecodingError.duplicateFieldName(field.name)
-            }
         }
     }
 

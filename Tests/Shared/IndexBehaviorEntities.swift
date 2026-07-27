@@ -2,8 +2,8 @@
 // Persistable entities shared by index behavior scenarios.
 
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import StorageKit
 

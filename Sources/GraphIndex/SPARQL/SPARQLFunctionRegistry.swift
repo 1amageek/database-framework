@@ -1,14 +1,14 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 /// Immutable, container-scoped registry for SPARQL extension functions.
 public struct SPARQLFunctionRegistry: Sendable {
-    private let functions: [DatabaseRDFIRI: any SPARQLFunction]
+    private let functions: [RDFIRI: any SPARQLFunction]
 
     public static let empty = SPARQLFunctionRegistry(functions: [:])
 
     public init(_ functions: [any SPARQLFunction]) throws {
-        var registered: [DatabaseRDFIRI: any SPARQLFunction] = [:]
+        var registered: [RDFIRI: any SPARQLFunction] = [:]
         registered.reserveCapacity(functions.count)
         for function in functions {
             guard registered[function.identifier] == nil else {
@@ -21,7 +21,7 @@ public struct SPARQLFunctionRegistry: Sendable {
         self.functions = registered
     }
 
-    private init(functions: [DatabaseRDFIRI: any SPARQLFunction]) {
+    private init(functions: [RDFIRI: any SPARQLFunction]) {
         self.functions = functions
     }
 
@@ -29,9 +29,9 @@ public struct SPARQLFunctionRegistry: Sendable {
         identifier: String,
         arguments: [FieldValue]
     ) throws -> FieldValue {
-        let iri: DatabaseRDFIRI
+        let iri: RDFIRI
         do {
-            iri = try DatabaseRDFIRI(identifier)
+            iri = try RDFIRI(identifier)
         } catch {
             throw SPARQLFunctionRegistryError.unknownFunction(identifier)
         }

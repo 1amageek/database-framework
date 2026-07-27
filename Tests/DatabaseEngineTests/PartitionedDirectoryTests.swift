@@ -7,12 +7,12 @@ import Testing
 import Foundation
 @testable import DatabaseEngine
 import DatabaseRuntime
-@testable import Core
+@testable import DatabaseKit
 import StorageKit
 import FDBStorage
 import TestSupport
 
-@Suite("Partitioned Directory Tests", .serialized, .heartbeat)
+@Suite("Partitioned Directory Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct PartitionedDirectoryTests {
 
     /// Generate unique test ID to avoid conflicts with parallel tests
@@ -59,8 +59,8 @@ struct PartitionedDirectoryTests {
 
             // Fetch using partition
             let fetched = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenantID)
-                .where(\.id == orderID)
+                .partition(TenantOrder.fields.tenantID, equals: tenantID)
+                .where(TenantOrder.fields.id == orderID)
                 .first()
 
             #expect(fetched != nil)
@@ -92,7 +92,7 @@ struct PartitionedDirectoryTests {
 
             // Fetch tenant1 orders
             let tenant1Orders = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenant1)
+                .partition(TenantOrder.fields.tenantID, equals: tenant1)
                 .execute()
 
             #expect(tenant1Orders.count >= 1)
@@ -101,7 +101,7 @@ struct PartitionedDirectoryTests {
 
             // Fetch tenant2 orders
             let tenant2Orders = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenant2)
+                .partition(TenantOrder.fields.tenantID, equals: tenant2)
                 .execute()
 
             #expect(tenant2Orders.count >= 1)
@@ -139,8 +139,8 @@ struct PartitionedDirectoryTests {
             try await context.save()
 
             let results = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenantID)
-                .where(\.status == "shipped")
+                .partition(TenantOrder.fields.tenantID, equals: tenantID)
+                .where(TenantOrder.fields.status == "shipped")
                 .execute()
 
             #expect(results.contains { $0.id == orderID })
@@ -169,8 +169,8 @@ struct PartitionedDirectoryTests {
 
             // Filter by status within partition
             let pendingOrders = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenantID)
-                .where(\.status == "pending")
+                .partition(TenantOrder.fields.tenantID, equals: tenantID)
+                .where(TenantOrder.fields.status == "pending")
                 .execute()
 
             #expect(pendingOrders.contains { $0.id == order1ID })
@@ -196,8 +196,8 @@ struct PartitionedDirectoryTests {
 
             // Verify exists
             let beforeDelete = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenantID)
-                .where(\.id == orderID)
+                .partition(TenantOrder.fields.tenantID, equals: tenantID)
+                .where(TenantOrder.fields.id == orderID)
                 .first()
             #expect(beforeDelete != nil)
 
@@ -209,8 +209,8 @@ struct PartitionedDirectoryTests {
 
             // Verify deleted
             let afterDelete = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenantID)
-                .where(\.id == orderID)
+                .partition(TenantOrder.fields.tenantID, equals: tenantID)
+                .where(TenantOrder.fields.id == orderID)
                 .first()
             #expect(afterDelete == nil)
         }
@@ -252,18 +252,18 @@ struct PartitionedDirectoryTests {
             try await context.save()
 
             // Delete all from tenant1
-            try await context.deleteAll(TenantOrder.self, partition: \.tenantID, equals: tenant1)
+            try await context.deleteAll(TenantOrder.self, partition: TenantOrder.fields.tenantID, equals: tenant1)
             try await context.save()
 
             // tenant1 should be empty
             let tenant1Orders = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenant1)
+                .partition(TenantOrder.fields.tenantID, equals: tenant1)
                 .execute()
             #expect(!tenant1Orders.contains { $0.id == order1ID })
 
             // tenant2 should still have data
             let tenant2Orders = try await context.fetch(TenantOrder.self)
-                .partition(\.tenantID, equals: tenant2)
+                .partition(TenantOrder.fields.tenantID, equals: tenant2)
                 .execute()
             #expect(tenant2Orders.contains { $0.id == order2ID })
         }
@@ -298,7 +298,7 @@ struct PartitionedDirectoryTests {
             try await context.save()
 
             var found = false
-            try await context.enumerate(TenantOrder.self, partition: \.tenantID, equals: tenantID) { enumOrder in
+            try await context.enumerate(TenantOrder.self, partition: TenantOrder.fields.tenantID, equals: tenantID) { enumOrder in
                 if enumOrder.id == orderID {
                     found = true
                 }
@@ -322,18 +322,22 @@ struct PartitionedDirectoryTests {
     @Test("DirectoryPath validates complete binding")
     func testDirectoryPathValidatesCompleteBinding() async throws {
         var binding = DirectoryPath<TenantOrder>()
-        binding.set(\.tenantID, to: "tenant_123")
+        binding.set(TenantOrder.fields.tenantID, to: "tenant_123")
 
         // Should not throw
         try binding.validate()
     }
 
     @Test("DirectoryPath.from extracts values from model")
-    func testDirectoryPathFromModel() {
+    func testDirectoryPathFromModel() throws {
         let order = TenantOrder(tenantID: "tenant_xyz", status: "pending", total: 50.0)
-        let binding = DirectoryPath<TenantOrder>.from(order)
+        let binding = try DirectoryPath<TenantOrder>.from(order)
 
-        #expect(binding.value(for: \.tenantID) == "tenant_xyz")
+        #expect(
+            try binding.value(
+                for: TenantOrder.fields.tenantID
+            ) == "tenant_xyz"
+        )
     }
 
     // MARK: - Static Directory Tests (Regression)
@@ -353,7 +357,7 @@ struct PartitionedDirectoryTests {
 
             // Should work without partition
             let fetched = try await context.fetch(Player.self)
-                .where(\.id == playerID)
+                .where(Player.fields.id == playerID)
                 .first()
 
             #expect(fetched != nil)
@@ -410,7 +414,7 @@ struct PartitionedDirectoryTests {
 
             // Fetch using model(for:as:partition:)
             var binding = DirectoryPath<TenantOrder>()
-            binding.set(\.tenantID, to: tenantID)
+            binding.set(TenantOrder.fields.tenantID, to: tenantID)
 
             let fetched = try await context.model(for: orderID, as: TenantOrder.self, partition: binding)
 
@@ -435,7 +439,7 @@ struct PartitionedDirectoryTests {
                 try await transaction.save(order, precondition: .notExists)
 
                 var binding = DirectoryPath<TenantOrder>()
-                binding.set(\.tenantID, to: tenantID)
+                binding.set(TenantOrder.fields.tenantID, to: tenantID)
                 let fetched = try await transaction.fetch(
                     TenantOrder.self,
                     identifiedBy: orderID,

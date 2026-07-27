@@ -1,5 +1,5 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import Testing
 @testable import GraphIndex
@@ -17,8 +17,8 @@ struct SPARQLPropertyPathRetainedStorageTests {
                 expectedCount: 2
             )
             try firstBuilder.append(
-                start: .iri("urn:start:1"),
-                end: .iri("urn:end:1")
+                start: try .iri(validating: "urn:start:1"),
+                end: try .iri(validating: "urn:end:1")
             )
             let first = firstBuilder.finish()
             let firstAddress = propertyPathMatchBufferAddress(first)
@@ -29,8 +29,8 @@ struct SPARQLPropertyPathRetainedStorageTests {
                 maximumResults: 2
             )
             try resumed.append(
-                start: .iri("urn:start:2"),
-                end: .iri("urn:end:2")
+                start: try .iri(validating: "urn:start:2"),
+                end: try .iri(validating: "urn:end:2")
             )
             let second = resumed.finish()
             let secondAddress = propertyPathMatchBufferAddress(second)
@@ -58,12 +58,12 @@ struct SPARQLPropertyPathRetainedStorageTests {
             )
             let retainedBytes = workMeter.retainedIntermediateBytes
             let peakBytes = workMeter.peakIntermediateBytes
-            let deepTerm = makeDeepPropertyPathTerm(depth: 32)
+            let deepTerm = try makeDeepPropertyPathTerm(depth: 32)
 
             do {
                 try builder.append(
                     start: deepTerm,
-                    end: .iri("urn:end")
+                    end: try .iri(validating: "urn:end")
                 )
                 Issue.record("Expected the result limit to reject the match")
             } catch let error as SPARQLQueryError {
@@ -88,41 +88,18 @@ struct SPARQLPropertyPathRetainedStorageTests {
         #expect(workMeter.retainedIntermediateBytes == 0)
     }
 
-    @Test("Deep RDF-star scratch failure is bounded and reusable")
-    func deepRDFStarScratchFailureIsBounded() throws {
+    @Test("Deep RDF-star footprint uses constant traversal storage")
+    func deepRDFStarFootprintUsesConstantTraversalStorage() throws {
         let workMeter = makePropertyPathWorkMeter(
-            maximumIntermediateBytes: 500
+            maximumIntermediateBytes: 1
         )
-        let footprintMeter = try SPARQLPropertyPathMatchFootprintMeter.make(
-            workMeter: workMeter,
-            stage: .pathExpansion
+        let footprint = try SPARQLPropertyPathMatchRetainedFootprint.measure(
+            start: try makeDeepPropertyPathTerm(depth: 512),
+            end: try .iri(validating: "urn:end")
         )
-        defer { footprintMeter.shutdown() }
-
-        #expect {
-            try footprintMeter.footprint(
-                start: makeDeepPropertyPathTerm(depth: 8),
-                end: .iri("urn:end")
-            )
-        } throws: { error in
-            error as? DatabaseWorkLimitError
-                == .maximumIntermediateBytes(
-                    stage: .pathExpansion,
-                    consumed: 320,
-                    requested: 256,
-                    maximum: 500
-                )
-        }
-
-        let shallow = try footprintMeter.footprint(
-            start: .iri("urn:start"),
-            end: .iri("urn:end")
-        )
-        #expect(shallow.rows == 1)
-        #expect(shallow.bytes > 0)
-        #expect(workMeter.retainedIntermediateBytes == 320)
-
-        footprintMeter.shutdown()
+        #expect(footprint.rows == 1)
+        #expect(footprint.bytes > 0)
+        #expect(workMeter.peakIntermediateBytes == 0)
         #expect(workMeter.retainedIntermediateBytes == 0)
     }
 
@@ -130,8 +107,8 @@ struct SPARQLPropertyPathRetainedStorageTests {
     func setDuplicateProbeDoesNotGrow() throws {
         let workMeter = makePropertyPathWorkMeter()
         let match = SPARQLPropertyPathMatch(
-            start: .iri("urn:start"),
-            end: .iri("urn:end")
+            start: try .iri(validating: "urn:start"),
+            end: try .iri(validating: "urn:end")
         )
 
         do {
@@ -163,8 +140,8 @@ struct SPARQLPropertyPathRetainedStorageTests {
     func simultaneousOwnersHaveExactLifetime() throws {
         let workMeter = makePropertyPathWorkMeter()
         let match = SPARQLPropertyPathMatch(
-            start: .iri("urn:start"),
-            end: .iri("urn:end")
+            start: try .iri(validating: "urn:start"),
+            end: try .iri(validating: "urn:end")
         )
 
         do {
@@ -217,7 +194,7 @@ struct SPARQLPropertyPathRetainedStorageTests {
     @Test("Set owner is admitted before construction")
     func setOwnerAdmissionPrecedesConstruction() {
         let workMeter = makePropertyPathWorkMeter(
-            maximumIntermediateBytes: 127
+            maximumIntermediateBytes: 63
         )
 
         #expect {
@@ -229,9 +206,9 @@ struct SPARQLPropertyPathRetainedStorageTests {
             error as? DatabaseWorkLimitError
                 == .maximumIntermediateBytes(
                     stage: .deduplication,
-                    consumed: 64,
+                    consumed: 0,
                     requested: 64,
-                    maximum: 127
+                    maximum: 63
                 )
         }
         #expect(workMeter.retainedIntermediateRows == 0)
@@ -243,7 +220,7 @@ private func makePropertyPathWorkMeter(
     maximumIntermediateBytes: UInt64 = 1_000_000
 ) -> DatabaseWorkMeter {
     DatabaseWorkMeter(
-        budget: DatabaseExecutionBudget(
+        budget: ExecutionBudget(
             maximumRows: 100,
             maximumWorkUnits: 1_000,
             maximumIntermediateRows: 100,
@@ -255,13 +232,13 @@ private func makePropertyPathWorkMeter(
 
 private func makeDeepPropertyPathTerm(
     depth: Int
-) -> DatabaseRDFTerm {
-    var term = DatabaseRDFTerm.iri("urn:leaf")
+) throws -> RDFTerm {
+    var term = try RDFTerm.iri(validating: "urn:leaf")
     for index in 0..<depth {
         term = .tripleTerm(
-            subject: term,
-            predicate: .iri("urn:predicate:\(index)"),
-            object: .iri("urn:object:\(index)")
+            subject: .iri(try RDFIRI("urn:subject:\(index)")),
+            predicate: try RDFPredicateIRI("urn:predicate:\(index)"),
+            object: term
         )
     }
     return term

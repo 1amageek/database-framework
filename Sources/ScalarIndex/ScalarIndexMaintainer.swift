@@ -8,7 +8,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -47,7 +47,7 @@ import StorageKit
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct ScalarIndexMaintainer<Item: Persistable>: IndexUniquenessMaintainer {
     // MARK: - Properties
 
     /// Index definition
@@ -151,6 +151,83 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple
     ) async throws -> [Bytes] {
         return try buildIndexKeys(for: item, id: id)
+    }
+
+    public func uniquenessConflicts(
+        for item: Item,
+        id: Tuple,
+        transaction: any TransactionAccess
+    ) async throws -> [IndexUniquenessConflict] {
+        let fieldValues: [any TupleElement]
+        do {
+            fieldValues = try DataAccess.evaluate(
+                item: item,
+                expression: index.rootExpression
+            )
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return []
+        }
+        guard !fieldValues.isEmpty else {
+            return []
+        }
+
+        var conflicts: [IndexUniquenessConflict] = []
+        if index.kind.fieldNames.count == 1, fieldValues.count > 1 {
+            conflicts.reserveCapacity(fieldValues.count)
+        } else {
+            conflicts.reserveCapacity(1)
+        }
+        let decoder = ScalarIndexPhysicalEntryDecoder()
+
+        func findConflict(
+            for values: [any TupleElement]
+        ) async throws -> IndexUniquenessConflict? {
+            let valueKey = subspace.pack(Tuple(values))
+            var rangeEnd = valueKey
+            rangeEnd.append(0xFF)
+            let entries = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(valueKey),
+                to: .firstGreaterOrEqual(rangeEnd),
+                limit: 2,
+                snapshot: false
+            )
+            for (key, _) in entries {
+                let entry = try decoder.decode(
+                    key: key,
+                    in: subspace,
+                    index: index
+                )
+                guard entry.primaryKey != id else {
+                    continue
+                }
+                var conflictingValues: [FieldValue] = []
+                conflictingValues.reserveCapacity(values.count)
+                for value in values {
+                    conflictingValues.append(
+                        try FieldValue(tupleElement: value)
+                    )
+                }
+                return IndexUniquenessConflict(
+                    valueKey: valueKey,
+                    conflictingValues: conflictingValues,
+                    existingPrimaryKey: entry.primaryKey
+                )
+            }
+            return nil
+        }
+
+        if index.kind.fieldNames.count == 1, fieldValues.count > 1 {
+            for value in fieldValues {
+                if let conflict = try await findConflict(for: [value]) {
+                    conflicts.append(conflict)
+                }
+            }
+        } else {
+            if let conflict = try await findConflict(for: fieldValues) {
+                conflicts.append(conflict)
+            }
+        }
+        return conflicts
     }
 
     // MARK: - Private Methods

@@ -4,74 +4,37 @@
 
 import Testing
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 import FDBStorage
-import Geospatial
 import TestSupport
 @testable import DatabaseEngine
 @testable import SpatialIndex
 
 // MARK: - Test Model
 
-struct BenchmarkLocation: Persistable {
-    typealias ID = String
-
+@Persistable
+struct BenchmarkLocation {
     var id: String
     var name: String
-    var latitude: Double
-    var longitude: Double
+    var location: GeographicPoint
 
-    init(id: String = UUID().uuidString, name: String, latitude: Double, longitude: Double) {
+    var latitude: Double { location.latitude }
+    var longitude: Double { location.longitude }
+
+    init(
+        id: String = UUID().uuidString,
+        name: String,
+        latitude: Double,
+        longitude: Double
+    ) throws {
         self.id = id
         self.name = name
-        self.latitude = latitude
-        self.longitude = longitude
-    }
-
-    static var persistableType: String { "BenchmarkLocation" }
-    static var allFields: [String] { ["id", "name", "latitude", "longitude"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "latitude": return latitude
-        case "longitude": return longitude
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BenchmarkLocation, Value>) -> String {
-        switch keyPath {
-        case \BenchmarkLocation.id: return "id"
-        case \BenchmarkLocation.name: return "name"
-        case \BenchmarkLocation.latitude: return "latitude"
-        case \BenchmarkLocation.longitude: return "longitude"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BenchmarkLocation>) -> String {
-        switch keyPath {
-        case \BenchmarkLocation.id: return "id"
-        case \BenchmarkLocation.name: return "name"
-        case \BenchmarkLocation.latitude: return "latitude"
-        case \BenchmarkLocation.longitude: return "longitude"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BenchmarkLocation> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
+        self.location = try GeographicPoint(
+            latitude: latitude,
+            longitude: longitude
+        )
     }
 }
 
@@ -91,28 +54,23 @@ private struct BenchmarkContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.level = level
 
-        let kind = SpatialIndexKind<BenchmarkLocation>(
-            latitude: \.latitude,
-            longitude: \.longitude,
-            encoding: encoding,
-            level: level
-        )
-
         let index = Index(
             name: indexName,
-            kind: kind,
-            rootExpression: ConcatenateKeyExpression(children: [
-                FieldKeyExpression(fieldName: "latitude"),
-                FieldKeyExpression(fieldName: "longitude")
-            ]),
+            kind: spatialIndexMetadata(
+                fieldName: "location",
+                fieldNumber: 3,
+                encoding: encoding,
+                level: level
+            ),
+            rootExpression: FieldKeyExpression(fieldName: "location"),
             subspaceKey: indexName,
             itemTypes: Set(["BenchmarkLocation"])
         )
 
         self.maintainer = SpatialIndexMaintainer<BenchmarkLocation>(
             index: index,
-            encoding: kind.encoding,
-            level: kind.level,
+            encoding: encoding,
+            level: level,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
@@ -158,8 +116,8 @@ private func randomLocation(
     maxLat: Double = 35.8,
     minLon: Double = 139.5,
     maxLon: Double = 139.9
-) -> BenchmarkLocation {
-    BenchmarkLocation(
+) throws -> BenchmarkLocation {
+    try BenchmarkLocation(
         id: id,
         name: "Location \(id)",
         latitude: Double.random(in: minLat...maxLat),
@@ -173,13 +131,13 @@ private func clusteredLocation(
     centerLat: Double,
     centerLon: Double,
     radiusKm: Double
-) -> BenchmarkLocation {
+) throws -> BenchmarkLocation {
     // Approximate: 1 degree latitude ≈ 111km
     let latOffset = Double.random(in: -radiusKm/111...radiusKm/111)
     // Approximate: 1 degree longitude ≈ 111km * cos(lat)
     let lonOffset = Double.random(in: -radiusKm/111...radiusKm/111) / cos(centerLat * .pi / 180)
 
-    return BenchmarkLocation(
+    return try BenchmarkLocation(
         id: id,
         name: "Location \(id)",
         latitude: centerLat + latOffset,
@@ -206,8 +164,8 @@ struct SpatialIndexPerformanceTests {
         let ctx = try await BenchmarkContext(level: 12)
 
         let locationCount = 100
-        let locations = (0..<locationCount).map { i in
-            randomLocation(id: "\(uniqueID("loc"))-\(i)")
+        let locations = try (0..<locationCount).map { i in
+            try randomLocation(id: "\(uniqueID("loc"))-\(i)")
         }
 
         let startTime = DispatchTime.now()
@@ -242,8 +200,8 @@ struct SpatialIndexPerformanceTests {
         for count in [50, 100, 200] {
             let ctx = try await BenchmarkContext(level: 12)
 
-            let locations = (0..<count).map { i in
-                randomLocation(id: "\(uniqueID("loc"))-\(i)")
+            let locations = try (0..<count).map { i in
+                try randomLocation(id: "\(uniqueID("loc"))-\(i)")
             }
 
             let startTime = DispatchTime.now()
@@ -281,8 +239,8 @@ struct SpatialIndexPerformanceTests {
         let centerLon = 139.7671
         let locationCount = 100
 
-        let locations = (0..<locationCount).map { i in
-            clusteredLocation(
+        let locations = try (0..<locationCount).map { i in
+            try clusteredLocation(
                 id: "\(uniqueID("loc"))-\(i)",
                 centerLat: centerLat,
                 centerLon: centerLon,
@@ -336,8 +294,8 @@ struct SpatialIndexPerformanceTests {
         let centerLon = 139.7671
         let locationCount = 100
 
-        let locations = (0..<locationCount).map { i in
-            clusteredLocation(
+        let locations = try (0..<locationCount).map { i in
+            try clusteredLocation(
                 id: "\(uniqueID("loc"))-\(i)",
                 centerLat: centerLat,
                 centerLon: centerLon,
@@ -388,8 +346,8 @@ struct SpatialIndexPerformanceTests {
 
         // Setup: Insert locations in Tokyo area
         let locationCount = 100
-        let locations = (0..<locationCount).map { i in
-            randomLocation(
+        let locations = try (0..<locationCount).map { i in
+            try randomLocation(
                 id: "\(uniqueID("loc"))-\(i)",
                 minLat: 35.6,
                 maxLat: 35.8,
@@ -448,8 +406,8 @@ struct SpatialIndexPerformanceTests {
         for level in [6, 8, 10, 12] {
             let ctx = try await BenchmarkContext(level: level)
 
-            let locations = (0..<locationCount).map { i in
-                clusteredLocation(
+            let locations = try (0..<locationCount).map { i in
+                try clusteredLocation(
                     id: "\(uniqueID("loc"))-\(i)",
                     centerLat: centerLat,
                     centerLon: centerLon,
@@ -500,8 +458,8 @@ struct SpatialIndexPerformanceTests {
         for encoding in [SpatialEncoding.s2, SpatialEncoding.morton] {
             let ctx = try await BenchmarkContext(encoding: encoding, level: 10)
 
-            let locations = (0..<locationCount).map { i in
-                randomLocation(id: "\(uniqueID("loc"))-\(i)")
+            let locations = try (0..<locationCount).map { i in
+                try randomLocation(id: "\(uniqueID("loc"))-\(i)")
             }
 
             let insertStartTime = DispatchTime.now()
@@ -534,8 +492,8 @@ struct SpatialIndexPerformanceTests {
 
         // Setup: Insert initial locations
         let locationCount = 50
-        var locations = (0..<locationCount).map { i in
-            randomLocation(id: "\(uniqueID("loc"))-\(i)")
+        var locations = try (0..<locationCount).map { i in
+            try randomLocation(id: "\(uniqueID("loc"))-\(i)")
         }
 
         try await ctx.database.withTransaction { transaction in
@@ -554,7 +512,7 @@ struct SpatialIndexPerformanceTests {
 
         for i in 0..<updateCount {
             let oldLocation = locations[i]
-            let newLocation = BenchmarkLocation(
+            let newLocation = try BenchmarkLocation(
                 id: oldLocation.id,
                 name: "Updated \(i)",
                 latitude: oldLocation.latitude + 0.01,
@@ -594,8 +552,8 @@ struct SpatialIndexPerformanceTests {
 
         // Setup: Insert locations
         let locationCount = 50
-        let locations = (0..<locationCount).map { i in
-            randomLocation(id: "\(uniqueID("loc"))-\(i)")
+        let locations = try (0..<locationCount).map { i in
+            try randomLocation(id: "\(uniqueID("loc"))-\(i)")
         }
 
         try await ctx.database.withTransaction { transaction in
@@ -647,8 +605,8 @@ struct SpatialIndexPerformanceTests {
         for count in [50, 100, 200] {
             let ctx = try await BenchmarkContext(level: 8)
 
-            let locations = (0..<count).map { i in
-                clusteredLocation(
+            let locations = try (0..<count).map { i in
+                try clusteredLocation(
                     id: "\(uniqueID("loc"))-\(i)",
                     centerLat: centerLat,
                     centerLon: centerLon,

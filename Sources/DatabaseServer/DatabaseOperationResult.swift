@@ -1,27 +1,36 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseOperationResult: Sendable {
     private enum Body: Sendable {
-        case encoder(DatabaseOperationResponseEncoder)
-        case frame(requestID: UInt64, bytes: DatabaseBytes)
+        case response(DatabaseOperationResponseEncoder)
+        case frame(requestID: UInt64, bytes: ByteString)
     }
 
     public let operation: DatabaseOperationIdentifier
     private let body: Body
 
-    public init(
-        operation: DatabaseOperationIdentifier,
-        encoder: DatabaseOperationResponseEncoder
+    public init<Operation: ServerOperationDeclaration>(
+        _ operation: Operation.Type,
+        response: Operation.Response
     ) {
-        self.operation = operation
-        self.body = .encoder(encoder)
+        let encoder = DatabaseOperationResponseEncoder(
+            operation,
+            response: response
+        )
+        self.operation = encoder.operation
+        self.body = .response(encoder)
+    }
+
+    init(encoder: DatabaseOperationResponseEncoder) {
+        self.operation = encoder.operation
+        self.body = .response(encoder)
     }
 
     init(
         operation: DatabaseOperationIdentifier,
         requestID: UInt64,
-        frame: DatabaseBytes
+        frame: ByteString
     ) {
         self.operation = operation
         self.body = .frame(requestID: requestID, bytes: frame)
@@ -30,15 +39,13 @@ public struct DatabaseOperationResult: Sendable {
     func encodeResponse(
         requestID: UInt64,
         limits: DatabaseWireLimits
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         switch body {
-        case .encoder(let encoder):
-            return try DatabaseEnvelopeCodec.encodeSuccessResponse(
+        case .response(let encoder):
+            return try encoder.encode(
                 requestID: requestID,
-                operation: operation,
-                limits: limits,
-                encodePayload: encoder.encode(into:)
-            )
+                limits: limits
+            ).frame
         case .frame(let encodedRequestID, let bytes):
             guard encodedRequestID == requestID else {
                 throw DatabaseEndpointError.responseRequestIDMismatch(

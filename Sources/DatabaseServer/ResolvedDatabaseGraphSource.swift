@@ -1,6 +1,6 @@
-import DatabaseValue
-import DatabaseWire
-import Graph
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 import GraphIndex
 import StorageKit
 
@@ -50,18 +50,18 @@ public struct ResolvedDatabaseGraphSource: Sendable {
     public enum RDFScope: Sendable, Equatable {
         case all
         case defaultGraph
-        case named(DatabaseRDFTerm)
+        case named(RDFTerm)
     }
 
     public struct RDFLayout: Sendable {
         public let scope: RDFScope
-        public let predicate: DatabaseRDFTerm?
+        public let predicate: RDFTerm?
         package let scannerScope: GraphScanScope
         package let scannerEdgeLabel: GraphIdentity?
 
         public init(
             scope: RDFScope,
-            predicate: DatabaseRDFTerm?
+            predicate: RDFTerm?
         ) throws {
             switch scope {
             case .all:
@@ -69,13 +69,15 @@ public struct ResolvedDatabaseGraphSource: Sendable {
             case .defaultGraph:
                 self.scannerScope = .defaultGraph
             case .named(let graph):
-                guard graph.isRDFGraphName else {
+                do {
+                    _ = try RDFGraphName(graph)
+                } catch {
                     throw DatabaseGraphAlgorithmError.invalidRDFGraphName(.rdf(graph))
                 }
                 self.scannerScope = .named(try .rdf(graph))
             }
             if let predicate {
-                guard predicate.isRDFPredicate else {
+                guard case .iri = predicate else {
                     throw DatabaseGraphAlgorithmError.invalidRDFPredicate(.rdf(predicate))
                 }
                 self.scannerEdgeLabel = try .rdf(predicate)
@@ -134,7 +136,7 @@ public struct ResolvedDatabaseGraphSource: Sendable {
         }
     }
 
-    public func encodeVertex(_ term: DatabaseGraphTerm) throws -> GraphIdentity {
+    public func encodeVertex(_ term: GraphAlgorithmOperation.Term) throws -> GraphIdentity {
         switch (layout, term) {
         case (.propertyGraph, .identifier(let value)):
             return .identifier(value)
@@ -147,7 +149,7 @@ public struct ResolvedDatabaseGraphSource: Sendable {
         }
     }
 
-    public func decodeVertex(_ value: GraphIdentity) throws -> DatabaseGraphTerm {
+    public func decodeVertex(_ value: GraphIdentity) throws -> GraphAlgorithmOperation.Term {
         switch (layout, value.representation) {
         case (.propertyGraph, .propertyGraph):
             guard let identifier = value.identifier else {
@@ -184,7 +186,7 @@ public struct ResolvedDatabaseGraphSource: Sendable {
         }
     }
 
-    public func decodeEdgeLabel(_ value: GraphIdentity) throws -> DatabaseGraphTerm {
+    public func decodeEdgeLabel(_ value: GraphIdentity) throws -> GraphAlgorithmOperation.Term {
         try decodeVertex(value)
     }
 }

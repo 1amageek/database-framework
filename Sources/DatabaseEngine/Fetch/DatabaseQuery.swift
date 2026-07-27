@@ -1,10 +1,5 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 // MARK: - Query
 
@@ -14,9 +9,9 @@ import DatabaseValue
 /// ```swift
 /// // Fluent API
 /// let users = try await context.fetch(User.self)
-///     .where(\.isActive == true)
-///     .where(\.age > 18)
-///     .orderBy(\.name)
+///     .where(#field(\User.isActive) == true)
+///     .where(#field(\User.age) > 18)
+///     .orderBy(#field(\User.name))
 ///     .limit(10)
 ///     .execute()
 ///
@@ -25,12 +20,12 @@ import DatabaseValue
 ///
 /// // First result
 /// let user = try await context.fetch(User.self)
-///     .where(\.email == "alice@example.com")
+///     .where(#field(\User.email) == "alice@example.com")
 ///     .first()
 ///
 /// // Count
 /// let count = try await context.fetch(User.self)
-///     .where(\.isActive == true)
+///     .where(#field(\User.isActive) == true)
 ///     .count()
 /// ```
 public struct Query<T: Persistable>: Sendable {
@@ -97,20 +92,24 @@ public struct Query<T: Persistable>: Sendable {
 
     /// Add sort order (ascending)
     public func orderBy<V: Comparable & Sendable>(
-        _ keyPath: KeyPath<T, V> & Sendable
+        _ field: Field<T, V>
     ) -> Query<T> {
         var copy = self
-        copy.sortDescriptors.append(SortDescriptor(keyPath: keyPath, order: .ascending))
+        copy.sortDescriptors.append(
+            SortDescriptor(field: field, order: .ascending)
+        )
         return copy
     }
 
     /// Add sort order with direction
     public func orderBy<V: Comparable & Sendable>(
-        _ keyPath: KeyPath<T, V> & Sendable,
+        _ field: Field<T, V>,
         _ order: SortOrder
     ) -> Query<T> {
         var copy = self
-        copy.sortDescriptors.append(SortDescriptor(keyPath: keyPath, order: order))
+        copy.sortDescriptors.append(
+            SortDescriptor(field: field, order: order)
+        )
         return copy
     }
 
@@ -169,39 +168,43 @@ public struct Query<T: Persistable>: Sendable {
     /// }
     ///
     /// let orders = try await context.fetch(Order.self)
-    ///     .partition(\.tenantID, equals: "tenant_123")
-    ///     .where(\.status == "open")
+    ///     .partition(#field(\Order.tenantID), equals: "tenant_123")
+    ///     .where(#field(\Order.status) == "open")
     ///     .execute()
     /// ```
     ///
     /// - Parameters:
-    ///   - keyPath: The partition field's keyPath
+    ///   - field: The compiled partition field
     ///   - value: The value for directory resolution
     /// - Returns: A new Query with the partition binding added
-    public func partition<V: Sendable & Equatable & FieldValueConvertible>(
-        _ keyPath: KeyPath<T, V> & Sendable,
+    public func partition<V: Sendable & Equatable & FieldValueRepresentable>(
+        _ field: Field<T, V>,
         equals value: V
     ) -> Query<T> {
         var copy = self
         var binding = copy.partitionBinding ?? DirectoryPath<T>()
-        binding.set(keyPath, to: value)
+        binding.set(field, to: value)
         copy.partitionBinding = binding
 
         // Also add as a where clause for filtering (defense in depth)
         // This ensures data integrity even if wrong partition is somehow accessed
         // Only add if not already present for this keyPath
-        let fieldName = T.fieldName(for: keyPath)
         let alreadyHasPredicate = copy.predicates.contains { predicate in
             if case .comparison(let comparison) = predicate {
-                return comparison.fieldName == fieldName
+                return comparison.field == field.identity
             }
             return false
         }
         if !alreadyHasPredicate {
-            copy.predicates.append(.comparison(FieldComparison(
-                keyPath: keyPath, op: .equal, value: value,
-                evaluate: { $0[keyPath: keyPath] == value }
-            )))
+            copy.predicates.append(
+                .comparison(
+                    FieldComparison(
+                        field: field,
+                        op: .equal,
+                        value: value
+                    )
+                )
+            )
         }
         return copy
     }
@@ -295,16 +298,18 @@ public indirect enum Predicate<T: Persistable>: Sendable {
 
 /// Represents a comparison of a field value
 ///
-/// Uses `FieldValue` from Core for type-safe value representation that maps directly
-/// to FoundationDB's TupleElement types.
-///
-/// **Zero-copy evaluation**: When constructed with typed KeyPaths (via operator overloads),
-/// captures a `@Sendable` closure that evaluates the comparison without any allocation.
-/// Falls back to `FieldReader` when the closure is unavailable (e.g., after type erasure
-/// in QueryRewriter/DNFConverter).
+/// The comparison retains only the compiled field identity and canonical
+/// primitive value. Model access is delegated to the macro-generated
+/// `Persistable` traversal; no KeyPath, reflection, dynamic member lookup, or
+/// type-erased accessor is retained at runtime.
 public struct FieldComparison<T: Persistable>: Sendable, Hashable {
-    /// The canonical field name used by planning and type-erased evaluation.
-    public let fieldName: String
+    /// The exact compiled schema field selected by this comparison.
+    public let field: FieldIdentity
+
+    /// The canonical field name used by planners and
+    public var fieldName: String {
+        field.name
+    }
 
     /// The comparison operator
     public let op: ComparisonOperator
@@ -312,183 +317,94 @@ public struct FieldComparison<T: Persistable>: Sendable, Hashable {
     /// The value to compare against (type-safe)
     public let value: FieldValue
 
-    /// Zero-copy evaluation closure, captured at construction time
-    /// when typed KeyPath and value are available.
-    /// Excluded from Hashable identity (field name + operator + value suffice).
-    private let _evaluate: (@Sendable (T) -> Bool)?
-
-    /// Typed field access retained across predicate rewrites.
-    private let _readValue: (@Sendable (T) -> FieldValue)?
-
-    /// Create a field comparison with a canonical field name.
-    ///
-    /// Used by QueryRewriter/DNFConverter after type erasure.
-    /// Optionally accepts an evaluate closure for zero-copy evaluation.
-    public init(
-        fieldName: String,
+    /// Create a comparison from a schema identity already validated by the
+    /// query conversion boundary.
+    package init(
+        field: FieldIdentity,
         op: ComparisonOperator,
-        value: FieldValue,
-        evaluate: (@Sendable (T) -> Bool)? = nil
+        value: FieldValue
     ) {
-        self.fieldName = fieldName
+        self.field = field
         self.op = op
         self.value = value
-        self._evaluate = evaluate
-        self._readValue = nil
     }
 
-    /// Create a field comparison from FieldValueConvertible
-    ///
-    /// Optionally accepts an evaluate closure for zero-copy evaluation.
-    /// The operator overloads pass a typed closure; direct callers may omit it.
-    public init<V: FieldValueConvertible>(
-        keyPath: KeyPath<T, V> & Sendable,
+    /// Create a comparison from a compile-time typed field and value.
+    public init<V: FieldValueRepresentable>(
+        field: Field<T, V>,
         op: ComparisonOperator,
-        value: V,
-        evaluate: (@Sendable (T) -> Bool)? = nil
+        value: V
     ) {
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.op = op
-        self.value = value.toFieldValue()
-        self._evaluate = evaluate
-        self._readValue = { model in
-            model[keyPath: keyPath].toFieldValue()
-        }
+        self.value = value.fieldValue
     }
 
-    /// Create a comparison for a non-optional field and a canonical comparison value.
-    public init<V: Sendable>(
-        keyPath: KeyPath<T, V> & Sendable,
+    /// Create a comparison from a typed field and canonical comparison value.
+    public init<V>(
+        field: Field<T, V>,
         op: ComparisonOperator,
-        value: FieldValue,
-        evaluate: (@Sendable (T) -> Bool)? = nil
+        value: FieldValue
     ) {
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.op = op
         self.value = value
-        self._evaluate = evaluate
-        self._readValue = { model in
-            FieldValue(model[keyPath: keyPath]) ?? .null
-        }
     }
 
-    /// Create a comparison for an optional field and a canonical comparison value.
-    public init<V: Sendable>(
-        keyPath: KeyPath<T, V?> & Sendable,
-        op: ComparisonOperator,
-        value: FieldValue,
-        evaluate: (@Sendable (T) -> Bool)? = nil
-    ) {
-        self.fieldName = T.fieldName(for: keyPath)
-        self.op = op
-        self.value = value
-        self._evaluate = evaluate
-        self._readValue = { model in
-            guard let fieldValue = model[keyPath: keyPath] else {
-                return .null
-            }
-            return FieldValue(fieldValue) ?? .null
-        }
-    }
-
-    /// Create a nil comparison (isNil/isNotNil)
-    ///
-    /// Captures a zero-copy closure for nil checks.
-    public init<V: Sendable>(
-        keyPath: KeyPath<T, V?> & Sendable,
+    /// Create a nil comparison for an optional compiled field.
+    public init<V>(
+        field: Field<T, V?>,
         op: ComparisonOperator
     ) {
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.op = op
         self.value = .null
-        self._readValue = { model in
-            model[keyPath: keyPath] == nil ? .null : .bool(true)
-        }
-        switch op {
-        case .isNil:
-            self._evaluate = { model in model[keyPath: keyPath] == nil }
-        case .isNotNil:
-            self._evaluate = { model in model[keyPath: keyPath] != nil }
-        default:
-            self._evaluate = nil
-        }
     }
 
-    /// Create an IN comparison
-    ///
-    /// Optionally accepts an evaluate closure for zero-copy evaluation.
-    public init<V: FieldValueConvertible>(
-        keyPath: KeyPath<T, V> & Sendable,
-        values: [V],
-        evaluate: (@Sendable (T) -> Bool)? = nil
+    /// Create an IN comparison from a compiled field.
+    public init<V: FieldValueRepresentable>(
+        field: Field<T, V>,
+        values: [V]
     ) {
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.op = .in
-        self.value = .array(values.map { $0.toFieldValue() })
-        self._evaluate = evaluate
-        self._readValue = { model in
-            model[keyPath: keyPath].toFieldValue()
-        }
+        self.value = .array(values.map(\.fieldValue))
     }
 
-    /// Rebuild a comparison while retaining its typed field accessor.
+    /// Rebuild a comparison while retaining the exact schema identity.
     func replacing(
         op: ComparisonOperator,
         value: FieldValue? = nil
     ) -> FieldComparison<T> {
         FieldComparison(
-            fieldName: fieldName,
+            field: field,
             op: op,
-            value: value ?? self.value,
-            readValue: _readValue
+            value: value ?? self.value
         )
-    }
-
-    private init(
-        fieldName: String,
-        op: ComparisonOperator,
-        value: FieldValue,
-        readValue: (@Sendable (T) -> FieldValue)?
-    ) {
-        self.fieldName = fieldName
-        self.op = op
-        self.value = value
-        self._evaluate = nil
-        self._readValue = readValue
     }
 
     // MARK: - Evaluation
 
-    /// Evaluate this comparison against a model
-    ///
-    /// Fast path: uses the captured typed closure (zero allocation per evaluation).
-    /// Slow path: falls back to FieldReader + FieldValue comparison.
-    public func evaluate(on model: T) -> Bool {
-        if let eval = _evaluate {
-            return eval(model)
+    /// Evaluate this comparison through the generated model adapter.
+    public func evaluate(
+        on model: borrowing T
+    ) throws(QueryEvaluationError) -> Bool {
+        let encoded: FieldValue?
+        do {
+            encoded = try model.persistedFieldValue(for: field)
+        } catch let error {
+            throw .fieldEncoding(error)
         }
-        return evaluateViaFieldReader(model)
+        guard let modelFieldValue = encoded else {
+            throw .missingField(
+                entity: T.persistableType,
+                field: field
+            )
+        }
+        return evaluate(modelFieldValue)
     }
 
-    /// Fallback evaluation using FieldReader (non-throwing field access)
-    ///
-    /// Handles all comparison operators including string operations.
-    /// Used when typed closure is unavailable (type-erased paths from QueryRewriter/DNFConverter).
-    private func evaluateViaFieldReader(_ model: T) -> Bool {
-        let fieldValue = _readValue?(model)
-            ?? FieldReader.readFieldValue(from: model, fieldName: fieldName)
-        return evaluateFieldValue(fieldValue)
-    }
-
-    /// Core comparison logic for raw values
-    ///
-    /// Converts raw value to FieldValue and evaluates comparison operator.
-    /// Handles all comparison operators including string operations.
-    private func evaluateFieldValue(_ modelFieldValue: FieldValue) -> Bool {
-        // Handle nil check operators first
-        // NOTE: Cannot use `raw == nil` because PartialKeyPath path returns
-        // Optional<V>.none boxed in Any (.some(Any(Optional.none))), not nil.
-        // Must use FieldValue conversion which correctly maps boxed nil to .null.
+    private func evaluate(_ modelFieldValue: FieldValue) -> Bool {
         switch op {
         case .isNil:
             return modelFieldValue.isNull
@@ -516,7 +432,7 @@ public struct FieldComparison<T: Persistable>: Sendable, Hashable {
         case .contains:
             if let str = modelFieldValue.stringValue,
                let substr = value.stringValue {
-                return DatabaseText.contains(substr, in: str)
+                return str.contains(substr)
             }
             return false
         case .hasPrefix:
@@ -547,14 +463,13 @@ public struct FieldComparison<T: Persistable>: Sendable, Hashable {
     // MARK: - Hashable
 
     public func hash(into hasher: inout Hasher) {
-        // Evaluation closures are excluded from semantic identity.
-        hasher.combine(fieldName)
+        hasher.combine(field)
         hasher.combine(op)
         hasher.combine(value)
     }
 
     public static func == (lhs: FieldComparison<T>, rhs: FieldComparison<T>) -> Bool {
-        lhs.fieldName == rhs.fieldName
+        lhs.field == rhs.field
             && lhs.op == rhs.op
             && lhs.value == rhs.value
     }
@@ -563,90 +478,78 @@ public struct FieldComparison<T: Persistable>: Sendable, Hashable {
 // MARK: - SortDescriptor
 
 /// Describes how to sort query results
-///
-/// **Zero-copy comparison**: When constructed with a typed KeyPath, captures
-/// a `@Sendable` comparator closure. Falls back to `FieldReader` + `FieldValue.compare`
-/// when the closure is unavailable.
 public struct SortDescriptor<T: Persistable>: Sendable {
-    /// The canonical field name used by planning and type-erased comparison.
-    public let fieldName: String
+    /// The exact compiled schema field used for ordering.
+    public let field: FieldIdentity
+
+    /// The canonical field name used by planners and
+    public var fieldName: String {
+        field.name
+    }
 
     /// Sort order
     public let order: SortOrder
 
-    /// Zero-copy comparison closure, captured at construction time.
-    /// Returns raw comparison (ascending order); caller applies sort direction.
-    private let _compare: (@Sendable (T, T) -> ComparisonResult)?
-
-    /// Create a sort descriptor with zero-copy comparison
+    /// Create a sort descriptor from a compile-time typed field.
     public init<V: Comparable & Sendable>(
-        keyPath: KeyPath<T, V> & Sendable,
+        field: Field<T, V>,
         order: SortOrder = .ascending
     ) {
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.order = order
-        self._compare = { lhs, rhs in
-            let l = lhs[keyPath: keyPath]
-            let r = rhs[keyPath: keyPath]
-            if l < r { return .orderedAscending }
-            if l > r { return .orderedDescending }
-            return .orderedSame
-        }
     }
 
-    /// Create a sort descriptor from a QueryIR field name.
-    ///
-    /// Used when the sort key originates from a canonical/erased source and a typed
-    /// KeyPath is unavailable. Comparison falls back to FieldReader, reading strictly
-    /// by `fieldName`.
-    init(fieldName: String, order: SortOrder) {
-        self.fieldName = fieldName
+    /// Create a sort descriptor from an identity validated by QueryIR binding.
+    package init(field: FieldIdentity, order: SortOrder) {
+        self.field = field
         self.order = order
-        self._compare = nil
     }
 
     // MARK: - Comparison
 
-    /// Compare two models with sort direction applied
-    ///
-    /// Returns `.orderedAscending` when lhs should come before rhs,
-    /// `.orderedDescending` when rhs should come before lhs,
-    /// `.orderedSame` when equal (move to next sort descriptor).
-    public func orderedComparison(_ lhs: T, _ rhs: T) -> ComparisonResult {
-        let rawResult: ComparisonResult
-        if let cmp = _compare {
-            rawResult = cmp(lhs, rhs)
-        } else {
-            rawResult = compareViaFieldReader(lhs, rhs)
+    /// Compare two models with sort direction applied.
+    public func orderedComparison(
+        _ lhs: borrowing T,
+        _ rhs: borrowing T
+    ) throws(QueryEvaluationError) -> QueryComparison {
+        let left = try fieldValue(from: lhs)
+        let right = try fieldValue(from: rhs)
+        guard let rawResult = left.compare(to: right) else {
+            throw .incomparableValues(
+                entity: T.persistableType,
+                field: field,
+                left: left,
+                right: right
+            )
         }
         switch order {
         case .ascending:
             return rawResult
         case .descending:
             switch rawResult {
-            case .orderedAscending: return .orderedDescending
-            case .orderedDescending: return .orderedAscending
-            case .orderedSame: return .orderedSame
+            case .lessThan: return .greaterThan
+            case .greaterThan: return .lessThan
+            case .equal: return .equal
             }
         }
     }
 
-    /// Fallback comparison using FieldReader + FieldValue
-    ///
-    /// Handles null ordering: null sorts first in raw comparison
-    /// (ascending = null first, descending = null last after flip).
-    private func compareViaFieldReader(_ lhs: T, _ rhs: T) -> ComparisonResult {
-        let lhsField: FieldValue
-        let rhsField: FieldValue
-        lhsField = FieldReader.readFieldValue(from: lhs, fieldName: fieldName)
-        rhsField = FieldReader.readFieldValue(from: rhs, fieldName: fieldName)
-
-        // Null sorts first in raw (ascending) comparison
-        if case .null = lhsField, case .null = rhsField { return .orderedSame }
-        if case .null = lhsField { return .orderedAscending }
-        if case .null = rhsField { return .orderedDescending }
-
-        return lhsField.compare(to: rhsField) ?? .orderedSame
+    private func fieldValue(
+        from model: borrowing T
+    ) throws(QueryEvaluationError) -> FieldValue {
+        let encoded: FieldValue?
+        do {
+            encoded = try model.persistedFieldValue(for: field)
+        } catch let error {
+            throw .fieldEncoding(error)
+        }
+        guard let value = encoded else {
+            throw .missingField(
+                entity: T.persistableType,
+                field: field
+            )
+        }
+        return value
     }
 }
 
@@ -656,90 +559,72 @@ public enum SortOrder: String, Sendable, Hashable {
     case descending
 }
 
-// MARK: - KeyPath Operators (FieldValueConvertible)
+// MARK: - Field Operators
 
-/// Equal comparison (zero-copy closure captured)
-public func == <T: Persistable, V: Equatable & FieldValueConvertible & Sendable>(
-    lhs: KeyPath<T, V> & Sendable,
+/// Equal comparison.
+public func == <T: Persistable, V: Equatable & FieldValueRepresentable & Sendable>(
+    lhs: Field<T, V>,
     rhs: V
 ) -> Predicate<T> {
-    return .comparison(FieldComparison(
-        keyPath: lhs, op: .equal, value: rhs,
-        evaluate: { $0[keyPath: lhs] == rhs }
-    ))
+    .comparison(FieldComparison(field: lhs, op: .equal, value: rhs))
 }
 
-/// Not equal comparison (zero-copy closure captured)
-public func != <T: Persistable, V: Equatable & FieldValueConvertible & Sendable>(
-    lhs: KeyPath<T, V> & Sendable,
+/// Not equal comparison.
+public func != <T: Persistable, V: Equatable & FieldValueRepresentable & Sendable>(
+    lhs: Field<T, V>,
     rhs: V
 ) -> Predicate<T> {
-    return .comparison(FieldComparison(
-        keyPath: lhs, op: .notEqual, value: rhs,
-        evaluate: { $0[keyPath: lhs] != rhs }
-    ))
+    .comparison(FieldComparison(field: lhs, op: .notEqual, value: rhs))
 }
 
-/// Less than comparison (zero-copy closure captured)
-public func < <T: Persistable, V: Comparable & FieldValueConvertible & Sendable>(
-    lhs: KeyPath<T, V> & Sendable,
+/// Less than comparison.
+public func < <T: Persistable, V: Comparable & FieldValueRepresentable & Sendable>(
+    lhs: Field<T, V>,
     rhs: V
 ) -> Predicate<T> {
-    return .comparison(FieldComparison(
-        keyPath: lhs, op: .lessThan, value: rhs,
-        evaluate: { $0[keyPath: lhs] < rhs }
-    ))
+    .comparison(FieldComparison(field: lhs, op: .lessThan, value: rhs))
 }
 
-/// Less than or equal comparison (zero-copy closure captured)
-public func <= <T: Persistable, V: Comparable & FieldValueConvertible & Sendable>(
-    lhs: KeyPath<T, V> & Sendable,
+/// Less than or equal comparison.
+public func <= <T: Persistable, V: Comparable & FieldValueRepresentable & Sendable>(
+    lhs: Field<T, V>,
     rhs: V
 ) -> Predicate<T> {
-    return .comparison(FieldComparison(
-        keyPath: lhs, op: .lessThanOrEqual, value: rhs,
-        evaluate: { $0[keyPath: lhs] <= rhs }
-    ))
+    .comparison(FieldComparison(field: lhs, op: .lessThanOrEqual, value: rhs))
 }
 
-/// Greater than comparison (zero-copy closure captured)
-public func > <T: Persistable, V: Comparable & FieldValueConvertible & Sendable>(
-    lhs: KeyPath<T, V> & Sendable,
+/// Greater than comparison.
+public func > <T: Persistable, V: Comparable & FieldValueRepresentable & Sendable>(
+    lhs: Field<T, V>,
     rhs: V
 ) -> Predicate<T> {
-    return .comparison(FieldComparison(
-        keyPath: lhs, op: .greaterThan, value: rhs,
-        evaluate: { $0[keyPath: lhs] > rhs }
-    ))
+    .comparison(FieldComparison(field: lhs, op: .greaterThan, value: rhs))
 }
 
-/// Greater than or equal comparison (zero-copy closure captured)
-public func >= <T: Persistable, V: Comparable & FieldValueConvertible & Sendable>(
-    lhs: KeyPath<T, V> & Sendable,
+/// Greater than or equal comparison.
+public func >= <T: Persistable, V: Comparable & FieldValueRepresentable & Sendable>(
+    lhs: Field<T, V>,
     rhs: V
 ) -> Predicate<T> {
-    return .comparison(FieldComparison(
-        keyPath: lhs, op: .greaterThanOrEqual, value: rhs,
-        evaluate: { $0[keyPath: lhs] >= rhs }
-    ))
+    .comparison(FieldComparison(field: lhs, op: .greaterThanOrEqual, value: rhs))
 }
 
-// MARK: - Optional KeyPath Operators
+// MARK: - Optional Field Operators
 
-/// Check if optional field is nil (zero-copy closure captured in init)
+/// Check if an optional field is nil.
 public func == <T: Persistable, V: Sendable>(
-    lhs: KeyPath<T, V?> & Sendable,
+    lhs: Field<T, V?>,
     rhs: V?.Type
 ) -> Predicate<T> where V? == Optional<V> {
-    .comparison(FieldComparison(keyPath: lhs, op: .isNil))
+    .comparison(FieldComparison(field: lhs, op: .isNil))
 }
 
-/// Check if optional field is not nil (zero-copy closure captured in init)
+/// Check if an optional field is not nil.
 public func != <T: Persistable, V: Sendable>(
-    lhs: KeyPath<T, V?> & Sendable,
+    lhs: Field<T, V?>,
     rhs: V?.Type
 ) -> Predicate<T> where V? == Optional<V> {
-    .comparison(FieldComparison(keyPath: lhs, op: .isNotNil))
+    .comparison(FieldComparison(field: lhs, op: .isNotNil))
 }
 
 // MARK: - Typed Predicate Factories
@@ -748,81 +633,81 @@ extension Predicate {
     /// Check whether a string field contains a substring.
     public static func contains(
         _ substring: String,
-        in keyPath: KeyPath<T, String> & Sendable
+        in field: Field<T, String>
     ) -> Predicate<T> {
-        return .comparison(FieldComparison(
-            keyPath: keyPath, op: .contains, value: substring,
-            evaluate: { DatabaseText.contains(substring, in: $0[keyPath: keyPath]) }
-        ))
+        .comparison(
+            FieldComparison(field: field, op: .contains, value: substring)
+        )
     }
 
     /// Check whether a string field starts with a prefix.
     public static func hasPrefix(
         _ prefix: String,
-        in keyPath: KeyPath<T, String> & Sendable
+        in field: Field<T, String>
     ) -> Predicate<T> {
-        return .comparison(FieldComparison(
-            keyPath: keyPath, op: .hasPrefix, value: prefix,
-            evaluate: { $0[keyPath: keyPath].hasPrefix(prefix) }
-        ))
+        .comparison(
+            FieldComparison(field: field, op: .hasPrefix, value: prefix)
+        )
     }
 
     /// Check whether a string field ends with a suffix.
     public static func hasSuffix(
         _ suffix: String,
-        in keyPath: KeyPath<T, String> & Sendable
+        in field: Field<T, String>
     ) -> Predicate<T> {
-        return .comparison(FieldComparison(
-            keyPath: keyPath, op: .hasSuffix, value: suffix,
-            evaluate: { $0[keyPath: keyPath].hasSuffix(suffix) }
-        ))
+        .comparison(
+            FieldComparison(field: field, op: .hasSuffix, value: suffix)
+        )
     }
 
     /// Check whether an optional string field contains a substring.
     public static func contains(
         _ substring: String,
-        in keyPath: KeyPath<T, String?> & Sendable
+        in field: Field<T, String?>
     ) -> Predicate<T> {
-        return .comparison(FieldComparison(
-            keyPath: keyPath, op: .contains, value: .string(substring),
-            evaluate: { value in
-                guard let field = value[keyPath: keyPath] else { return false }
-                return DatabaseText.contains(substring, in: field)
-            }
-        ))
+        .comparison(
+            FieldComparison(
+                field: field,
+                op: .contains,
+                value: .string(substring)
+            )
+        )
     }
 
     /// Check whether an optional string field starts with a prefix.
     public static func hasPrefix(
         _ prefix: String,
-        in keyPath: KeyPath<T, String?> & Sendable
+        in field: Field<T, String?>
     ) -> Predicate<T> {
-        return .comparison(FieldComparison(
-            keyPath: keyPath, op: .hasPrefix, value: .string(prefix),
-            evaluate: { $0[keyPath: keyPath]?.hasPrefix(prefix) ?? false }
-        ))
+        .comparison(
+            FieldComparison(
+                field: field,
+                op: .hasPrefix,
+                value: .string(prefix)
+            )
+        )
     }
 
     /// Check whether an optional string field ends with a suffix.
     public static func hasSuffix(
         _ suffix: String,
-        in keyPath: KeyPath<T, String?> & Sendable
+        in field: Field<T, String?>
     ) -> Predicate<T> {
-        return .comparison(FieldComparison(
-            keyPath: keyPath, op: .hasSuffix, value: .string(suffix),
-            evaluate: { $0[keyPath: keyPath]?.hasSuffix(suffix) ?? false }
-        ))
+        .comparison(
+            FieldComparison(
+                field: field,
+                op: .hasSuffix,
+                value: .string(suffix)
+            )
+        )
     }
 
     /// Check whether a field matches any value in the supplied collection.
-    public static func matchesAny<Value: Equatable & FieldValueConvertible & Sendable>(
+    public static func matchesAny<Value: Equatable & FieldValueRepresentable & Sendable>(
         of values: [Value],
-        at keyPath: KeyPath<T, Value> & Sendable
+        at field: Field<T, Value>
     ) -> Predicate<T> {
-        return .comparison(FieldComparison(
-            keyPath: keyPath, values: values,
-            evaluate: { model in values.contains(model[keyPath: keyPath]) }
-        ))
+        .comparison(FieldComparison(field: field, values: values))
     }
 }
 
@@ -833,9 +718,9 @@ extension Predicate {
 /// **Usage**:
 /// ```swift
 /// let users = try await context.fetch(User.self)
-///     .where(\.isActive == true)
-///     .where(\.age > 18)
-///     .orderBy(\.name)
+///     .where(#field(\User.isActive) == true)
+///     .where(#field(\User.age) > 18)
+///     .orderBy(#field(\User.name))
 ///     .limit(10)
 ///     .execute()
 /// ```
@@ -858,20 +743,20 @@ public struct QueryExecutor<T: Persistable>: Sendable {
 
     /// Add sort order (ascending)
     public func orderBy<V: Comparable & Sendable>(
-        _ keyPath: KeyPath<T, V> & Sendable
+        _ field: Field<T, V>
     ) -> QueryExecutor<T> {
         var copy = self
-        copy.query = query.orderBy(keyPath)
+        copy.query = query.orderBy(field)
         return copy
     }
 
     /// Add sort order with direction
     public func orderBy<V: Comparable & Sendable>(
-        _ keyPath: KeyPath<T, V> & Sendable,
+        _ field: Field<T, V>,
         _ order: SortOrder
     ) -> QueryExecutor<T> {
         var copy = self
-        copy.query = query.orderBy(keyPath, order)
+        copy.query = query.orderBy(field, order)
         return copy
     }
 
@@ -930,21 +815,21 @@ public struct QueryExecutor<T: Persistable>: Sendable {
     /// }
     ///
     /// let orders = try await context.fetch(Order.self)
-    ///     .partition(\.tenantID, equals: "tenant_123")
-    ///     .where(\.status == "open")
+    ///     .partition(#field(\Order.tenantID), equals: "tenant_123")
+    ///     .where(#field(\Order.status) == "open")
     ///     .execute()
     /// ```
     ///
     /// - Parameters:
-    ///   - keyPath: The partition field's keyPath
+    ///   - field: The compiled partition field
     ///   - value: The value for directory resolution
     /// - Returns: A new QueryExecutor with the partition binding added
-    public func partition<V: Sendable & Equatable & FieldValueConvertible>(
-        _ keyPath: KeyPath<T, V> & Sendable,
+    public func partition<V: Sendable & Equatable & FieldValueRepresentable>(
+        _ field: Field<T, V>,
         equals value: V
     ) -> QueryExecutor<T> {
         var copy = self
-        copy.query = query.partition(keyPath, equals: value)
+        copy.query = query.partition(field, equals: value)
         return copy
     }
 

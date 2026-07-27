@@ -34,7 +34,7 @@ import Foundation
 /// **Usage**:
 /// ```swift
 /// let results = try await context.findSimilar(Product.self)
-///     .vector(\.embedding, dimensions: 384)
+///     .vector(Product.fields.embedding, dimensions: 384)
 ///     .query(queryVector, k: 10)
 ///     .filter { product in product.category == "electronics" }
 ///     .acorn(expansionFactor: 3)

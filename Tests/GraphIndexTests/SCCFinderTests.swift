@@ -6,10 +6,9 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseRuntime
-import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -24,17 +23,17 @@ struct EdgeForSCC {
     var relationship: String = ""
     var to: String = ""
 
-    #Index(GraphIndexKind<EdgeForSCC>(
-        from: \.from,
-        edge: \.relationship,
-        to: \.to,
-        strategy: .tripleStore
-    ))
+    #Index(
+        .propertyGraph(strategy: .tripleStore),
+        from: \EdgeForSCC.from,
+        edge: \EdgeForSCC.relationship,
+        to: \EdgeForSCC.to
+    )
 }
 
 // MARK: - Test Suite
 
-@Suite("SCC Finder Tests", .serialized, .heartbeat)
+@Suite("SCC Finder Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct SCCFinderTests {
 
     init() async throws {
@@ -49,8 +48,18 @@ struct SCCFinderTests {
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([EdgeForSCC.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [EdgeForSCC.self]), security: .disabled)
+        let schema = try Schema(
+            entities: [try EdgeForSCC.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        return try await DBContainer.open(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [EdgeForSCC.self]
+            ),
+            security: .disabled
+        )
     }
 
     private func insertEdges(_ edges: [EdgeForSCC], context: DatabaseContext) async throws {
@@ -388,7 +397,7 @@ struct SCCFinderTests {
 
 // MARK: - GraphEdgeScanner Batch Method Tests
 
-@Suite("GraphEdgeScanner Batch Tests", .serialized, .heartbeat)
+@Suite("GraphEdgeScanner Batch Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct GraphEdgeScannerBatchTests {
 
     init() async throws {
@@ -401,8 +410,18 @@ struct GraphEdgeScannerBatchTests {
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([EdgeForSCC.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [EdgeForSCC.self]), security: .disabled)
+        let schema = try Schema(
+            entities: [try EdgeForSCC.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        return try await DBContainer.open(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [EdgeForSCC.self]
+            ),
+            security: .disabled
+        )
     }
 
     private func insertEdges(_ edges: [EdgeForSCC], context: DatabaseContext) async throws {
@@ -481,8 +500,9 @@ struct GraphEdgeScannerBatchTests {
         try await insertEdges(edges, context: context)
 
         // Get the graph scanner
-        guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
+        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
+            $0.kindIdentifier
+                == IndexDefinition.propertyGraph().identifier
         }) else {
             throw SCCError.graphIndexNotFound
         }
@@ -540,8 +560,9 @@ struct GraphEdgeScannerBatchTests {
         try await insertEdges(edges, context: context)
 
         // Get the graph scanner
-        guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
+        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
+            $0.kindIdentifier
+                == IndexDefinition.propertyGraph().identifier
         }) else {
             throw SCCError.graphIndexNotFound
         }
@@ -591,8 +612,9 @@ struct GraphEdgeScannerBatchTests {
         ]
         try await insertEdges(edges, context: context)
 
-        guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
+        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
+            $0.kindIdentifier
+                == IndexDefinition.propertyGraph().identifier
         }) else {
             throw SCCError.graphIndexNotFound
         }
@@ -631,8 +653,9 @@ struct GraphEdgeScannerBatchTests {
         ]
         try await insertEdges(edges, context: context)
 
-        guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
+        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
+            $0.kindIdentifier
+                == IndexDefinition.propertyGraph().identifier
         }) else {
             throw SCCError.graphIndexNotFound
         }
@@ -676,8 +699,9 @@ struct GraphEdgeScannerBatchTests {
         ]
         try await insertEdges(edges, context: context)
 
-        guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
+        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
+            $0.kindIdentifier
+                == IndexDefinition.propertyGraph().identifier
         }) else {
             throw SCCError.graphIndexNotFound
         }
@@ -723,8 +747,9 @@ struct GraphEdgeScannerBatchTests {
         ]
         try await insertEdges(edges, context: context)
 
-        guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
+        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
+            $0.kindIdentifier
+                == IndexDefinition.propertyGraph().identifier
         }) else {
             throw SCCError.graphIndexNotFound
         }
@@ -767,8 +792,9 @@ struct GraphEdgeScannerBatchTests {
         ]
         try await insertEdges(edges, context: context)
 
-        guard let descriptor = EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier == GraphIndexKind<EdgeForSCC>.identifier
+        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
+            $0.kindIdentifier
+                == IndexDefinition.propertyGraph().identifier
         }) else {
             throw SCCError.graphIndexNotFound
         }

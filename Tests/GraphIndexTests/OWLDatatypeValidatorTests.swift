@@ -1,5 +1,5 @@
-import Graph
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import OntologyIndex
 import Testing
 
@@ -471,15 +471,15 @@ struct OWLDatatypeValidatorTests {
     @Test("Language metadata is admitted only by its RDF datatype")
     func languageMetadata() throws {
         let validator = OWLDatatypeValidator(profile: .owl2RDF11)
-        let tagged = OWLLiteral(
+        let tagged = RDFLiteral(
             lexicalForm: "hello",
-            language: try DatabaseRDFLanguageTag("en-US")
+            language: try RDFLanguageTag("en-US")
         )
 
         try validator.validateLexicalForm(tagged)
-        try validator.validateLexicalForm(OWLLiteral(
+        try validator.validateLexicalForm(RDFLiteral(
             lexicalForm: "hello",
-            language: try DatabaseRDFLanguageTag(
+            language: try RDFLanguageTag(
                 "en-Latn-US-u-ca-gregory-x-private"
             )
         ))
@@ -490,15 +490,12 @@ struct OWLDatatypeValidatorTests {
             "de-1901-1901",
             "en-a-foo-a-bar",
         ] {
-            assertInvalidLexicalForm {
-                try validator.validateLexicalForm(OWLLiteral(
-                    lexicalForm: "hello",
-                    language: try DatabaseRDFLanguageTag(invalidTag)
-                ))
+            #expect(throws: RDFLanguageTagError.self) {
+                _ = try RDFLanguageTag(invalidTag)
             }
         }
-        #expect(throws: DatabaseRDFLanguageTagError.self) {
-            _ = try DatabaseRDFLanguageTag("en-abcdefghi")
+        #expect(throws: RDFLanguageTagError.self) {
+            _ = try RDFLanguageTag("en-abcdefghi")
         }
 
         let bounded = OWLDatatypeValidator(
@@ -506,9 +503,9 @@ struct OWLDatatypeValidatorTests {
             limits: XSDValidationLimits(maxLanguageSubtags: 2)
         )
         assertResourceFailure(resource: "languageSubtags") {
-            try bounded.validateLexicalForm(OWLLiteral(
+            try bounded.validateLexicalForm(RDFLiteral(
                 lexicalForm: "hello",
-                language: try DatabaseRDFLanguageTag("en-Latn-US")
+                language: try RDFLanguageTag("en-Latn-US")
             ))
         }
     }
@@ -561,13 +558,13 @@ struct OWLDatatypeValidatorTests {
 
     @Test("Pattern facet values use the same typed literal validation path")
     func patternFacetMetadata() {
-        let validator = OWLDatatypeValidator()
+        let validator = OWLDatatypeValidator(profile: .owl2RDF11)
         assertInvalidRestriction {
             _ = try validator.compile(.datatypeRestriction(
                 datatype: Self.xsd + "string",
                 facets: [FacetRestriction(
                     facet: .pattern,
-                    value: OWLLiteral(
+                    value: RDFLiteral(
                         lexicalForm: "a",
                         language: .english
                     )
@@ -579,8 +576,8 @@ struct OWLDatatypeValidatorTests {
     private func literal(
         _ lexicalForm: String,
         _ datatype: String
-    ) throws -> OWLLiteral {
-        try OWLLiteral(
+    ) throws -> RDFLiteral {
+        try RDFLiteral(
             lexicalForm: lexicalForm,
             datatype: Self.xsd + datatype
         )
@@ -589,8 +586,8 @@ struct OWLDatatypeValidatorTests {
     private func rdfLiteral(
         _ lexicalForm: String,
         _ datatype: String
-    ) throws -> OWLLiteral {
-        try OWLLiteral(
+    ) throws -> RDFLiteral {
+        try RDFLiteral(
             lexicalForm: lexicalForm,
             datatype: Self.rdf + datatype
         )
@@ -599,8 +596,8 @@ struct OWLDatatypeValidatorTests {
     private func owlLiteral(
         _ lexicalForm: String,
         _ datatype: String
-    ) throws -> OWLLiteral {
-        try OWLLiteral(
+    ) throws -> RDFLiteral {
+        try RDFLiteral(
             lexicalForm: lexicalForm,
             datatype: Self.owl + datatype
         )

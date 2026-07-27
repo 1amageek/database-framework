@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -90,7 +90,11 @@ private struct CountIndexContext {
 
         let index = Index(
             name: indexName,
-            kind: CountIndexKind<CountIndexedUser>(groupBy: [\.city]),
+            kind: countIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "city", number: 2)
+                ]
+            ),
             rootExpression: FieldKeyExpression(fieldName: "city"),
             subspaceKey: indexName,
             itemTypes: Set(["CountIndexedUser"])
@@ -446,7 +450,12 @@ struct CountIndexBehaviorTests {
 
         let index = Index(
             name: "CountIndexedUser_city_department",
-            kind: CountIndexKind<CountIndexedUser>(groupBy: [\.city, \.department]),
+            kind: countIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "city", number: 2),
+                    FieldIdentity(name: "department", number: 3),
+                ]
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "city"),
                 FieldKeyExpression(fieldName: "department")

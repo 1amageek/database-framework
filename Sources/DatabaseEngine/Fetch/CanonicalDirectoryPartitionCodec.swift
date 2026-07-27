@@ -1,16 +1,19 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
 
 enum CanonicalDirectoryPartitionCodec {
     private static let prefix = "dbp1-"
 
-    static func encode(_ value: DatabaseValue) throws -> String {
-        var writer = DatabaseWireWriter()
-        try value.encode(into: &writer)
+    static func encode(_ value: FieldValue) throws -> String {
+        // Directory APIs require an owned String. The bounded storage frame is
+        // the only intermediate materialization before that output boundary.
+        let bytes = try StorageFrameEncoder.encode {
+            writer throws(StorageFrameError) in
+            try StorageValueEncoder.write(value, into: &writer)
+        }
 
         var encoded = prefix
-        encoded.reserveCapacity(prefix.count + writer.bytes.count * 2)
-        for byte in writer.bytes {
+        encoded.reserveCapacity(prefix.count + bytes.count * 2)
+        for byte in bytes {
             encoded.append(hexDigit(byte >> 4))
             encoded.append(hexDigit(byte & 0x0f))
         }

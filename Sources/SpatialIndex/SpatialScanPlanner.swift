@@ -6,10 +6,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseMath
 import DatabaseEngine
-import Geospatial
+import DatabaseKit
 
 internal enum SpatialScanPlan: Sendable {
     case cells([UInt64])

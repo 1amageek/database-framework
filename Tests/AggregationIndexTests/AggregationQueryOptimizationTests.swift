@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -16,64 +16,12 @@ import DatabaseRuntime
 // MARK: - Test Models
 
 /// Test model with COUNT index for testing index-backed execution
-struct AggregationOrder: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct AggregationOrder {
+    var id: String = UUID().uuidString
     var region: String
     var amount: Int64
-    var quantity: Int64
-
-    init(id: String = UUID().uuidString, region: String, amount: Int64, quantity: Int64 = 1) {
-        self.id = id
-        self.region = region
-        self.amount = amount
-        self.quantity = quantity
-    }
-
-    static var persistableType: String { "AggregationOrder" }
-    static var allFields: [String] { ["id", "region", "amount", "quantity"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "region": return region
-        case "amount": return amount
-        case "quantity": return quantity
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<AggregationOrder, Value>) -> String {
-        switch keyPath {
-        case \AggregationOrder.id: return "id"
-        case \AggregationOrder.region: return "region"
-        case \AggregationOrder.amount: return "amount"
-        case \AggregationOrder.quantity: return "quantity"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<AggregationOrder>) -> String {
-        switch keyPath {
-        case \AggregationOrder.id: return "id"
-        case \AggregationOrder.region: return "region"
-        case \AggregationOrder.amount: return "amount"
-        case \AggregationOrder.quantity: return "quantity"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<AggregationOrder> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var quantity: Int64 = 1
 }
 
 // MARK: - Schema Entity Construction
@@ -83,12 +31,13 @@ private func makeAggregationOrderEntity(
     name: String,
     allFields: [String],
     indexDescriptors: [IndexDescriptor]
-) -> Schema.Entity {
+) throws -> Schema.Entity {
     precondition(name == AggregationOrder.persistableType)
     precondition(allFields == AggregationOrder.allFields)
-    var entity = Schema.Entity(from: AggregationOrder.self)
-    entity.indexDescriptors = indexDescriptors
-    return entity
+    return try Schema.Entity(
+        from: AggregationOrder.self,
+        including: indexDescriptors
+    )
 }
 
 // MARK: - Aggregation Query Context
@@ -113,7 +62,11 @@ private struct AggregationQueryContext {
         // COUNT index: group by region
         let countIndex = Index(
             name: "AggregationOrder_count_region",
-            kind: CountIndexKind<AggregationOrder>(groupBy: [\.region]),
+            kind: countIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ]
+            ),
             rootExpression: FieldKeyExpression(fieldName: "region"),
             subspaceKey: "AggregationOrder_count_region",
             itemTypes: Set(["AggregationOrder"])
@@ -127,7 +80,14 @@ private struct AggregationQueryContext {
         // SUM index: group by region, sum amount
         let sumIndex = Index(
             name: "AggregationOrder_sum_region_amount",
-            kind: SumIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .sum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 3),
+                valueType: .int64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
@@ -144,7 +104,14 @@ private struct AggregationQueryContext {
         // AVG index: group by region, avg amount
         let avgIndex = Index(
             name: "AggregationOrder_avg_region_amount",
-            kind: AverageIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .average,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 3),
+                valueType: .int64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
@@ -293,15 +260,18 @@ struct AggregationQueryOptimizationTests {
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "min", testId).pack())
 
         // Create schema with MinIndexKind
-        let minIndexDescriptor = IndexDescriptor(
+        let minIndexDescriptor = try IndexDescriptor(
             name: "AggregationOrder_min_region_amount",
-            keyPaths: [\AggregationOrder.region, \AggregationOrder.amount],
-            kind: MinIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount)
+            definition: .minimum,
+            fields: [
+                AggregationOrder.fields.region.ascending,
+                AggregationOrder.fields.amount.ascending,
+            ]
         )
 
-        let schema = Schema(
+        let schema = try Schema(
             entities: [
-                makeAggregationOrderEntity(
+                try makeAggregationOrderEntity(
                     name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [minIndexDescriptor]
@@ -314,8 +284,8 @@ struct AggregationQueryOptimizationTests {
 
         // Build query with MIN aggregation
         let builder = context.aggregate(AggregationOrder.self)
-            .groupBy(\AggregationOrder.region)
-            .min(\AggregationOrder.amount, as: "minAmount")
+            .groupBy(AggregationOrder.fields.region)
+            .min(AggregationOrder.fields.amount, as: "minAmount")
 
         // Check that determineExecutionStrategies returns useIndex for MIN (Phase 1 implementation)
         let strategies = try builder.determineExecutionStrategies()
@@ -346,15 +316,18 @@ struct AggregationQueryOptimizationTests {
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "max", testId).pack())
 
         // Create schema with MaxIndexKind
-        let maxIndexDescriptor = IndexDescriptor(
+        let maxIndexDescriptor = try IndexDescriptor(
             name: "AggregationOrder_max_region_amount",
-            keyPaths: [\AggregationOrder.region, \AggregationOrder.amount],
-            kind: MaxIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount)
+            definition: .maximum,
+            fields: [
+                AggregationOrder.fields.region.ascending,
+                AggregationOrder.fields.amount.ascending,
+            ]
         )
 
-        let schema = Schema(
+        let schema = try Schema(
             entities: [
-                makeAggregationOrderEntity(
+                try makeAggregationOrderEntity(
                     name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [maxIndexDescriptor]
@@ -367,8 +340,8 @@ struct AggregationQueryOptimizationTests {
 
         // Build query with MAX aggregation
         let builder = context.aggregate(AggregationOrder.self)
-            .groupBy(\AggregationOrder.region)
-            .max(\AggregationOrder.amount, as: "maxAmount")
+            .groupBy(AggregationOrder.fields.region)
+            .max(AggregationOrder.fields.amount, as: "maxAmount")
 
         // Check that determineExecutionStrategies returns useIndex for MAX (Phase 1 implementation)
         let strategies = try builder.determineExecutionStrategies()
@@ -399,15 +372,17 @@ struct AggregationQueryOptimizationTests {
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "count_match", testId).pack())
 
         // Create schema with CountIndexKind
-        let countIndexDescriptor = IndexDescriptor(
+        let countIndexDescriptor = try IndexDescriptor(
             name: "AggregationOrder_count_region",
-            keyPaths: [\AggregationOrder.region],
-            kind: CountIndexKind<AggregationOrder>(groupBy: [\.region])
+            definition: .count,
+            fields: [
+                AggregationOrder.fields.region.ascending
+            ]
         )
 
-        let schema = Schema(
+        let schema = try Schema(
             entities: [
-                makeAggregationOrderEntity(
+                try makeAggregationOrderEntity(
                     name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [countIndexDescriptor]
@@ -420,7 +395,7 @@ struct AggregationQueryOptimizationTests {
 
         // Build query with COUNT aggregation matching the index
         let builder = context.aggregate(AggregationOrder.self)
-            .groupBy(\AggregationOrder.region)
+            .groupBy(AggregationOrder.fields.region)
             .count(as: "orderCount")
 
         // Check that determineExecutionStrategies returns useIndex for COUNT
@@ -451,15 +426,18 @@ struct AggregationQueryOptimizationTests {
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "sum_match", testId).pack())
 
         // Create schema with SumIndexKind
-        let sumIndexDescriptor = IndexDescriptor(
+        let sumIndexDescriptor = try IndexDescriptor(
             name: "AggregationOrder_sum_region_amount",
-            keyPaths: [\AggregationOrder.region, \AggregationOrder.amount],
-            kind: SumIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount)
+            definition: .sum,
+            fields: [
+                AggregationOrder.fields.region.ascending,
+                AggregationOrder.fields.amount.ascending,
+            ]
         )
 
-        let schema = Schema(
+        let schema = try Schema(
             entities: [
-                makeAggregationOrderEntity(
+                try makeAggregationOrderEntity(
                     name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [sumIndexDescriptor]
@@ -472,8 +450,8 @@ struct AggregationQueryOptimizationTests {
 
         // Build query with SUM aggregation matching the index
         let builder = context.aggregate(AggregationOrder.self)
-            .groupBy(\AggregationOrder.region)
-            .sum(\AggregationOrder.amount, as: "totalAmount")
+            .groupBy(AggregationOrder.fields.region)
+            .sum(AggregationOrder.fields.amount, as: "totalAmount")
 
         // Check that determineExecutionStrategies returns useIndex for SUM
         let strategies = try builder.determineExecutionStrategies()
@@ -505,20 +483,25 @@ struct AggregationQueryOptimizationTests {
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "mixed", testId).pack())
 
         // Create schema with COUNT and MIN indexes
-        let countIndexDescriptor = IndexDescriptor(
+        let countIndexDescriptor = try IndexDescriptor(
             name: "AggregationOrder_count_region",
-            keyPaths: [\AggregationOrder.region],
-            kind: CountIndexKind<AggregationOrder>(groupBy: [\.region])
+            definition: .count,
+            fields: [
+                AggregationOrder.fields.region.ascending
+            ]
         )
-        let minIndexDescriptor = IndexDescriptor(
+        let minIndexDescriptor = try IndexDescriptor(
             name: "AggregationOrder_min_region_amount",
-            keyPaths: [\AggregationOrder.region, \AggregationOrder.amount],
-            kind: MinIndexKind<AggregationOrder, Int64>(groupBy: [\.region], value: \.amount)
+            definition: .minimum,
+            fields: [
+                AggregationOrder.fields.region.ascending,
+                AggregationOrder.fields.amount.ascending,
+            ]
         )
 
-        let schema = Schema(
+        let schema = try Schema(
             entities: [
-                makeAggregationOrderEntity(
+                try makeAggregationOrderEntity(
                     name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [countIndexDescriptor, minIndexDescriptor]
@@ -531,9 +514,9 @@ struct AggregationQueryOptimizationTests {
 
         // Build query with both COUNT and MIN (both have indexes)
         let builder = context.aggregate(AggregationOrder.self)
-            .groupBy(\AggregationOrder.region)
+            .groupBy(AggregationOrder.fields.region)
             .count(as: "orderCount")
-            .min(\AggregationOrder.amount, as: "minAmount")
+            .min(AggregationOrder.fields.amount, as: "minAmount")
 
         // Check strategies
         let strategies = try builder.determineExecutionStrategies()
@@ -568,15 +551,17 @@ struct AggregationQueryOptimizationTests {
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "no_match", testId).pack())
 
         // Create schema with COUNT index grouped by 'region'
-        let countIndexDescriptor = IndexDescriptor(
+        let countIndexDescriptor = try IndexDescriptor(
             name: "AggregationOrder_count_region",
-            keyPaths: [\AggregationOrder.region],
-            kind: CountIndexKind<AggregationOrder>(groupBy: [\.region])
+            definition: .count,
+            fields: [
+                AggregationOrder.fields.region.ascending
+            ]
         )
 
-        let schema = Schema(
+        let schema = try Schema(
             entities: [
-                makeAggregationOrderEntity(
+                try makeAggregationOrderEntity(
                     name: "AggregationOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [countIndexDescriptor]
@@ -590,7 +575,7 @@ struct AggregationQueryOptimizationTests {
         // Build query grouping by DIFFERENT field (amount instead of region)
         // This should NOT match the index
         let builder = context.aggregate(AggregationOrder.self)
-            .groupBy(\AggregationOrder.amount)  // Different field than index
+            .groupBy(AggregationOrder.fields.amount)
             .count(as: "orderCount")
 
         // Verify that an index with incompatible grouping is not selected.

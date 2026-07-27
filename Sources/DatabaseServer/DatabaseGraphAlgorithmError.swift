@@ -1,19 +1,19 @@
-import DatabaseWire
-import DatabaseValue
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseTypes
 
 public enum DatabaseGraphAlgorithmError: Error, Sendable, CustomStringConvertible {
     case sourceIndexNotFound(String)
     case sourceIndexHasNoUniqueOwner(String)
     case unsupportedSourceIndex(index: String, kind: String)
-    case expectedPropertyGraphIdentifier(DatabaseGraphTerm)
-    case expectedRDFTerm(DatabaseGraphTerm)
-    case invalidRDFPredicate(DatabaseGraphTerm)
-    case invalidRDFGraphName(DatabaseGraphTerm)
+    case expectedPropertyGraphIdentifier(GraphAlgorithmOperation.Term)
+    case expectedRDFTerm(GraphAlgorithmOperation.Term)
+    case invalidRDFPredicate(GraphAlgorithmOperation.Term)
+    case invalidRDFGraphName(GraphAlgorithmOperation.Term)
     case rdfSourceDoesNotCoverDefaultGraph(index: String)
-    case rdfSourceDoesNotCoverNamedGraph(index: String, graph: DatabaseRDFTerm)
+    case rdfSourceDoesNotCoverNamedGraph(index: String, graph: RDFTerm)
     case weightPropertyNotStored(index: String, property: String)
     case edgeWeightMissing(property: String)
-    case invalidEdgeWeight(property: String, value: DatabaseValue)
+    case invalidEdgeWeight(property: String, value: FieldValue)
     case ambiguousEdgeWeight(property: String)
     case invalidInvocation(String)
     case numericLimitOutOfRange(field: String, value: UInt64)

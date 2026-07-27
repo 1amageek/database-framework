@@ -1,4 +1,4 @@
-import DatabaseWire
+import DatabaseEngine
 
 public enum PropertyGraphDefinitionCatalogError:
     Error,
@@ -7,11 +7,10 @@ public enum PropertyGraphDefinitionCatalogError:
 {
     public enum StoredDefinitionViolation: Sendable, Equatable {
         case valueTooLarge(actual: Int, maximum: Int)
-        case decodingFailed(DatabaseWireError)
-        case unexpectedStatement
+        case decodingFailed(StorageFrameError)
         case graphNameMismatch(actual: String)
         case containsCreationCondition
-        case canonicalizationFailed(DatabaseWireError)
+        case canonicalizationFailed(StorageFrameError)
         case nonCanonicalEncoding
     }
 
@@ -20,7 +19,7 @@ public enum PropertyGraphDefinitionCatalogError:
     case graphNotFound(String)
     case keyTooLarge(actual: Int, maximum: Int)
     case definitionTooLarge(actual: Int, maximum: Int)
-    case definitionCannotBeRepresented(DatabaseWireError)
+    case definitionCannotBeRepresented(StorageFrameError)
     case invalidStoredDefinition(
         graphName: String,
         violation: StoredDefinitionViolation

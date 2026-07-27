@@ -1,8 +1,8 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import StorageKit
 import Testing
@@ -33,23 +33,29 @@ struct DatabaseOperationAdmissionPolicyTests {
             ),
             middlewares: [AnyDatabaseRequestMiddleware(middleware)]
         )
-        let request = try DatabaseEnvelopeCodec.encodeRequest(
-            CapabilitiesDescribeOperation.self,
+        let request = try DatabaseWireEncoder().encodeRequest(
+            DatabaseOperations.capabilitiesDescribe,
             requestID: 700,
-            metadata: DatabaseRequestMetadata(traceID: "admission-test"),
-            request: DatabaseEmpty()
+            metadata: OperationRequestMetadata(traceID: "admission-test"),
+            request: EmptyOperationPayload()
         )
 
         let responseBytes = try await endpoint.execute(request)
-        let response = try DatabaseEnvelopeCodec.decodeResponse(responseBytes)
-        guard case .failure(let error) = response.payload else {
+        let decoder = DatabaseWireDecoder()
+        let header = try decoder.decodeResponseHeader(responseBytes)
+        let response = try decoder.decodeResponse(
+            DatabaseOperations.capabilitiesDescribe,
+            from: responseBytes,
+            matching: 700
+        )
+        guard case .failure(let error) = response else {
             Issue.record("Expected admission denial")
             return
         }
         let middlewareInvocationCount = await middleware.invocationCount
 
-        #expect(response.requestID == 700)
-        #expect(response.operation == .capabilitiesDescribe)
+        #expect(header.requestID == 700)
+        #expect(header.operation == .capabilitiesDescribe)
         #expect(error.category == .authorization)
         #expect(error.code == "OPERATION_DENIED")
         #expect(error.message == "Operation denied")

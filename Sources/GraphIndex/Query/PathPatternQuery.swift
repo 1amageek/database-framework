@@ -8,10 +8,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
-import Graph
+import DatabaseKit
 
 // MARK: - PathPatternQueryBuilder
 
@@ -357,17 +357,17 @@ public struct PathPatternEntryPoint<T: Persistable>: Sendable {
 
     /// Specify the graph index fields
     public func index<V1, V2, V3>(
-        _ from: KeyPath<T, V1>,
-        _ edge: KeyPath<T, V2>,
-        _ to: KeyPath<T, V3>
+        _ from: Field<T, V1>,
+        _ edge: Field<T, V2>,
+        _ to: Field<T, V3>
     ) throws -> PathPatternQueryBuilder<T> {
         return PathPatternQueryBuilder(
             queryContext: queryContext,
             index: try PropertyGraphIndexResolver.exact(
                 signature: PropertyGraphIndexSignature(
-                    sourceFieldName: T.fieldName(for: from),
-                    labelFieldName: T.fieldName(for: edge),
-                    targetFieldName: T.fieldName(for: to)
+                    sourceFieldName: from.name,
+                    labelFieldName: edge.name,
+                    targetFieldName: to.name
                 ),
                 for: T.self,
                 in: queryContext

@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public enum DatabaseOperationRegistryError: Error, Sendable, CustomStringConvertible {
     case duplicate(DatabaseOperationIdentifier)

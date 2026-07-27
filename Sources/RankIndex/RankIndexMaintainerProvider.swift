@@ -1,6 +1,5 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import Rank
 import StorageKit
 
 /// Canonical runtime provider for rank indexes.
@@ -17,7 +16,7 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
         try index.kind.validateIdentity(identifier: kindIdentifier, subspaceStructure: .hierarchical)
         try index.kind.validateMetadataKeys(required: ["scoreType", "bucketSize"])
@@ -32,8 +31,6 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
         }
 
         switch try index.kind.requireScalarType("scoreType") {
-        case .int:
-            return make(Int.self, index: index, bucketSize: bucketSize, subspace: subspace, idExpression: idExpression)
         case .int8:
             return make(Int8.self, index: index, bucketSize: bucketSize, subspace: subspace, idExpression: idExpression)
         case .int16:
@@ -42,8 +39,6 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
             return make(Int32.self, index: index, bucketSize: bucketSize, subspace: subspace, idExpression: idExpression)
         case .int64:
             return make(Int64.self, index: index, bucketSize: bucketSize, subspace: subspace, idExpression: idExpression)
-        case .uint:
-            return make(UInt.self, index: index, bucketSize: bucketSize, subspace: subspace, idExpression: idExpression)
         case .uint8:
             return make(UInt8.self, index: index, bucketSize: bucketSize, subspace: subspace, idExpression: idExpression)
         case .uint16:
@@ -52,11 +47,11 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
             return make(UInt32.self, index: index, bucketSize: bucketSize, subspace: subspace, idExpression: idExpression)
         case .uint64:
             return make(UInt64.self, index: index, bucketSize: bucketSize, subspace: subspace, idExpression: idExpression)
-        case .float:
+        case .float32:
             return make(Float.self, index: index, bucketSize: bucketSize, subspace: subspace, idExpression: idExpression)
-        case .double:
+        case .float64:
             return make(Double.self, index: index, bucketSize: bucketSize, subspace: subspace, idExpression: idExpression)
-        case .string, .date:
+        case .string, .date, .timestamp:
             throw IndexMaintainerProviderError.invalidMetadata(
                 kindIdentifier: kindIdentifier,
                 key: "scoreType"

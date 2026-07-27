@@ -1,5 +1,5 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public enum DatabaseJobRuntimeError: Error, CustomStringConvertible, Equatable {
     case invalidConfiguration(String)
@@ -9,24 +9,24 @@ public enum DatabaseJobRuntimeError: Error, CustomStringConvertible, Equatable {
     case planTooLarge(actual: Int, maximum: Int)
     case stateTooLarge(actual: Int, maximum: Int)
     case unsuccessfulOutcomeExceedsLimits(DatabaseWireError)
-    case jobNotFound(DatabaseUUID)
+    case jobNotFound(DatabaseTypes.UUID)
     case jobOperationMismatch(
-        expected: DatabaseJobOperationIdentifier,
-        actual: DatabaseJobOperationIdentifier
+        expected: JobOperationIdentifier,
+        actual: JobOperationIdentifier
     )
-    case resultNotReady(DatabaseUUID)
+    case resultNotReady(DatabaseTypes.UUID)
     case corruptedSpecification
     case corruptedPlan
     case corruptedState
     case corruptedResult
-    case resultChunkMissing(jobID: DatabaseUUID, index: UInt32)
+    case resultChunkMissing(jobID: DatabaseTypes.UUID, index: UInt32)
     case invalidResultContinuation
     case invalidStateTransition
     case stateRevisionOverflow
     case workUnitOverflow
     case sliceExceededBudget(actual: UInt64, maximum: UInt64)
     case responseTooLarge(actual: Int, maximum: Int)
-    case duplicateJobIdentifier(DatabaseUUID)
+    case duplicateJobIdentifier(DatabaseTypes.UUID)
     case commitModelMismatch
 
     public var description: String {

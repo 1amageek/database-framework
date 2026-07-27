@@ -1,21 +1,22 @@
-import DatabaseDigest
+import DatabaseKit
+@_spi(DatabaseServer) import DatabaseWire
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
 
 enum DatabaseGraphQueryResultFingerprint {
-    private static let prefix: DatabaseBytes = [0x47, 0x51, 0x01]
+    private static let prefix: ByteString = [0x47, 0x51, 0x01]
 
     static func compute(
         graph: borrowing DatabaseRetainedRDFGraph,
         wireLimits: DatabaseWireLimits,
         workMeter: DatabaseWorkMeter
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         var hasher = SHA256Accumulator()
         hasher.update(Self.prefix)
         for index in 0..<graph.count {
             try graph.withElement(at: index) { triple in
-                try DatabaseWireWriter.emit(
+                try ServerPayloadEncoder.emit(
+                    triple,
                     limits: wireLimits,
                     prepare: { byteCount in
                         try workMeter.consume(
@@ -30,10 +31,7 @@ enum DatabaseGraphQueryResultFingerprint {
                     consume: { bytes in
                         hasher.update(bytes)
                     }
-                ) {
-                    (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
-                    try triple.encode(into: &writer)
-                }
+                )
             }
         }
         return hasher.finalize()

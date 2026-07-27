@@ -1,22 +1,22 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 struct DatabaseIdempotencyManifest: Sendable, Hashable {
     static let formatVersion: UInt16 = 1
     static let chunkByteCount: UInt32 = 90_000
 
     let operation: DatabaseOperationIdentifier
-    let requestDigest: DatabaseBytes
-    let responseDigest: DatabaseBytes
+    let requestDigest: ByteString
+    let responseDigest: ByteString
     let totalResponseBytes: UInt64
     let chunkCount: UInt32
 
-    func encode(limits: DatabaseWireLimits) throws -> DatabaseBytes {
+    func encode(limits: DatabaseWireLimits) throws -> ByteString {
         try validate(limits: limits)
         return try DatabaseWireWriter.encode(limits: limits) {
             (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
             writer.writeUInt16(Self.formatVersion)
-            operation.encode(into: &writer)
+            writer.writeUInt16(operation.rawValue)
             try writer.writeBytes(requestDigest)
             try writer.writeBytes(responseDigest)
             writer.writeUInt64(totalResponseBytes)
@@ -26,14 +26,18 @@ struct DatabaseIdempotencyManifest: Sendable, Hashable {
     }
 
     static func decode(
-        _ bytes: DatabaseBytes,
+        _ bytes: ByteString,
         limits: DatabaseWireLimits
     ) throws -> Self {
         var reader = DatabaseWireReader(bytes, limits: limits)
         guard try reader.readUInt16() == formatVersion else {
             throw DatabaseMutationError.idempotencyEntryCorrupted
         }
-        let operation = try DatabaseOperationIdentifier(from: &reader)
+        guard let operation = DatabaseOperationIdentifier(
+            rawValue: try reader.readUInt16()
+        ) else {
+            throw DatabaseMutationError.idempotencyEntryCorrupted
+        }
         let requestDigest = try reader.readBytes()
         let responseDigest = try reader.readBytes()
         let totalResponseBytes = try reader.readUInt64()

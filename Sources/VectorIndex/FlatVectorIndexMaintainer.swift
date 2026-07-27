@@ -8,10 +8,9 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
-import Vector
 
 /// Maintainer for flat scan vector indexes
 ///
@@ -31,7 +30,8 @@ import Vector
 /// ```swift
 /// let maintainer = FlatVectorIndexMaintainer<Product>(
 ///     index: vectorIndex,
-///     kind: VectorIndexKind(dimensions: 384, metric: .cosine),
+///     dimensions: 384,
+///     metric: .cosine,
 ///     subspace: vectorSubspace,
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )

@@ -1,7 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 struct DatabaseIndexStatusPager: Sendable {
     private static let maximumPageSize = 256
@@ -20,9 +20,9 @@ struct DatabaseIndexStatusPager: Sendable {
     func page(
         entity entityFilter: String?,
         index indexFilter: String?,
-        partitions partitionFilter: [DatabaseObjectField],
-        continuation: DatabaseBytes?,
-        budget: DatabaseExecutionBudget
+        partitions partitionFilter: FieldObject,
+        continuation: ByteString?,
+        budget: ExecutionBudget
     ) async throws -> DatabaseIndexStatusTargetPage {
         try validateFilters(
             entity: entityFilter,
@@ -116,7 +116,7 @@ struct DatabaseIndexStatusPager: Sendable {
             appendTarget(
                 entity: entity,
                 indexes: indexes,
-                partitions: [],
+                partitions: FieldObject(),
                 state: &state,
                 targets: &targets
             )
@@ -143,7 +143,7 @@ struct DatabaseIndexStatusPager: Sendable {
     private func validateFilters(
         entity: String?,
         index: String?,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) throws {
         if let entity, entity.isEmpty {
             throw DatabaseMaintenanceRuntimeError.invalidInvocation(
@@ -197,7 +197,7 @@ struct DatabaseIndexStatusPager: Sendable {
     private func appendTarget(
         entity: Schema.Entity,
         indexes: [IndexDescriptor],
-        partitions: [DatabaseObjectField],
+        partitions: FieldObject,
         state: inout State,
         targets: inout [DatabaseIndexStatusTarget]
     ) {
@@ -213,10 +213,10 @@ struct DatabaseIndexStatusPager: Sendable {
     }
 
     private func decodeState(
-        _ continuation: DatabaseBytes?,
+        _ continuation: ByteString?,
         entityFilter: String?,
         indexFilter: String?,
-        partitionFilter: [DatabaseObjectField],
+        partitionFilter: FieldObject,
         entityCount: Int
     ) throws -> State {
         guard let continuation else {
@@ -224,7 +224,7 @@ struct DatabaseIndexStatusPager: Sendable {
         }
         let decoded: DatabaseIndexStatusContinuation
         do {
-            decoded = try DatabaseEnvelopeCodec.decode(
+            decoded = try ServerPayloadDecoder.decode(
                 DatabaseIndexStatusContinuation.self,
                 from: continuation,
                 limits: wireLimits
@@ -253,13 +253,13 @@ struct DatabaseIndexStatusPager: Sendable {
         _ state: State,
         entityFilter: String?,
         indexFilter: String?,
-        partitionFilter: [DatabaseObjectField]
-    ) throws -> DatabaseBytes {
+        partitionFilter: FieldObject
+    ) throws -> ByteString {
         guard let entityPosition = UInt32(exactly: state.entityPosition),
               let indexPosition = UInt32(exactly: state.indexPosition) else {
             throw DatabaseMaintenanceRuntimeError.invalidContinuation
         }
-        return try DatabaseEnvelopeCodec.encode(
+        return try ServerPayloadEncoder.encode(
             DatabaseIndexStatusContinuation(
                 entityFilter: entityFilter,
                 indexFilter: indexFilter,
@@ -275,7 +275,7 @@ struct DatabaseIndexStatusPager: Sendable {
     private struct State {
         var entityPosition: Int = 0
         var indexPosition: Int = 0
-        var partitionCatalogContinuation: DatabaseBytes? = nil
+        var partitionCatalogContinuation: ByteString? = nil
 
         mutating func advanceEntity() {
             entityPosition += 1

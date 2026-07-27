@@ -9,7 +9,7 @@ import Foundation
 
 // MARK: - Helper
 
-private func parseQuery(_ sparql: String) throws -> QueryIR.SelectQuery {
+private func parseQuery(_ sparql: String) throws -> SelectQuery {
     let parser = SPARQLParser()
     return try parser.parseSelect(sparql)
 }
@@ -36,9 +36,13 @@ private func requireTriplePatterns(
     return try basicGraphPattern.triplePatterns()
 }
 
-private func parseExpression(_ sparql: String) throws -> QueryIR.Expression {
+private func parseExpression(
+    _ sparql: String
+) throws -> DatabaseKit.Expression {
     let pattern = try parsePattern(sparql)
-    func findFilter(_ p: GraphPattern) -> QueryIR.Expression? {
+    func findFilter(
+        _ p: GraphPattern
+    ) -> DatabaseKit.Expression? {
         switch p {
         case .filter(_, let expr): return expr
         case .join(let l, let r): return findFilter(l) ?? findFilter(r)

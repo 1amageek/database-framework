@@ -1,645 +1,284 @@
 #if FOUNDATION_DB
-// SHACLTypeTests.swift
-// Pure unit tests for SHACL types, PrefixMap, and RDFTerm
-//
-// These tests do NOT require FoundationDB. They verify
-// Codable round-trips, computed properties, and convenience APIs
-// for the Graph module's SHACL types, PrefixMap, and RDFTerm.
-
-import Testing
+import DatabaseKit
+import DatabaseTypes
 import TestHeartbeat
-import Foundation
-import DatabaseValue
-import Graph
+import Testing
 @testable import GraphIndex
 
-@Suite("Canonical RDF term storage encoding", .heartbeat)
-struct CanonicalRDFTermStorageEncodingTests {
-    @Test("All RDF term roles round-trip through canonical storage encoding")
-    func allRDFTermRolesRoundTripThroughCanonicalStorageEncoding() throws {
-        let terms: [DatabaseRDFTerm] = [
-            .iri("https://example.com/alice"),
-            .blankNode("node-1"),
-            .literal(
-                DatabaseRDFLiteral(
-                    lexicalForm: "Alice",
-                    datatype: .xsdString
-                )
-            ),
-            .tripleTerm(
-                subject: .iri("https://example.com/alice"),
-                predicate: .iri("https://example.com/knows"),
-                object: .iri("https://example.com/bob")
-            ),
-        ]
-
-        for term in terms {
-            let encoded = try DatabaseRDFTermCodec.encode(term)
-            let decoded = try DatabaseRDFTermCodec.decode(encoded)
-            #expect(decoded == term)
-        }
-    }
-
-    @Test("Literal metadata and special characters round-trip exactly")
-    func literalMetadataAndSpecialCharactersRoundTripExactly() throws {
-        let term = DatabaseRDFTerm.literal(
-            DatabaseRDFLiteral(
-                lexicalForm: "line1\nline2\t\"quoted\" \\slash",
-                language: try DatabaseRDFLanguageTag("en"),
-                direction: .leftToRight
-            )
+@Suite("Prefix map semantics", .heartbeat)
+struct PrefixMapTests {
+    @Test("Registered prefixes expand and the longest namespace compacts")
+    func expansionAndCompaction() {
+        var prefixes = PrefixMap.standard
+        prefixes.register(prefix: "ex", namespace: "https://example.com/")
+        prefixes.register(
+            prefix: "vocab",
+            namespace: "https://example.com/vocabulary/"
         )
 
-        let encoded = try DatabaseRDFTermCodec.encode(term)
-        let decoded = try DatabaseRDFTermCodec.decode(encoded)
-
-        #expect(decoded == term)
+        #expect(
+            prefixes.expand("sh:NodeShape")
+                == "http://www.w3.org/ns/shacl#NodeShape"
+        )
+        #expect(
+            prefixes.expand("ex:Person")
+                == "https://example.com/Person"
+        )
+        #expect(
+            prefixes.compact("https://example.com/vocabulary/Person")
+                == "vocab:Person"
+        )
     }
-}
 
-// MARK: - PrefixMap Tests
-
-@Suite("PrefixMap Tests", .heartbeat)
-struct PrefixMapTests {
-
-    @Test("Expand prefixed name to full IRI")
-    func testExpandPrefixed() {
+    @Test("Unknown prefixes and absolute IRIs remain unchanged")
+    func unknownAndAbsoluteValuesRemainUnchanged() {
         let prefixes = PrefixMap.standard
-        let expanded = prefixes.expand("sh:NodeShape")
-        #expect(expanded == "http://www.w3.org/ns/shacl#NodeShape")
+
+        #expect(prefixes.expand("unknown:Person") == "unknown:Person")
+        #expect(
+            prefixes.expand("https://example.com/Person")
+                == "https://example.com/Person"
+        )
+        #expect(
+            prefixes.compact("https://example.com/Person")
+                == "https://example.com/Person"
+        )
     }
 
-    @Test("Expand full IRI unchanged when it contains //")
-    func testExpandFullIRI() {
-        let prefixes = PrefixMap.standard
-        let fullIRI = "http://example.org/foo"
-        let expanded = prefixes.expand(fullIRI)
-        #expect(expanded == fullIRI)
-    }
-
-    @Test("Expand with unknown prefix returns input unchanged")
-    func testExpandUnknownPrefix() {
-        let prefixes = PrefixMap.standard
-        let input = "unknown:Foo"
-        let expanded = prefixes.expand(input)
-        #expect(expanded == input)
-    }
-
-    @Test("Compact full SHACL IRI to prefixed form")
-    func testCompactFullIRI() {
-        let prefixes = PrefixMap.standard
-        let compacted = prefixes.compact("http://www.w3.org/ns/shacl#NodeShape")
-        #expect(compacted == "sh:NodeShape")
-    }
-
-    @Test("Compact unknown IRI returns input unchanged")
-    func testCompactNoMatch() {
-        let prefixes = PrefixMap.standard
-        let unknownIRI = "http://unknown.example.org/Thing"
-        let compacted = prefixes.compact(unknownIRI)
-        #expect(compacted == unknownIRI)
-    }
-
-    @Test("Compact selects longest matching namespace prefix")
-    func testCompactLongestMatch() {
-        var prefixes = PrefixMap()
-        prefixes.register(prefix: "ex", namespace: "http://example.org/")
-        prefixes.register(prefix: "exvocab", namespace: "http://example.org/vocab/")
-
-        let compacted = prefixes.compact("http://example.org/vocab/Term")
-        #expect(compacted == "exvocab:Term")
-    }
-
-    @Test("Register custom prefix and expand")
-    func testRegisterAndExpand() {
-        var prefixes = PrefixMap()
-        prefixes.register(prefix: "myns", namespace: "http://myapp.example.com/ns/")
-
-        let expanded = prefixes.expand("myns:Widget")
-        #expect(expanded == "http://myapp.example.com/ns/Widget")
-    }
-
-    @Test("Merge two PrefixMaps and both work")
-    func testMerged() {
-        let first = PrefixMap(["a": "http://a.example.org/"])
-        let second = PrefixMap(["b": "http://b.example.org/"])
-
-        let merged = first.merged(with: second)
-        #expect(merged.expand("a:Foo") == "http://a.example.org/Foo")
-        #expect(merged.expand("b:Bar") == "http://b.example.org/Bar")
-    }
-
-    @Test("Standard prefixes contain rdf, rdfs, owl, xsd, sh")
-    func testStandardPrefixes() {
-        let standard = PrefixMap.standard
-        let prefixes = standard.prefixes
-
-        #expect(prefixes.contains("rdf"))
-        #expect(prefixes.contains("rdfs"))
-        #expect(prefixes.contains("owl"))
-        #expect(prefixes.contains("xsd"))
-        #expect(prefixes.contains("sh"))
-    }
-
-    @Test("Codable round-trip preserves PrefixMap equality")
-    func testCodableRoundTrip() throws {
-        var original = PrefixMap.standard
-        original.register(prefix: "test", namespace: "http://test.example.org/")
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        let data = try encoder.encode(original)
-        let decoded = try JSONDecoder().decode(PrefixMap.self, from: data)
-
-        #expect(original == decoded)
-    }
-}
-
-// MARK: - SHACLPath Tests
-
-@Suite("SHACLPath Tests", .heartbeat)
-struct SHACLPathTests {
-
-    @Test("Predicate path reports isPredicatePath and predicateIRI")
-    func testPredicatePath() {
-        let path: SHACLPath = .predicate("ex:name")
-        #expect(path.isPredicatePath == true)
-        #expect(path.predicateIRI == "ex:name")
-    }
-
-    @Test("Inverse path is not a predicate path")
-    func testInversePath() {
-        let path: SHACLPath = .inverse(.predicate("ex:knows"))
-        #expect(path.isPredicatePath == false)
-        #expect(path.predicateIRI == nil)
-    }
-
-    @Test("Sequence path collects all referenced predicates")
-    func testReferencedPredicates() {
-        let path: SHACLPath = .sequence([
-            .predicate("ex:parent"),
-            .predicate("ex:name"),
-            .inverse(.predicate("ex:child"))
+    @Test("Merging replaces conflicting mappings with the incoming map")
+    func mergePrecedence() {
+        let original = PrefixMap([
+            "ex": "https://original.example/",
+            "stable": "https://stable.example/",
         ])
-        let predicates = path.referencedPredicates
-        #expect(predicates == Set(["ex:parent", "ex:name", "ex:child"]))
+        let incoming = PrefixMap([
+            "ex": "https://incoming.example/",
+        ])
+
+        let merged = original.merged(with: incoming)
+
+        #expect(
+            merged.expand("ex:Value")
+                == "https://incoming.example/Value"
+        )
+        #expect(
+            merged.expand("stable:Value")
+                == "https://stable.example/Value"
+        )
+    }
+}
+
+@Suite("SHACL path semantics", .heartbeat)
+struct SHACLPathTests {
+    @Test("Predicate paths expose their typed predicate")
+    func predicatePath() throws {
+        let predicate = try RDFPredicateIRI("https://example.com/name")
+        let path = SHACLPath.predicate(predicate)
+
+        #expect(path.isPredicatePath)
+        #expect(path.predicateIRI == predicate)
+        #expect(path.referencedPredicates == Set([predicate]))
     }
 
-    @Test("Codable round-trip for various path types")
-    func testCodableRoundTrip() throws {
-        let paths: [SHACLPath] = [
-            .predicate("ex:name"),
-            .inverse(.predicate("ex:knows")),
-            .sequence([.predicate("ex:parent"), .predicate("ex:name")]),
-            .alternative([.predicate("rdfs:label"), .predicate("skos:prefLabel")]),
-            .zeroOrMore(.predicate("ex:knows")),
-            .oneOrMore(.predicate("ex:parent")),
-            .zeroOrOne(.predicate("ex:nickname")),
-        ]
+    @Test("Compound paths collect every referenced predicate")
+    func compoundPathReferences() throws {
+        let parent = try RDFPredicateIRI("https://example.com/parent")
+        let name = try RDFPredicateIRI("https://example.com/name")
+        let child = try RDFPredicateIRI("https://example.com/child")
+        let sequence = try SHACLPathList([
+            .predicate(parent),
+            .predicate(name),
+            .inverse(.predicate(child)),
+        ])
+        let path = SHACLPath.sequence(sequence)
 
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
+        #expect(!path.isPredicatePath)
+        #expect(path.predicateIRI == nil)
+        #expect(path.referencedPredicates == Set([parent, name, child]))
+    }
 
-        for original in paths {
-            let data = try encoder.encode(original)
-            let decoded = try decoder.decode(SHACLPath.self, from: data)
-            #expect(original == decoded)
+    @Test("Sequence and alternative paths require at least two members")
+    func pathListCardinality() throws {
+        let predicate = try RDFPredicateIRI("https://example.com/name")
+
+        #expect(throws: SHACLPathError.insufficientMembers(actual: 0)) {
+            _ = try SHACLPathList([])
+        }
+        #expect(throws: SHACLPathError.insufficientMembers(actual: 1)) {
+            _ = try SHACLPathList([.predicate(predicate)])
         }
     }
 }
 
-// MARK: - SHACLConstraint Tests
-
-@Suite("SHACLConstraint Tests", .heartbeat)
+@Suite("SHACL constraint semantics", .heartbeat)
 struct SHACLConstraintTests {
-
-    @Test("Each constraint type returns correct W3C component IRI")
-    func testComponentIRIs() {
+    @Test("Every constraint reports its W3C component identifier")
+    func componentIdentifiers() throws {
+        let predicate = SHACLPath.predicate(
+            try RDFPredicateIRI("https://example.com/value")
+        )
+        let value = RDFTerm.string("value")
+        let nestedShape = SHACLShape.node(
+            NodeShape(constraints: [.minCount(1)])
+        )
         let cases: [(SHACLConstraint, String)] = [
             (.class_("ex:Person"), "sh:ClassConstraintComponent"),
             (.datatype("xsd:string"), "sh:DatatypeConstraintComponent"),
             (.nodeKind(.iri), "sh:NodeKindConstraintComponent"),
             (.minCount(1), "sh:MinCountConstraintComponent"),
-            (.maxCount(5), "sh:MaxCountConstraintComponent"),
-            (.minExclusive(.integer(0)), "sh:MinExclusiveConstraintComponent"),
-            (.maxExclusive(.integer(100)), "sh:MaxExclusiveConstraintComponent"),
-            (.minInclusive(.integer(1)), "sh:MinInclusiveConstraintComponent"),
-            (.maxInclusive(.integer(99)), "sh:MaxInclusiveConstraintComponent"),
+            (.maxCount(1), "sh:MaxCountConstraintComponent"),
+            (.minExclusive(value), "sh:MinExclusiveConstraintComponent"),
+            (.maxExclusive(value), "sh:MaxExclusiveConstraintComponent"),
+            (.minInclusive(value), "sh:MinInclusiveConstraintComponent"),
+            (.maxInclusive(value), "sh:MaxInclusiveConstraintComponent"),
             (.minLength(1), "sh:MinLengthConstraintComponent"),
-            (.maxLength(255), "sh:MaxLengthConstraintComponent"),
-            (.pattern("^[a-z]+$", flags: "i"), "sh:PatternConstraintComponent"),
-            (.languageIn(["en", "de"]), "sh:LanguageInConstraintComponent"),
+            (.maxLength(1), "sh:MaxLengthConstraintComponent"),
+            (.pattern("value", flags: nil), "sh:PatternConstraintComponent"),
+            (.languageIn(["en"]), "sh:LanguageInConstraintComponent"),
             (.uniqueLang, "sh:UniqueLangConstraintComponent"),
-            (.equals(.predicate("ex:name")), "sh:EqualsConstraintComponent"),
-            (.disjoint(.predicate("ex:other")), "sh:DisjointConstraintComponent"),
-            (.lessThan(.predicate("ex:upper")), "sh:LessThanConstraintComponent"),
-            (.lessThanOrEquals(.predicate("ex:max")), "sh:LessThanOrEqualsConstraintComponent"),
-            (.closed(ignoredProperties: ["rdf:type"]), "sh:ClosedConstraintComponent"),
-            (.hasValue(.iri("ex:Active")), "sh:HasValueConstraintComponent"),
-            (.in_([.iri("ex:A"), .iri("ex:B")]), "sh:InConstraintComponent"),
+            (.equals(predicate), "sh:EqualsConstraintComponent"),
+            (.disjoint(predicate), "sh:DisjointConstraintComponent"),
+            (.lessThan(predicate), "sh:LessThanConstraintComponent"),
+            (
+                .lessThanOrEquals(predicate),
+                "sh:LessThanOrEqualsConstraintComponent"
+            ),
+            (.not(nestedShape), "sh:NotConstraintComponent"),
+            (.and([nestedShape]), "sh:AndConstraintComponent"),
+            (.or([nestedShape]), "sh:OrConstraintComponent"),
+            (.xone([nestedShape]), "sh:XoneConstraintComponent"),
+            (
+                .node(NodeShape()),
+                "sh:NodeConstraintComponent"
+            ),
+            (
+                .qualifiedValueShape(
+                    shape: nestedShape,
+                    min: 1,
+                    max: 2
+                ),
+                "sh:QualifiedValueShapeConstraintComponent"
+            ),
+            (
+                .closed(ignoredProperties: []),
+                "sh:ClosedConstraintComponent"
+            ),
+            (.hasValue(value), "sh:HasValueConstraintComponent"),
+            (.in_([value]), "sh:InConstraintComponent"),
         ]
 
-        for (constraint, expectedIRI) in cases {
-            #expect(constraint.componentIRI == expectedIRI)
+        for (constraint, expectedIdentifier) in cases {
+            #expect(constraint.componentIRI == expectedIdentifier)
         }
     }
 
-    @Test("Invalid pattern throws typed SHACL error")
-    func testInvalidPatternThrowsTypedError() throws {
+    @Test("Invalid regular expressions fail with the typed SHACL error")
+    func invalidRegularExpression() {
         do {
             _ = try SHACLRegularExpression(pattern: "[", flags: nil)
-            Issue.record("Expected SHACLError.invalidPattern to be thrown")
+            Issue.record("Expected invalidPattern")
         } catch let error as SHACLError {
-            if case .invalidPattern(let regex, let reason) = error {
-                #expect(regex == "[")
-                #expect(!reason.isEmpty)
-            } else {
-                Issue.record("Expected invalidPattern, got \(error)")
+            guard case .invalidPattern(let expression, let reason) = error
+            else {
+                Issue.record("Expected invalidPattern, received \(error)")
+                return
             }
-        }
-    }
-
-    @Test("Codable round-trip for constraints including indirect cases")
-    func testCodableRoundTrip() throws {
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        let constraints: [SHACLConstraint] = [
-            .class_("ex:Person"),
-            .datatype("xsd:string"),
-            .nodeKind(.literal),
-            .minCount(1),
-            .maxCount(10),
-            .minExclusive(.decimal(0.5)),
-            .maxInclusive(.integer(100)),
-            .minLength(3),
-            .maxLength(50),
-            .pattern("^\\d+$", flags: nil),
-            .languageIn(["en", "fr", "de"]),
-            .uniqueLang,
-            .equals(.predicate("ex:sameAs")),
-            .disjoint(.predicate("ex:differentFrom")),
-            .lessThan(.predicate("ex:upper")),
-            .lessThanOrEquals(.predicate("ex:ceiling")),
-            .closed(ignoredProperties: ["rdf:type"]),
-            .hasValue(.string("active")),
-            .in_([.integer(1), .integer(2), .integer(3)]),
-            // Indirect cases referencing SHACLShape
-            .not(.node(NodeShape(
-                identifier: .iri("ex:ForbiddenShape"),
-                constraints: [.maxCount(0)]
-            ))),
-            .and([
-                .node(NodeShape(constraints: [.minCount(1)])),
-                .node(NodeShape(constraints: [.datatype("xsd:string")])),
-            ]),
-            .or([
-                .node(NodeShape(constraints: [.datatype("xsd:string")])),
-                .node(NodeShape(constraints: [.datatype("xsd:integer")])),
-            ]),
-            .xone([
-                .node(NodeShape(constraints: [.hasValue(.boolean(true))])),
-                .node(NodeShape(constraints: [.hasValue(.boolean(false))])),
-            ]),
-            .node(NodeShape(
-                identifier: .iri("ex:AddressShape"),
-                constraints: [.minCount(1)]
-            )),
-            .qualifiedValueShape(
-                shape: .node(NodeShape(constraints: [.datatype("xsd:string")])),
-                min: 1,
-                max: 3
-            ),
-        ]
-
-        for original in constraints {
-            let data = try encoder.encode(original)
-            let decoded = try decoder.decode(SHACLConstraint.self, from: data)
-            #expect(original == decoded)
-        }
-    }
-
-    @Test("RDFTerm convenience constructors produce correct OWLLiteral")
-    func testRDFTermConvenience() {
-        let strVal = RDFTerm.string("hello")
-        let intVal = RDFTerm.integer(42)
-        let decVal = RDFTerm.decimal(3.14)
-        let boolVal = RDFTerm.boolean(true)
-
-        // Verify they produce .literal variants with correct OWLLiteral
-        if case .literal(let lit) = strVal {
-            #expect(lit.lexicalForm == "hello")
-            #expect(lit.datatype == "xsd:string")
-        } else {
-            Issue.record("Expected .literal for .string()")
-        }
-
-        if case .literal(let lit) = intVal {
-            #expect(lit.lexicalForm == "42")
-            #expect(lit.datatype == "xsd:integer")
-        } else {
-            Issue.record("Expected .literal for .integer()")
-        }
-
-        if case .literal(let lit) = decVal {
-            #expect(lit.lexicalForm == "3.14")
-            #expect(lit.datatype == "xsd:decimal")
-        } else {
-            Issue.record("Expected .literal for .decimal()")
-        }
-
-        if case .literal(let lit) = boolVal {
-            #expect(lit.lexicalForm == "true")
-            #expect(lit.datatype == "xsd:boolean")
-        } else {
-            Issue.record("Expected .literal for .boolean()")
+            #expect(expression == "[")
+            #expect(!reason.isEmpty)
+        } catch {
+            Issue.record("Expected SHACLError, received \(error)")
         }
     }
 }
 
-// MARK: - SHACLShapesGraph Tests
-
-@Suite("SHACLShapesGraph Tests", .heartbeat)
+@Suite("SHACL shapes graph semantics", .heartbeat)
 struct SHACLShapesGraphTests {
-
-    @Test("Active shapes excludes deactivated shapes")
-    func testActiveShapes() {
-        let graph = SHACLShapesGraph(
-            iri: "http://example.org/shapes",
-            shapes: [
-                .node(NodeShape(
-                    identifier: .iri("ex:ActiveShape"),
-                    targets: [.class_("ex:Person")],
-                    deactivated: false
-                )),
-                .node(NodeShape(
-                    identifier: .iri("ex:InactiveShape"),
-                    targets: [.class_("ex:Animal")],
-                    deactivated: true
-                )),
-                .property(PropertyShape(
-                    identifier: .iri("ex:ActiveProp"),
-                    path: .predicate("ex:name"),
-                    deactivated: false
-                )),
-                .property(PropertyShape(
-                    identifier: .iri("ex:InactiveProp"),
-                    path: .predicate("ex:age"),
-                    deactivated: true
-                )),
-            ]
+    @Test("Graph projections preserve shape identity and activation")
+    func graphProjections() throws {
+        let activeIdentifier = RDFTerm.iri(
+            try RDFIRI("https://example.com/ActiveShape")
         )
-
-        let active = graph.activeShapes
-        #expect(active.count == 2)
-        #expect(active.allSatisfy { !$0.isDeactivated })
-    }
-
-    @Test("findShape(identifier:) returns the matching shape")
-    func testFindShapeByIdentifier() {
-        let targetShape = NodeShape(
-            identifier: .iri("ex:PersonShape"),
-            targets: [.class_("ex:Person")],
-            constraints: [.minCount(1)]
+        let inactiveIdentifier = RDFTerm.iri(
+            try RDFIRI("https://example.com/InactiveShape")
+        )
+        let propertyIdentifier = RDFTerm.iri(
+            try RDFIRI("https://example.com/PropertyShape")
+        )
+        let predicate = SHACLPath.predicate(
+            try RDFPredicateIRI("https://example.com/name")
         )
         let graph = SHACLShapesGraph(
-            iri: "http://example.org/shapes",
+            iri: "https://example.com/shapes",
             shapes: [
-                .node(targetShape),
-                .node(NodeShape(identifier: .iri("ex:OtherShape"))),
-            ]
-        )
-
-        let found = graph.findShape(identifier: .iri("ex:PersonShape"))
-        #expect(found != nil)
-        #expect(found?.identifier == .iri("ex:PersonShape"))
-
-        let notFound = graph.findShape(identifier: .iri("ex:NonExistent"))
-        #expect(notFound == nil)
-    }
-
-    @Test("targetClassIRIs collects all target class IRIs")
-    func testTargetClassIRIs() {
-        let graph = SHACLShapesGraph(
-            iri: "http://example.org/shapes",
-            shapes: [
-                .node(NodeShape(
-                    identifier: .iri("ex:Shape1"),
-                    targets: [.class_("ex:Person"), .class_("ex:Agent")]
-                )),
-                .node(NodeShape(
-                    identifier: .iri("ex:Shape2"),
-                    targets: [.class_("ex:Organization"), .node(.iri("ex:SpecificNode"))]
-                )),
-                .property(PropertyShape(
-                    path: .predicate("ex:name"),
-                    targets: [.class_("ex:Person")]
-                )),
-            ]
-        )
-
-        let classIRIs = graph.targetClassIRIs
-        #expect(classIRIs == Set(["ex:Person", "ex:Agent", "ex:Organization"]))
-    }
-
-    @Test("nodeShapes and propertyShapes computed properties")
-    func testNodeAndPropertyShapeAccess() {
-        let ns1 = NodeShape(identifier: .iri("ex:NS1"))
-        let ns2 = NodeShape(identifier: .iri("ex:NS2"))
-        let ps1 = PropertyShape(path: .predicate("ex:name"))
-        let ps2 = PropertyShape(path: .predicate("ex:age"))
-
-        let graph = SHACLShapesGraph(
-            iri: "http://example.org/shapes",
-            shapes: [
-                .node(ns1),
-                .property(ps1),
-                .node(ns2),
-                .property(ps2),
+                .node(
+                    NodeShape(
+                        identifier: activeIdentifier,
+                        targets: [.class_("https://example.com/Person")]
+                    )
+                ),
+                .node(
+                    NodeShape(
+                        identifier: inactiveIdentifier,
+                        deactivated: true
+                    )
+                ),
+                .property(
+                    PropertyShape(
+                        identifier: propertyIdentifier,
+                        path: predicate
+                    )
+                ),
             ]
         )
 
         #expect(graph.nodeShapes.count == 2)
-        #expect(graph.propertyShapes.count == 2)
-        #expect(graph.nodeShapes[0].identifier == .iri("ex:NS1"))
-        #expect(graph.nodeShapes[1].identifier == .iri("ex:NS2"))
-    }
-
-    @Test("Codable round-trip for full shapes graph")
-    func testCodableRoundTrip() throws {
-        let original = SHACLShapesGraph(
-            iri: "http://example.org/shapes/person",
-            shapes: [
-                .node(NodeShape(
-                    identifier: .iri("ex:PersonShape"),
-                    targets: [.class_("ex:Person")],
-                    constraints: [.nodeKind(.blankNodeOrIRI)],
-                    propertyShapes: [
-                        PropertyShape(
-                            identifier: .iri("ex:PersonNameShape"),
-                            path: .predicate("ex:name"),
-                            constraints: [.minCount(1), .datatype("xsd:string"), .maxLength(200)]
-                        ),
-                        PropertyShape(
-                            path: .predicate("ex:age"),
-                            constraints: [
-                                .minInclusive(.integer(0)),
-                                .maxInclusive(.integer(150)),
-                                .datatype("xsd:integer"),
-                            ]
-                        ),
-                    ],
-                    severity: .violation,
-                    messages: ["Person must have a name"]
-                )),
-                .property(PropertyShape(
-                    identifier: .iri("ex:EmailShape"),
-                    path: .predicate("ex:email"),
-                    constraints: [
-                        .pattern("^[^@]+@[^@]+$", flags: nil),
-                        .nodeKind(.literal),
-                    ],
-                    severity: .warning,
-                    messages: ["Email should be valid"]
-                )),
-            ],
-            prefixes: .standard,
-            entailment: .rdfs
+        #expect(graph.propertyShapes.count == 1)
+        #expect(graph.activeShapes.count == 2)
+        #expect(graph.findShape(identifier: activeIdentifier) != nil)
+        #expect(graph.findShape(identifier: inactiveIdentifier) != nil)
+        #expect(
+            graph.targetClassIRIs
+                == Set(["https://example.com/Person"])
         )
-
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(SHACLShapesGraph.self, from: data)
-        #expect(original == decoded)
     }
 }
 
-// MARK: - SHACLValidationReport Tests
-
-@Suite("SHACLValidationReport Tests", .heartbeat)
+@Suite("SHACL validation report semantics", .heartbeat)
 struct SHACLValidationReportTests {
+    @Test("Only violations make a report nonconforming")
+    func conformanceUsesViolationSeverity() throws {
+        let focusNode = RDFTerm.iri(
+            try RDFIRI("https://example.com/Alice")
+        )
+        let warning = SHACLValidationResult(
+            focusNode: focusNode,
+            sourceConstraintComponent: "sh:PatternConstraintComponent",
+            resultSeverity: .warning
+        )
+        let conformingReport = SHACLValidationReport(results: [warning])
+        let violation = SHACLValidationResult(
+            focusNode: focusNode,
+            sourceConstraintComponent: "sh:MinCountConstraintComponent",
+            resultSeverity: .violation
+        )
+        let nonconformingReport = SHACLValidationReport(
+            results: [warning, violation]
+        )
 
-    @Test("No violations means conforms is true")
-    func testConforms() {
-        let report = SHACLValidationReport(results: [])
-        #expect(report.conforms == true)
-
-        // Even with warnings/infos, conforms should be true (only violations matter)
-        let reportWithWarning = SHACLValidationReport(results: [
-            SHACLValidationResult(
-                focusNode: .iri("ex:Alice"),
-                sourceConstraintComponent: "sh:MinCountConstraintComponent",
-                resultSeverity: .warning
-            ),
-            SHACLValidationResult(
-                focusNode: .iri("ex:Bob"),
-                sourceConstraintComponent: "sh:DatatypeConstraintComponent",
-                resultSeverity: .info
-            ),
-        ])
-        #expect(reportWithWarning.conforms == true)
-    }
-
-    @Test("Violations present means conforms is false")
-    func testNotConforms() {
-        let report = SHACLValidationReport(results: [
-            SHACLValidationResult(
-                focusNode: .iri("ex:Alice"),
-                resultPath: .predicate("ex:name"),
-                sourceConstraintComponent: "sh:MinCountConstraintComponent",
-                resultMessage: ["Missing required property ex:name"],
-                resultSeverity: .violation
-            ),
-        ])
-        #expect(report.conforms == false)
-    }
-
-    @Test("violations filter returns only severity == .violation")
-    func testViolationsFilter() {
-        let report = SHACLValidationReport(results: [
-            SHACLValidationResult(
-                focusNode: .iri("ex:Alice"),
-                sourceConstraintComponent: "sh:MinCountConstraintComponent",
-                resultSeverity: .violation
-            ),
-            SHACLValidationResult(
-                focusNode: .iri("ex:Bob"),
-                sourceConstraintComponent: "sh:DatatypeConstraintComponent",
-                resultSeverity: .warning
-            ),
-            SHACLValidationResult(
-                focusNode: .iri("ex:Carol"),
-                sourceConstraintComponent: "sh:NodeKindConstraintComponent",
-                resultSeverity: .violation
-            ),
-            SHACLValidationResult(
-                focusNode: .iri("ex:Dave"),
-                sourceConstraintComponent: "sh:MaxCountConstraintComponent",
-                resultSeverity: .info
-            ),
-        ])
-
-        #expect(report.violations.count == 2)
-        #expect(report.violations.allSatisfy { $0.resultSeverity == .violation })
-    }
-
-    @Test("warnings and infos filter correctly")
-    func testWarningsAndInfos() {
-        let report = SHACLValidationReport(results: [
-            SHACLValidationResult(
-                focusNode: .iri("ex:A"),
-                sourceConstraintComponent: "sh:MinCountConstraintComponent",
-                resultSeverity: .violation
-            ),
-            SHACLValidationResult(
-                focusNode: .iri("ex:B"),
-                sourceConstraintComponent: "sh:PatternConstraintComponent",
-                resultSeverity: .warning
-            ),
-            SHACLValidationResult(
-                focusNode: .iri("ex:C"),
-                sourceConstraintComponent: "sh:MaxLengthConstraintComponent",
-                resultSeverity: .warning
-            ),
-            SHACLValidationResult(
-                focusNode: .iri("ex:D"),
-                sourceConstraintComponent: "sh:DatatypeConstraintComponent",
-                resultSeverity: .info
-            ),
-        ])
-
-        #expect(report.warnings.count == 2)
-        #expect(report.warnings.allSatisfy { $0.resultSeverity == .warning })
-        #expect(report.infos.count == 1)
-        #expect(report.infos.allSatisfy { $0.resultSeverity == .info })
-    }
-
-    @Test("resultsByFocusNode groups results correctly")
-    func testResultsByFocusNode() {
-        let report = SHACLValidationReport(results: [
-            SHACLValidationResult(
-                focusNode: .iri("ex:Alice"),
-                resultPath: .predicate("ex:name"),
-                sourceConstraintComponent: "sh:MinCountConstraintComponent",
-                resultSeverity: .violation
-            ),
-            SHACLValidationResult(
-                focusNode: .iri("ex:Alice"),
-                resultPath: .predicate("ex:email"),
-                sourceConstraintComponent: "sh:PatternConstraintComponent",
-                resultSeverity: .warning
-            ),
-            SHACLValidationResult(
-                focusNode: .iri("ex:Bob"),
-                resultPath: .predicate("ex:age"),
-                sourceConstraintComponent: "sh:DatatypeConstraintComponent",
-                resultSeverity: .violation
-            ),
-        ])
-
-        let grouped = report.resultsByFocusNode
-        #expect(grouped.count == 2)
-        #expect(grouped[.iri("ex:Alice")]?.count == 2)
-        #expect(grouped[.iri("ex:Bob")]?.count == 1)
+        #expect(conformingReport.conforms)
+        #expect(!nonconformingReport.conforms)
+        #expect(nonconformingReport.violations.count == 1)
+        #expect(
+            nonconformingReport.violations.first?.resultSeverity
+                == .violation
+        )
+        #expect(nonconformingReport.warnings.count == 1)
+        #expect(
+            nonconformingReport.warnings.first?.resultSeverity
+                == .warning
+        )
+        #expect(nonconformingReport.infos.isEmpty)
+        #expect(nonconformingReport.resultsByFocusNode[focusNode]?.count == 2)
     }
 }
 #endif

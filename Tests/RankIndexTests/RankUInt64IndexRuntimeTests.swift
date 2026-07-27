@@ -1,7 +1,6 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
-import Rank
 import StorageKit
 import Testing
 @testable import RankIndex
@@ -15,12 +14,9 @@ struct RankUInt64IndexRuntimeTests {
             UInt64(Int64.max) + 1,
             UInt64.max,
         ]
-        let kind = RankIndexKind<UnsignedRankEntity, UInt64>(field: \.score)
-        #expect(kind.scoreType == .uint64)
-
         let index = Index(
             name: "UnsignedRankEntity_rank_score",
-            kind: kind,
+            kind: rankIndexMetadata(scoreType: .uint64),
             rootExpression: FieldKeyExpression(fieldName: "score"),
             subspaceKey: "UnsignedRankEntity_rank_score",
             itemTypes: [UnsignedRankEntity.persistableType]
@@ -63,10 +59,9 @@ struct RankUInt64IndexRuntimeTests {
 
     @Test("Rank runtime rejects NaN before emitting an unordered key")
     func rejectsNaNScore() async throws {
-        let kind = RankIndexKind<FloatingRankEntity, Double>(field: \.score)
         let index = Index(
             name: "FloatingRankEntity_rank_score",
-            kind: kind,
+            kind: rankIndexMetadata(scoreType: .float64),
             rootExpression: FieldKeyExpression(fieldName: "score"),
             subspaceKey: "FloatingRankEntity_rank_score",
             itemTypes: [FloatingRankEntity.persistableType]
@@ -79,7 +74,11 @@ struct RankUInt64IndexRuntimeTests {
                 configurations: []
             )
 
-        await #expect(throws: RankIndexError.self) {
+        await #expect(
+            throws: RankIndexMaintenanceError.unorderedFloatingPoint(
+                indexName: "FloatingRankEntity_rank_score"
+            )
+        ) {
             try await maintainer.computeIndexKeys(
                 for: FloatingRankEntity(id: "nan", score: .nan),
                 id: Tuple("nan")

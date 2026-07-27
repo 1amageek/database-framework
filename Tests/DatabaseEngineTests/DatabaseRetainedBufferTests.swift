@@ -1,4 +1,5 @@
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseWire
 import Synchronization
 import Testing
@@ -490,7 +491,7 @@ struct DatabaseRetainedBufferTests {
     @Test("retained RDF graph rejects a second row and releases every claim")
     func retainedRDFGraphLimitFailureReleasesClaims() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 10,
                 maximumWorkUnits: 10,
                 maximumIntermediateRows: 5,
@@ -524,7 +525,7 @@ struct DatabaseRetainedBufferTests {
     @Test("partial RDF graph promotion releases the hidden full graph")
     func partialRDFGraphPromotionReleasesFullGraph() throws {
         let meter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 10,
                 maximumWorkUnits: 10,
                 maximumIntermediateRows: 10,
@@ -551,7 +552,7 @@ struct DatabaseRetainedBufferTests {
         bytes: UInt64
     ) -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1,
                 maximumWorkUnits: 1,
                 maximumIntermediateRows: rows,
@@ -589,11 +590,11 @@ struct DatabaseRetainedBufferTests {
         return builder
     }
 
-    private func graphQuad(identifier: Int) throws -> DatabaseRDFQuad {
-        try DatabaseRDFQuad(
-            subject: .iri("urn:subject:\(identifier)"),
-            predicate: .iri("urn:predicate"),
-            object: .iri("urn:object:\(identifier)")
+    private func graphQuad(identifier: Int) throws -> RDFQuad {
+        RDFQuad(
+            subject: .iri(try RDFIRI("urn:subject:\(identifier)")),
+            predicate: try RDFPredicateIRI("urn:predicate"),
+            object: .iri(try RDFIRI("urn:object:\(identifier)"))
         )
     }
 

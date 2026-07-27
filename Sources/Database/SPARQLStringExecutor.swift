@@ -1,17 +1,17 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
-import Graph
+import DatabaseKit
 import GraphIndex
 import QueryAST
-import QueryIR
+import DatabaseKit
 import StorageKit
 
 extension DatabaseContext {
     public func executeSPARQL<T: Persistable>(
         _ sparql: String,
         on type: T.Type,
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLResult {
         let statement = try SPARQLParser().parse(sparql)
         guard case .select(let query) = statement else {
@@ -32,7 +32,7 @@ public func executeSPARQLString(
     database: any StorageEngine,
     sources: [RDFDatasetSource],
     transaction: (any TransactionAccess)? = nil,
-    budget: DatabaseExecutionBudget
+    budget: ExecutionBudget
 ) async throws -> SPARQLResult {
     let workMeter = DatabaseWorkMeter(budget: budget)
     let result = try await _executeSPARQLString(
@@ -101,7 +101,7 @@ func _executeSPARQLString(
 }
 
 public enum SPARQLStringError: Error, CustomStringConvertible {
-    case unsupportedQueryForm(QueryIR.QueryStatement)
+    case unsupportedQueryForm(QueryStatement)
 
     public var description: String {
         switch self {

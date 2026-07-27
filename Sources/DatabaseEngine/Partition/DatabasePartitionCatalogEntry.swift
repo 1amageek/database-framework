@@ -1,35 +1,35 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
 
-package struct DatabasePartitionCatalogEntry: DatabaseWireValue, Hashable {
+package struct DatabasePartitionCatalogEntry: StorageFrameValue, Hashable {
     package let entity: String
-    package let partitions: [DatabaseObjectField]
+    package let partitions: FieldObject
 
-    package init(entity: String, partitions: [DatabaseObjectField]) {
+    package init(entity: String, partitions: FieldObject) {
         self.entity = entity
         self.partitions = partitions
     }
 
     package func encode(
-        into writer: inout DatabaseWireWriter
-    ) throws(DatabaseWireError) {
+        to writer: inout StorageFrameEncoder
+    ) throws(StorageFrameError) {
         try writer.writeString(entity)
-        try writer.writeCount(partitions.count)
-        for partition in partitions {
-            try partition.encode(into: &writer)
-        }
+        try StorageValueEncoder.write(
+            .object(partitions),
+            into: &writer
+        )
     }
 
     package init(
-        from reader: inout DatabaseWireReader
-    ) throws(DatabaseWireError) {
+        from reader: inout StorageFrameDecoder
+    ) throws(StorageFrameError) {
         let entity = try reader.readString()
-        let count = try reader.readCount()
-        var partitions: [DatabaseObjectField] = []
-        partitions.reserveCapacity(count)
-        for _ in 0..<count {
-            partitions.append(try DatabaseObjectField(from: &reader))
+        guard case .object(let partitions) =
+                try StorageValueDecoder.read(from: &reader) else {
+            throw .invalidValue
         }
-        self.init(entity: entity, partitions: partitions)
+        self.init(
+            entity: entity,
+            partitions: partitions
+        )
     }
 }

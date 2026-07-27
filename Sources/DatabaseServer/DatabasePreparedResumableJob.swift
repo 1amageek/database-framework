@@ -1,7 +1,7 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabasePreparedResumableJob<Plan, State>: Sendable
-where Plan: DatabaseWireValue, State: DatabaseWireValue {
+where Plan: PersistentJobPayload, State: PersistentJobPayload {
     public let plan: Plan
     public let initialState: State
     public let sliceTimeoutMilliseconds: UInt32

@@ -1,6 +1,6 @@
-import DatabaseValue
+import DatabaseTypes
 import GraphIndex
-import QueryIR
+import DatabaseKit
 import Testing
 @testable import DatabaseServer
 
@@ -9,7 +9,7 @@ struct SPARQLUpdateQuadResolverTests {
     @Test("An unbound graph variable omits the quad instead of targeting default")
     func unboundGraphOmitsQuad() throws {
         let resolved = try SPARQLUpdateQuadResolver().resolve(
-            QueryIR.Quad(
+            Quad(
                 graph: .variable("graph"),
                 triple: TriplePattern(
                     subject: .iri("https://example.test/subject"),
@@ -29,7 +29,7 @@ struct SPARQLUpdateQuadResolverTests {
     @Test("An illegal variable substitution omits only that quad")
     func illegalVariableSubstitutionOmitsQuad() throws {
         let resolved = try SPARQLUpdateQuadResolver().resolve(
-            QueryIR.Quad(
+            Quad(
                 triple: TriplePattern(
                     subject: .variable("subject"),
                     predicate: .iri("https://example.test/predicate"),
@@ -40,7 +40,7 @@ struct SPARQLUpdateQuadResolverTests {
                 [
                     "?subject": .rdfTerm(
                         .literal(
-                            DatabaseRDFLiteral(
+                            RDFLiteral(
                                 lexicalForm: "not-a-subject",
                                 datatype: .xsdString
                             )
@@ -60,7 +60,7 @@ struct SPARQLUpdateQuadResolverTests {
     func illegalStaticTermIsRejected() throws {
         do {
             _ = try SPARQLUpdateQuadResolver().resolve(
-                QueryIR.Quad(
+                Quad(
                     triple: TriplePattern(
                         subject: .literal(.string("not-a-subject")),
                         predicate: .iri("https://example.test/predicate"),

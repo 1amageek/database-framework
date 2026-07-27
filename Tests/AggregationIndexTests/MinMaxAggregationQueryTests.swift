@@ -3,7 +3,7 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -28,10 +28,11 @@ struct MinMaxAggregationQueryTests {
         var amount: Double = 0.0
         var quantity: Int64 = 0
 
-        #Index(MinIndexKind<MinimumOrder, Double>(
-            groupBy: [\.region],
-            value: \.amount
-        ))
+        #Index(
+            .minimum,
+            groupBy: [\MinimumOrder.region],
+            value: \MinimumOrder.amount
+        )
     }
 
     @Persistable
@@ -44,10 +45,11 @@ struct MinMaxAggregationQueryTests {
         var amount: Double = 0.0
         var quantity: Int64 = 0
 
-        #Index(MaxIndexKind<MaximumOrder, Double>(
-            groupBy: [\.region],
-            value: \.amount
-        ))
+        #Index(
+            .maximum,
+            groupBy: [\MaximumOrder.region],
+            value: \MaximumOrder.amount
+        )
     }
 
     @Persistable
@@ -60,9 +62,17 @@ struct MinMaxAggregationQueryTests {
         var amount: Double = 0.0
         var quantity: Int64 = 0
 
-        #Index(CountIndexKind<MixedAggregationOrder>(groupBy: [\.region]))
-        #Index(MinIndexKind<MixedAggregationOrder, Double>(groupBy: [\.region], value: \.amount))
-        #Index(MaxIndexKind<MixedAggregationOrder, Double>(groupBy: [\.region], value: \.amount))
+        #Index(.count, groupBy: [\MixedAggregationOrder.region])
+        #Index(
+            .minimum,
+            groupBy: [\MixedAggregationOrder.region],
+            value: \MixedAggregationOrder.amount
+        )
+        #Index(
+            .maximum,
+            groupBy: [\MixedAggregationOrder.region],
+            value: \MixedAggregationOrder.amount
+        )
     }
 
     @Persistable
@@ -75,10 +85,11 @@ struct MinMaxAggregationQueryTests {
         var amount: Double = 0.0
         var quantity: Int64 = 0
 
-        #Index(MinIndexKind<Int64AggregationOrder, Int64>(
-            groupBy: [\.region],
-            value: \.quantity
-        ))
+        #Index(
+            .minimum,
+            groupBy: [\Int64AggregationOrder.region],
+            value: \Int64AggregationOrder.quantity
+        )
     }
 
     // MARK: - End-to-End Integration Tests
@@ -86,7 +97,11 @@ struct MinMaxAggregationQueryTests {
     @Test("MIN aggregation end-to-end with context.aggregate().execute()")
     func testMinAggregationEndToEnd() async throws {
         // Create schema from Persistable type
-        let schema = Schema([MinimumOrder.self])
+        let schema = try Schema(
+            entities: [
+                try MinimumOrder.schemaEntity
+            ]
+        )
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
@@ -140,7 +155,11 @@ struct MinMaxAggregationQueryTests {
     @Test("MAX aggregation end-to-end with context.aggregate().execute()")
     func testMaxAggregationEndToEnd() async throws {
         // Create schema from Persistable type
-        let schema = Schema([MaximumOrder.self])
+        let schema = try Schema(
+            entities: [
+                try MaximumOrder.schemaEntity
+            ]
+        )
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
@@ -194,7 +213,11 @@ struct MinMaxAggregationQueryTests {
     @Test("Mixed MIN/MAX/COUNT aggregation end-to-end")
     func testMixedMinMaxCountAggregation() async throws {
         // Create schema from Persistable type
-        let schema = Schema([MixedAggregationOrder.self])
+        let schema = try Schema(
+            entities: [
+                try MixedAggregationOrder.schemaEntity
+            ]
+        )
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
@@ -277,7 +300,11 @@ struct MinMaxAggregationQueryTests {
     @Test("MIN aggregation with Int64 type")
     func testMinAggregationWithInt64() async throws {
         // Create schema from Persistable type
-        let schema = Schema([Int64AggregationOrder.self])
+        let schema = try Schema(
+            entities: [
+                try Int64AggregationOrder.schemaEntity
+            ]
+        )
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,

@@ -1,5 +1,6 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseKit
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public enum DatabaseSHACLDataSourceError: Error, Sendable, Equatable,
     CustomStringConvertible {
@@ -7,12 +8,12 @@ public enum DatabaseSHACLDataSourceError: Error, Sendable, Equatable,
     case indexNotFound(entity: String, index: String)
     case indexIsNotRDFDataset(entity: String, index: String)
     case graphNotCovered(entity: String, index: String)
-    case invalidGraphName(DatabaseRDFTerm)
+    case invalidGraphName(RDFTerm)
     case invalidPartition(entity: String, reason: String)
     case focusEntityMismatch(expected: String, actual: String)
-    case focusPartitionMismatch(PersistableIdentity)
-    case focusEntityNotFound(PersistableIdentity)
-    case focusSubjectMissing(entity: PersistableIdentity, field: String)
+    case focusPartitionMismatch(EntityReference)
+    case focusEntityNotFound(EntityReference)
+    case focusSubjectMissing(entity: EntityReference, field: String)
     case unsupportedEntailment(SHACLExecuteOperation.Entailment)
 
     public var description: String {

@@ -1,9 +1,9 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
-    public var jobOperations: [DatabaseJobOperationIdentifier] {
+    public var jobOperations: [JobOperationIdentifier] {
         registry.identifiers
     }
 
@@ -146,7 +146,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
                 state: state,
                 transaction: transactionContext.storageAccess
             )
-            return DatabaseJobIdentity(
+            return JobIdentity(
                 jobID: jobID,
                 operation: request.operation
             )
@@ -198,7 +198,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
                 job: request.job,
                 manifest: manifest
             )
-            let payload: DatabaseBytes
+            let payload: ByteString
             if manifest.chunkCount == 0 {
                 payload = []
             } else {
@@ -319,7 +319,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
     }
 
     private func requiredSnapshot(
-        _ job: DatabaseJobIdentity
+        _ job: JobIdentity
     ) async throws -> DatabasePersistentJobSnapshot {
         guard let snapshot = try await store.load(job.jobID) else {
             throw DatabaseJobRuntimeError.jobNotFound(job.jobID)
@@ -335,7 +335,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
 
     private func resultChunkIndex(
         _ continuation: JobResultOperation.Continuation?,
-        job: DatabaseJobIdentity,
+        job: JobIdentity,
         manifest: DatabasePersistentJobResultManifest
     ) throws -> UInt32 {
         guard let continuation else {
@@ -381,7 +381,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
         DatabaseOperationContext(
             container: container,
             requestID: snapshot.specification.requestID,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 traceID: snapshot.specification.traceID
             ),
             requestPayload: [],

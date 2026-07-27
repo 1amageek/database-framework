@@ -1,7 +1,7 @@
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 
-extension DatabaseUUID: @retroactive TupleElement {
+extension DatabaseTypes.UUID: @retroactive TupleElement {
     public func encodeTuple(to sink: inout TupleEncodingSink) {
         sink.writeByte(TupleTypeCode.uuid.rawValue)
         for byte in self {
@@ -12,7 +12,7 @@ extension DatabaseUUID: @retroactive TupleElement {
     public static func decodeTuple(
         from bytes: Bytes,
         at offset: inout Int
-    ) throws -> DatabaseUUID {
+    ) throws -> DatabaseTypes.UUID {
         guard offset > 0, offset <= bytes.count else {
             throw TupleError.unexpectedEndOfData
         }
@@ -35,7 +35,7 @@ extension DatabaseUUID: @retroactive TupleElement {
             }
         }
         offset = endOffset
-        return DatabaseUUID(high: high, low: low)
+        return DatabaseTypes.UUID(high: high, low: low)
     }
 
     var storageBytes: Bytes {

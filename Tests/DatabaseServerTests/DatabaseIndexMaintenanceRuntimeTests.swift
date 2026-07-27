@@ -1,7 +1,7 @@
-import Core
+import DatabaseKit
 @testable import DatabaseEngine
 import DatabaseRuntime
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import StorageKit
 import Testing
@@ -13,10 +13,14 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         let engine = InMemoryEngine()
         let firstContainer = try await makeContainer(engine: engine)
         try await insertEntities(into: firstContainer)
-        let generation = try #require(DatabaseUUID(bytes: Array(0..<16)))
-        let partitions = [try tenantPartition("tenant-a")]
+        let decodedGeneration = DatabaseTypes.UUID(bytes: Array(0..<16))
+        let generation = try #require(decodedGeneration)
+        let partitions = try tenantPartition("tenant-a")
         var directoryPath = DirectoryPath<CatalogPartitionedEntity>()
-        directoryPath.set(\.tenantID, to: "tenant-a")
+        directoryPath.set(
+            CatalogPartitionedEntity.fields.tenantID,
+            to: "tenant-a"
+        )
         let entitySubspace = try await firstContainer.resolveDirectory(
             for: CatalogPartitionedEntity.self,
             path: directoryPath
@@ -112,7 +116,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
     func rejectsConcurrentGeneration() async throws {
         let container = try await makeContainer(engine: InMemoryEngine())
         try await insertEntities(into: container)
-        let partitions = [try tenantPartition("tenant-a")]
+        let partitions = try tenantPartition("tenant-a")
         let runtime = DatabaseIndexMaintenanceRuntime(container: container)
         let preparedPartitions = try await container.newContext()
             .withTransaction { transaction in
@@ -124,9 +128,10 @@ struct DatabaseIndexMaintenanceRuntimeTests {
             )
         }
         #expect(preparedPartitions == partitions)
-        let firstGeneration = try #require(
-            DatabaseUUID(bytes: Array(repeating: 1, count: 16))
+        let decodedFirstGeneration = DatabaseTypes.UUID(
+            bytes: Array(repeating: 1, count: 16)
         )
+        let firstGeneration = try #require(decodedFirstGeneration)
         _ = try await container.newContext().withTransaction { transaction in
             try await runtime.runRebuildSlice(
                 entity: CatalogPartitionedEntity.persistableType,
@@ -138,9 +143,10 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 transaction: transaction.storageAccess
             )
         }
-        let secondGeneration = try #require(
-            DatabaseUUID(bytes: Array(repeating: 2, count: 16))
+        let decodedSecondGeneration = DatabaseTypes.UUID(
+            bytes: Array(repeating: 2, count: 16)
         )
+        let secondGeneration = try #require(decodedSecondGeneration)
 
         await #expect(
             throws: DatabaseIndexRebuildError.buildAlreadyActive(
@@ -166,7 +172,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
     func resumeRequiresExistingBuildingEntity() async throws {
         let container = try await makeContainer(engine: InMemoryEngine())
         try await insertEntities(into: container)
-        let partitions = [try tenantPartition("tenant-a")]
+        let partitions = try tenantPartition("tenant-a")
         let runtime = DatabaseIndexMaintenanceRuntime(container: container)
         _ = try await container.newContext().withTransaction { transaction in
             try await runtime.prepareResources(
@@ -176,7 +182,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 transaction: transaction.storageAccess
             )
         }
-        let generation = DatabaseUUID(high: 3, low: 1)
+        let generation = DatabaseTypes.UUID(high: 3, low: 1)
 
         await #expect(throws: DatabaseIndexRebuildError.corruptedRebuildState) {
             try await container.newContext().withTransaction { transaction in
@@ -196,7 +202,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
     private func status(
         runtime: DatabaseIndexMaintenanceRuntime,
         container: DBContainer,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> DatabaseIndexMaintenanceStatus {
         try await container.newContext().withTransaction { transaction in
             try await runtime.status(

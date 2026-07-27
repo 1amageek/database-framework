@@ -6,89 +6,39 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Geospatial
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import SpatialIndex
 
 // MARK: - Test Model
 
-struct NearbyStore: Persistable {
-    typealias ID = String
-
+@Persistable
+struct NearbyStore {
     var id: String
     var name: String
-    var geoPoint: GeoPoint
+    var geoPoint: GeographicPoint
 
-    init(id: String = UUID().uuidString, name: String, geoPoint: GeoPoint) {
+    init(
+        id: String = UUID().uuidString,
+        name: String,
+        latitude: Double,
+        longitude: Double
+    ) throws {
         self.id = id
         self.name = name
-        self.geoPoint = geoPoint
-    }
-
-    init(id: String = UUID().uuidString, name: String, latitude: Double, longitude: Double) {
-        self.id = id
-        self.name = name
-        self.geoPoint = GeoPoint(latitude, longitude)
-    }
-
-    static var persistableType: String { "NearbyStore" }
-    static var allFields: [String] { ["id", "name", "geoPoint"] }
-
-    static var indexDescriptors: [IndexDescriptor] {
-        let kind = SpatialIndexKind<NearbyStore>(
-            latitude: \.geoPoint.latitude,
-            longitude: \.geoPoint.longitude,
-            encoding: .s2,
-            level: 10
+        self.geoPoint = try GeographicPoint(
+            latitude: latitude,
+            longitude: longitude
         )
-        return [
-            IndexDescriptor(
-                name: "NearbyStore_spatial_geoPoint",
-                keyPaths: [\NearbyStore.geoPoint] as [PartialKeyPath<NearbyStore>],
-                kind: kind
-            )
-        ]
     }
 
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "geoPoint": return geoPoint
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<NearbyStore, Value>) -> String {
-        switch keyPath {
-        case \NearbyStore.id: return "id"
-        case \NearbyStore.name: return "name"
-        case \NearbyStore.geoPoint: return "geoPoint"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<NearbyStore>) -> String {
-        switch keyPath {
-        case \NearbyStore.id: return "id"
-        case \NearbyStore.name: return "name"
-        case \NearbyStore.geoPoint: return "geoPoint"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<NearbyStore> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    #Index(
+        .spatial(encoding: .s2, level: 10),
+        location: \NearbyStore.geoPoint,
+        name: "NearbyStore_spatial_geoPoint"
+    )
 }
 
 // MARK: - Spatial Query Context
@@ -98,7 +48,6 @@ private struct SpatialQueryContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: SpatialIndexMaintainer<NearbyStore>
-    let kind: SpatialIndexKind<NearbyStore>
     let testId: String
 
     init() async throws {
@@ -108,16 +57,14 @@ private struct SpatialQueryContext {
         let indexName = "NearbyStore_spatial_geoPoint"
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = SpatialIndexKind<NearbyStore>(
-            latitude: \.geoPoint.latitude,
-            longitude: \.geoPoint.longitude,
-            encoding: .s2,
-            level: 10
-        )
-
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: spatialIndexMetadata(
+                fieldName: "geoPoint",
+                fieldNumber: 3,
+                encoding: .s2,
+                level: 10
+            ),
             rootExpression: FieldKeyExpression(fieldName: "geoPoint"),
             subspaceKey: indexName,
             itemTypes: Set(["NearbyStore"])
@@ -125,8 +72,8 @@ private struct SpatialQueryContext {
 
         self.maintainer = SpatialIndexMaintainer<NearbyStore>(
             index: index,
-            encoding: kind.encoding,
-            level: kind.level,
+            encoding: .s2,
+            level: 10,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
@@ -250,9 +197,9 @@ struct KNNResultTests {
     @Test("SpatialKNNResult stores correct values")
     func testSpatialKNNResultStoresValues() async throws {
         let items: [(item: NearbyStore, distance: Double)] = [
-            (NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
-            (NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), 200.0),
-            (NearbyStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0)
+            (try NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
+            (try NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), 200.0),
+            (try NearbyStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0)
         ]
 
         let result = SpatialKNNResult(
@@ -272,9 +219,9 @@ struct KNNResultTests {
     @Test("SpatialKNNResult isComplete when count >= k")
     func testSpatialKNNResultIsComplete() async throws {
         let items: [(item: NearbyStore, distance: Double)] = [
-            (NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
-            (NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), 200.0),
-            (NearbyStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0)
+            (try NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
+            (try NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), 200.0),
+            (try NearbyStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0)
         ]
 
         let result = SpatialKNNResult(
@@ -290,7 +237,7 @@ struct KNNResultTests {
     @Test("SpatialKNNResult with limit reason")
     func testSpatialKNNResultWithLimitReason() async throws {
         let items: [(item: NearbyStore, distance: Double)] = [
-            (NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0)
+            (try NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0)
         ]
 
         let limitReason = LimitReason.maxResultsReached(returned: 1, limit: 10)
@@ -429,8 +376,8 @@ struct SpatialQueryResultTests {
     @Test("SpatialQueryResult with items and distance")
     func testSpatialQueryResultWithDistance() async throws {
         let items: [(item: NearbyStore, distance: Double?)] = [
-            (NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
-            (NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), nil)
+            (try NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
+            (try NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), nil)
         ]
 
         let result = SpatialQueryResult(items: items, limitReason: nil)
@@ -444,7 +391,7 @@ struct SpatialQueryResultTests {
     @Test("SpatialQueryResult with limit reason")
     func testSpatialQueryResultWithLimitReason() async throws {
         let items: [(item: NearbyStore, distance: Double?)] = [
-            (NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0)
+            (try NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0)
         ]
 
         let limitReason = LimitReason.maxResultsReached(returned: 1, limit: 10)
@@ -548,9 +495,9 @@ struct KNNValidationTests {
     func testKNNResultCompleteness() async throws {
         // Test isComplete logic
         let completeItems: [(item: NearbyStore, distance: Double)] = [
-            (NearbyStore(name: "A", latitude: 35.0, longitude: 139.0), 100.0),
-            (NearbyStore(name: "B", latitude: 35.1, longitude: 139.1), 200.0),
-            (NearbyStore(name: "C", latitude: 35.2, longitude: 139.2), 300.0)
+            (try NearbyStore(name: "A", latitude: 35.0, longitude: 139.0), 100.0),
+            (try NearbyStore(name: "B", latitude: 35.1, longitude: 139.1), 200.0),
+            (try NearbyStore(name: "C", latitude: 35.2, longitude: 139.2), 300.0)
         ]
 
         // Complete result (count >= k)

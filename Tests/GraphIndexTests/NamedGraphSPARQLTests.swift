@@ -1,11 +1,10 @@
 #if FOUNDATION_DB
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseValue
-import DatabaseValueCodable
+import DatabaseTypes
+import DatabaseKitFoundation
 import FDBStorage
 import Foundation
-import Graph
 import StorageKit
 import TestSupport
 import Testing
@@ -16,23 +15,22 @@ import Testing
 private struct SPARQLQuadStatement {
     #Directory<SPARQLQuadStatement>("named_graph_sparql_tests")
     #Index(
-        RDFQuadIndexKind<SPARQLQuadStatement>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object,
-            graph: \.graph
-        ),
+        .rdfDataset,
+        from: \SPARQLQuadStatement.subject,
+        edge: \SPARQLQuadStatement.predicate,
+        to: \SPARQLQuadStatement.object,
+        graph: \SPARQLQuadStatement.graph,
         name: "rdf_quad"
     )
 
-    var id: String = ULID().ulidString
-    var subject: DatabaseRDFTerm = .iri("https://example.com/resource")
-    var predicate: DatabaseRDFTerm = .iri("https://example.com/predicate")
-    var object: DatabaseRDFTerm = .iri("https://example.com/object")
-    var graph: DatabaseRDFTerm? = nil
+    var id: String = UUID().uuidString
+    var subject: RDFTerm = .iri(.xsdString)
+    var predicate: RDFTerm = .iri(.xsdString)
+    var object: RDFTerm = .iri(.xsdString)
+    var graph: RDFTerm? = nil
 }
 
-@Suite("Canonical Named Graph SPARQL Integration", .serialized, .heartbeat)
+@Suite("Canonical Named Graph SPARQL Integration", .serialized, .foundationDBScenario, .heartbeat)
 struct NamedGraphSPARQLTests {
     private let alice = "https://example.com/person/alice"
     private let bob = "https://example.com/person/bob"
@@ -62,7 +60,10 @@ struct NamedGraphSPARQLTests {
         )
 
         #expect(result.count == 1)
-        #expect(result.first?["?subject"] == .rdfTerm(.iri(carol)))
+        let expectedSubject = FieldValue.rdfTerm(
+            try .iri(validating: carol)
+        )
+        #expect(result.first?["?subject"] == expectedSubject)
     }
 
     @Test("Named graph selector isolates one active graph")
@@ -71,7 +72,9 @@ struct NamedGraphSPARQLTests {
         let basic = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?subject"),
-                predicate: .value(.rdfTerm(.iri(knows))),
+                predicate: .value(
+                    .rdfTerm(try .iri(validating: knows))
+                ),
                 object: .variable("?object")
             )
         ])
@@ -123,15 +126,21 @@ struct NamedGraphSPARQLTests {
         let context = try await seededContext()
         let left = ExecutionPattern.basic([
             ExecutionTriple(
-                subject: .value(.rdfTerm(.iri(alice))),
-                predicate: .value(.rdfTerm(.iri(knows))),
+                subject: .value(
+                    .rdfTerm(try .iri(validating: alice))
+                ),
+                predicate: .value(
+                    .rdfTerm(try .iri(validating: knows))
+                ),
                 object: .variable("?middle")
             )
         ])
         let right = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?middle"),
-                predicate: .value(.rdfTerm(.iri(knows))),
+                predicate: .value(
+                    .rdfTerm(try .iri(validating: knows))
+                ),
                 object: .variable("?friend")
             )
         ])
@@ -147,8 +156,14 @@ struct NamedGraphSPARQLTests {
         )
 
         #expect(result.count == 1)
-        #expect(result.first?["?middle"] == .rdfTerm(.iri(bob)))
-        #expect(result.first?["?friend"] == .rdfTerm(.iri(carol)))
+        let expectedMiddle = FieldValue.rdfTerm(
+            try .iri(validating: bob)
+        )
+        let expectedFriend = FieldValue.rdfTerm(
+            try .iri(validating: carol)
+        )
+        #expect(result.first?["?middle"] == expectedMiddle)
+        #expect(result.first?["?friend"] == expectedFriend)
     }
 
     @Test("Optional joins across explicit named graph scopes")
@@ -159,7 +174,9 @@ struct NamedGraphSPARQLTests {
             .basic([
                 ExecutionTriple(
                     subject: .variable("?subject"),
-                    predicate: .value(.rdfTerm(.iri(knows))),
+                    predicate: .value(
+                        .rdfTerm(try .iri(validating: knows))
+                    ),
                     object: .variable("?friend")
                 )
             ])
@@ -169,7 +186,9 @@ struct NamedGraphSPARQLTests {
             .basic([
                 ExecutionTriple(
                     subject: .variable("?subject"),
-                    predicate: .value(.rdfTerm(.iri(worksAt))),
+                    predicate: .value(
+                        .rdfTerm(try .iri(validating: worksAt))
+                    ),
                     object: .variable("?company")
                 )
             ])
@@ -182,14 +201,26 @@ struct NamedGraphSPARQLTests {
         )
 
         #expect(result.count == 3)
+        let aliceValue = FieldValue.rdfTerm(
+            try .iri(validating: alice)
+        )
+        let bobValue = FieldValue.rdfTerm(
+            try .iri(validating: bob)
+        )
+        let acmeValue = FieldValue.rdfTerm(
+            try .iri(validating: acme)
+        )
+        let betaValue = FieldValue.rdfTerm(
+            try .iri(validating: beta)
+        )
         let aliceRows = result.bindings.filter {
-            $0["?subject"] == .rdfTerm(.iri(alice))
+            $0["?subject"] == aliceValue
         }
-        #expect(aliceRows.allSatisfy { $0["?company"] == .rdfTerm(.iri(acme)) })
+        #expect(aliceRows.allSatisfy { $0["?company"] == acmeValue })
         let bobRows = result.bindings.filter {
-            $0["?subject"] == .rdfTerm(.iri(bob))
+            $0["?subject"] == bobValue
         }
-        #expect(bobRows.allSatisfy { $0["?company"] == .rdfTerm(.iri(beta)) })
+        #expect(bobRows.allSatisfy { $0["?company"] == betaValue })
     }
 
     private func seededContext() async throws -> DatabaseContext {
@@ -202,8 +233,8 @@ struct NamedGraphSPARQLTests {
                 path: ["named_graph_sparql_tests"]
             )
         }
-        let schema = Schema(
-            [SPARQLQuadStatement.self],
+        let schema = try Schema(
+            entities: [try SPARQLQuadStatement.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.open(
@@ -216,12 +247,12 @@ struct NamedGraphSPARQLTests {
         let context = container.newContext()
 
         let quads = [
-            statement(alice, knows, bob, graph: socialGraph),
-            statement(alice, knows, carol, graph: socialGraph),
-            statement(bob, knows, carol, graph: socialGraph),
-            statement(alice, worksAt, acme, graph: workGraph),
-            statement(bob, worksAt, beta, graph: workGraph),
-            statement(carol, worksAt, acme, graph: nil),
+            try statement(alice, knows, bob, graph: socialGraph),
+            try statement(alice, knows, carol, graph: socialGraph),
+            try statement(bob, knows, carol, graph: socialGraph),
+            try statement(alice, worksAt, acme, graph: workGraph),
+            try statement(bob, worksAt, beta, graph: workGraph),
+            try statement(carol, worksAt, acme, graph: nil),
         ]
         for quad in quads {
             try context.insert(quad)
@@ -235,12 +266,14 @@ struct NamedGraphSPARQLTests {
         _ predicate: String,
         _ object: String,
         graph: String?
-    ) -> SPARQLQuadStatement {
+    ) throws -> SPARQLQuadStatement {
         var statement = SPARQLQuadStatement()
-        statement.subject = .iri(subject)
-        statement.predicate = .iri(predicate)
-        statement.object = .iri(object)
-        statement.graph = graph.map(DatabaseRDFTerm.iri)
+        statement.subject = try .iri(validating: subject)
+        statement.predicate = try .iri(validating: predicate)
+        statement.object = try .iri(validating: object)
+        if let graph {
+            statement.graph = try .iri(validating: graph)
+        }
         return statement
     }
 
@@ -248,7 +281,7 @@ struct NamedGraphSPARQLTests {
         guard case .rdfTerm(.iri(let iri)) = value else {
             return nil
         }
-        return iri
+        return iri.rawValue
     }
 }
 #endif

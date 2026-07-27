@@ -613,16 +613,16 @@ struct EdgeCaseTests {
 
         let caseExpr = Expression.caseWhen(
             cases: [
-                CaseWhenPair(condition: Expression.greaterThan(
+                CaseWhenPair(condition: DatabaseKit.Expression.greaterThan(
                     Expression.column(ColumnRef(column: "a")),
                     Expression.literal(.int(10))
-                ), result: Expression.literal(.string("high"))),
-                CaseWhenPair(condition: Expression.greaterThan(
+                ), result: DatabaseKit.Expression.literal(.string("high"))),
+                CaseWhenPair(condition: DatabaseKit.Expression.greaterThan(
                     Expression.column(ColumnRef(column: "a")),
                     Expression.literal(.int(5))
-                ), result: Expression.literal(.string("medium")))
+                ), result: DatabaseKit.Expression.literal(.string("medium")))
             ],
-            elseResult: Expression.literal(.string("low"))
+            elseResult: DatabaseKit.Expression.literal(.string("low"))
         )
 
         if case .caseWhen(let whens, let elseExpr) = caseExpr {

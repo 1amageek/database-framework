@@ -2,8 +2,8 @@
 import Testing
 import Foundation
 import StorageKit
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 @testable import DatabaseEngine
 
 private struct TupleKeyExpressionEntity: Persistable, Codable, Sendable {

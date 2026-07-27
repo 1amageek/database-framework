@@ -1,4 +1,5 @@
-import Graph
+import DatabaseKit
+import DatabaseTypes
 
 /// Typed failures that prevent SHACL validation from producing a report.
 public enum SHACLError: Error, Sendable, Equatable, CustomStringConvertible {

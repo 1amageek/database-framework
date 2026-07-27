@@ -1,11 +1,11 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 struct SPARQLStringValue: Sendable, Equatable {
     enum Kind: Sendable, Equatable {
         case string
-        case language(DatabaseRDFLanguageTag)
-        case directionalLanguage(DatabaseRDFLanguageTag, DatabaseRDFDirection)
+        case language(RDFLanguageTag)
+        case directionalLanguage(RDFLanguageTag, RDFDirection)
     }
 
     let lexicalForm: String
@@ -64,7 +64,7 @@ struct SPARQLStringValue: Sendable, Equatable {
         case .string:
             return .rdfTerm(
                 .literal(
-                    DatabaseRDFLiteral(
+                    RDFLiteral(
                         lexicalForm: lexicalForm,
                         datatype: .xsdString
                     )
@@ -73,7 +73,7 @@ struct SPARQLStringValue: Sendable, Equatable {
         case .language(let language):
             return .rdfTerm(
                 .literal(
-                    DatabaseRDFLiteral(
+                    RDFLiteral(
                         lexicalForm: lexicalForm,
                         language: language
                     )
@@ -82,7 +82,7 @@ struct SPARQLStringValue: Sendable, Equatable {
         case .directionalLanguage(let language, let direction):
             return .rdfTerm(
                 .literal(
-                    DatabaseRDFLiteral(
+                    RDFLiteral(
                         lexicalForm: lexicalForm,
                         language: language,
                         direction: direction

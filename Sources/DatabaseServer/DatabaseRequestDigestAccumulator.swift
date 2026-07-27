@@ -1,9 +1,9 @@
-import DatabaseDigest
-import DatabaseValue
-import DatabaseWire
+import DatabaseKit
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseTypes
 
 struct DatabaseRequestDigestAccumulator {
-    private static let jobIdentifierDomain: DatabaseBytes = [
+    private static let jobIdentifierDomain: ByteString = [
         0x4a, 0x4f, 0x50, 0x49,
     ]
 
@@ -18,7 +18,7 @@ struct DatabaseRequestDigestAccumulator {
         self.hasher = hasher
     }
 
-    init(jobOperation: DatabaseJobOperationIdentifier) {
+    init(jobOperation: JobOperationIdentifier) {
         var hasher = SHA256Accumulator()
         Self.jobIdentifierDomain.withUnsafeBytes {
             hasher.update($0)
@@ -51,7 +51,7 @@ struct DatabaseRequestDigestAccumulator {
         self.hasher = hasher
     }
 
-    mutating func update(_ bytes: DatabaseBytes) {
+    mutating func update(_ bytes: ByteString) {
         bytes.withUnsafeBytes {
             hasher.update($0)
         }
@@ -80,7 +80,7 @@ struct DatabaseRequestDigestAccumulator {
         }
     }
 
-    consuming func finalize() -> DatabaseBytes {
+    consuming func finalize() -> ByteString {
         hasher.finalize()
     }
 }

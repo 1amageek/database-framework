@@ -1,17 +1,18 @@
-import DatabaseDigest
+import DatabaseKit
+import DatabaseWire
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 
 /// Deterministic, request-accounted blank-node identity for one solution.
 struct SPARQLConstructBlankNodeScope: ~Copyable {
-    private static let domain: DatabaseBytes = [0x43, 0x42, 0x4e, 0x01]
+    private static let domain: ByteString = [0x43, 0x42, 0x4e, 0x01]
     private static let cacheContainerByteCount: UInt64 = 64
     private static let cacheSlotByteCount: UInt64 = 128
     private static let stringStorageByteCount: UInt64 = 16
     private static let identifierUTF8Count: UInt64 = 65
 
     private let resultScope: DatabaseGraphResultScope
-    private let bindingFingerprint: DatabaseBytes
+    private let bindingFingerprint: ByteString
     private let occurrence: UInt64
     private let workMeter: DatabaseWorkMeter
     private let reservation: DatabaseIntermediateReservation
@@ -20,7 +21,7 @@ struct SPARQLConstructBlankNodeScope: ~Copyable {
 
     init(
         resultScope: DatabaseGraphResultScope,
-        bindingFingerprint: DatabaseBytes,
+        bindingFingerprint: ByteString,
         occurrence: UInt64,
         workMeter: DatabaseWorkMeter
     ) throws {
@@ -119,7 +120,7 @@ struct SPARQLConstructBlankNodeScope: ~Copyable {
     }
 
     private func update(
-        _ bytes: DatabaseBytes,
+        _ bytes: ByteString,
         hasher: inout SHA256Accumulator
     ) {
         update(UInt64(bytes.count), hasher: &hasher)

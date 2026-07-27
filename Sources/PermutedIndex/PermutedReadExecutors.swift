@@ -1,13 +1,6 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
-import DatabaseValue
-import Core
-import QueryIR
-import Permuted
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 enum PermutedReadParameter {
@@ -42,8 +35,9 @@ private struct PermutedReadExecutor: IndexReadExecutor {
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult {
+        let parameters = IndexReadParameters(indexScan.parameters)
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .snapshot
@@ -52,19 +46,28 @@ private struct PermutedReadExecutor: IndexReadExecutor {
         var builder = PermutedQueryBuilder<T>(
             queryContext: queryContext,
             indexName: indexScan.indexName,
-            permutation: try decodePermutation(indexScan.parameters[PermutedReadParameter.permutation])
+            permutation: try decodePermutation(parameters)
         )
 
-        if let limit = indexScan.parameters[PermutedReadParameter.limit]?.int64Value {
-            builder = builder.limit(Int(limit))
+        if let limit = try parameters.optionalInteger(
+            named: PermutedReadParameter.limit
+        ) {
+            guard limit >= 0 else {
+                throw PermutedReadError.invalidParameter(
+                    PermutedReadParameter.limit
+                )
+            }
+            builder = builder.limit(limit)
         }
 
-        let queryType = try requireString(PermutedReadParameter.queryType, from: indexScan.parameters)
+        let queryType = try parameters.requireString(
+            named: PermutedReadParameter.queryType
+        )
         switch queryType {
         case PermutedReadParameter.prefixQuery:
-            builder = builder.prefix(try decodeTupleArray(indexScan.parameters[PermutedReadParameter.values]))
+            builder = builder.prefix(try decodeTupleArray(parameters))
         case PermutedReadParameter.exactQuery:
-            builder = builder.exact(try decodeTupleArray(indexScan.parameters[PermutedReadParameter.values]))
+            builder = builder.exact(try decodeTupleArray(parameters))
         case PermutedReadParameter.allQuery:
             break
         default:
@@ -80,70 +83,45 @@ private struct PermutedReadExecutor: IndexReadExecutor {
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 
-    private func requireString(
-        _ key: String,
-        from parameters: [String: QueryParameterValue]
-    ) throws -> String {
-        guard let value = parameters[key]?.stringValue else {
-            throw PermutedReadError.missingParameter(key)
+    private func decodePermutation(
+        _ parameters: IndexReadParameters
+    ) throws -> Permutation? {
+        guard let values = try parameters.optionalArray(
+            named: PermutedReadParameter.permutation
+        ) else {
+            return nil
         }
-        return value
-    }
-
-    private func decodePermutation(_ value: QueryParameterValue?) throws -> Permutation? {
-        guard let values = value?.arrayValue else { return nil }
-        let indices = try values.map { parameter in
-            guard let intValue = parameter.int64Value else {
-                throw PermutedReadError.invalidParameter(PermutedReadParameter.permutation)
-            }
-            return Int(intValue)
-        }
+        let indices = try integerValues(
+            values,
+            parameter: PermutedReadParameter.permutation
+        )
         return try Permutation(indices: indices)
     }
 
     private func decodeTupleArray(
-        _ value: QueryParameterValue?
+        _ parameters: IndexReadParameters
     ) throws -> [any TupleElement & Sendable] {
-        guard let values = value?.arrayValue else {
-            throw PermutedReadError.missingParameter(PermutedReadParameter.values)
-        }
+        let values = try parameters.requireArray(
+            named: PermutedReadParameter.values
+        )
         return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
     }
-}
 
-private struct PolymorphicPermutedPlaceholder: Persistable {
-    typealias ID = String
-
-    var id: String = ""
-
-    static var persistableType: String { "_PolymorphicPermutedPlaceholder" }
-    static var allFields: [String] { ["id"] }
-
-    static func fieldNumber(for fieldName: String) -> Int? {
-        fieldName == "id" ? 1 : nil
-    }
-
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        member == "id" ? id : nil
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<PolymorphicPermutedPlaceholder, Value>) -> String {
-        if keyPath == \PolymorphicPermutedPlaceholder.id { return "id" }
-        return "\(keyPath)"
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<PolymorphicPermutedPlaceholder>) -> String {
-        if keyPath == \PolymorphicPermutedPlaceholder.id { return "id" }
-        return "\(keyPath)"
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PolymorphicPermutedPlaceholder> {
-            return fieldName(for: partial)
+    private func integerValues(
+        _ values: [FieldValue],
+        parameter: String
+    ) throws -> [Int] {
+        var result: [Int] = []
+        result.reserveCapacity(values.count)
+        for value in values {
+            let element = IndexReadParameters(["value": value])
+            do {
+                result.append(try element.requireInteger(named: "value"))
+            } catch {
+                throw PermutedReadError.invalidParameter(parameter)
+            }
         }
-        return "\(keyPath)"
+        return result
     }
 }
 
@@ -156,8 +134,9 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
-        partitions: [DatabaseObjectField]
+        partitions: FieldObject
     ) async throws -> IndexReadResult {
+        let parameters = IndexReadParameters(indexScan.parameters)
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .snapshot
@@ -165,17 +144,22 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
         let orderByFields = try selectQuery.requiredOrderByColumnNames()
         try context.authorizePolymorphicListAccess(
             group: group,
-            limit: selectQuery.limit,
-            offset: selectQuery.offset,
+            limit: try runtimeInteger(
+                selectQuery.limit,
+                parameter: "limit"
+            ),
+            offset: try runtimeInteger(
+                selectQuery.offset,
+                parameter: "offset"
+            ),
             orderBy: orderByFields
         )
 
         let resolved = try resolveIndex(
-            from: indexScan.parameters[PermutedReadParameter.permutation],
+            parameters: parameters,
             group: group,
             indexName: indexScan.indexName
         )
-        let descriptor = resolved.descriptor
         let permutation = resolved.permutation
         let indexSubspace = try await context.container
             .resolvePolymorphicDirectory(for: group.identifier)
@@ -185,41 +169,45 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
         var primaryKeys = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction in
-            let maintainer = PermutedIndexMaintainer<PolymorphicPermutedPlaceholder>(
-                index: Index(
-                    name: indexScan.indexName,
-                    kind: descriptor.kind,
-                    rootExpression: KeyExpressionFactory.from(keyPaths: descriptor.fieldNames),
-                    isUnique: descriptor.unique,
-                    storedFieldNames: descriptor.storedFieldNames
-                ),
+            let reader = PermutedIndexReader(
                 permutation: permutation,
-                subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id")
+                subspace: indexSubspace
             )
 
-            let queryType = try requireString(PermutedReadParameter.queryType, from: indexScan.parameters)
+            let queryType = try parameters.requireString(
+                named: PermutedReadParameter.queryType
+            )
             switch queryType {
             case PermutedReadParameter.prefixQuery:
-                return try await maintainer.scanByPrefix(
-                    prefixValues: decodeTupleArray(indexScan.parameters[PermutedReadParameter.values]),
+                return try await reader.primaryKeys(
+                    prefixedBy: decodeTupleArray(parameters),
                     transaction: transaction
                 ).map(Tuple.init)
             case PermutedReadParameter.exactQuery:
-                return try await maintainer.scanByExactMatch(
-                    values: decodeTupleArray(indexScan.parameters[PermutedReadParameter.values]),
+                return try await reader.primaryKeys(
+                    matching: decodeTupleArray(parameters),
                     transaction: transaction
                 ).map(Tuple.init)
             case PermutedReadParameter.allQuery:
-                return try await maintainer.scanAll(transaction: transaction).map { Tuple($0.primaryKey) }
+                return try await reader.entries(
+                    transaction: transaction
+                ).map { Tuple($0.primaryKey) }
             default:
                 throw PermutedReadError.invalidParameter(PermutedReadParameter.queryType)
             }
         }
 
-        if let limit = indexScan.parameters[PermutedReadParameter.limit]?.int64Value,
-           primaryKeys.count > Int(limit) {
-            primaryKeys = Array(primaryKeys.prefix(Int(limit)))
+        if let limit = try parameters.optionalInteger(
+            named: PermutedReadParameter.limit
+        ) {
+            guard limit >= 0 else {
+                throw PermutedReadError.invalidParameter(
+                    PermutedReadParameter.limit
+                )
+            }
+            if primaryKeys.count > limit {
+                primaryKeys = Array(primaryKeys.prefix(limit))
+            }
         }
 
         let entities = try await context.fetchPolymorphicItems(
@@ -240,55 +228,84 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 
-    private func requireString(
-        _ key: String,
-        from parameters: [String: QueryParameterValue]
-    ) throws -> String {
-        guard let value = parameters[key]?.stringValue else {
-            throw PermutedReadError.missingParameter(key)
-        }
-        return value
-    }
-
     private func resolveIndex(
-        from value: QueryParameterValue?,
+        parameters: IndexReadParameters,
         group: PolymorphicGroup,
         indexName: String
-    ) throws -> (descriptor: IndexDescriptorMetadata, permutation: Permutation) {
+    ) throws -> (
+        descriptor: PolymorphicIndexMetadata,
+        permutation: Permutation
+    ) {
         guard let descriptor = group.indexes.first(where: {
             $0.name == indexName && $0.kindIdentifier == kindIdentifier
         }),
-        let indices = descriptor.kind.metadata["permutation"]?.intArrayValue else {
+        case .array(let encodedIndices)? = descriptor.metadata["permutation"] else {
             throw PermutedReadError.missingParameter(PermutedReadParameter.permutation)
         }
+        let indices = try integerValues(
+            encodedIndices,
+            parameter: PermutedReadParameter.permutation
+        )
         let canonicalPermutation = try Permutation(indices: indices)
         guard canonicalPermutation.size == descriptor.fieldNames.count else {
             throw PermutedReadError.invalidParameter(PermutedReadParameter.permutation)
         }
-        if let requestedPermutation = try decodePermutation(value),
+        if let requestedPermutation = try decodePermutation(parameters),
            requestedPermutation != canonicalPermutation {
             throw PermutedReadError.invalidParameter(PermutedReadParameter.permutation)
         }
         return (descriptor, canonicalPermutation)
     }
 
-    private func decodePermutation(_ value: QueryParameterValue?) throws -> Permutation? {
-        guard let values = value?.arrayValue else { return nil }
-        let indices = try values.map { parameter in
-            guard let intValue = parameter.int64Value else {
-                throw PermutedReadError.invalidParameter(PermutedReadParameter.permutation)
-            }
-            return Int(intValue)
+    private func decodePermutation(
+        _ parameters: IndexReadParameters
+    ) throws -> Permutation? {
+        guard let values = try parameters.optionalArray(
+            named: PermutedReadParameter.permutation
+        ) else {
+            return nil
         }
+        let indices = try integerValues(
+            values,
+            parameter: PermutedReadParameter.permutation
+        )
         return try Permutation(indices: indices)
     }
 
     private func decodeTupleArray(
-        _ value: QueryParameterValue?
+        _ parameters: IndexReadParameters
     ) throws -> [any TupleElement & Sendable] {
-        guard let values = value?.arrayValue else {
-            throw PermutedReadError.missingParameter(PermutedReadParameter.values)
-        }
+        let values = try parameters.requireArray(
+            named: PermutedReadParameter.values
+        )
         return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
+    }
+
+    private func integerValues(
+        _ values: [FieldValue],
+        parameter: String
+    ) throws -> [Int] {
+        var result: [Int] = []
+        result.reserveCapacity(values.count)
+        for value in values {
+            let element = IndexReadParameters(["value": value])
+            do {
+                result.append(try element.requireInteger(named: "value"))
+            } catch {
+                throw PermutedReadError.invalidParameter(parameter)
+            }
+        }
+        return result
+    }
+
+    private func runtimeInteger(
+        _ value: UInt64?,
+        parameter: String
+    ) throws -> Int? {
+        guard let value else { return nil }
+        guard let result = Int(exactly: value) else {
+            throw PermutedReadError.invalidParameter(parameter)
+        }
+        return result
     }
 }

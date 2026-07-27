@@ -1,44 +1,44 @@
 // ExpressionConversion.swift
-// DatabaseEngine - Conversion between Predicate<T> and QueryIR.Expression
+// DatabaseEngine - Conversion between Predicate<T> and Expression
 
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 
-// MARK: - Predicate<T> → QueryIR.Expression (Forward: always succeeds)
+// MARK: - Predicate<T> → Expression
 
 extension Predicate {
     /// Convert a type-safe Predicate to a type-erased QueryIR Expression.
     ///
-    /// This conversion always succeeds. All Predicate cases have direct QueryIR equivalents.
-    /// The result is serializable, inspectable, and suitable for query planning or caching.
+/// The result is serializable, inspectable, and suitable for query planning
+    /// or caching. Values without a QueryIR literal representation fail with a
+    /// typed error.
     ///
     /// - Note: The original zero-copy evaluation closures are NOT preserved in the IR.
     ///   Use the original Predicate for in-process evaluation.
-    public func toExpression() -> QueryIR.Expression {
+    public func toExpression() throws(LiteralConversionError) -> Expression {
         switch self {
         case .comparison(let fc):
-            return fc.toExpression()
+            return try fc.toExpression()
         case .and(let predicates):
             guard let first = predicates.first else {
                 return .literal(.bool(true))
             }
-            var expression = first.toExpression()
+            var expression = try first.toExpression()
             for predicate in predicates.dropFirst() {
-                expression = .and(expression, predicate.toExpression())
+                expression = .and(expression, try predicate.toExpression())
             }
             return expression
         case .or(let predicates):
             guard let first = predicates.first else {
                 return .literal(.bool(false))
             }
-            var expression = first.toExpression()
+            var expression = try first.toExpression()
             for predicate in predicates.dropFirst() {
-                expression = .or(expression, predicate.toExpression())
+                expression = .or(expression, try predicate.toExpression())
             }
             return expression
         case .not(let predicate):
-            return .not(predicate.toExpression())
+            return .not(try predicate.toExpression())
         case .true:
             return .literal(.bool(true))
         case .false:
@@ -47,21 +47,21 @@ extension Predicate {
     }
 }
 
-// MARK: - FieldComparison<T> → QueryIR.Expression
+// MARK: - FieldComparison<T> → Expression
 
 extension FieldComparison {
     /// Convert a FieldComparison to a QueryIR Expression.
     ///
-    /// Uses the field name (derived from the KeyPath) and the comparison operator
+    /// Uses the compiled field identity and the comparison operator
     /// to construct a column-based expression.
-    public func toExpression() -> QueryIR.Expression {
-        op.toExpression(column: fieldName, value: value)
+    public func toExpression() throws(LiteralConversionError) -> Expression {
+        try op.toExpression(column: fieldName, value: value)
     }
 }
 
-// MARK: - QueryIR.Expression → Predicate<T> (Reverse: partial)
+// MARK: - Expression → Predicate<T> (Reverse: partial)
 
-extension QueryIR.Expression {
+extension Expression {
     /// Attempt to convert a QueryIR Expression back to a type-safe Predicate.
     ///
     /// Returns `nil` for patterns that cannot be represented as a Predicate:
@@ -71,11 +71,8 @@ extension QueryIR.Expression {
     /// - Arithmetic expressions used as boolean
     /// - Column names that don't match any field in the target type
     ///
-    /// Throws when a literal belongs to the canonical value model but cannot be
-    /// represented exactly by the narrower `FieldValue` predicate model.
-    ///
-    /// Successfully converted predicates use `FieldReader`-based evaluation
-    /// (via `dynamicMember` subscript). They do NOT have zero-copy KeyPath closures.
+    /// Successfully converted predicates retain the exact compiled field
+    /// identity and use the generated `Persistable` field traversal.
     public func toPredicate<T: Persistable>(
         for type: T.Type
     ) throws(LiteralConversionError) -> Predicate<T>? {
@@ -109,68 +106,54 @@ extension QueryIR.Expression {
 
         // Null checks
         case .isNull(.column(let col)):
-            guard T.allFields.contains(col.column) else { return nil }
-            let fieldName = col.column
+            guard let field = T.persistedFieldIdentity(
+                named: col.column
+            ) else { return nil }
             return .comparison(FieldComparison<T>(
-                fieldName: fieldName,
+                field: field,
                 op: .isNil,
-                value: .null,
-                evaluate: { model in
-                    FieldReader.readFieldValue(from: model, fieldName: fieldName) == .null
-                }
+                value: .null
             ))
         case .isNotNull(.column(let col)):
-            guard T.allFields.contains(col.column) else { return nil }
-            let fieldName = col.column
+            guard let field = T.persistedFieldIdentity(
+                named: col.column
+            ) else { return nil }
             return .comparison(FieldComparison<T>(
-                fieldName: fieldName,
+                field: field,
                 op: .isNotNil,
-                value: .null,
-                evaluate: { model in
-                    FieldReader.readFieldValue(from: model, fieldName: fieldName) != .null
-                }
+                value: .null
             ))
 
         // IN list
         case .inList(.column(let col), let values):
-            guard T.allFields.contains(col.column) else { return nil }
+            guard let field = T.persistedFieldIdentity(
+                named: col.column
+            ) else { return nil }
             var collected: [FieldValue] = []
             for v in values {
                 guard case .literal(let literal) = v else { return nil }
                 collected.append(try literal.toFieldValue())
             }
-            let fieldValues = collected  // immutable copy for Sendable capture
-            let arrayValue = FieldValue.array(fieldValues)
-            let fieldName = col.column
             return .comparison(FieldComparison<T>(
-                fieldName: fieldName,
+                field: field,
                 op: .in,
-                value: arrayValue,
-                evaluate: { model in
-                    let modelValue = FieldReader.readFieldValue(from: model, fieldName: fieldName)
-                    return fieldValues.contains { modelValue.isEqual(to: $0) }
-                }
+                value: .array(collected)
             ))
 
         // NOT IN list
         case .notInList(.column(let col), let values):
-            guard T.allFields.contains(col.column) else { return nil }
+            guard let field = T.persistedFieldIdentity(
+                named: col.column
+            ) else { return nil }
             var collected: [FieldValue] = []
             for v in values {
                 guard case .literal(let literal) = v else { return nil }
                 collected.append(try literal.toFieldValue())
             }
-            let fieldValues = collected
-            let arrayValue = FieldValue.array(fieldValues)
-            let fieldName = col.column
             return .comparison(FieldComparison<T>(
-                fieldName: fieldName,
+                field: field,
                 op: .notIn,
-                value: arrayValue,
-                evaluate: { model in
-                    let modelValue = FieldReader.readFieldValue(from: model, fieldName: fieldName)
-                    return !fieldValues.contains { modelValue.isEqual(to: $0) }
-                }
+                value: .array(collected)
             ))
 
         // Boolean literals
@@ -187,110 +170,41 @@ extension QueryIR.Expression {
 
     /// Extract column-op-literal pattern into a FieldComparison-based Predicate.
     ///
-    /// Uses FieldReader for evaluation since KeyPath resolution from field names
-    /// is not available on Persistable.
+    /// Resolves the QueryIR column to one exact compiled schema identity.
     private func columnLiteralPredicate<T: Persistable>(
-        lhs: QueryIR.Expression,
-        rhs: QueryIR.Expression,
+        lhs: Expression,
+        rhs: Expression,
         op: ComparisonOperator
     ) throws(LiteralConversionError) -> Predicate<T>? {
         guard case .column(let col) = lhs,
               case .literal(let literal) = rhs else { return nil }
         let fieldValue = try literal.toFieldValue()
-        let fieldName = col.column
-        guard T.allFields.contains(fieldName) else { return nil }
+        guard let field = T.persistedFieldIdentity(
+            named: col.column
+        ) else { return nil }
         return .comparison(FieldComparison<T>(
-            fieldName: fieldName,
+            field: field,
             op: op,
-            value: fieldValue,
-            evaluate: QueryRowExpressionEvaluator.makeEvaluator(
-                fieldName: fieldName,
-                op: op,
-                value: fieldValue
-            )
+            value: fieldValue
         ))
     }
 }
 
-// MARK: - Evaluation Closure Builder
-
-/// Builds `@Sendable` evaluation closures for FieldReader-based comparison.
-///
-/// Used by reverse conversion (Expression → Predicate) where typed KeyPaths
-/// are not available. All closures use `FieldReader.readFieldValue` for field access
-/// and `FieldValue` comparison methods for type-safe evaluation.
-enum QueryRowExpressionEvaluator {
-    static func makeEvaluator<T: Persistable>(
-        fieldName: String,
-        op: ComparisonOperator,
-        value: FieldValue
-    ) -> @Sendable (T) -> Bool {
-        { model in
-            let modelValue = FieldReader.readFieldValue(from: model, fieldName: fieldName)
-
-            switch op {
-            case .isNil:
-                return modelValue == .null
-            case .isNotNil:
-                return modelValue != .null
-            default:
-                break
-            }
-
-            if modelValue == .null { return false }
-
-            switch op {
-            case .equal:
-                return modelValue.isEqual(to: value)
-            case .notEqual:
-                return !modelValue.isEqual(to: value)
-            case .lessThan:
-                return modelValue.isLessThan(value)
-            case .lessThanOrEqual:
-                return modelValue.isLessThan(value) || modelValue.isEqual(to: value)
-            case .greaterThan:
-                return value.isLessThan(modelValue)
-            case .greaterThanOrEqual:
-                return value.isLessThan(modelValue) || modelValue.isEqual(to: value)
-            case .contains:
-                if let str = FieldReader.read(from: model, fieldName: fieldName) as? String,
-                   let substr = value.stringValue {
-                    return DatabaseText.contains(substr, in: str)
-                }
-                return false
-            case .hasPrefix:
-                if let str = FieldReader.read(from: model, fieldName: fieldName) as? String,
-                   let prefix = value.stringValue {
-                    return str.hasPrefix(prefix)
-                }
-                return false
-            case .hasSuffix:
-                if let str = FieldReader.read(from: model, fieldName: fieldName) as? String,
-                   let suffix = value.stringValue {
-                    return str.hasSuffix(suffix)
-                }
-                return false
-            case .in, .notIn:
-                if let arrayValues = value.arrayValue {
-                    let contains = arrayValues.contains {
-                        modelValue.isEqual(to: $0)
-                    }
-                    return op == .in ? contains : !contains
-                }
-                return false
-            case .isNil, .isNotNil:
-                return false
-            }
+private extension Persistable {
+    static func persistedFieldIdentity(named name: String) -> FieldIdentity? {
+        for schema in fieldSchemas where schema.name == name && schema.fieldNumber > 0 {
+            return FieldIdentity(name: schema.name, number: schema.fieldNumber)
         }
+        return nil
     }
 }
 
 // MARK: - Array Helper
 
-extension Array where Element == QueryIR.Expression {
+extension Array where Element == Expression {
     /// Reduce an array of expressions with a binary combinator.
     /// Returns `.literal(.bool(true))` for empty arrays, single element for count == 1.
-    func reduceExpressions(with combine: (QueryIR.Expression, QueryIR.Expression) -> QueryIR.Expression) -> QueryIR.Expression {
+    func reduceExpressions(with combine: (Expression, Expression) -> Expression) -> Expression {
         guard let first = self.first else {
             return .literal(.bool(true))
         }
@@ -309,15 +223,15 @@ struct SplitAndResult<T: Persistable>: Sendable {
     /// Conjuncts successfully converted to typed predicates (push-down candidates).
     let pushed: [Predicate<T>]
     /// Conjuncts that could not be converted; must be evaluated as residual.
-    let residual: [QueryIR.Expression]
+    let residual: [Expression]
 }
 
-extension QueryIR.Expression {
+extension Expression {
     /// Split this expression into pushable typed predicates and residual conjuncts.
     ///
     /// Flattens the top-level AND structure and attempts `toPredicate(for:)` on each
     /// conjunct. Successful conversions are returned as `Predicate<T>`; failures are
-    /// returned as `QueryIR.Expression` for residual in-memory evaluation. This enables
+    /// returned as `Expression` for residual in-memory evaluation. This enables
     /// partial push-down: the convertible part of `A AND B AND C` engages the typed
     /// fetch path (index selection, range scans) even when one conjunct cannot be
     /// represented as a typed predicate.
@@ -327,8 +241,8 @@ extension QueryIR.Expression {
         for type: T.Type
     ) throws(LiteralConversionError) -> SplitAndResult<T> {
         var pushed: [Predicate<T>] = []
-        var residual: [QueryIR.Expression] = []
-        var pending: [QueryIR.Expression] = [self]
+        var residual: [Expression] = []
+        var pending: [Expression] = [self]
         while let conjunct = pending.popLast() {
             if case .and(let lhs, let rhs) = conjunct {
                 pending.append(rhs)

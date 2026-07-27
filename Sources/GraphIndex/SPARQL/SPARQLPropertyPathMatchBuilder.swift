@@ -1,21 +1,18 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 
 /// Builds one retained property-path relation with prospective admission.
 struct SPARQLPropertyPathMatchBuilder: ~Copyable {
     private var storage: DatabaseRetainedArrayBuilder<SPARQLPropertyPathMatch>
-    private let footprintMeter: SPARQLPropertyPathMatchFootprintMeter
     private let maximumResults: Int?
 
     private init(
         storage: consuming DatabaseRetainedArrayBuilder<
             SPARQLPropertyPathMatch
         >,
-        footprintMeter: SPARQLPropertyPathMatchFootprintMeter,
         maximumResults: Int?
     ) {
         self.storage = storage
-        self.footprintMeter = footprintMeter
         self.maximumResults = maximumResults
     }
 
@@ -68,31 +65,21 @@ struct SPARQLPropertyPathMatchBuilder: ~Copyable {
         maximumResults: Int?,
         expectedCount: Int
     ) throws -> SPARQLPropertyPathMatchBuilder {
-        let footprintMeter = try SPARQLPropertyPathMatchFootprintMeter.make(
+        let storage = try DatabaseRetainedArrayBuilder<
+            SPARQLPropertyPathMatch
+        >(
             workMeter: workMeter,
-            stage: stage
+            stage: stage,
+            layout: try SPARQLPropertyPathMatchRetainedFootprint
+                .retainedArrayLayout(),
+            expectedCount: maximumResults.map {
+                min(expectedCount, $0)
+            } ?? expectedCount
         )
-        do {
-            let storage = try DatabaseRetainedArrayBuilder<
-                SPARQLPropertyPathMatch
-            >(
-                workMeter: workMeter,
-                stage: stage,
-                layout: try SPARQLPropertyPathMatchFootprintMeter
-                    .retainedArrayLayout(),
-                expectedCount: maximumResults.map {
-                    min(expectedCount, $0)
-                } ?? expectedCount
-            )
-            return SPARQLPropertyPathMatchBuilder(
-                storage: storage,
-                footprintMeter: footprintMeter,
-                maximumResults: maximumResults
-            )
-        } catch {
-            footprintMeter.shutdown()
-            throw error
-        }
+        return SPARQLPropertyPathMatchBuilder(
+            storage: storage,
+            maximumResults: maximumResults
+        )
     }
 
     /// Reopens a unique relation without copying its Array buffer.
@@ -120,11 +107,8 @@ struct SPARQLPropertyPathMatchBuilder: ~Copyable {
                 maximumResults: maximumResults
             )
         case .unique(let retained):
-            let footprintMeter = try SPARQLPropertyPathMatchFootprintMeter
-                .make(workMeter: workMeter, stage: stage)
             return SPARQLPropertyPathMatchBuilder(
                 storage: retained.resumeBuilding(at: stage),
-                footprintMeter: footprintMeter,
                 maximumResults: maximumResults
             )
         }
@@ -144,11 +128,8 @@ struct SPARQLPropertyPathMatchBuilder: ~Copyable {
                 stage: stage
             )
         case .unique(let retained):
-            let footprintMeter = try SPARQLPropertyPathMatchFootprintMeter
-                .make(workMeter: workMeter, stage: stage)
             return SPARQLPropertyPathMatchBuilder(
                 storage: retained.resumeBuilding(at: stage),
-                footprintMeter: footprintMeter,
                 maximumResults: nil
             )
         }
@@ -168,12 +149,12 @@ struct SPARQLPropertyPathMatchBuilder: ~Copyable {
     }
 
     mutating func append(
-        start: borrowing DatabaseRDFTerm,
-        end: borrowing DatabaseRDFTerm,
+        start: borrowing RDFTerm,
+        end: borrowing RDFTerm,
         at stage: DatabaseWorkStage? = nil
     ) throws {
         try checkAppendAllowed()
-        let footprint = try footprintMeter.footprint(
+        let footprint = try SPARQLPropertyPathMatchRetainedFootprint.measure(
             start: start,
             end: end
         )
@@ -193,7 +174,9 @@ struct SPARQLPropertyPathMatchBuilder: ~Copyable {
         at stage: DatabaseWorkStage? = nil
     ) throws {
         try checkAppendAllowed()
-        let footprint = try footprintMeter.footprint(of: match)
+        let footprint = try SPARQLPropertyPathMatchRetainedFootprint.measure(
+            of: match
+        )
         let admission = try storage.prepareAppend(
             footprint: footprint,
             at: stage
@@ -206,7 +189,9 @@ struct SPARQLPropertyPathMatchBuilder: ~Copyable {
         at stage: DatabaseWorkStage? = nil
     ) throws {
         try checkAppendAllowed()
-        let footprint = try footprintMeter.footprint(of: match)
+        let footprint = try SPARQLPropertyPathMatchRetainedFootprint.measure(
+            of: match
+        )
         let admission = try storage.prepareAppend(
             footprint: footprint,
             at: stage
@@ -227,7 +212,6 @@ struct SPARQLPropertyPathMatchBuilder: ~Copyable {
     }
 
     consuming func finish() -> SPARQLPropertyPathMatches {
-        footprintMeter.shutdown()
         guard !storage.isEmpty else { return .empty }
         return .unique(storage.finish())
     }

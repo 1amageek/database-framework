@@ -1,12 +1,12 @@
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 
 public struct RelationshipReferenceIdentityPage: Sendable {
-    public let identities: [PersistableIdentity]
+    public let identities: [EntityReference]
     public let continuation: Bytes?
 
     public init(
-        identities: [PersistableIdentity],
+        identities: [EntityReference],
         continuation: Bytes?
     ) {
         self.identities = identities

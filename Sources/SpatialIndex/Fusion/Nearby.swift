@@ -4,15 +4,10 @@
 // This file is part of SpatialIndex module, not DatabaseEngine.
 // DatabaseEngine does not know about SpatialIndexKind.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
+import DatabaseKit
 import DatabaseEngine
+import DatabaseTypes
 import StorageKit
-import Geospatial
 
 /// Spatial search query for Fusion
 ///
@@ -30,7 +25,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     public typealias Item = T
 
     private let queryContext: IndexQueryContext
-    private let fieldName: String
+    private let field: FieldIdentity
     private var constraint: SpatialConstraint?
     private var referencePoint: (latitude: Double, longitude: Double)?
 
@@ -48,11 +43,11 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     ///     Nearby(\.location).within(radiusKm: 5, of: userLocation)
     /// }
     /// ```
-    public init(_ keyPath: KeyPath<T, GeoPoint>) {
+    public init(_ field: Field<T, GeographicPoint>) {
         guard let context = FusionContext.current else {
             fatalError("Nearby must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -61,11 +56,11 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     /// Uses FusionContext.current for context (automatically set by `context.fuse { }`).
     ///
     /// - Parameter keyPath: KeyPath to the optional GeoPoint field
-    public init(_ keyPath: KeyPath<T, GeoPoint?>) {
+    public init(_ field: Field<T, GeographicPoint?>) {
         guard let context = FusionContext.current else {
             fatalError("Nearby must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -76,8 +71,11 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     /// - Parameters:
     ///   - keyPath: KeyPath to the GeoPoint field
     ///   - context: IndexQueryContext for database access
-    public init(_ keyPath: KeyPath<T, GeoPoint>, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
+    public init(
+        _ field: Field<T, GeographicPoint>,
+        context: IndexQueryContext
+    ) {
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -86,18 +84,11 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     /// - Parameters:
     ///   - keyPath: KeyPath to the optional GeoPoint field
     ///   - context: IndexQueryContext for database access
-    public init(_ keyPath: KeyPath<T, GeoPoint?>, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Nearby query with a field name string
-    ///
-    /// - Parameters:
-    ///   - fieldName: The field name to search
-    ///   - context: IndexQueryContext for database access
-    public init(fieldName: String, context: IndexQueryContext) {
-        self.fieldName = fieldName
+    public init(
+        _ field: Field<T, GeographicPoint?>,
+        context: IndexQueryContext
+    ) {
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -109,7 +100,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     ///   - radiusKm: Radius in kilometers
     ///   - center: Center point
     /// - Returns: Updated query
-    public func within(radiusKm: Double, of center: GeoPoint) -> Self {
+    public func within(radiusKm: Double, of center: GeographicPoint) -> Self {
         var copy = self
         copy.constraint = SpatialConstraint(
             type: .withinDistance(
@@ -146,13 +137,9 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
 
     /// Find the index descriptor using kindIdentifier and fieldName
     private func findIndexDescriptor() -> IndexDescriptor? {
-        T.indexDescriptors.first { descriptor in
-            // 1. Filter by kindIdentifier
-            guard descriptor.kindIdentifier == SpatialIndexKind<T>.identifier else {
-                return false
-            }
-            // 2. Match by fieldName
-            return descriptor.fieldNames.contains(fieldName)
+        queryContext.schema.indexDescriptors(for: T.persistableType).first {
+            $0.kind.identifier == "spatial"
+                && $0.fieldNames == [field.name]
         }
     }
 
@@ -167,14 +154,14 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         guard let descriptor = findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
                 type: T.persistableType,
-                field: fieldName,
+                field: field.name,
                 kind: "spatial"
             )
         }
 
-        let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)
-        let level = kind.level
-        let encoding = kind.encoding
+        let (encoding, level) = try spatialConfiguration(
+            descriptor.kind
+        )
 
         let indexName = descriptor.name
 
@@ -195,7 +182,12 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
 
         // Fetch items by primary keys
         var items = try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
-        items = items.filter { matches($0, constraint: constraint) }
+        var matchingItems: [T] = []
+        matchingItems.reserveCapacity(items.count)
+        for item in items where try matches(item, constraint: constraint) {
+            matchingItems.append(item)
+        }
+        items = matchingItems
 
         // Filter to candidates if provided
         if let candidateIDs = candidates {
@@ -210,12 +202,18 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         let refPoint = GeoPoint(ref.latitude, ref.longitude)
 
         // Extract locations and calculate distances
-        let itemsWithDistance: [(item: T, distance: Double)] = items.compactMap { item in
-            guard let location = item[dynamicMember: fieldName] as? GeoPoint else {
-                return nil
+        var itemsWithDistance: [(item: T, distance: Double)] = []
+        itemsWithDistance.reserveCapacity(items.count)
+        for item in items {
+            guard let coordinate = try coordinate(from: item) else {
+                continue
             }
+            let location = GeoPoint(
+                coordinate.latitude,
+                coordinate.longitude
+            )
             let distance = refPoint.distance(to: location)
-            return (item: item, distance: distance)
+            itemsWithDistance.append((item: item, distance: distance))
         }
 
         // Normalize distance to score (closer = higher score)
@@ -248,10 +246,17 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         return keys
     }
 
-    private func matches(_ item: T, constraint: SpatialConstraint) -> Bool {
-        guard let location = item[dynamicMember: fieldName] as? GeoPoint else {
+    private func matches(
+        _ item: T,
+        constraint: SpatialConstraint
+    ) throws -> Bool {
+        guard let coordinate = try coordinate(from: item) else {
             return false
         }
+        let location = GeoPoint(
+            coordinate.latitude,
+            coordinate.longitude
+        )
 
         switch constraint.type {
         case .withinDistance(let center, let radiusMeters):
@@ -296,5 +301,39 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         }
 
         return inside
+    }
+
+    private func coordinate(from item: T) throws -> GeographicPoint? {
+        guard let value = try item.persistedFieldValue(for: field) else {
+            throw SpatialIndexMaintenanceError.missingCoordinate(
+                fieldName: field.name
+            )
+        }
+        switch value {
+        case .null:
+            return nil
+        case .geographicPoint(let point):
+            return point
+        case .geographicPosition(let position):
+            return position.point
+        default:
+            throw SpatialIndexMaintenanceError.unsupportedCoordinateValue(
+                fieldName: field.name
+            )
+        }
+    }
+
+    private func spatialConfiguration(
+        _ metadata: IndexKindMetadata
+    ) throws -> (encoding: SpatialEncoding, level: Int) {
+        let definition = try IndexDefinition(metadata: metadata)
+        guard case .spatial(let encoding, let level) = definition else {
+            throw FusionQueryError.indexNotFound(
+                type: T.persistableType,
+                field: field.name,
+                kind: "spatial"
+            )
+        }
+        return (encoding, level)
     }
 }

@@ -1,12 +1,13 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseRuntime
 
 @Persistable
 struct BootstrapIndexedEntity {
     #Directory<BootstrapIndexedEntity>("test", "schema-bootstrap")
     #Index(
-        ScalarIndexKind<BootstrapIndexedEntity>(fields: [\.value]),
+        .scalar,
+        fields: [\BootstrapIndexedEntity.value],
         name: "bootstrap_value"
     )
 

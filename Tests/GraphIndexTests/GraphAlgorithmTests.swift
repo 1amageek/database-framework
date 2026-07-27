@@ -5,9 +5,9 @@
 import Testing
 import Foundation
 import StorageKit
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 @testable import DatabaseEngine
 @testable import GraphIndex
 
@@ -19,15 +19,8 @@ private struct Edge {
     var source: String
     var target: String
     var label: String
-    var weight: Double
+    var weight: Double = 1.0
 
-    init(id: String = UUID().uuidString, source: String, target: String, label: String, weight: Double = 1.0) {
-        self.id = id
-        self.source = source
-        self.target = target
-        self.label = label
-        self.weight = weight
-    }
 }
 
 // MARK: - Test Helper

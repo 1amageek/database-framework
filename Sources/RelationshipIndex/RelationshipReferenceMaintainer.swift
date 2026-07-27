@@ -1,7 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import Relationship
+import DatabaseTypes
 
 /// Maintains the canonical inverse-reference catalog for every relationship field.
 public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
@@ -13,8 +12,7 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
         var descriptorNames = Set<String>()
         var ownerFields = Set<String>()
         for entity in schema.entities {
-            guard let ownerType = entity.persistableType else { continue }
-            for descriptor in ownerType.relationshipDescriptors {
+            for descriptor in entity.relationships {
                 guard descriptorNames.insert(descriptor.name).inserted else {
                     throw RelationshipSchemaError.duplicateDescriptorName(
                         descriptor.name
@@ -27,13 +25,13 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
                         field: descriptor.propertyName
                     )
                 }
-                guard descriptor.ownerTypeName == ownerType.persistableType else {
+                guard descriptor.ownerTypeName == entity.name else {
                     throw RelationshipSchemaError.ownerMismatch(
-                        expected: ownerType.persistableType,
+                        expected: entity.name,
                         actual: descriptor.ownerTypeName
                     )
                 }
-                guard let field = ownerType.fieldSchemas.first(where: {
+                guard let field = entity.fields.first(where: {
                     $0.name == descriptor.propertyName
                 }) else {
                     throw RelationshipSchemaError.missingField(
@@ -62,13 +60,8 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
                         actual: field.referenceTargetEntity
                     )
                 }
-                guard let target = schema.entity(named: descriptor.relatedTypeName) else {
+                guard schema.entity(named: descriptor.relatedTypeName) != nil else {
                     throw RelationshipSchemaError.unknownTarget(
-                        descriptor.relatedTypeName
-                    )
-                }
-                guard target.persistableType != nil else {
-                    throw RelationshipSchemaError.targetHasNoCompiledType(
                         descriptor.relatedTypeName
                     )
                 }
@@ -122,7 +115,7 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
 
         let resolver = RelationshipReferenceResolver(schema: context.schema)
         if let oldModel {
-            let owner = try PersistableIdentityEncoder.encode(oldModel)
+            let owner = try EntityReferenceEncoder.encode(oldModel)
             for descriptor in type(of: oldModel).relationshipDescriptors {
                 for target in try resolver.references(
                     from: oldModel,
@@ -139,7 +132,7 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
         }
 
         if let newModel {
-            let owner = try PersistableIdentityEncoder.encode(newModel)
+            let owner = try EntityReferenceEncoder.encode(newModel)
             for descriptor in type(of: newModel).relationshipDescriptors {
                 for target in try resolver.references(
                     from: newModel,
@@ -161,7 +154,7 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
         context: borrowing PersistableValidationContext
     ) async throws {
         let resolver = RelationshipReferenceResolver(schema: context.schema)
-        var validated = Set<PersistableIdentity>()
+        var validated = Set<EntityReference>()
 
         for model in models {
             for descriptor in type(of: model).relationshipDescriptors {

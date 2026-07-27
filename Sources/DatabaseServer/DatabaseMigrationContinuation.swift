@@ -1,25 +1,28 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseKit
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
-struct DatabaseMigrationContinuation: DatabaseWireValue, Sendable, Hashable {
+struct DatabaseMigrationContinuation: ServerPayloadValue, Sendable, Hashable {
     private static let formatVersion: UInt8 = 1
 
-    let targetVersion: DatabaseSchemaVersion
-    let requestFingerprint: DatabaseBytes
+    let targetVersion: SchemaVersion
+    let requestFingerprint: ByteString
     let completedWorkUnits: UInt64
 
     func encode(
         into writer: inout DatabaseWireWriter
     ) throws(DatabaseWireError) {
         writer.writeUInt8(Self.formatVersion)
-        try targetVersion.encode(into: &writer)
+        writer.writeUInt32(targetVersion.major)
+        writer.writeUInt32(targetVersion.minor)
+        writer.writeUInt32(targetVersion.patch)
         try writer.writeBytes(requestFingerprint)
         writer.writeUInt64(completedWorkUnits)
     }
 
     init(
-        targetVersion: DatabaseSchemaVersion,
-        requestFingerprint: DatabaseBytes,
+        targetVersion: SchemaVersion,
+        requestFingerprint: ByteString,
         completedWorkUnits: UInt64
     ) {
         self.targetVersion = targetVersion
@@ -35,7 +38,11 @@ struct DatabaseMigrationContinuation: DatabaseWireValue, Sendable, Hashable {
             throw .unsupportedProtocolVersionValue(UInt16(version))
         }
         self.init(
-            targetVersion: try DatabaseSchemaVersion(from: &reader),
+            targetVersion: SchemaVersion(
+                try reader.readUInt32(),
+                try reader.readUInt32(),
+                try reader.readUInt32()
+            ),
             requestFingerprint: try reader.readBytes(),
             completedWorkUnits: try reader.readUInt64()
         )

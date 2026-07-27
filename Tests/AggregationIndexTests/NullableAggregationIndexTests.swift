@@ -1,6 +1,6 @@
 @testable import AggregationIndex
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import DatabaseRuntime
 import Foundation
@@ -12,7 +12,11 @@ struct NullableAggregationIndexTests {
     @Test("Indexed grouping preserves null and unsigned presentation types")
     func indexedGroupingPreservesNullAndUnsignedTypes() async throws {
         let container = try await DBContainer.open(
-            for: Schema([NullableUnsignedAggregationEntity.self]),
+            for: try Schema(
+                entities: [
+                    try NullableUnsignedAggregationEntity.schemaEntity
+                ]
+            ),
             configuration: .init(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [NullableUnsignedAggregationEntity.self]),
             security: .disabled
@@ -37,9 +41,9 @@ struct NullableAggregationIndexTests {
 
         let builder = context
             .aggregate(NullableUnsignedAggregationEntity.self)
-            .groupBy(\.group)
+            .groupBy(NullableUnsignedAggregationEntity.fields.group)
             .count(as: "count")
-            .sum(\.value, as: "sum")
+            .sum(NullableUnsignedAggregationEntity.fields.value, as: "sum")
         let strategies = try builder.determineExecutionStrategies()
         guard case .useIndex = strategies["count"],
               case .useIndex = strategies["sum"] else {
@@ -69,9 +73,11 @@ struct NullableAggregationIndexTests {
         let engine = InMemoryEngine()
         let index = Index(
             name: "nullable-count-not-null",
-            kind: CountNotNullIndexKind<NullableUnsignedAggregationEntity>(
-                groupBy: [\.group],
-                value: \.optionalValue
+            kind: countNotNullIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "group", number: 2)
+                ],
+                valueField: FieldIdentity(name: "optionalValue", number: 4)
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
@@ -140,11 +146,13 @@ private struct NullableUnsignedAggregationEntity {
     var value: Int64 = 0
     var optionalValue: String?
 
-    #Index(CountIndexKind<NullableUnsignedAggregationEntity>(
-        groupBy: [\.group]
-    ))
-    #Index(SumIndexKind<NullableUnsignedAggregationEntity, Int64>(
-        groupBy: [\.group],
-        value: \.value
-    ))
+    #Index(
+        .count,
+        groupBy: [\NullableUnsignedAggregationEntity.group]
+    )
+    #Index(
+        .sum,
+        groupBy: [\NullableUnsignedAggregationEntity.group],
+        value: \NullableUnsignedAggregationEntity.value
+    )
 }

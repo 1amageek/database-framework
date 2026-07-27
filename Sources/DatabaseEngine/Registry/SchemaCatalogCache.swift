@@ -4,7 +4,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import Synchronization
-import Core
+import DatabaseKit
 
 /// Thread-safe cache for Schema.Entity entries with TTL
 ///

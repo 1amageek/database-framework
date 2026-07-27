@@ -1,34 +1,25 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseKit
+import DatabaseTypes
 
 public struct AnyDatabaseReadCommand: Sendable {
-    public let identifier: String
+    public let identifier: CommandIdentifier
 
     private let executeCommand: @Sendable (
-        DatabaseBytes,
+        FieldObject,
         DatabaseReadCommandContext,
-        DatabaseWireLimits
-    ) async throws -> AnyDatabaseCommandResult
+    ) async throws -> DatabaseCommandResult
 
     public init<Command: DatabaseReadCommand>(_ command: Command) {
         self.identifier = command.identifier
-        self.executeCommand = { input, context, limits in
-            let decoded = try DatabaseEnvelopeCodec.decode(
-                Command.Descriptor.Input.self,
-                from: input,
-                limits: limits
-            )
-            return AnyDatabaseCommandResult(
-                try await command.execute(input: decoded, context: context)
-            )
+        self.executeCommand = { input, context in
+            try await command.execute(input: input, context: context)
         }
     }
 
     func execute(
-        input: DatabaseBytes,
-        context: DatabaseReadCommandContext,
-        limits: DatabaseWireLimits
-    ) async throws -> AnyDatabaseCommandResult {
-        try await executeCommand(input, context, limits)
+        input: FieldObject,
+        context: DatabaseReadCommandContext
+    ) async throws -> DatabaseCommandResult {
+        try await executeCommand(input, context)
     }
 }

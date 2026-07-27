@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestHeartbeat
 import Testing
 @testable import GraphIndex
@@ -16,7 +16,7 @@ struct SPARQLFunctionRegistryTests {
             case fail
         }
 
-        let identifier: DatabaseRDFIRI
+        let identifier: RDFIRI
         let behavior: Behavior
 
         func evaluate(arguments: [FieldValue]) throws -> FieldValue {
@@ -31,8 +31,10 @@ struct SPARQLFunctionRegistryTests {
 
     @Test("An exact canonical IRI resolves to its injected function")
     func exactCanonicalLookup() throws {
-        let identifier = try DatabaseRDFIRI("https://example.com/function/value")
-        let expected = FieldValue.rdfTerm(.iri("https://example.com/result"))
+        let identifier = try RDFIRI("https://example.com/function/value")
+        let expected = FieldValue.rdfTerm(
+            try .iri(validating: "https://example.com/result")
+        )
         let registry = try SPARQLFunctionRegistry([
             ConfiguredSPARQLFunction(
                 identifier: identifier,
@@ -50,10 +52,14 @@ struct SPARQLFunctionRegistryTests {
 
     @Test("Duplicate extension identifiers fail registry construction")
     func duplicateIdentifierFails() throws {
-        let identifier = try DatabaseRDFIRI("https://example.com/function/value")
+        let identifier = try RDFIRI("https://example.com/function/value")
         let function = ConfiguredSPARQLFunction(
             identifier: identifier,
-            behavior: .returnValue(.rdfTerm(.iri("https://example.com/result")))
+            behavior: .returnValue(
+                .rdfTerm(
+                    try .iri(validating: "https://example.com/result")
+                )
+            )
         )
 
         #expect(throws: SPARQLFunctionRegistryError.self) {
@@ -73,7 +79,7 @@ struct SPARQLFunctionRegistryTests {
 
     @Test("Extension functions cannot return non-canonical scalar values")
     func nonCanonicalResultFails() throws {
-        let identifier = try DatabaseRDFIRI("https://example.com/function/scalar")
+        let identifier = try RDFIRI("https://example.com/function/scalar")
         let registry = try SPARQLFunctionRegistry([
             ConfiguredSPARQLFunction(
                 identifier: identifier,
@@ -91,7 +97,7 @@ struct SPARQLFunctionRegistryTests {
 
     @Test("Implementation failures preserve the function identity")
     func extensionFunctionFailurePreservesIdentifier() throws {
-        let identifier = try DatabaseRDFIRI("https://example.com/function/failing")
+        let identifier = try RDFIRI("https://example.com/function/failing")
         let registry = try SPARQLFunctionRegistry([
             ConfiguredSPARQLFunction(identifier: identifier, behavior: .fail)
         ])

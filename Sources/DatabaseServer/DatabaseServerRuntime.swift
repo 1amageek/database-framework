@@ -1,5 +1,5 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 
 public final class DatabaseServerRuntime: Sendable {
     public let endpoint: DatabaseEndpoint
@@ -70,18 +70,11 @@ public final class DatabaseServerRuntime: Sendable {
                 )
             ),
             AnyDatabaseOperationHandler(
-                CommandReadHandler(
-                    registry: services.readCommandRegistry,
-                    runtimeLimits: configuration.runtimeLimits,
-                    wireLimits: configuration.wireLimits
-                )
-            ),
-            AnyDatabaseOperationHandler(
-                CommandWriteHandler(
-                    registry: services.writeCommandRegistry,
+                CommandExecuteHandler(
+                    readRegistry: services.readCommandRegistry,
+                    writeRegistry: services.writeCommandRegistry,
                     coordinator: coordinator,
-                    runtimeLimits: configuration.runtimeLimits,
-                    wireLimits: configuration.wireLimits
+                    runtimeLimits: configuration.runtimeLimits
                 )
             ),
             AnyDatabaseOperationHandler(
@@ -118,7 +111,7 @@ public final class DatabaseServerRuntime: Sendable {
         )
     }
 
-    public func execute(_ bytes: DatabaseBytes) async throws -> DatabaseBytes {
+    public func execute(_ bytes: ByteString) async throws -> ByteString {
         try await endpoint.execute(bytes)
     }
 

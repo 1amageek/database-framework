@@ -11,7 +11,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Graph
+import DatabaseKit
 import Synchronization
 
 /// OWL DL Reasoner

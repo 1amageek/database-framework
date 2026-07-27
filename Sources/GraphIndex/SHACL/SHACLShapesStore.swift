@@ -1,30 +1,21 @@
 // SHACLShapesStore.swift
 // GraphIndex - FDB persistence for SHACL shapes graphs
 //
-// Stores and retrieves SHACL shapes graphs in FoundationDB.
-// Follows the OntologyStore pattern: transaction-receiver, JSON encoding.
+// Stores and retrieves bounded canonical SHACL shape frames.
 //
 // Reference: W3C SHACL §2.1 (Shapes Graph)
 // https://www.w3.org/TR/shacl/#shapes-graph
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
-import Graph
-
-import OntologyIndex
+import DatabaseKit
+import DatabaseTypes
 /// Persistent storage for SHACL shapes graphs in FoundationDB
 ///
 /// **Key Layout**:
 /// ```
-/// [S]/0/[shapesGraphIRI]  → JSON-encoded SHACLShapesGraph
+/// [S]/0/[shapesGraphIRI]  → canonical SHACL storage frame
 /// ```
 ///
-/// SHACL shapes graphs are typically small (dozens of shapes),
-/// so each graph is stored as a single JSON document.
 struct SHACLShapesStore: Sendable {
 
     /// Subspace key for shapes graph entries
@@ -62,9 +53,12 @@ struct SHACLShapesStore: Sendable {
         _ graph: SHACLShapesGraph,
         transaction: any TransactionAccess
     ) throws {
-        let data = try JSONEncoder().encode(graph)
+        let frame = try SHACLShapesGraphStorageFormat.encode(graph)
+        // TransactionAccess currently owns `[UInt8]` values. This is the one
+        // required storage-adapter copy from the exact-size semantic frame.
+        let data = frame.withUnsafeBytes { Bytes($0) }
         let key = graphKey(graph.iri)
-        try transaction.setValue(Bytes(data), for: key)
+        try transaction.setValue(data, for: key)
     }
 
     // MARK: - Get
@@ -83,7 +77,9 @@ struct SHACLShapesStore: Sendable {
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
             return nil
         }
-        return try JSONDecoder().decode(SHACLShapesGraph.self, from: Data(data))
+        return try SHACLShapesGraphStorageFormat.decode(
+            ByteString(retaining: data)
+        )
     }
 
     // MARK: - List

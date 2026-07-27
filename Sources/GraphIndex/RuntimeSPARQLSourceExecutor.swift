@@ -234,7 +234,8 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             entityName: resolution.entity.name,
             indexName: resolution.indexDescriptor.name,
             indexSubspace: indexSubspace,
-            coverage: try resolution.metadata.graphScope.sourceCoverage
+            coverage: try resolution.metadata.graphScope.sourceCoverage,
+            storedFieldNames: resolution.indexDescriptor.storedFieldNames
         )
     }
 

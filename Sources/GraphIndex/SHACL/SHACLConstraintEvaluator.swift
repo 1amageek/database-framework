@@ -14,10 +14,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
-import Graph
-import Core
+import DatabaseKit
+import DatabaseKit
 import DatabaseEngine
 
 import OntologyIndex
@@ -167,7 +167,10 @@ public struct SHACLConstraintEvaluator: Sendable {
 
             let isInstance: Bool
             if let reasoner = reasoner {
-                let result = reasoner.isInstanceOf(individual: nodeIRI, classExpr: .named(classIRI))
+                let result = reasoner.isInstanceOf(
+                    individual: nodeIRI.rawValue,
+                    classExpr: .named(classIRI)
+                )
                 isInstance = result.value
             } else {
                 // Fallback: SPARQL rdf:type query
@@ -176,10 +179,16 @@ public struct SHACLConstraintEvaluator: Sendable {
                         subject: .value(.rdfTerm(.iri(nodeIRI))),
                         predicate: .value(
                             .rdfTerm(
-                                .iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
+                                .iri(
+                                    try RDFIRI(
+                                        "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+                                    )
+                                )
                             )
                         ),
-                        object: .value(.rdfTerm(.iri(classIRI)))
+                        object: .value(
+                            .rdfTerm(.iri(try RDFIRI(classIRI)))
+                        )
                     )
                 ])
                 let (bindings, _) = try await executor.executeInTransaction(
@@ -215,10 +224,10 @@ public struct SHACLConstraintEvaluator: Sendable {
                 continue
             }
             // Check datatype matches
-            if literal.datatype != datatypeIRI {
+            if literal.datatypeIRI.rawValue != datatypeIRI {
                 results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.datatype(datatypeIRI).componentIRI, sourceShape: sourceShape,
-                    message: messages.first ?? "Expected datatype \(datatypeIRI), got \(literal.datatype)", severity: severity))
+                    message: messages.first ?? "Expected datatype \(datatypeIRI), got \(literal.datatypeIRI.rawValue)", severity: severity))
                 continue
             }
             if try !valueComparator.validateLexicalForm(literal) {
@@ -360,8 +369,8 @@ public struct SHACLConstraintEvaluator: Sendable {
             let str: String
             switch value {
             case .literal(let lit): str = lit.lexicalForm
-            case .iri(let iri): str = iri
-            case .blankNode(let id): str = id
+            case .iri(let iri): str = iri.rawValue
+            case .blankNode(let id): str = id.rawValue
             case .tripleTerm: str = value.description
             }
 
@@ -398,8 +407,8 @@ public struct SHACLConstraintEvaluator: Sendable {
             let str: String
             switch value {
             case .literal(let lit): str = lit.lexicalForm
-            case .iri(let iri): str = iri
-            case .blankNode(let id): str = id
+            case .iri(let iri): str = iri.rawValue
+            case .blankNode(let id): str = id.rawValue
             case .tripleTerm: str = value.description
             }
 
@@ -431,7 +440,7 @@ public struct SHACLConstraintEvaluator: Sendable {
                     message: messages.first ?? "Value is not a literal", severity: severity))
                 continue
             }
-            guard let lang = literal.language else {
+            guard let lang = literal.languageTag?.rawValue else {
                 results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.languageIn(langs).componentIRI, sourceShape: sourceShape,
                     message: messages.first ?? "Literal has no language tag", severity: severity))
@@ -464,7 +473,8 @@ public struct SHACLConstraintEvaluator: Sendable {
         var seenLangs = Set<String>()
         var results: [SHACLValidationResult] = []
         for value in valueNodes {
-            if case .literal(let literal) = value, let lang = literal.language {
+            if case .literal(let literal) = value,
+               let lang = literal.languageTag?.rawValue {
                 try budget.consume(at: .deduplication)
                 let normalized = lang.lowercased()
                 if seenLangs.contains(normalized) {
@@ -782,8 +792,8 @@ public struct SHACLConstraintEvaluator: Sendable {
             try budget.consume(at: .filterEvaluation)
             if let pValue = binding["?p"],
                case .rdfTerm(.iri(let predicate)) = pValue {
-                if !ignoredSet.contains(predicate) {
-                    results.append(try makeResult(focusNode: focusNode, path: .predicate(predicate), value: nil,
+                if !ignoredSet.contains(predicate.rawValue) {
+                    results.append(try makeResult(focusNode: focusNode, path: .predicate(RDFPredicateIRI(predicate)), value: nil,
                         component: SHACLConstraint.closed(ignoredProperties: ignoredProperties).componentIRI,
                         sourceShape: sourceShape,
                         message: messages.first ?? "Unexpected property: \(predicate)", severity: severity))
@@ -902,13 +912,13 @@ extension SHACLPath {
     func toExecutionPropertyPath() throws -> ExecutionPropertyPath {
         switch self {
         case .predicate(let iri):
-            return .iri(try DatabaseRDFPredicateIRI(iri))
+            return .iri(iri)
         case .inverse(let inner):
             return .inverse(try inner.toExecutionPropertyPath())
         case .sequence(let paths):
-            guard let first = paths.first else { return .empty }
+            guard let first = paths.elements.first else { return .empty }
             var result = try first.toExecutionPropertyPath()
-            for path in paths.dropFirst() {
+            for path in paths.elements.dropFirst() {
                 result = .sequence(
                     result,
                     try path.toExecutionPropertyPath()
@@ -916,9 +926,9 @@ extension SHACLPath {
             }
             return result
         case .alternative(let paths):
-            guard let first = paths.first else { return .empty }
+            guard let first = paths.elements.first else { return .empty }
             var result = try first.toExecutionPropertyPath()
-            for path in paths.dropFirst() {
+            for path in paths.elements.dropFirst() {
                 result = .alternative(
                     result,
                     try path.toExecutionPropertyPath()

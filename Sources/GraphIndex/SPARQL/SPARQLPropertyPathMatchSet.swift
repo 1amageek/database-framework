@@ -10,7 +10,6 @@ struct SPARQLPropertyPathMatchSet: ~Copyable {
     // release, matching the ownership ordering used by retained scan results.
     private var storage: Set<SPARQLPropertyPathMatch>
     private let reservation: DatabaseIntermediateReservation
-    private let footprintMeter: SPARQLPropertyPathMatchFootprintMeter
     private let defaultStage: DatabaseWorkStage
     private var accountedCapacity: Int
 
@@ -20,13 +19,11 @@ struct SPARQLPropertyPathMatchSet: ~Copyable {
     private init(
         storage: consuming Set<SPARQLPropertyPathMatch>,
         reservation: DatabaseIntermediateReservation,
-        footprintMeter: SPARQLPropertyPathMatchFootprintMeter,
         defaultStage: DatabaseWorkStage,
         accountedCapacity: Int
     ) {
         self.storage = storage
         self.reservation = reservation
-        self.footprintMeter = footprintMeter
         self.defaultStage = defaultStage
         self.accountedCapacity = accountedCapacity
     }
@@ -35,26 +32,16 @@ struct SPARQLPropertyPathMatchSet: ~Copyable {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .deduplication
     ) throws -> SPARQLPropertyPathMatchSet {
-        let footprintMeter = try SPARQLPropertyPathMatchFootprintMeter.make(
-            workMeter: workMeter,
-            stage: stage
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: containerByteCount,
+            at: stage
         )
-        do {
-            let reservation = try workMeter.reserveIntermediate(
-                bytes: containerByteCount,
-                at: stage
-            )
-            return SPARQLPropertyPathMatchSet(
-                storage: Set(),
-                reservation: reservation,
-                footprintMeter: footprintMeter,
-                defaultStage: stage,
-                accountedCapacity: 0
-            )
-        } catch {
-            footprintMeter.shutdown()
-            throw error
-        }
+        return SPARQLPropertyPathMatchSet(
+            storage: Set(),
+            reservation: reservation,
+            defaultStage: stage,
+            accountedCapacity: 0
+        )
     }
 
     var count: Int { storage.count }
@@ -77,7 +64,9 @@ struct SPARQLPropertyPathMatchSet: ~Copyable {
     ) throws -> Bool {
         guard !storage.contains(match) else { return false }
 
-        let footprint = try footprintMeter.footprint(of: match)
+        let footprint = try SPARQLPropertyPathMatchRetainedFootprint.measure(
+            of: match
+        )
         let (requiredCount, countOverflow) = storage.count
             .addingReportingOverflow(1)
         guard !countOverflow else {

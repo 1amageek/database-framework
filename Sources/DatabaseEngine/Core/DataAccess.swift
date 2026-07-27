@@ -1,13 +1,12 @@
 import StorageKit
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseWire
 
 /// Static utility for accessing Persistable item data
 ///
-/// DataAccess provides static functions for extracting metadata and field values
-/// from Persistable items. It uses the @dynamicMemberLookup subscript for field
-/// access and the canonical compiled-entity codec for serialization.
+/// DataAccess provides static functions for extracting canonical field values
+/// from compiled Persistable models and for storage serialization.
 ///
 /// **Design**: Stateless namespace with generic static functions
 /// **No instantiation needed**: All methods are static
@@ -42,8 +41,8 @@ public struct DataAccess: Sendable {
 
     /// Evaluate a KeyExpression to extract field values
     ///
-    /// This method uses the Visitor pattern to traverse the KeyExpression tree
-    /// and extract the corresponding values from the item using Persistable's subscript.
+    /// This method traverses the expression and resolves every field through
+    /// macro-generated canonical field access.
     ///
     /// - Parameters:
     ///   - item: The item to evaluate
@@ -58,7 +57,7 @@ public struct DataAccess: Sendable {
         return try expression.accept(visitor: visitor)
     }
 
-    /// Extract a single field value using Persistable's subscript
+    /// Extract a field value through its compiled schema identity.
     ///
     /// This method is called by the KeyExpression evaluator.
     ///
@@ -67,8 +66,8 @@ public struct DataAccess: Sendable {
     /// - Nested field: "address.city", "user.profile.name" (dot notation)
     ///
     /// **Nested Field Support**:
-    /// Nested fields are accessed using Mirror reflection. The path is split by "."
-    /// and each component is traversed to reach the final value.
+    /// Nested fields traverse canonical `FieldObject` values. Runtime reflection
+    /// and dynamic-member lookup are intentionally excluded from persistence.
     ///
     /// - Parameters:
     ///   - item: The item to extract from
@@ -79,91 +78,34 @@ public struct DataAccess: Sendable {
         from item: Item,
         keyPath: String
     ) throws -> [any TupleElement] {
-        // Handle nested keyPaths (e.g., "user.address.city")
-        if DatabaseText.contains(".", in: keyPath) {
-            let components = keyPath.split(separator: ".").map(String.init)
-            return try extractNestedField(from: item, components: components, fullPath: keyPath)
-        }
-
-        // Use Persistable's subscript for top-level fields
-        guard let value = item[dynamicMember: keyPath] else {
+        let components = keyPath.split(separator: ".", omittingEmptySubsequences: false)
+        guard let first = components.first,
+              !first.isEmpty,
+              let fieldNumber = Item.fieldNumber(for: String(first)),
+              let firstValue = try item.persistedFieldValue(
+                for: FieldIdentity(name: String(first), number: fieldNumber)
+              ) else {
             throw DataAccessError.fieldNotFound(
                 itemType: Item.persistableType,
                 keyPath: keyPath
             )
         }
-
-        // Convert to TupleElement
-        return try convertToTupleElements(value)
-    }
-
-    /// Extract a nested field value using Mirror reflection
-    ///
-    /// - Parameters:
-    ///   - item: The root item to extract from
-    ///   - components: Path components (e.g., ["address", "city"])
-    ///   - fullPath: Full dot-notation path for error messages
-    /// - Returns: Array of tuple elements
-    /// - Throws: Error if field not found at any level
-    private static func extractNestedField<Item: Persistable>(
-        from item: Item,
-        components: [String],
-        fullPath: String
-    ) throws -> [any TupleElement] {
-        guard !components.isEmpty else {
-            throw DataAccessError.fieldNotFound(
-                itemType: Item.persistableType,
-                keyPath: fullPath
-            )
-        }
-
-        var currentValue: Any = item
-        var traversedPath: [String] = []
-
-        for component in components {
-            traversedPath.append(component)
-
-            // Try Persistable subscript first (for top-level on Persistable types)
-            if let persistable = currentValue as? any Persistable,
-               let value = persistable[dynamicMember: component] {
-                currentValue = value
-                continue
-            }
-
-            // Fall back to Mirror reflection for nested structs
-            let mirror = Mirror(reflecting: currentValue)
-            var found = false
-
-            for child in mirror.children {
-                if child.label == component {
-                    // Handle Optional values
-                    if let optional = child.value as? (any _OptionalProtocol) {
-                        if optional._isNil {
-                            throw DataAccessError.nilValueCannotBeIndexed
-                        }
-                        if let unwrapped = optional._unwrappedAny {
-                            currentValue = unwrapped
-                        } else {
-                            throw DataAccessError.nilValueCannotBeIndexed
-                        }
-                    } else {
-                        currentValue = child.value
-                    }
-                    found = true
-                    break
-                }
-            }
-
-            if !found {
+        var value = firstValue
+        for component in components.dropFirst() {
+            guard !component.isEmpty,
+                  case .object(let object) = value,
+                  let nested = object[String(component)] else {
                 throw DataAccessError.fieldNotFound(
                     itemType: Item.persistableType,
-                    keyPath: traversedPath.joined(separator: ".")
+                    keyPath: keyPath
                 )
             }
+            value = nested
         }
-
-        // Convert final value to TupleElement
-        return try convertToTupleElements(currentValue)
+        if case .array(let values) = value {
+            return try FieldValue.toTupleElements(values)
+        }
+        return [try value.toTupleElement()]
     }
 
     /// Extract id from an item using the id expression
@@ -179,74 +121,6 @@ public struct DataAccess: Sendable {
     ) throws -> Tuple {
         let elements = try evaluate(item: item, expression: idExpression)
         return Tuple(elements)
-    }
-
-    // MARK: - KeyPath Direct Extraction (Optimized)
-
-    /// Extract field values using KeyPath direct subscript access
-    ///
-    /// This method uses direct KeyPath subscript access (`item[keyPath: kp]`)
-    /// which is more efficient than string-based `@dynamicMemberLookup`.
-    ///
-    /// **Benefits over string-based extraction**:
-    /// - Type-safe at compile time
-    /// - Direct memory access without string parsing
-    /// - Refactoring-friendly (IDE renames propagate)
-    /// - Reduced runtime overhead
-    ///
-    /// - Parameters:
-    ///   - item: The item to extract from
-    ///   - keyPath: The KeyPath to the field
-    /// - Returns: Array of tuple elements representing the extracted value
-    /// - Throws: Error if type conversion fails
-    public static func extractFieldUsingKeyPath<Item: Persistable, Value>(
-        from item: Item,
-        keyPath: KeyPath<Item, Value>
-    ) throws -> [any TupleElement] {
-        let value = item[keyPath: keyPath]
-        return try convertToTupleElements(value)
-    }
-
-    /// Extract multiple field values using KeyPaths (optimized batch extraction)
-    ///
-    /// This method extracts values from multiple KeyPaths using direct subscript access.
-    /// Prefer this method when `index.keyPaths` is available.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// if let keyPaths = index.keyPaths {
-    ///     let values = try DataAccess.extractFieldsUsingKeyPaths(from: user, keyPaths: keyPaths)
-    /// } else {
-    ///     let values = try DataAccess.evaluate(item: user, expression: index.rootExpression)
-    /// }
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - item: The item to extract from
-    ///   - keyPaths: Array of KeyPaths to extract
-    /// - Returns: Array of tuple elements representing all extracted values
-    /// - Throws: Error if type conversion fails
-    public static func extractFieldsUsingKeyPaths<Item: Persistable>(
-        from item: Item,
-        keyPaths: [AnyKeyPath]
-    ) throws -> [any TupleElement] {
-        var result: [any TupleElement] = []
-        for anyKeyPath in keyPaths {
-            // Try to cast to PartialKeyPath<Item> for direct access
-            if let partialKeyPath = anyKeyPath as? PartialKeyPath<Item> {
-                let value = item[keyPath: partialKeyPath]
-                let tupleElements = try convertToTupleElements(value)
-                result.append(contentsOf: tupleElements)
-            } else {
-                // Fallback: This shouldn't happen if keyPaths were created correctly
-                // from the same Item type, but handle gracefully
-                throw DataAccessError.keyPathTypeMismatch(
-                    expectedType: Item.persistableType,
-                    keyPath: String(describing: anyKeyPath)
-                )
-            }
-        }
-        return result
     }
 
     /// Extract Range boundary value
@@ -311,7 +185,7 @@ public struct DataAccess: Sendable {
     /// - Throws: Error if deserialization fails
     public static func deserializeAny(
         _ bytes: Bytes,
-        as type: any (Persistable & Codable).Type
+        as type: any Persistable.Type
     ) throws -> any Persistable {
         try PersistableStorageCodec.decodeAny(type, from: bytes)
     }
@@ -345,27 +219,6 @@ public struct DataAccess: Sendable {
         )
     }
 
-    // MARK: - Private Type Conversion
-
-    /// Convert any value to TupleElements
-    ///
-    /// Delegates to TupleEncoder and exposes domain-specific indexing errors.
-    ///
-    /// - Parameter value: The value to convert
-    /// - Returns: Array of TupleElements
-    /// - Throws: DataAccessError on failure
-    private static func convertToTupleElements(_ value: Any) throws -> [any TupleElement] {
-        do {
-            return try TupleEncoder.encodeToArray(value)
-        } catch let error as TupleEncodingError {
-            switch error {
-            case .nilValueCannotBeEncoded:
-                throw DataAccessError.nilValueCannotBeIndexed
-            case .unsupportedType(let actualType):
-                throw DataAccessError.unsupportedType(actualType: actualType)
-            }
-        }
-    }
 }
 
 // MARK: - DataAccessEvaluator
@@ -420,24 +273,32 @@ private struct DataAccessEvaluator<Item: Persistable>: KeyExpressionVisitor {
 
     func visitNest(_ parentField: String, _ child: KeyExpression) throws -> [any TupleElement] {
         // Build the full nested path by recursively flattening the expression
-        let fullPath = buildNestedPath(parentField: parentField, child: child)
+        let fullPath = try buildNestedPath(
+            parentField: parentField,
+            child: child
+        )
         return try DataAccess.extractField(from: item, keyPath: fullPath)
     }
 
     /// Build a dot-notation path from nested expressions
-    private func buildNestedPath(parentField: String, child: KeyExpression) -> String {
+    private func buildNestedPath(
+        parentField: String,
+        child: KeyExpression
+    ) throws -> String {
         if let fieldExpr = child as? FieldKeyExpression {
             return "\(parentField).\(fieldExpr.fieldName)"
         }
 
         if let nestExpr = child as? NestExpression {
-            let childPath = buildNestedPath(parentField: nestExpr.parentField, child: nestExpr.child)
+            let childPath = try buildNestedPath(
+                parentField: nestExpr.parentField,
+                child: nestExpr.child
+            )
             return "\(parentField).\(childPath)"
         }
-
-        // For other expression types, just use the parent field
-        // (this shouldn't happen in normal usage)
-        return parentField
+        throw DataAccessError.invalidNestedExpression(
+            actualType: String(describing: type(of: child))
+        )
     }
 }
 
@@ -451,12 +312,7 @@ public enum DataAccessError: Error, CustomStringConvertible {
     case typeMismatch(itemType: String, keyPath: String, expected: String, actual: String)
     case nilValueCannotBeIndexed
     case unsupportedType(actualType: String)
-
-    /// KeyPath type mismatch during direct extraction
-    ///
-    /// This occurs when a KeyPath cannot be cast to `PartialKeyPath<Item>`,
-    /// indicating the KeyPath was created for a different type.
-    case keyPathTypeMismatch(expectedType: String, keyPath: String)
+    case invalidNestedExpression(actualType: String)
 
     public var description: String {
         switch self {
@@ -472,8 +328,8 @@ public enum DataAccessError: Error, CustomStringConvertible {
             return "Nil values cannot be indexed. Optional fields with nil values should use sparse indexes or be excluded from indexing."
         case .unsupportedType(let actualType):
             return "Unsupported type '\(actualType)' for indexing. Supported types: String, signed and unsigned integers, Double, Float, Bool, UUID, Data, [UInt8], Tuple"
-        case .keyPathTypeMismatch(let expectedType, let keyPath):
-            return "KeyPath '\(keyPath)' cannot be cast to PartialKeyPath<\(expectedType)>. Ensure the KeyPath was created for the correct type."
+        case .invalidNestedExpression(let actualType):
+            return "Nested field path cannot contain '\(actualType)'"
         }
     }
 }

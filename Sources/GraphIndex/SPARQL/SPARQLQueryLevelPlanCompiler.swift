@@ -1,4 +1,4 @@
-import QueryIR
+import DatabaseKit
 
 struct SPARQLQueryLevelCompilation {
     var algebra: ExecutionPattern
@@ -62,9 +62,9 @@ public enum SPARQLQueryLevelPlanCompiler {
 
     static func prepare(
         source: DataSource,
-        filter: QueryIR.Expression?,
-        groupBy: [QueryIR.Expression],
-        having: [QueryIR.Expression],
+        filter: Expression?,
+        groupBy: [Expression],
+        having: [Expression],
         orderBy: [SortKey],
         orderVisibleVariables: Set<String>,
         inputVariables: Set<String>,
@@ -87,7 +87,7 @@ public enum SPARQLQueryLevelPlanCompiler {
         )
 
         let groupCompilation = try compileGroupKeys(groupBy)
-        var rewrittenHaving: [QueryIR.Expression] = []
+        var rewrittenHaving: [Expression] = []
         rewrittenHaving.reserveCapacity(having.count)
         for condition in having {
             rewrittenHaving.append(
@@ -218,28 +218,14 @@ public enum SPARQLQueryLevelPlanCompiler {
         }
     }
 
-    package static func validateSolutionModifiers(
-        limit: Int?,
-        offset: Int?
-    ) throws {
-        if let limit, limit < 0 {
-            throw SPARQLSelectPlanCompilationError
-                .negativeSolutionModifier(name: "LIMIT", value: limit)
-        }
-        if let offset, offset < 0 {
-            throw SPARQLSelectPlanCompilationError
-                .negativeSolutionModifier(name: "OFFSET", value: offset)
-        }
-    }
-
     private static func compile(
         pattern: GraphPattern,
         dataset: SPARQLDataset,
         modifiers: SPARQLSolutionModifiers
     ) throws -> SPARQLSolutionFormExecutionPlan {
-        try validateSolutionModifiers(
-            limit: modifiers.limit,
-            offset: modifiers.offset
+        let slice = try SPARQLSlice(
+            offset: modifiers.offset ?? 0,
+            limit: modifiers.limit
         )
         var context = SPARQLAlgebraCompilationContext()
         var aggregateRewriter = SPARQLAggregateRewriter()
@@ -261,10 +247,7 @@ public enum SPARQLQueryLevelPlanCompiler {
         )
         return SPARQLSolutionFormExecutionPlan(
             ordered: consume ordered,
-            slice: SPARQLSlice(
-                offset: modifiers.offset ?? 0,
-                limit: modifiers.limit
-            )
+            slice: slice
         )
     }
 
@@ -286,7 +269,7 @@ public enum SPARQLQueryLevelPlanCompiler {
     }
 
     private static func compileGroupKeys(
-        _ expressions: [QueryIR.Expression]
+        _ expressions: [Expression]
     ) throws -> (
         keys: [SPARQLGroupKeyPlan],
         expressionVariables: SPARQLGroupedExpressionBindings,

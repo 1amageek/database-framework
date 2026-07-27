@@ -1,7 +1,7 @@
 // FullTextDocumentLookupKey.swift
 // FullTextIndex - Stable lookup key for fetched documents
 
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 

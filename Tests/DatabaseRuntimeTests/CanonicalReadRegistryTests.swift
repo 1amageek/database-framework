@@ -1,7 +1,7 @@
 import Testing
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import RelationshipIndex
@@ -18,7 +18,7 @@ struct CanonicalReadRegistryTests {
             indexScan: IndexScanSource,
             group: PolymorphicGroup,
             options: DatabaseEngine.ReadExecutionContext,
-            partitions: [DatabaseObjectField]
+            partitions: FieldObject
         ) async throws -> IndexReadResult {
             .empty
         }

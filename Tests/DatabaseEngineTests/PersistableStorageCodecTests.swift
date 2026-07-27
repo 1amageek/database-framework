@@ -1,8 +1,9 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
-import DatabaseWire
+import StorageKit
 import Testing
 
 @Suite("Canonical entity storage codec", .heartbeat)
@@ -33,9 +34,9 @@ struct PersistableStorageCodecTests {
         let target = try RelationshipReferenceFactory.make(
             RelationshipPartitionedTarget.self,
             id: "target-1",
-            partitions: [
-                .init(number: 2, name: "tenantID", value: .string("tenant-1"))
-            ]
+            partitions: try FieldObject([
+                (key: "tenantID", value: .string("tenant-1"))
+            ])
         )
         var owner = RelationshipPartitionedOwner(target: target)
         owner.id = "owner-1"
@@ -79,7 +80,7 @@ struct PersistableStorageCodecTests {
             let _: RelationshipArrayOwner = try DataAccess.deserialize(bytes)
         }
 
-        #expect(throws: DatabaseWireError.self) {
+        #expect(throws: StorageFrameError.truncated) {
             let _: RelationshipTarget = try DataAccess.deserialize(bytes.dropLast())
         }
     }

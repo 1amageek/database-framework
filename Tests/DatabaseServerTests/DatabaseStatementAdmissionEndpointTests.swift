@@ -1,10 +1,10 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
+import DatabaseKit
 import StorageKit
 import Testing
 
@@ -57,19 +57,21 @@ struct DatabaseStatementAdmissionEndpointTests {
                 parameters: []
             )
         )
-        let frame = try DatabaseEnvelopeCodec.encodeRequest(
-            MutationExecuteOperation.self,
+        let frame = try DatabaseWireEncoder().encodeRequest(
+            DatabaseOperations.mutationExecute,
             requestID: 1,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 idempotencyKey: "statement-admission"
             ),
             request: request
         )
-        let response = try DatabaseEnvelopeCodec.decodeResponse(
-            try await endpoint.execute(frame)
+        let response = try DatabaseWireDecoder().decodeResponse(
+            DatabaseOperations.mutationExecute,
+            from: try await endpoint.execute(frame),
+            matching: 1
         )
 
-        guard case .failure(let error) = response.payload else {
+        guard case .failure(let error) = response else {
             Issue.record("Expected canonical admission to reject the statement")
             return
         }
@@ -100,7 +102,7 @@ private struct UnreachableStatementMutationExecutor:
 
     func prepare(
         _ statement: ValidatedDatabaseStatement,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         context: DatabaseOperationContext
     ) async throws -> Prepared {
         throw UnreachableStatementMutationExecutorError.prepareCalled
@@ -109,7 +111,7 @@ private struct UnreachableStatementMutationExecutor:
     func execute(
         _ prepared: Prepared,
         preconditions: [MutationExecuteOperation.Precondition],
-        graphPartitions: [DatabaseObjectField],
+        graphPartitions: FieldObject,
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result {

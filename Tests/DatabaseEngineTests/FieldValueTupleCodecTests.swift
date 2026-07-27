@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 import Testing
 @testable import DatabaseEngine
@@ -8,23 +8,61 @@ import Testing
 struct FieldValueTupleCodecTests {
     @Test("all value families round-trip through physical tuple bytes")
     func allValueFamiliesRoundTrip() throws {
-        let language = try DatabaseRDFLanguageTag("ja")
+        let language = try RDFLanguageTag("ja")
+        let date = try CivilDate(year: 2026, month: 7, day: 24)
+        let timestamp = try Timestamp(
+            secondsSinceUnixEpoch: 1_774_483_200,
+            nanoseconds: 123_456_789
+        )
+        let uuid = DatabaseTypes.UUID(high: 1, low: 2)
+        let object = FieldValue.object(
+            try FieldObject([
+                (key: "title", value: .string("Calendar")),
+                (
+                    key: "priority",
+                    value: .decimal(
+                        ExactDecimal(coefficient: 125, scale: 2)
+                    )
+                ),
+            ])
+        )
+        let reference = FieldValue.reference(
+            try EntityReference(
+                entity: "Event",
+                id: .composite([
+                    .string("calendar"),
+                    .uuid(uuid),
+                ]),
+                partitions: try FieldObject([
+                    (key: "tenant", value: .string("primary")),
+                ])
+            )
+        )
         let values: [FieldValue] = [
             .null,
             .bool(true),
             .int64(-42),
-            .double(4.25),
+            .uint64(.max),
+            .float64(4.25),
+            .decimal(ExactDecimal(coefficient: -12_500, scale: 3)),
             .string("calendar"),
-            .data([0xFF, 0x00]),
-            .rdfTerm(.literal(DatabaseRDFLiteral(
+            .bytes([0xFF, 0x00]),
+            .date(date),
+            .timestamp(timestamp),
+            .uuid(uuid),
+            object,
+            reference,
+            .rdfTerm(.literal(RDFLiteral(
                 lexicalForm: "東京\0event",
                 language: language
             ))),
             .array([
                 .int64(0x44_56_42),
                 .string("nested\0string"),
-                .data([0xFF, 0x00]),
-                .rdfTerm(.iri("urn:calendar:event")),
+                .bytes([0xFF, 0x00]),
+                object,
+                reference,
+                .rdfTerm(try .iri(validating: "urn:calendar:event")),
                 .null,
             ]),
         ]
@@ -39,16 +77,35 @@ struct FieldValueTupleCodecTests {
         }
     }
 
+    @Test("decimal tuple order matches exact FieldValue order")
+    func decimalTupleOrderMatchesFieldValueOrder() throws {
+        let values: [FieldValue] = [
+            .decimal(ExactDecimal(coefficient: -121, scale: 2)),
+            .decimal(ExactDecimal(coefficient: -12, scale: 1)),
+            .decimal(ExactDecimal(coefficient: 0, scale: 4)),
+            .decimal(ExactDecimal(coefficient: 12, scale: 1)),
+            .decimal(ExactDecimal(coefficient: 121, scale: 2)),
+            .decimal(ExactDecimal(coefficient: 12, scale: -3)),
+        ]
+
+        for pair in zip(values, values.dropFirst()) {
+            #expect(pair.0 < pair.1)
+            let left = Tuple(try pair.0.toTupleElement()).pack()
+            let right = Tuple(try pair.1.toTupleElement()).pack()
+            #expect(left.lexicographicallyPrecedes(right))
+        }
+    }
+
     @Test("composite payloads are zero-free tuple views")
     func compositePayloadsAreZeroFree() throws {
         let values: [FieldValue] = [
             .null,
-            .data([0x00, 0xFF, 0x7F]),
-            .rdfTerm(.literal(DatabaseRDFLiteral(
+            .bytes([0x00, 0xFF, 0x7F]),
+            .rdfTerm(.literal(RDFLiteral(
                 lexicalForm: "a\0b",
                 datatype: .xsdString
             ))),
-            .array([.string("a\0b"), .data([0x00]), .null]),
+            .array([.string("a\0b"), .bytes([0x00]), .null]),
         ]
 
         for value in values {
@@ -67,7 +124,12 @@ struct FieldValueTupleCodecTests {
 
     @Test("malformed RDF payloads fail with a typed error")
     func malformedRDFPayloadFails() {
-        let payload = Bytes([0x44, 0x56, 0x42, 0x01, 0x26, 0xFF])
+        let payload = Bytes([
+            0x44, 0x56, 0x42, 0x01,
+            0x3D,
+            0x11, 0x11,
+            0x01,
+        ])
 
         #expect(
             throws: FieldValueTupleCodecError.invalidRDFTerm(
@@ -96,7 +158,7 @@ struct FieldValueTupleCodecTests {
     func resourceLimitsAreSymmetric() throws {
         let value = FieldValue.array([
             .array([.null]),
-            .rdfTerm(.iri("urn:calendar:event")),
+            .rdfTerm(try .iri(validating: "urn:calendar:event")),
         ])
         let unrestrictedElement = try value.toTupleElement()
         let packed = Tuple(unrestrictedElement).pack()
@@ -176,18 +238,41 @@ struct FieldValueTupleCodecTests {
 
     @Test("truncated arrays and malformed nibble payloads fail")
     func malformedCompositePayloadsFail() {
-        let truncatedArray = Bytes([0x44, 0x56, 0x42, 0x01, 0x28, 0x20])
+        let truncatedArray = Bytes([
+            0x44, 0x56, 0x42, 0x01,
+            0x3A,
+            0x20,
+        ])
         #expect(
             throws: FieldValueTupleCodecError.truncated
         ) {
             _ = try FieldValue(tupleElement: truncatedArray)
         }
 
-        let malformedData = Bytes([0x44, 0x56, 0x42, 0x01, 0x27, 0x02, 0x01])
+        let malformedData = Bytes([
+            0x44, 0x56, 0x42, 0x01,
+            0x2F,
+            0x02, 0x01,
+        ])
         #expect(
             throws: FieldValueTupleCodecError.incompleteNibblePair
         ) {
             _ = try FieldValue(tupleElement: malformedData)
+        }
+
+        let invalidUTF8 = Bytes([
+            0x44, 0x56, 0x42, 0x01,
+            0x3A,
+            0x2E, 0x11, 0x11, 0x01,
+            0x01,
+        ])
+        #expect(
+            throws: FieldValueTupleCodecError.invalidArrayElement(
+                index: 0,
+                reason: .invalidUTF8
+            )
+        ) {
+            _ = try FieldValue(tupleElement: invalidUTF8)
         }
     }
 

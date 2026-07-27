@@ -1,4 +1,5 @@
-import Core
+import DatabaseKit
+import DatabaseTypes
 import Testing
 @testable import RankIndex
 
@@ -29,7 +30,7 @@ struct RankValueOrderingTests {
             ),
             try entry(
                 item: "double",
-                value: .double(Double(boundary)),
+                value: .float64(Double(boundary)),
                 identifier: "d"
             ),
             try entry(item: "signed", value: .int64(-1), identifier: "s")
@@ -62,11 +63,13 @@ struct RankValueOrderingTests {
         #expect(
             throws: RankValueError.nonNumericField(
                 fieldName: "score",
-                actualType: "Swift.String"
+                actualType: String(
+                    reflecting: FieldValue.string("not-a-number")
+                )
             )
         ) {
             try RankValueOrdering.numericValue(
-                from: "not-a-number",
+                from: .string("not-a-number"),
                 fieldName: "score"
             )
         }
@@ -74,7 +77,7 @@ struct RankValueOrderingTests {
             throws: RankValueError.unorderedFloatingPoint(fieldName: "score")
         ) {
             try RankValueOrdering.numericValue(
-                from: Double.nan,
+                from: .float64(.nan),
                 fieldName: "score"
             )
         }

@@ -1,8 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
-import QueryIR
+import DatabaseTypes
 
 /// Instantiates a CONSTRUCT template directly from one borrowed solution.
 struct SPARQLConstructTemplateInstantiator {
@@ -11,7 +9,7 @@ struct SPARQLConstructTemplateInstantiator {
         case predicate
         case object
 
-        var binaryRole: DatabaseRDFTermRole {
+        var semanticRole: RDFTermRole {
             switch self {
             case .subject: .subject
             case .predicate: .predicate
@@ -49,9 +47,9 @@ struct SPARQLConstructTemplateInstantiator {
         )
         guard let subject, let predicate, let object else { return }
         try output.append(
-            try DatabaseRDFQuad(
-                subject: subject,
-                predicate: predicate,
+            RDFQuad(
+                subject: try rdfSubject(from: subject),
+                predicate: try rdfPredicate(from: predicate),
                 object: object
             )
         )
@@ -63,8 +61,8 @@ struct SPARQLConstructTemplateInstantiator {
         role: Role,
         blankNodeScope: inout SPARQLConstructBlankNodeScope,
         output: inout DatabaseRetainedRDFGraphBuilder
-    ) throws -> DatabaseRDFTerm? {
-        let resolved: DatabaseRDFTerm
+    ) throws -> RDFTerm? {
+        let resolved: RDFTerm
         let isVariableSubstitution: Bool
         switch term {
         case .variable(let name):
@@ -77,7 +75,7 @@ struct SPARQLConstructTemplateInstantiator {
 
         case .iri(let value):
             isVariableSubstitution = false
-            resolved = .iri(value)
+            resolved = .iri(try RDFIRI(value))
 
         case .literal(let literal):
             isVariableSubstitution = false
@@ -91,7 +89,10 @@ struct SPARQLConstructTemplateInstantiator {
 
         case .blankNode(let label):
             isVariableSubstitution = false
-            resolved = .blankNode(try blankNodeScope.identifier(for: label))
+            let identifier = try blankNodeScope.identifier(for: label)
+            resolved = .blankNode(
+                try RDFBlankNodeIdentifier(identifier)
+            )
 
         case .tripleTerm(let subject, let predicate, let object):
             isVariableSubstitution = false
@@ -122,8 +123,8 @@ struct SPARQLConstructTemplateInstantiator {
                 return nil
             }
             resolved = .tripleTerm(
-                subject: resolvedSubject,
-                predicate: resolvedPredicate,
+                subject: try rdfSubject(from: resolvedSubject),
+                predicate: try rdfPredicate(from: resolvedPredicate),
                 object: resolvedObject
             )
 
@@ -169,14 +170,16 @@ struct SPARQLConstructTemplateInstantiator {
                 return nil
             }
             try output.append(
-                try DatabaseRDFQuad(
-                    subject: resolvedReifier,
-                    predicate: .iri(
-                        "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"
+                RDFQuad(
+                    subject: try rdfSubject(from: resolvedReifier),
+                    predicate: RDFPredicateIRI(
+                        try RDFIRI(
+                            "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"
+                        )
                     ),
                     object: .tripleTerm(
-                        subject: resolvedSubject,
-                        predicate: resolvedPredicate,
+                        subject: try rdfSubject(from: resolvedSubject),
+                        predicate: try rdfPredicate(from: resolvedPredicate),
                         object: resolvedObject
                     )
                 )
@@ -185,9 +188,9 @@ struct SPARQLConstructTemplateInstantiator {
         }
 
         do {
-            try DatabaseRDFTermCodec.validate(
+            try RDFTermValidation.validate(
                 resolved,
-                role: role.binaryRole
+                role: role.semanticRole
             )
         } catch {
             if isVariableSubstitution {
@@ -198,5 +201,31 @@ struct SPARQLConstructTemplateInstantiator {
             )
         }
         return resolved
+    }
+
+    private static func rdfSubject(
+        from term: RDFTerm
+    ) throws -> RDFSubject {
+        switch term {
+        case .iri(let iri):
+            return .iri(iri)
+        case .blankNode(let identifier):
+            return .blankNode(identifier)
+        case .literal, .tripleTerm:
+            throw SPARQLQueryError.invalidRDFTerm(
+                String(describing: term)
+            )
+        }
+    }
+
+    private static func rdfPredicate(
+        from term: RDFTerm
+    ) throws -> RDFPredicateIRI {
+        guard case .iri(let iri) = term else {
+            throw SPARQLQueryError.invalidRDFTerm(
+                String(describing: term)
+            )
+        }
+        return RDFPredicateIRI(iri)
     }
 }

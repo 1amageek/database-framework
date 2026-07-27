@@ -7,11 +7,9 @@ import FoundationEssentials
 import Foundation
 #endif
 @_spi(PolymorphicRuntime) import DatabaseEngine
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
-import FullText
 
 // MARK: - Full-Text Query Builder
 
@@ -37,17 +35,20 @@ import FullText
 /// ```
 public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
-    private let fieldName: String
+    private let field: FieldIdentity
     private var searchTerms: [String] = []
     private var matchMode: TextMatchMode = .all
     private var fetchLimit: Int?
     private var bm25Params: BM25Parameters = .default
-    private var facetFields: [String] = []
+    private var facetFields: [FieldIdentity] = []
     private var facetLimit: Int = 10
 
-    internal init(queryContext: IndexQueryContext, fieldName: String) {
+    internal init(
+        queryContext: IndexQueryContext,
+        field: FieldIdentity
+    ) {
         self.queryContext = queryContext
-        self.fieldName = fieldName
+        self.field = field
     }
 
     /// Set search terms and match mode
@@ -104,7 +105,50 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     ///   - fields: Field names to compute facets for
     ///   - limit: Maximum number of values per field (default: 10)
     /// - Returns: Updated query builder
-    public func facets(_ fields: [String], limit: Int = 10) -> Self {
+    public func facet(
+        _ field: Field<T, String>,
+        limit: Int = 10
+    ) -> Self {
+        var copy = self
+        copy.facetFields.append(field.identity)
+        copy.facetLimit = limit
+        return copy
+    }
+
+    public func facet(
+        _ field: Field<T, String?>,
+        limit: Int = 10
+    ) -> Self {
+        var copy = self
+        copy.facetFields.append(field.identity)
+        copy.facetLimit = limit
+        return copy
+    }
+
+    public func facet(
+        _ field: Field<T, [String]>,
+        limit: Int = 10
+    ) -> Self {
+        var copy = self
+        copy.facetFields.append(field.identity)
+        copy.facetLimit = limit
+        return copy
+    }
+
+    public func facet(
+        _ field: Field<T, [String]?>,
+        limit: Int = 10
+    ) -> Self {
+        var copy = self
+        copy.facetFields.append(field.identity)
+        copy.facetLimit = limit
+        return copy
+    }
+
+    internal func facets(
+        _ fields: [FieldIdentity],
+        limit: Int
+    ) -> Self {
         var copy = self
         copy.facetFields = fields
         copy.facetLimit = limit
@@ -140,7 +184,9 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
 
         let indexName = try buildIndexName()
-        let (_, kind) = try resolveFullTextIndex(named: indexName)
+        let (_, indexConfiguration) = try resolveFullTextIndex(
+            named: indexName
+        )
 
         // Get index subspace
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
@@ -159,7 +205,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             return try await self.searchFullText(
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
-                kind: kind,
+                configuration: indexConfiguration,
                 indexSubspace: indexSubspace,
                 transaction: transaction
             )
@@ -240,7 +286,9 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
 
         let indexName = try buildIndexName()
-        let (_, kind) = try resolveFullTextIndex(named: indexName)
+        let (_, indexConfiguration) = try resolveFullTextIndex(
+            named: indexName
+        )
 
         // Get index subspace
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
@@ -258,7 +306,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             return try await self.searchFullText(
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
-                kind: kind,
+                configuration: indexConfiguration,
                 indexSubspace: indexSubspace,
                 transaction: transaction
             )
@@ -272,7 +320,11 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         var facetCounts: [String: [(value: String, count: Int64)]] = [:]
 
         if !facetFields.isEmpty {
-            facetCounts = computeFacetsFromItems(allItems, fields: facetFields, limit: facetLimit)
+            facetCounts = try computeFacetsFromItems(
+                allItems,
+                fields: facetFields,
+                limit: facetLimit
+            )
         }
 
         // Apply limit if specified
@@ -299,22 +351,25 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Dictionary of field -> [(value, count)] sorted by count descending
     private func computeFacetsFromItems(
         _ items: [T],
-        fields: [String],
+        fields: [FieldIdentity],
         limit: Int
-    ) -> [String: [(value: String, count: Int64)]] {
+    ) throws -> [String: [(value: String, count: Int64)]] {
         var fieldCounts: [String: [String: Int64]] = [:]
 
         // Initialize counts for each field
         for field in fields {
-            fieldCounts[field] = [:]
+            fieldCounts[field.name] = [:]
         }
 
         // Count values for each field
         for item in items {
             for field in fields {
-                let values = extractFieldValues(from: item, field: field)
+                let values = try FullTextFieldValueExtractor.strings(
+                    from: item,
+                    field: field
+                )
                 for value in values {
-                    fieldCounts[field]![value, default: 0] += 1
+                    fieldCounts[field.name]![value, default: 0] += 1
                 }
             }
         }
@@ -329,30 +384,6 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         return result
     }
 
-    /// Extract field values from an item for faceting
-    private func extractFieldValues(from item: T, field: String) -> [String] {
-        guard let value = item[dynamicMember: field] else {
-            return []
-        }
-
-        // Handle arrays
-        if let array = value as? [String] {
-            return array
-        }
-
-        // Handle single values
-        if let string = value as? String {
-            return [string]
-        }
-
-        // Handle other types by converting to string
-        if let convertible = value as? CustomStringConvertible {
-            return [convertible.description]
-        }
-
-        return []
-    }
-
     /// Search for an exact phrase using position-verified matching
     ///
     /// Creates a FullTextIndexMaintainer to call `searchPhrase()` which verifies
@@ -363,7 +394,9 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         indexSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> [Tuple] {
-        let (indexDescriptor, kind) = try resolveFullTextIndex(named: indexName)
+        let (indexDescriptor, configuration) = try resolveFullTextIndex(
+            named: indexName
+        )
 
         let index = Index(
             name: indexName,
@@ -375,10 +408,10 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
         let maintainer = FullTextIndexMaintainer<T>(
             index: index,
-            tokenizer: kind.tokenizer,
-            storePositions: kind.storePositions,
-            ngramSize: kind.ngramSize,
-            minTermLength: kind.minTermLength,
+            tokenizer: configuration.tokenizer,
+            storePositions: configuration.storePositions,
+            ngramSize: configuration.ngramSize,
+            minTermLength: configuration.minTermLength,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
@@ -392,13 +425,16 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchFullText(
         terms: [String],
         matchMode: TextMatchMode,
-        kind: FullTextIndexKind<T>,
+        configuration: FullTextIndexConfiguration,
         indexSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let termsSubspace = indexSubspace.subspace("terms")
 
-        let termGroups = normalizeQueryTermGroups(terms, kind: kind)
+        let termGroups = normalizeQueryTermGroups(
+            terms,
+            configuration: configuration
+        )
         let normalizedTerms = uniqueTerms(termGroups.flatMap { $0 })
 
         // Get matching document IDs based on match mode
@@ -537,12 +573,12 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
     private func normalizeQueryTermGroups(
         _ terms: [String],
-        kind: FullTextIndexKind<T>
+        configuration: FullTextIndexConfiguration
     ) -> [[String]] {
         let normalizer = FullTextTermNormalizer(
-            tokenizer: kind.tokenizer,
-            ngramSize: kind.ngramSize,
-            minTermLength: kind.minTermLength
+            tokenizer: configuration.tokenizer,
+            ngramSize: configuration.ngramSize,
+            minTermLength: configuration.minTermLength
         )
         return terms.map { term in
             uniqueTerms(normalizer.normalizedTerms(from: term))
@@ -593,7 +629,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
         return try response.rows.map { row in
             let item = try QueryRowCodec.decode(row, as: T.self)
-            guard let score = row.annotations["score"]?.doubleValue else {
+            guard let score = row.annotations["score"]?.float64Value else {
                 throw CanonicalReadError.missingAnnotation("score")
             }
             return (item: item, score: score)
@@ -610,12 +646,16 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
         let indexName = try buildIndexName()
 
-        let (indexDescriptor, kind) = try resolveFullTextIndex(named: indexName)
+        let (indexDescriptor, indexConfiguration) = try resolveFullTextIndex(
+            named: indexName
+        )
 
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
-        return try await queryContext.withTransaction(configuration: configuration) { transaction in
+        return try await queryContext.withTransaction(
+            configuration: configuration
+        ) { transaction in
             // Create maintainer using makeIndexMaintainer
             let index = Index(
                 name: indexName,
@@ -627,10 +667,10 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
             let maintainer = FullTextIndexMaintainer<T>(
                 index: index,
-                tokenizer: kind.tokenizer,
-                storePositions: kind.storePositions,
-                ngramSize: kind.ngramSize,
-                minTermLength: kind.minTermLength,
+                tokenizer: indexConfiguration.tokenizer,
+                storePositions: indexConfiguration.storePositions,
+                ngramSize: indexConfiguration.ngramSize,
+                minTermLength: indexConfiguration.minTermLength,
                 subspace: indexSubspace,
                 idExpression: FieldKeyExpression(fieldName: "id")
             )
@@ -675,9 +715,9 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         returnScores: Bool = false,
         includeFacets: Bool = false
     ) throws -> SelectQuery {
-        var parameters: [String: QueryParameterValue] = [
-            FullTextReadParameter.fieldName: .string(fieldName),
-            FullTextReadParameter.terms: .array(searchTerms.map(QueryParameterValue.string)),
+        var parameters: [String: FieldValue] = [
+            FullTextReadParameter.fieldName: .string(field.name),
+            FullTextReadParameter.terms: .array(searchTerms.map(FieldValue.string)),
             FullTextReadParameter.matchMode: .string(matchMode.accessPathIdentifier),
             FullTextReadParameter.returnScores: .bool(returnScores),
             FullTextReadParameter.includeFacets: .bool(includeFacets)
@@ -687,11 +727,17 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             parameters[FullTextReadParameter.limit] = .int64(Int64(fetchLimit))
         }
         if returnScores {
-            parameters[FullTextReadParameter.bm25K1] = .double(Double(bm25Params.k1))
-            parameters[FullTextReadParameter.bm25B] = .double(Double(bm25Params.b))
+            parameters[FullTextReadParameter.bm25K1] = .float64(
+                Double(bm25Params.k1)
+            )
+            parameters[FullTextReadParameter.bm25B] = .float64(
+                Double(bm25Params.b)
+            )
         }
         if includeFacets, !facetFields.isEmpty {
-            parameters[FullTextReadParameter.facetFields] = .array(facetFields.map(QueryParameterValue.string))
+            parameters[FullTextReadParameter.facetFields] = .array(
+                facetFields.map { .string($0.name) }
+            )
             parameters[FullTextReadParameter.facetLimit] = .int64(Int64(facetLimit))
         }
 
@@ -701,51 +747,68 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             accessPath: .index(
                 IndexScanSource(
                     indexName: try buildIndexName(),
-                    kindIdentifier: FullTextIndexKind<T>.identifier,
+                    kindIdentifier: "fulltext",
                     parameters: parameters
                 )
             ),
-            limit: fetchLimit
+            limit: try fetchLimit.map {
+                guard let value = UInt64(exactly: $0) else {
+                    throw FullTextQueryError.invalidLimit($0)
+                }
+                return value
+            }
         )
     }
 
     /// Find the index descriptor using kindIdentifier and fieldName
-    private func findIndexDescriptor() -> IndexDescriptor? {
-        T.indexDescriptors.first { descriptor in
-            guard descriptor.kindIdentifier == FullTextIndexKind<T>.identifier else {
-                return false
-            }
-            return descriptor.fieldNames.contains(fieldName)
+    private func matchingIndexDescriptors() throws -> [IndexDescriptor] {
+        try T.indexDescriptors.filter { descriptor in
+            descriptor.kindIdentifier == "fulltext"
+                && descriptor.kind.fields.contains(where: {
+                    $0.identity == field
+                })
         }
     }
 
     private func resolveFullTextIndex(
         named indexName: String
-    ) throws -> (IndexDescriptor, FullTextIndexKind<T>) {
+    ) throws -> (IndexDescriptor, FullTextIndexConfiguration) {
         guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
             throw FullTextQueryError.indexNotFound(indexName)
         }
-        let kind = try FullTextIndexKind<T>(canonical: descriptor.kind)
-        guard kind.fieldNames.contains(fieldName) else {
+        guard descriptor.kindIdentifier == "fulltext",
+              descriptor.kind.fields.contains(where: {
+                  $0.identity == field
+              }) else {
             throw FullTextQueryError.indexFieldMismatch(indexName)
         }
-        return (descriptor, kind)
+        return (
+            descriptor,
+            try FullTextIndexConfiguration(metadata: descriptor.kind)
+        )
     }
 
     /// Build the index name based on type and field
     ///
     /// Uses IndexDescriptor lookup for reliable index name resolution.
     private func buildIndexName() throws -> String {
-        guard let descriptor = findIndexDescriptor() else {
+        let matches = try matchingIndexDescriptors()
+        guard let descriptor = matches.first else {
             throw FullTextQueryError.indexNotFound(
-                "\(T.persistableType).\(fieldName)"
+                "\(T.persistableType).\(field.name)"
+            )
+        }
+        guard matches.count == 1 else {
+            throw FullTextQueryError.ambiguousIndex(
+                entity: T.persistableType,
+                field: field.name
             )
         }
         return descriptor.name
     }
 
     private func decodeFacetMetadata(
-        _ metadata: [String: DatabaseValue]
+        _ metadata: [String: FieldValue]
     ) throws -> [String: [(value: String, count: Int64)]] {
         var facets: [String: [(value: String, count: Int64)]] = [:]
 
@@ -803,7 +866,7 @@ public enum PolymorphicFullTextQueryError: Error, Sendable, CustomStringConverti
 /// narrow by a field that is shared across the conforming models.
 public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphable>: Sendable {
     private var base: PolymorphicQuery<Member>
-    private let fieldName: String
+    private let field: FieldIdentity
     private var searchTerms: [String] = []
     private var matchMode: TextMatchMode = .all
     private var returnScores = false
@@ -811,10 +874,10 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
 
     internal init(
         base: PolymorphicQuery<Member>,
-        fieldName: String
+        field: FieldIdentity
     ) {
         self.base = base
-        self.fieldName = fieldName
+        self.field = field
     }
 
     /// Set search terms and match mode.
@@ -836,14 +899,14 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
     }
 
     /// Limit the number of matching rows.
-    public func limit(_ count: Int) -> Self {
+    public func limit(_ count: UInt64) -> Self {
         var copy = self
         copy.base = copy.base.limit(count)
         return copy
     }
 
     /// Skip the first N matching rows.
-    public func offset(_ count: Int) -> Self {
+    public func offset(_ count: UInt64) -> Self {
         var copy = self
         copy.base = copy.base.offset(count)
         return copy
@@ -898,9 +961,9 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
     }
 
     private func makeIndexScan() throws -> IndexScanSource {
-        var parameters: [String: QueryParameterValue] = [
-            FullTextReadParameter.fieldName: .string(fieldName),
-            FullTextReadParameter.terms: .array(searchTerms.map(QueryParameterValue.string)),
+        var parameters: [String: FieldValue] = [
+            FullTextReadParameter.fieldName: .string(field.name),
+            FullTextReadParameter.terms: .array(searchTerms.map(FieldValue.string)),
             FullTextReadParameter.matchMode: .string(matchMode.accessPathIdentifier),
             FullTextReadParameter.returnScores: .bool(returnScores),
             FullTextReadParameter.includeFacets: .bool(false)
@@ -910,28 +973,32 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
             parameters[FullTextReadParameter.limit] = .int64(Int64(limit))
         }
         if returnScores {
-            parameters[FullTextReadParameter.bm25K1] = .double(Double(bm25Params.k1))
-            parameters[FullTextReadParameter.bm25B] = .double(Double(bm25Params.b))
+            parameters[FullTextReadParameter.bm25K1] = .float64(
+                Double(bm25Params.k1)
+            )
+            parameters[FullTextReadParameter.bm25B] = .float64(
+                Double(bm25Params.b)
+            )
         }
 
         return IndexScanSource(
             indexName: try buildIndexName(),
-            kindIdentifier: FullTextIndexKind<Member>.identifier,
+            kindIdentifier: "fulltext",
             parameters: parameters
         )
     }
 
     private func buildIndexName() throws -> String {
         if let resolvedIndexName = try base.resolveIndexName(
-            kindIdentifier: FullTextIndexKind<Member>.identifier,
-            fieldName: fieldName
+            kindIdentifier: "fulltext",
+            fieldName: field.name
         ) {
             return resolvedIndexName
         }
 
         throw PolymorphicFullTextQueryError.indexNotFound(
             groupIdentifier: base.identifier,
-            fieldName: fieldName
+            fieldName: field.name
         )
     }
 }
@@ -939,21 +1006,21 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
 public extension PolymorphicQuery where Member: Persistable & Polymorphable {
     /// Search a shared String field across all members of the polymorphic group.
     func fullText(
-        _ keyPath: KeyPath<Member, String>
+        _ field: Field<Member, String>
     ) -> PolymorphicFullTextQueryBuilder<Member> {
         PolymorphicFullTextQueryBuilder(
             base: self,
-            fieldName: Member.fieldName(for: keyPath)
+            field: field.identity
         )
     }
 
     /// Search a shared optional String field across all members of the polymorphic group.
     func fullText(
-        _ keyPath: KeyPath<Member, String?>
+        _ field: Field<Member, String?>
     ) -> PolymorphicFullTextQueryBuilder<Member> {
         PolymorphicFullTextQueryBuilder(
             base: self,
-            fieldName: Member.fieldName(for: keyPath)
+            field: field.identity
         )
     }
 }
@@ -972,10 +1039,12 @@ public struct FullTextEntryPoint<T: Persistable>: Sendable {
     ///
     /// - Parameter keyPath: KeyPath to the String field
     /// - Returns: Full-text query builder
-    public func fullText(_ keyPath: KeyPath<T, String>) -> FullTextQueryBuilder<T> {
+    public func fullText(
+        _ field: Field<T, String>
+    ) -> FullTextQueryBuilder<T> {
         FullTextQueryBuilder(
             queryContext: queryContext,
-            fieldName: T.fieldName(for: keyPath)
+            field: field.identity
         )
     }
 
@@ -983,10 +1052,12 @@ public struct FullTextEntryPoint<T: Persistable>: Sendable {
     ///
     /// - Parameter keyPath: KeyPath to the optional String field
     /// - Returns: Full-text query builder
-    public func fullText(_ keyPath: KeyPath<T, String?>) -> FullTextQueryBuilder<T> {
+    public func fullText(
+        _ field: Field<T, String?>
+    ) -> FullTextQueryBuilder<T> {
         FullTextQueryBuilder(
             queryContext: queryContext,
-            fieldName: T.fieldName(for: keyPath)
+            field: field.identity
         )
     }
 }
@@ -1030,6 +1101,9 @@ public enum FullTextQueryError: Error, CustomStringConvertible {
     /// The named index does not include the requested field.
     case indexFieldMismatch(String)
 
+    case ambiguousIndex(entity: String, field: String)
+    case invalidLimit(Int)
+
     /// The canonical query endpoint returned malformed metadata.
     case invalidResponse(String)
 
@@ -1044,6 +1118,10 @@ public enum FullTextQueryError: Error, CustomStringConvertible {
             return "Full-text index not found: \(name)"
         case .indexFieldMismatch(let name):
             return "Full-text index '\(name)' does not include the requested field"
+        case .ambiguousIndex(let entity, let field):
+            return "Multiple full-text indexes match '\(entity).\(field)'"
+        case .invalidLimit(let limit):
+            return "Full-text query limit must be nonnegative: \(limit)"
         case .invalidResponse(let reason):
             return "Invalid full-text query response: \(reason)"
         case .invalidExecutionPath(let reason):

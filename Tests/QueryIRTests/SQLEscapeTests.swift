@@ -3,7 +3,7 @@
 
 import Testing
 import TestHeartbeat
-@testable import QueryIR
+@testable import DatabaseKit
 
 @Suite("SQLEscape", .heartbeat)
 struct SQLEscapeTests {

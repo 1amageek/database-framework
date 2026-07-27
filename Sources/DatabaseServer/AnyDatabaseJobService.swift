@@ -1,8 +1,8 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 /// Type-erased persistent job service for runtime composition.
 public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
-    public let jobOperations: [DatabaseJobOperationIdentifier]
+    public let jobOperations: [JobOperationIdentifier]
 
     private let startJob: @Sendable (
         JobStartOperation.Request,

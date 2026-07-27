@@ -2,7 +2,7 @@
 
 import StorageKit
 import DatabaseEngine
-import Core
+import DatabaseKit
 
 /// Opens only databases with the canonical persisted format descriptor.
 public struct CatalogDataAccess: Sendable {

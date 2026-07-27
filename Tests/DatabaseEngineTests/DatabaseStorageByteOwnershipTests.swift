@@ -1,5 +1,5 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 import StorageKitEmbeddedCore
 import Synchronization
@@ -9,26 +9,40 @@ import Testing
 struct DatabaseStorageByteOwnershipTests {
     @Test("Slices share storage across database and storage views")
     func slicesShareStorageAcrossDatabaseAndStorageViews() throws {
-        let databaseSource = DatabaseBytes([0x10, 0x20, 0x30, 0x40])
-            .slice(1..<3)
+        let databaseSource = ByteString([0x10, 0x20, 0x30, 0x40])[1..<3]
         let storageView = Bytes(retaining: databaseSource)
-        let databaseRoundTrip = DatabaseBytes(retaining: storageView)
+        let databaseRoundTrip = ByteString(retaining: storageView)
 
         let sourceAddress = try address(of: databaseSource)
         let storageAddress = try address(of: storageView)
         let roundTripAddress = try address(of: databaseRoundTrip)
+        let sourceBytes = databaseSource.copyBytes()
+        let storageBytes = storageView.copyBytes()
+        let roundTripBytes = databaseRoundTrip.copyBytes()
 
+        #expect(
+            sourceBytes == [0x20, 0x30],
+            Comment(rawValue: "Source bytes: \(sourceBytes)")
+        )
+        #expect(
+            storageBytes == [0x20, 0x30],
+            Comment(rawValue: "Storage bytes: \(storageBytes)")
+        )
         #expect(sourceAddress == storageAddress)
         #expect(storageAddress == roundTripAddress)
-        #expect(databaseRoundTrip == [0x20, 0x30])
+        #expect(
+            roundTripBytes == [0x20, 0x30],
+            Comment(rawValue: "Round-trip bytes: \(roundTripBytes)")
+        )
+        #expect(databaseRoundTrip == ByteString([0x20, 0x30]))
     }
 
     @Test("StorageKit retains an adopted database allocation")
     func storageRetainsDatabaseAllocation() throws {
         let probe = ReleaseProbe()
-        var source: DatabaseBytes? = makeDatabaseOwnedPayload(probe: probe)
+        var source: ByteString? = makeDatabaseOwnedPayload(probe: probe)
         var destination: Bytes? = Bytes(
-            retaining: try #require(source).slice(1..<3)
+            retaining: try #require(source)[1..<3]
         )
 
         source = nil
@@ -44,7 +58,7 @@ struct DatabaseStorageByteOwnershipTests {
         let owner = DatabaseBorrowingByteOwner(
             bytes: [0x10, 0x20, 0x30, 0x40]
         )
-        let databaseBytes = DatabaseBytes(retaining: owner).slice(1..<3)
+        let databaseBytes = ByteString(retaining: owner)[1..<3]
         let storageBytes = Bytes(retaining: databaseBytes)
 
         #expect(try address(of: storageBytes) == address(of: databaseBytes))
@@ -57,7 +71,7 @@ struct DatabaseStorageByteOwnershipTests {
             bytes: [0x10, 0x20, 0x30, 0x40]
         )
         let storageBytes = Bytes(retaining: owner)[1..<3]
-        let databaseBytes = DatabaseBytes(retaining: storageBytes)
+        let databaseBytes = ByteString(retaining: storageBytes)
 
         #expect(try address(of: databaseBytes) == address(of: storageBytes))
         #expect(databaseBytes == [0x20, 0x30])
@@ -67,7 +81,7 @@ struct DatabaseStorageByteOwnershipTests {
     func databaseRetainsStorageAllocation() throws {
         let probe = ReleaseProbe()
         var source: Bytes? = Bytes(makeStorageOwnedPayload(probe: probe))
-        var destination: DatabaseBytes? = DatabaseBytes(
+        var destination: ByteString? = ByteString(
             retaining: try #require(source)[1..<3]
         )
 
@@ -79,7 +93,7 @@ struct DatabaseStorageByteOwnershipTests {
         #expect(probe.releaseCount == 1)
     }
 
-    private func address(of bytes: DatabaseBytes) throws -> UInt {
+    private func address(of bytes: ByteString) throws -> UInt {
         try #require(
             bytes.withUnsafeBytes { buffer in
                 buffer.baseAddress.map(UInt.init(bitPattern:))
@@ -95,16 +109,13 @@ struct DatabaseStorageByteOwnershipTests {
         )
     }
 
-    private func makeDatabaseOwnedPayload(probe: ReleaseProbe) -> DatabaseBytes {
+    private func makeDatabaseOwnedPayload(probe: ReleaseProbe) -> ByteString {
         let pointer = allocatePayload()
-        return DatabaseBytes(
-            allocation: DatabaseByteAllocation(
+        return ByteString(
+            retaining: AllocatedByteStringOwner(
                 unsafeAddress: UInt(bitPattern: pointer),
                 count: 4,
-                deallocator: { address, _ in
-                    UnsafeMutableRawPointer(bitPattern: address)?.deallocate()
-                    probe.recordRelease()
-                }
+                releaseProbe: probe
             )
         )
     }
@@ -135,20 +146,21 @@ struct DatabaseStorageByteOwnershipTests {
         return pointer
     }
 
-    private final class ReleaseProbe: Sendable {
-        private let count = Mutex(0)
+}
 
-        var releaseCount: Int {
-            count.withLock { $0 }
-        }
+private final class ReleaseProbe: Sendable {
+    private let count = Mutex(0)
 
-        func recordRelease() {
-            count.withLock { $0 += 1 }
-        }
+    var releaseCount: Int {
+        count.withLock { $0 }
+    }
+
+    func recordRelease() {
+        count.withLock { $0 += 1 }
     }
 }
 
-private struct DatabaseBorrowingByteOwner: DatabaseByteOwner {
+private struct DatabaseBorrowingByteOwner: ByteStringOwner {
     let bytes: [UInt8]
 
     var count: Int {
@@ -159,6 +171,34 @@ private struct DatabaseBorrowingByteOwner: DatabaseByteOwner {
         _ body: (UnsafeRawBufferPointer) throws -> Void
     ) rethrows {
         try bytes.withUnsafeBytes(body)
+    }
+}
+
+private final class AllocatedByteStringOwner: ByteStringOwner {
+    let unsafeAddress: UInt
+    let count: Int
+    let releaseProbe: ReleaseProbe
+
+    init(
+        unsafeAddress: UInt,
+        count: Int,
+        releaseProbe: ReleaseProbe
+    ) {
+        self.unsafeAddress = unsafeAddress
+        self.count = count
+        self.releaseProbe = releaseProbe
+    }
+
+    deinit {
+        UnsafeMutableRawPointer(bitPattern: unsafeAddress)?.deallocate()
+        releaseProbe.recordRelease()
+    }
+
+    func borrowBytes(
+        _ body: (UnsafeRawBufferPointer) throws -> Void
+    ) rethrows {
+        let pointer = UnsafeRawPointer(bitPattern: unsafeAddress)
+        try body(UnsafeRawBufferPointer(start: pointer, count: count))
     }
 }
 

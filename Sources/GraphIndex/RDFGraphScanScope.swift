@@ -1,4 +1,4 @@
-import Graph
+import DatabaseKit
 
 /// The graph set visible to one atomic RDF quad scan.
 public enum RDFGraphScanScope: Sendable, Hashable {

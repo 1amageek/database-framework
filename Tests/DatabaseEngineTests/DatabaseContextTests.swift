@@ -8,7 +8,7 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
-@testable import Core
+@testable import DatabaseKit
 
 /// Tests for DatabaseContext functionality
 ///
@@ -17,7 +17,7 @@ import DatabaseRuntime
 /// - Change tracking (insert, delete, save, rollback)
 /// - Fetch operations with Query DSL
 /// - Model retrieval by ID
-@Suite("DatabaseContext Tests", .serialized, .heartbeat)
+@Suite("DatabaseContext Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct DatabaseContextFoundationDBTests {
 
     // MARK: - Helper Types
@@ -27,17 +27,17 @@ struct DatabaseContextFoundationDBTests {
     @Persistable
     struct ContextUser {
         #Directory<ContextUser>("fdb_context_test_users")
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var name: String
         var email: String
-        var age: Int
+        var age: Int64
         var isActive: Bool = true
     }
 
     @Persistable
     struct ContextProduct {
         #Directory<ContextProduct>("fdb_context_test_products")
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var name: String
         var price: Double
     }
@@ -285,7 +285,11 @@ struct DatabaseContextFoundationDBTests {
         let context = container.newContext()
 
         for i in 1...5 {
-            let user = ContextUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
+            let user = ContextUser(
+                name: "User\(i)",
+                email: "user\(i)@example.com",
+                age: 20 + Int64(i)
+            )
             try context.insert(user)
         }
         try await context.save()
@@ -305,7 +309,11 @@ struct DatabaseContextFoundationDBTests {
         let context = container.newContext()
 
         for i in 1...3 {
-            let user = ContextUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
+            let user = ContextUser(
+                name: "User\(i)",
+                email: "user\(i)@example.com",
+                age: 20 + Int64(i)
+            )
             try context.insert(user)
         }
         try await context.save()
@@ -325,7 +333,7 @@ struct DatabaseContextFoundationDBTests {
                 ContextUser(
                     name: "WindowUser\(index)",
                     email: "window\(index)@example.com",
-                    age: 20 + index
+                    age: 20 + Int64(index)
                 )
             )
         }
@@ -409,7 +417,11 @@ struct DatabaseContextFoundationDBTests {
         let context = container.newContext()
 
         for i in 1...10 {
-            let user = ContextUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
+            let user = ContextUser(
+                name: "User\(i)",
+                email: "user\(i)@example.com",
+                age: 20 + Int64(i)
+            )
             try context.insert(user)
         }
 

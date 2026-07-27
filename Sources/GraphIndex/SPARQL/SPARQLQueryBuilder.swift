@@ -8,11 +8,9 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
-import Graph
-import QueryIR
 
 /// Builder for SPARQL-like graph queries
 ///
@@ -187,8 +185,8 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     /// // ?email may be nil in results
     /// ```
     public func optional(
-        _ configure: (SPARQLQueryBuilder<T>) -> SPARQLQueryBuilder<T>
-    ) -> Self {
+        _ configure: (SPARQLQueryBuilder<T>) throws -> SPARQLQueryBuilder<T>
+    ) rethrows -> Self {
         var copy = self
 
         // Create a fresh builder for the optional part
@@ -196,7 +194,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             queryContext: queryContext,
             selection: selection
         )
-        optionalBuilder = configure(optionalBuilder)
+        optionalBuilder = try configure(optionalBuilder)
 
         // Combine with OPTIONAL semantics
         copy.graphPattern = .optional(copy.graphPattern, optionalBuilder.graphPattern)
@@ -216,15 +214,15 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     /// // Matches people who know OR follow Alice
     /// ```
     public func union(
-        _ configure: (SPARQLQueryBuilder<T>) -> SPARQLQueryBuilder<T>
-    ) -> Self {
+        _ configure: (SPARQLQueryBuilder<T>) throws -> SPARQLQueryBuilder<T>
+    ) rethrows -> Self {
         var copy = self
 
         var unionBuilder = SPARQLQueryBuilder(
             queryContext: queryContext,
             selection: selection
         )
-        unionBuilder = configure(unionBuilder)
+        unionBuilder = try configure(unionBuilder)
 
         copy.graphPattern = .union(copy.graphPattern, unionBuilder.graphPattern)
         return copy
@@ -250,18 +248,18 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
 
     /// Filter: variable equals value
     ///
-    /// The value is treated as a string. For typed comparisons, use
-    /// `.filter(.equals("?var", .int64(42)))` directly.
+    /// The value is treated as an `xsd:string` RDF literal. For other
+    /// datatypes, pass an explicitly typed `FieldValue.rdfTerm`.
     public func filter(_ variable: String, equals value: String) -> Self {
-        filter(.equals(variable, .string(value)))
+        filter(.equals(variable, .rdfTerm(.string(value))))
     }
 
     /// Filter: variable not equals value
     ///
-    /// The value is treated as a string. For typed comparisons, use
-    /// `.filter(.notEquals("?var", .int64(42)))` directly.
+    /// The value is treated as an `xsd:string` RDF literal. For other
+    /// datatypes, pass an explicitly typed `FieldValue.rdfTerm`.
     public func filter(_ variable: String, notEquals value: String) -> Self {
-        filter(.notEquals(variable, .string(value)))
+        filter(.notEquals(variable, .rdfTerm(.string(value))))
     }
 
     /// Filter: variable matches regex
@@ -418,7 +416,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     /// 4. DISTINCT
     /// 5. OFFSET / LIMIT (Slice)
     public func execute(
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLResult {
         guard offsetCount >= 0, limitCount.map({ $0 >= 0 }) ?? true else {
             throw SPARQLQueryError.invalidPagination
@@ -520,7 +518,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
 
     /// Execute and return just the first result (or nil)
     public func first(
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> VariableBinding? {
         try await limit(1).execute(budget: budget).bindings.first
     }
@@ -530,7 +528,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     /// Note: This executes the full query. For large result sets,
     /// consider using a limit or estimating cardinality.
     public func count(
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> Int {
         try await execute(budget: budget).count
     }
@@ -587,7 +585,7 @@ extension SPARQLQueryBuilder: CustomStringConvertible {
 
 extension SPARQLQueryBuilder {
 
-    /// Add a triple pattern using QueryIR.SPARQLTerm values
+    /// Add a triple pattern using SPARQLTerm values
     ///
     /// Converts QueryIR terms to ExecutionTerm for pattern matching.
     ///
@@ -596,9 +594,9 @@ extension SPARQLQueryBuilder {
     /// .where(.var("person"), .iri("knows"), .iri("Bob"))
     /// ```
     public func `where`(
-        _ subject: QueryIR.SPARQLTerm,
-        _ predicate: QueryIR.SPARQLTerm,
-        _ object: QueryIR.SPARQLTerm
+        _ subject: SPARQLTerm,
+        _ predicate: SPARQLTerm,
+        _ object: SPARQLTerm
     ) throws -> Self {
         `where`(
             try ExecutionTerm(validating: subject),
@@ -607,7 +605,7 @@ extension SPARQLQueryBuilder {
         )
     }
 
-    /// Add a FILTER using a QueryIR.Expression
+    /// Add a FILTER using a Expression
     ///
     /// Evaluates the expression against each binding using ExpressionEvaluator.
     /// Follows SPARQL §17.2 semantics: evaluation errors yield `false`.
@@ -616,7 +614,7 @@ extension SPARQLQueryBuilder {
     /// ```swift
     /// .filter(.greaterThanOrEqual(.var("age"), .int(18)))
     /// ```
-    public func filter(_ expression: QueryIR.Expression) -> Self {
+    public func filter(_ expression: DatabaseKit.Expression) -> Self {
         filter(.custom { binding in
             try ExpressionEvaluator.evaluateAsBoolean(
                 expression,
@@ -626,21 +624,25 @@ extension SPARQLQueryBuilder {
     }
 }
 
-// MARK: - ExecutionTerm ← QueryIR.SPARQLTerm
+// MARK: - ExecutionTerm ← SPARQLTerm
 
 extension ExecutionTerm {
 
-    /// Convert a QueryIR.SPARQLTerm to an ExecutionTerm
-    public init(validating sparqlTerm: QueryIR.SPARQLTerm) throws {
+    /// Convert a SPARQLTerm to an ExecutionTerm
+    public init(validating sparqlTerm: SPARQLTerm) throws {
         switch sparqlTerm {
         case .variable(let name):
             self = .variable("?\(name)")
         case .iri(let value):
-            self = .value(.rdfTerm(.iri(value)))
+            self = .value(.rdfTerm(.iri(try RDFIRI(value))))
         case .literal(let lit):
             self = .value(try lit.toSPARQLFieldValue())
         case .blankNode(let id):
-            self = .value(.rdfTerm(.blankNode(id)))
+            self = .value(
+                .rdfTerm(
+                    .blankNode(try RDFBlankNodeIdentifier(id))
+                )
+            )
         case .tripleTerm(let s, let p, let o):
             self = .tripleTerm(
                 subject: try ExecutionTerm(validating: s),

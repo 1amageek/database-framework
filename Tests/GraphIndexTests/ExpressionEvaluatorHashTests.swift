@@ -2,9 +2,9 @@
 // GraphIndexTests - SPARQL hash function behavior
 
 import Testing
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 @testable import GraphIndex
 
 @Suite("ExpressionEvaluator SPARQL Hash Functions", .heartbeat)
@@ -25,7 +25,7 @@ struct ExpressionEvaluatorHashTests {
                 result
                     == .rdfTerm(
                         .literal(
-                            DatabaseRDFLiteral(
+                            RDFLiteral(
                                 lexicalForm: expected,
                                 datatype: .xsdString
                             )
@@ -44,7 +44,7 @@ struct ExpressionEvaluatorHashTests {
             result
                 == .rdfTerm(
                     .literal(
-                        DatabaseRDFLiteral(
+                        RDFLiteral(
                             lexicalForm: "8cba3282fe37fa6054ce64531ce17410a1404e2bc4afbf113824097037b1e498",
                             datatype: .xsdString
                         )
@@ -55,8 +55,8 @@ struct ExpressionEvaluatorHashTests {
 
     @Test("Hash functions reject invalid argument counts")
     func invalidArgumentCountIsEvaluationFailure() {
-        let expression = QueryIR.Expression.function(
-            QueryIR.FunctionCall(name: "SHA256", arguments: [])
+        let expression = Expression.function(
+            FunctionCall(name: "SHA256", arguments: [])
         )
 
         #expect(
@@ -74,8 +74,8 @@ struct ExpressionEvaluatorHashTests {
         _ name: String,
         input: String
     ) throws -> FieldValue {
-        let expression = QueryIR.Expression.function(
-            QueryIR.FunctionCall(
+        let expression = Expression.function(
+            FunctionCall(
                 name: name,
                 arguments: [.literal(.string(input))]
             )

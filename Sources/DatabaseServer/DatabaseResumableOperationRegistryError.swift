@@ -1,8 +1,8 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public enum DatabaseResumableOperationRegistryError: Error, CustomStringConvertible {
-    case duplicateOperation(DatabaseJobOperationIdentifier)
-    case unsupportedOperation(DatabaseJobOperationIdentifier)
+    case duplicateOperation(JobOperationIdentifier)
+    case unsupportedOperation(JobOperationIdentifier)
 
     public var description: String {
         switch self {

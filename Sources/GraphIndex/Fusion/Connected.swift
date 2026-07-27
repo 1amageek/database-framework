@@ -4,8 +4,7 @@
 // This file is part of GraphIndex module, not DatabaseEngine.
 // Provides graph-based filtering and scoring for Fusion queries.
 
-import Core
-import Graph
+import DatabaseKit
 import DatabaseEngine
 import ScalarIndex
 import StorageKit
@@ -40,7 +39,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
     public typealias Item = T
 
     private let queryContext: IndexQueryContext
-    private let fieldName: String
+    private let field: FieldIdentity
     private var sourceValue: String?
     private var edgeType: String?
     private var targetValue: String?
@@ -71,34 +70,40 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
     ///     Connected(\.userId).from("user123").via("follows")
     /// }
     /// ```
-    public init(_ keyPath: KeyPath<T, String>) {
+    public init(_ field: Field<T, String>) {
         guard let context = FusionContext.current else {
             fatalError("Connected must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.queryContext = context
     }
 
     /// Create a Connected query for an optional field
-    public init(_ keyPath: KeyPath<T, String?>) {
+    public init(_ field: Field<T, String?>) {
         guard let context = FusionContext.current else {
             fatalError("Connected must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.queryContext = context
     }
 
     // MARK: - Initialization (Explicit Context)
 
     /// Create a Connected query with explicit context
-    public init(_ keyPath: KeyPath<T, String>, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
+    public init(
+        _ field: Field<T, String>,
+        context: IndexQueryContext
+    ) {
+        self.field = field.identity
         self.queryContext = context
     }
 
     /// Create a Connected query for an optional field with explicit context
-    public init(_ keyPath: KeyPath<T, String?>, context: IndexQueryContext) {
-        self.fieldName = T.fieldName(for: keyPath)
+    public init(
+        _ field: Field<T, String?>,
+        context: IndexQueryContext
+    ) {
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -159,13 +164,13 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
     // MARK: - Index Discovery
 
     /// Find the graph index descriptor
-    private func findIndexDescriptor() -> IndexDescriptor? {
-        T.indexDescriptors.first { descriptor in
-            guard descriptor.kindIdentifier == GraphIndexKind<T>.identifier else {
+    private func findIndexDescriptor() throws -> IndexDescriptor? {
+        try T.indexDescriptors.first { descriptor in
+            guard descriptor.kindIdentifier == "graph" else {
                 return false
             }
             // Match by source field
-            return descriptor.fieldNames.contains(fieldName)
+            return descriptor.fieldNames.contains(field.name)
         }
     }
 
@@ -194,7 +199,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         // Score items based on graph connectivity
         var results: [ScoredResult<T>] = []
         for item in items {
-            guard let nodeValue = item[dynamicMember: fieldName] as? String else {
+            guard let nodeValue = try nodeValue(in: item) else {
                 continue
             }
 
@@ -219,10 +224,10 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
     /// Find nodes connected within maxHops
     private func findConnectedNodes() async throws -> [ConnectedNode] {
-        guard let descriptor = findIndexDescriptor() else {
+        guard let descriptor = try findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
                 type: T.persistableType,
-                field: fieldName,
+                field: field.name,
                 kind: "graph"
             )
         }
@@ -367,7 +372,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         guard !nodeValues.isEmpty else { return [] }
 
         // Strategy 1: If the field is the ID field, use direct ID lookup
-        if fieldName == "id" {
+        if field.name == "id" {
             guard T.persistableIdentifierType == .string else {
                 throw FusionQueryError.invalidConfiguration(
                     "Graph node identifiers require a String entity identifier when the graph field is 'id'"
@@ -386,7 +391,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         }
 
         // Strategy 2: If there's a ScalarIndex on this field, use it
-        if let indexDescriptor = findScalarIndexForField() {
+        if let indexDescriptor = try findScalarIndexForField() {
             return try await fetchUsingScalarIndex(
                 nodeValues: nodeValues,
                 indexDescriptor: indexDescriptor
@@ -396,13 +401,13 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         // Strategy 3: Fallback to full scan (expensive)
         // Log warning for visibility
         #if DEBUG
-        print("[Connected] Warning: No index found for field '\(fieldName)' on type '\(T.persistableType)'. Performing full table scan.")
+        print("[Connected] Warning: No index found for field '\(field.name)' on type '\(T.persistableType)'. Performing full table scan.")
         #endif
 
         let allItems = try await queryContext.fetchAllItems(type: T.self)
         let nodeValueSet = Set(nodeValues)
-        return allItems.filter { item in
-            guard let value = item[dynamicMember: fieldName] as? String else {
+        return try allItems.filter { item in
+            guard let value = try nodeValue(in: item) else {
                 return false
             }
             return nodeValueSet.contains(value)
@@ -410,14 +415,35 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
     }
 
     /// Find a ScalarIndex that covers the field
-    private func findScalarIndexForField() -> IndexDescriptor? {
-        T.indexDescriptors.first { descriptor in
+    private func findScalarIndexForField() throws -> IndexDescriptor? {
+        try T.indexDescriptors.first { descriptor in
             // Check if it's a ScalarIndex
             guard descriptor.kindIdentifier == "scalar" else { return false }
 
             // The first indexed field defines the scalar lookup prefix. Read the
             // canonical descriptor metadata instead of parsing its display name.
-            return descriptor.fieldNames.first == fieldName
+            return descriptor.fieldNames.first == field.name
+        }
+    }
+
+    private func nodeValue(in item: T) throws -> String? {
+        guard let value = try item.persistedFieldValue(for: field) else {
+            throw DataAccessError.fieldNotFound(
+                itemType: T.persistableType,
+                keyPath: field.name
+            )
+        }
+        switch value {
+        case .null:
+            return nil
+        case .string(let string):
+            return string
+        default:
+            throw GraphIndexError.invalidFieldType(
+                fieldName: field.name,
+                expectedType: "String",
+                actualType: String(describing: value)
+            )
         }
     }
 

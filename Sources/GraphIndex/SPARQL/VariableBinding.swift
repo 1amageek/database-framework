@@ -8,7 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseTypes
+import DatabaseKit
 
 /// A single binding row: variable name → typed value
 ///
@@ -118,9 +119,12 @@ public struct VariableBinding: Sendable, Hashable {
     public func int(_ variable: String) -> Int? {
         guard let value = bindings[variable] else { return nil }
         if let i = value.int64Value {
-            return Int(i)
+            return Int(exactly: i)
         }
-        // Fallback: try parsing string
+        if let numeric = SPARQLNumericValue(value),
+           let integer = numeric.exactInteger {
+            return Int(exactly: integer)
+        }
         if let s = value.stringValue {
             return Int(s)
         }
@@ -133,7 +137,9 @@ public struct VariableBinding: Sendable, Hashable {
         if let i = value.int64Value {
             return i
         }
-        // Fallback: try parsing string
+        if let numeric = SPARQLNumericValue(value) {
+            return numeric.exactInteger
+        }
         if let s = value.stringValue {
             return Int64(s)
         }
@@ -143,8 +149,8 @@ public struct VariableBinding: Sendable, Hashable {
     /// Get value as Double
     public func double(_ variable: String) -> Double? {
         guard let value = bindings[variable] else { return nil }
-        if let d = value.asDouble {
-            return d
+        if let number = SPARQLNumericValue(value) {
+            return number.doubleValue
         }
         // Fallback: try parsing string
         if let s = value.stringValue {
@@ -243,10 +249,10 @@ public struct VariableBinding: Sendable, Hashable {
             }
             return match(
                 subject,
-                against: .rdfTerm(storedSubject)
+                against: .rdfTerm(storedSubject.term)
             ) && match(
                 predicate,
-                against: .rdfTerm(storedPredicate)
+                against: .rdfTerm(storedPredicate.term)
             ) && match(
                 object,
                 against: .rdfTerm(storedObject)
@@ -408,24 +414,44 @@ extension VariableBinding {
 extension FieldValue {
     /// Convert to a display string representation
     ///
-    /// Returns `nil` for `.null`, `.data`, and `.array` values.
+    /// Returns `nil` for values that do not have a SPARQL lexical form.
     /// Shared by `VariableBinding.string()` and `GroupValue.stringValue`.
     var displayString: String? {
         switch self {
         case .string(let s): return s
+        case .int8(let i): return String(i)
+        case .int16(let i): return String(i)
+        case .int32(let i): return String(i)
         case .int64(let i): return String(i)
+        case .uint8(let i): return String(i)
+        case .uint16(let i): return String(i)
+        case .uint32(let i): return String(i)
         case .uint64(let i): return String(i)
-        case .double(let d): return String(d)
+        case .float32(let value): return String(value)
+        case .float64(let value): return String(value)
+        case .decimal(let decimal):
+            do {
+                return try decimal.decimalLexicalForm(
+                    maximumUTF8Count:
+                        SPARQLExecutionLimits.maximumLiteralUTF8Count
+                )
+            } catch {
+                return nil
+            }
         case .bool(let b): return String(b)
         case .rdfTerm(let term):
             switch term {
-            case .iri(let iri): return iri
-            case .blankNode(let identifier): return "_:\(identifier)"
+            case .iri(let iri): return iri.rawValue
+            case .blankNode(let identifier):
+                return "_:\(identifier.rawValue)"
             case .literal(let literal): return literal.lexicalForm
             case .tripleTerm: return term.description
             }
         case .null: return nil
-        case .data, .array: return nil
+        case .bytes, .timestamp, .date, .time, .dateTime, .timeSpan,
+             .calendarPeriod, .uuid, .geographicPoint,
+             .geographicPosition, .vector, .array, .object, .reference:
+            return nil
         }
     }
 }

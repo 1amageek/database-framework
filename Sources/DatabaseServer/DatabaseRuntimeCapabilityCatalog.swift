@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 enum DatabaseRuntimeCapabilityCatalog {
     static let features = DatabaseOperationIdentifier.allCases
@@ -28,10 +28,8 @@ enum DatabaseRuntimeCapabilityCatalog {
             "ontology.execute"
         case .shaclExecute:
             "shacl.execute"
-        case .commandRead:
-            "command.read"
-        case .commandWrite:
-            "command.write"
+        case .commandExecute:
+            "command.execute"
         case .maintenanceExecute:
             "maintenance.execute"
         case .jobStart:

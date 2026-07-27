@@ -1,6 +1,6 @@
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 
 @Persistable
 struct RelationshipPlannerNullifyOwner {
@@ -9,5 +9,5 @@ struct RelationshipPlannerNullifyOwner {
     var id: String = ""
 
     @Relationship(deleteRule: .nullify)
-    var target: DatabaseReference<RelationshipPlannerTarget>? = nil
+    var target: PersistableReference<RelationshipPlannerTarget>? = nil
 }

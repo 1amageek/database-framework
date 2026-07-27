@@ -1,7 +1,7 @@
 #if FOUNDATION_DB
 import Testing
 import TestHeartbeat
-import QueryIR
+import DatabaseKit
 @testable import QueryAST
 
 @Suite("SPARQL Parser Strictness", .heartbeat)
@@ -628,7 +628,9 @@ struct SPARQLParserStrictnessTests {
         #expect(conjunctionDepth(having) <= 11)
     }
 
-    private func conjunctionDepth(_ expression: Expression) -> Int {
+    private func conjunctionDepth(
+        _ expression: DatabaseKit.Expression
+    ) -> Int {
         guard case .and(let lhs, let rhs) = expression else { return 1 }
         return 1 + max(conjunctionDepth(lhs), conjunctionDepth(rhs))
     }

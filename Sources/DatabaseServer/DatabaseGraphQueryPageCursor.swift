@@ -1,5 +1,5 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
     enum Kind: UInt8, Sendable, Hashable {
@@ -10,12 +10,12 @@ struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
     private static let formatVersion: UInt8 = 1
 
     let kind: Kind
-    let requestFingerprint: DatabaseBytes
+    let requestFingerprint: ByteString
     let snapshotVersion: Int64
-    let resultFingerprint: DatabaseBytes
+    let resultFingerprint: ByteString
     let tripleOffset: UInt64
 
-    func encode(limits: DatabaseWireLimits) throws -> DatabaseBytes {
+    func encode(limits: DatabaseWireLimits) throws -> ByteString {
         do {
             return try DatabaseWireWriter.encode(limits: limits) {
                 (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
@@ -32,7 +32,7 @@ struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
     }
 
     static func decode(
-        _ bytes: DatabaseBytes,
+        _ bytes: ByteString,
         limits: DatabaseWireLimits
     ) throws -> Self {
         do {

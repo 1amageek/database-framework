@@ -1,6 +1,5 @@
-import Core
-import DatabaseValue
-import DatabaseWire
+import DatabaseKit
+import DatabaseTypes
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -13,14 +12,13 @@ public enum CoveringValueBuilder {
     public static let formatVersion: UInt16 = 1
 
     private static let magic: [UInt8] = [0x44, 0x42, 0x49, 0x58]
-    private static func wireLimits() throws -> DatabaseWireLimits {
-        try DatabaseWireLimits(
+    private static func storageLimits() throws -> StorageFrameLimits {
+        try StorageFrameLimits(
             maximumFrameBytes: databaseMaximumValueSize,
             maximumStringBytes: databaseMaximumValueSize,
             maximumByteStringBytes: databaseMaximumValueSize,
             maximumCollectionCount: 10_000,
-            maximumNestingDepth: 64,
-            maximumObjectCount: 100_000
+            maximumNestingDepth: 64
         )
     }
 
@@ -70,7 +68,7 @@ public enum CoveringValueBuilder {
             version: formatVersion,
             entity: Item.persistableType,
             fields: selectedFields,
-            limits: try wireLimits()
+            limits: try storageLimits()
         )
         try validateValueSize(bytes)
         return bytes
@@ -80,7 +78,7 @@ public enum CoveringValueBuilder {
     public static func decode(
         _ bytes: Bytes,
         storedFieldNames: [String]
-    ) throws -> [String: DatabaseValue] {
+    ) throws -> [String: FieldValue] {
         guard !storedFieldNames.isEmpty else { return [:] }
         guard !bytes.isEmpty else {
             throw CanonicalIndexProjectionError.missingProjection(index: "unknown")
@@ -92,9 +90,9 @@ public enum CoveringValueBuilder {
             magic: magic,
             version: formatVersion,
             selectedFieldNames: rootFieldNames,
-            limits: try wireLimits()
+            limits: try storageLimits()
         )
-        var properties: [String: DatabaseValue] = [:]
+        var properties: [String: FieldValue] = [:]
         properties.reserveCapacity(storedFieldNames.count)
         for fieldPath in storedFieldNames {
             guard let value = value(at: fieldPath, in: frame.fieldsByName) else {
@@ -121,7 +119,7 @@ public enum CoveringValueBuilder {
             magic: magic,
             version: formatVersion,
             expectedEntity: expectedEntity,
-            limits: try wireLimits()
+            limits: try storageLimits()
         ).fields
     }
 
@@ -170,8 +168,8 @@ public enum CoveringValueBuilder {
 
     private static func value(
         at path: String,
-        in fieldsByName: [String: DatabaseValue]
-    ) -> DatabaseValue? {
+        in fieldsByName: [String: FieldValue]
+    ) -> FieldValue? {
         let components = path.split(separator: ".").map(String.init)
         guard let first = components.first,
               var current = fieldsByName[first] else {
@@ -179,10 +177,10 @@ public enum CoveringValueBuilder {
         }
         for component in components.dropFirst() {
             guard case .object(let fields) = current,
-                  let next = fields.first(where: { $0.name == component }) else {
+                  let next = fields[component] else {
                 return nil
             }
-            current = next.value
+            current = next
         }
         return current
     }

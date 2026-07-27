@@ -1,20 +1,20 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public protocol DatabaseStatementMutationExecutor: Sendable {
     associatedtype PreparedStatementMutation: Sendable
 
     func prepare(
         _ statement: ValidatedDatabaseStatement,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         context: DatabaseOperationContext
     ) async throws -> PreparedStatementMutation
 
     func execute(
         _ prepared: PreparedStatementMutation,
         preconditions: [MutationExecuteOperation.Precondition],
-        graphPartitions: [DatabaseObjectField],
+        graphPartitions: FieldObject,
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result

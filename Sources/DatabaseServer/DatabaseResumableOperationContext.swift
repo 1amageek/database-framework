@@ -1,8 +1,8 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 
 public struct DatabaseResumableOperationContext: Sendable {
-    public let jobID: DatabaseUUID
+    public let jobID: DatabaseTypes.UUID
     public let completedWorkUnitsBeforeSlice: UInt64
     public let request: DatabaseCommandRequestContext
     public let transaction: any DatabaseTransactionWriting
@@ -11,7 +11,7 @@ public struct DatabaseResumableOperationContext: Sendable {
     package let operationContext: DatabaseOperationContext
 
     package init(
-        jobID: DatabaseUUID,
+        jobID: DatabaseTypes.UUID,
         completedWorkUnitsBeforeSlice: UInt64,
         transaction: DatabaseTransaction,
         operationContext: DatabaseOperationContext

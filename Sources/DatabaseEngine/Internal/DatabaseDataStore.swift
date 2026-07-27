@@ -1,6 +1,6 @@
 import StorageKit
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 /// Canonical model persistence service over a `StorageEngine`.
 ///
@@ -69,7 +69,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         persistableType: String? = nil,
         metricsDelegate: DataStoreDelegate? = nil,
         securityDelegate: (any DataStoreSecurityDelegate)? = nil,
-        indexConfigurations: [any IndexConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) {
         self.container = container
         self.subspace = subspace
@@ -138,8 +138,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         )
 
         let results = try await fetchAllInternal(type)
-        guard let delegate = securityDelegate else { return results }
-        return delegate.filterByGetAccess(results)
+        try securityDelegate?.evaluateReadResults(results)
+        return results
     }
 
     /// Internal fetchAll without security evaluation (for internal use after security is already evaluated)
@@ -202,8 +202,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         )
 
         let results = try await fetchInternal(query)
-        guard let delegate = securityDelegate else { return results }
-        return delegate.filterByGetAccess(results)
+        try securityDelegate?.evaluateReadResults(results)
+        return results
     }
 
     // MARK: - Index-Optimized Fetch
@@ -471,12 +471,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
 
         // Fetch models by IDs
-        var models = try await fetchByIds(T.self, ids: ids)
-
-        // Apply GET security filter
-        if let delegate = securityDelegate {
-            models = delegate.filterByGetAccess(models)
-        }
+        let models = try await fetchByIds(T.self, ids: ids)
+        try securityDelegate?.evaluateReadResults(models)
 
         // Determine if post-filtering is needed
         // (needed if predicate has additional conditions beyond the indexed field)
@@ -517,16 +513,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
         elements.reserveCapacity(selection.clauses.count)
 
         for clause in selection.clauses {
-            let tuple: Tuple
+            let element: any TupleElement
             do {
-                tuple = try valueToTuple(clause.value)
+                element = try clause.value.toTupleElement()
             } catch {
-                throw CanonicalReadError.unencodablePredicateValue(
-                    field: clause.fieldName,
-                    valueDescription: String(describing: clause.value)
-                )
-            }
-            guard tuple.count == 1, let element = tuple[0] else {
                 throw CanonicalReadError.unencodablePredicateValue(
                     field: clause.fieldName,
                     valueDescription: String(describing: clause.value)
@@ -552,25 +542,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 matchedFieldCount: selection.clauses.count
             )
         )
-    }
-
-    /// Convert a value to a Tuple for index key construction
-    ///
-    /// Uses TupleEncoder for consistent type conversion across all index modules.
-    private func valueToTuple(_ value: Any) throws -> Tuple {
-        // Handle FieldValue first (most common case after refactoring)
-        if let fieldValue = value as? FieldValue {
-            return Tuple([try fieldValue.toTupleElement()])
-        }
-
-        // Handle values that are already TupleElement
-        if let tupleElement = value as? any TupleElement {
-            return Tuple([tupleElement])
-        }
-
-        // Use TupleEncoder for consistent type conversion
-        let element = try TupleEncoder.encode(value)
-        return Tuple([element])
     }
 
     /// Extract ID from an index key given a value subspace
@@ -761,8 +732,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
             // If index didn't cover all predicate conditions, apply remaining filters
             if indexResult.needsPostFiltering {
-                results = results.filter { model in
-                    evaluatePredicate(predicate, on: model)
+                results = try results.filter { model in
+                    try evaluatePredicate(predicate, on: model)
                 }
             }
         } else {
@@ -776,19 +747,19 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
             // Apply predicate filter
             if let predicate = combinedPredicate {
-                results = results.filter { model in
-                    evaluatePredicate(predicate, on: model)
+                results = try results.filter { model in
+                    try evaluatePredicate(predicate, on: model)
                 }
             }
         }
 
         // Apply sorting
         if !query.sortDescriptors.isEmpty {
-            results.sort { lhs, rhs in
+            try results.sort { lhs, rhs in
                 for sortDescriptor in query.sortDescriptors {
-                    let result = sortDescriptor.orderedComparison(lhs, rhs)
-                    if result != .orderedSame {
-                        return result == .orderedAscending
+                    let result = try sortDescriptor.orderedComparison(lhs, rhs)
+                    if result != .equal {
+                        return result == .lessThan
                     }
                 }
                 return false
@@ -829,8 +800,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         )
 
         let results = try await fetchInternalWithTransaction(query, transaction: transaction)
-        guard let delegate = securityDelegate else { return results }
-        return delegate.filterByGetAccess(results)
+        try securityDelegate?.evaluateReadResults(results)
+        return results
     }
 
     /// Internal fetch within an existing transaction
@@ -875,7 +846,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                     try query.executionWorkMeter?.consume(
                         at: .filterEvaluation
                     )
-                    return evaluatePredicate(predicate, on: model)
+                    return try evaluatePredicate(predicate, on: model)
                 }
             }
         } else {
@@ -899,7 +870,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                     try query.executionWorkMeter?.consume(
                         at: .filterEvaluation
                     )
-                    return evaluatePredicate(predicate, on: model)
+                    return try evaluatePredicate(predicate, on: model)
                 }
             }
         }
@@ -916,9 +887,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
                         2,
                         at: .sortComparison
                     )
-                    let result = sortDescriptor.orderedComparison(lhs, rhs)
-                    if result != .orderedSame {
-                        return result == .orderedAscending
+                    let result = try sortDescriptor.orderedComparison(lhs, rhs)
+                    if result != .equal {
+                        return result == .lessThan
                     }
                 }
                 return false
@@ -1151,17 +1122,13 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
 
         // Fetch models by IDs with provided transaction
-        var models = try await fetchByIdsWithTransaction(
+        let models = try await fetchByIdsWithTransaction(
             T.self,
             ids: ids,
             transaction: transaction,
             workMeter: workMeter
         )
-
-        // Apply GET security filter
-        if let delegate = securityDelegate {
-            models = delegate.filterByGetAccess(models)
-        }
+        try securityDelegate?.evaluateReadResults(models)
 
         return IndexFetchResult(models: models, needsPostFiltering: needsPostFiltering)
     }
@@ -1789,7 +1756,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     private static func evaluateWritePrecondition(
         _ precondition: WritePrecondition,
         existingRowPresent: Bool,
-        currentVersion: DatabaseBytes?,
+        currentVersion: ByteString?,
         typeName: String,
         idDescription: String
     ) throws {
@@ -1846,7 +1813,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     private static func entityVersionDigest(
         for model: any Persistable
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         let fields = try PersistableFieldEncoder.encode(model)
         return try PersistableVersionTokenCodec.digest(fields: fields)
     }
@@ -1900,19 +1867,32 @@ package final class DatabaseDataStore: DataStore, Sendable {
     // MARK: - Predicate Evaluation
 
     /// Evaluate a predicate on a model
-    private func evaluatePredicate<T: Persistable>(_ predicate: Predicate<T>, on model: T) -> Bool {
+    private func evaluatePredicate<T: Persistable>(
+        _ predicate: Predicate<T>,
+        on model: borrowing T
+    ) throws(QueryEvaluationError) -> Bool {
         switch predicate {
         case .comparison(let comparison):
-            return comparison.evaluate(on: model)
+            return try comparison.evaluate(on: model)
 
         case .and(let predicates):
-            return predicates.allSatisfy { evaluatePredicate($0, on: model) }
+            for predicate in predicates {
+                if try !evaluatePredicate(predicate, on: model) {
+                    return false
+                }
+            }
+            return true
 
         case .or(let predicates):
-            return predicates.contains { evaluatePredicate($0, on: model) }
+            for predicate in predicates {
+                if try evaluatePredicate(predicate, on: model) {
+                    return true
+                }
+            }
+            return false
 
         case .not(let predicate):
-            return !evaluatePredicate(predicate, on: model)
+            return try !evaluatePredicate(predicate, on: model)
 
         case .true:
             return true

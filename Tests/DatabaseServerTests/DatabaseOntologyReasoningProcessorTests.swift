@@ -1,8 +1,8 @@
-import Core
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseEngine
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import OntologyIndex
 import StorageKit
@@ -57,8 +57,9 @@ struct DatabaseOntologyReasoningProcessorTests {
             Issue.record("Expected a hierarchy response")
             return
         }
+        let entries = try page.materializedEntries(maximumCount: 16)
         #expect(
-            page.entries.contains(
+            entries.contains(
                 OntologyExecuteOperation.HierarchyEntry(
                     resource: "urn:Person",
                     depth: 1
@@ -80,13 +81,16 @@ struct DatabaseOntologyReasoningProcessorTests {
             Issue.record("Expected an inference response")
             return
         }
+        let inferredAxioms = try inference.materializedInferredAxioms(
+            maximumCount: 1_024
+        )
         #expect(
-            inference.inferredAxioms.contains(
-                try DatabaseRDFQuad(
-                    subject: .iri("urn:Alice"),
-                    predicate: .iri(Self.rdfType),
-                    object: .iri("urn:Person"),
-                    graph: .iri("urn:calendar")
+            inferredAxioms.contains(
+                try rdfQuad(
+                    subject: "urn:Alice",
+                    predicate: Self.rdfType,
+                    object: .iri(validating: "urn:Person"),
+                    graph: "urn:calendar"
                 )
             )
         )
@@ -95,7 +99,7 @@ struct DatabaseOntologyReasoningProcessorTests {
     @Test("reasoning preserves typed RDF literal identity")
     func reasoningPreservesLiteralIdentity() async throws {
         let reasoningContext = try await makeOntologyReasoningContext()
-        let literal = DatabaseRDFLiteral(
+        let literal = RDFLiteral(
             lexicalForm: "urn:value",
             datatype: .xsdString
         )
@@ -108,9 +112,9 @@ struct DatabaseOntologyReasoningProcessorTests {
                     try dataPropertyDeclaration("urn:label"),
                     try subproperty("urn:title", of: "urn:label"),
                     try individualDeclaration("urn:event:1"),
-                    try DatabaseRDFQuad(
-                        subject: .iri("urn:event:1"),
-                        predicate: .iri("urn:title"),
+                    try rdfQuad(
+                        subject: "urn:event:1",
+                        predicate: "urn:title",
                         object: .literal(literal)
                     )
                 ]
@@ -133,23 +137,26 @@ struct DatabaseOntologyReasoningProcessorTests {
             Issue.record("Expected an inference response")
             return
         }
+        let inferredAxioms = try inference.materializedInferredAxioms(
+            maximumCount: 1_024
+        )
         #expect(
-            inference.inferredAxioms.contains(
-                try DatabaseRDFQuad(
-                    subject: .iri("urn:event:1"),
-                    predicate: .iri("urn:label"),
+            inferredAxioms.contains(
+                try rdfQuad(
+                    subject: "urn:event:1",
+                    predicate: "urn:label",
                     object: .literal(literal),
-                    graph: .iri("urn:calendar")
+                    graph: "urn:calendar"
                 )
             )
         )
         #expect(
-            !inference.inferredAxioms.contains(
-                try DatabaseRDFQuad(
-                    subject: .iri("urn:event:1"),
-                    predicate: .iri("urn:label"),
-                    object: .iri("urn:value"),
-                    graph: .iri("urn:calendar")
+            !inferredAxioms.contains(
+                try rdfQuad(
+                    subject: "urn:event:1",
+                    predicate: "urn:label",
+                    object: .iri(validating: "urn:value"),
+                    graph: "urn:calendar"
                 )
             )
         )
@@ -164,10 +171,10 @@ struct DatabaseOntologyReasoningProcessorTests {
                 axioms: [
                     try ontologyDeclaration("urn:calendar"),
                     try individualDeclaration("urn:event:1"),
-                    try DatabaseRDFQuad(
-                        subject: .iri("urn:event:1"),
-                        predicate: .iri(Self.rdfType),
-                        object: .literal(DatabaseRDFLiteral(
+                    try rdfQuad(
+                        subject: "urn:event:1",
+                        predicate: Self.rdfType,
+                        object: .literal(RDFLiteral(
                             lexicalForm: "urn:Event",
                             datatype: .xsdString
                         ))
@@ -304,8 +311,11 @@ struct DatabaseOntologyReasoningProcessorTests {
             Issue.record("Expected a refreshed hierarchy response")
             return
         }
+        let refreshedEntries = try refreshedPage.materializedEntries(
+            maximumCount: 16
+        )
         #expect(
-            refreshedPage.entries.contains(
+            refreshedEntries.contains(
                 OntologyExecuteOperation.HierarchyEntry(
                     resource: "urn:Entity",
                     depth: 3
@@ -433,49 +443,66 @@ struct DatabaseOntologyReasoningProcessorTests {
             context: DatabaseOperationContext(
                 container: reasoningContext.container,
                 requestID: 1,
-                metadata: DatabaseRequestMetadata(idempotencyKey: key),
-                requestPayload: try DatabaseEnvelopeCodec.encode(request)
+                metadata: OperationRequestMetadata(idempotencyKey: key),
+                requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
+                    DatabaseOperations.ontologyExecute,
+                    request: request
+                )
             )
         ).response
     }
 
-    private func ontologyDeclaration(_ ontology: String) throws -> DatabaseRDFQuad {
+    private func ontologyDeclaration(_ ontology: String) throws -> RDFQuad {
         try type(ontology, class: Self.owlOntology)
     }
 
-    private func classDeclaration(_ value: String) throws -> DatabaseRDFQuad {
+    private func classDeclaration(_ value: String) throws -> RDFQuad {
         try type(value, class: Self.owlClass)
     }
 
-    private func individualDeclaration(_ value: String) throws -> DatabaseRDFQuad {
+    private func individualDeclaration(_ value: String) throws -> RDFQuad {
         try type(value, class: Self.owlNamedIndividual)
     }
 
-    private func dataPropertyDeclaration(_ value: String) throws -> DatabaseRDFQuad {
+    private func dataPropertyDeclaration(_ value: String) throws -> RDFQuad {
         try type(value, class: Self.owlDatatypeProperty)
     }
 
-    private func type(_ value: String, class classIRI: String) throws -> DatabaseRDFQuad {
-        try DatabaseRDFQuad(
-            subject: .iri(value),
-            predicate: .iri(Self.rdfType),
-            object: .iri(classIRI)
+    private func type(_ value: String, class classIRI: String) throws -> RDFQuad {
+        try rdfQuad(
+            subject: value,
+            predicate: Self.rdfType,
+            object: .iri(validating: classIRI)
         )
     }
 
-    private func subclass(_ value: String, of parent: String) throws -> DatabaseRDFQuad {
-        try DatabaseRDFQuad(
-            subject: .iri(value),
-            predicate: .iri(Self.rdfsSubClassOf),
-            object: .iri(parent)
+    private func subclass(_ value: String, of parent: String) throws -> RDFQuad {
+        try rdfQuad(
+            subject: value,
+            predicate: Self.rdfsSubClassOf,
+            object: .iri(validating: parent)
         )
     }
 
-    private func subproperty(_ value: String, of parent: String) throws -> DatabaseRDFQuad {
-        try DatabaseRDFQuad(
-            subject: .iri(value),
-            predicate: .iri(Self.rdfsSubPropertyOf),
-            object: .iri(parent)
+    private func subproperty(_ value: String, of parent: String) throws -> RDFQuad {
+        try rdfQuad(
+            subject: value,
+            predicate: Self.rdfsSubPropertyOf,
+            object: .iri(validating: parent)
+        )
+    }
+
+    private func rdfQuad(
+        subject: String,
+        predicate: String,
+        object: RDFTerm,
+        graph: String? = nil
+    ) throws -> RDFQuad {
+        RDFQuad(
+            subject: .iri(try RDFIRI(subject)),
+            predicate: try RDFPredicateIRI(predicate),
+            object: object,
+            graph: try graph.map(RDFGraphName.init(iri:))
         )
     }
 

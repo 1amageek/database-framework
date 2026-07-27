@@ -5,9 +5,10 @@
 import Testing
 import Foundation
 import StorageKit
-import Core
-import Graph
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -871,13 +872,24 @@ struct SPARQLQueryBuilderUnitTests {
 @Suite("ExpressionEvaluator Variable Key Resolution", .heartbeat)
 struct ExpressionEvaluatorVariableTests {
 
+    private func rdfString(_ value: String) -> FieldValue {
+        .rdfTerm(
+            .literal(
+                RDFLiteral(
+                    lexicalForm: value,
+                    datatype: .xsdString
+                )
+            )
+        )
+    }
+
     /// VariableBinding keys use "?"-prefixed names.
-    /// QueryIR.Variable.name strips the "?" prefix.
+    /// Variable.name strips the "?" prefix.
     /// ExpressionEvaluator must bridge this gap.
     private func makeBinding(_ pairs: [(String, String)]) -> VariableBinding {
         var binding = VariableBinding()
         for (key, value) in pairs {
-            binding = binding.binding(key, to: .string(value))
+            binding = binding.binding(key, to: rdfString(value))
         }
         return binding
     }
@@ -885,27 +897,19 @@ struct ExpressionEvaluatorVariableTests {
     @Test("Variable lookup resolves with ?-prefixed binding key")
     func variableLookup() throws {
         let binding = makeBinding([("?name", "Alice")])
-        // QueryIR.Variable("name") has .name == "name" (no ?)
-        let expr = QueryIR.Expression.variable(QueryIR.Variable("name"))
+        // Variable("name") has .name == "name" (no ?)
+        let expr = Expression.variable(Variable("name"))
         let result = try ExpressionEvaluator.evaluate(expr, binding: binding)
-        #expect(result == .string("Alice"))
-    }
-
-    @Test("Variable lookup when Variable already has ? prefix")
-    func variableLookupWithPrefix() throws {
-        let binding = makeBinding([("?age", "30")])
-        let expr = QueryIR.Expression.variable(QueryIR.Variable("?age"))
-        let result = try ExpressionEvaluator.evaluate(expr, binding: binding)
-        #expect(result == .string("30"))
+        #expect(result == rdfString("Alice"))
     }
 
     @Test("CONTAINS function with variable resolves correctly")
     func containsFilter() throws {
         let binding = makeBinding([("?name", "Google")])
-        let expr = QueryIR.Expression.function(QueryIR.FunctionCall(
+        let expr = Expression.function(FunctionCall(
             name: "CONTAINS",
             arguments: [
-                .variable(QueryIR.Variable("name")),
+                .variable(Variable("name")),
                 .literal(.string("oo"))
             ],
             distinct: false
@@ -917,10 +921,10 @@ struct ExpressionEvaluatorVariableTests {
     @Test("CONTAINS function returns false when no match")
     func containsFilterNoMatch() throws {
         let binding = makeBinding([("?name", "Apple")])
-        let expr = QueryIR.Expression.function(QueryIR.FunctionCall(
+        let expr = Expression.function(FunctionCall(
             name: "CONTAINS",
             arguments: [
-                .variable(QueryIR.Variable("name")),
+                .variable(Variable("name")),
                 .literal(.string("oo"))
             ],
             distinct: false
@@ -933,12 +937,12 @@ struct ExpressionEvaluatorVariableTests {
     func lcaseContainsNested() throws {
         let binding = makeBinding([("?name", "OpenAI")])
         // CONTAINS(LCASE(?name), "ai")
-        let expr = QueryIR.Expression.function(QueryIR.FunctionCall(
+        let expr = Expression.function(FunctionCall(
             name: "CONTAINS",
             arguments: [
-                .function(QueryIR.FunctionCall(
+                .function(FunctionCall(
                     name: "LCASE",
-                    arguments: [.variable(QueryIR.Variable("name"))],
+                    arguments: [.variable(Variable("name"))],
                     distinct: false
                 )),
                 .literal(.string("ai"))
@@ -952,8 +956,8 @@ struct ExpressionEvaluatorVariableTests {
     @Test("Equality comparison resolves variable")
     func equalityFilter() throws {
         let binding = makeBinding([("?name", "Toyota")])
-        let expr = QueryIR.Expression.equal(
-            .variable(QueryIR.Variable("name")),
+        let expr = Expression.equal(
+            .variable(Variable("name")),
             .literal(.string("Toyota"))
         )
         let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
@@ -963,7 +967,7 @@ struct ExpressionEvaluatorVariableTests {
     @Test("BOUND check resolves variable")
     func boundCheck() throws {
         let binding = makeBinding([("?name", "Alice")])
-        let expr = QueryIR.Expression.bound(QueryIR.Variable("name"))
+        let expr = Expression.bound(Variable("name"))
         let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
         #expect(result == true)
     }
@@ -971,7 +975,7 @@ struct ExpressionEvaluatorVariableTests {
     @Test("BOUND check returns false for unbound variable")
     func boundCheckUnbound() throws {
         let binding = makeBinding([("?name", "Alice")])
-        let expr = QueryIR.Expression.bound(QueryIR.Variable("email"))
+        let expr = Expression.bound(Variable("email"))
         let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)
         #expect(result == false)
     }
@@ -979,9 +983,9 @@ struct ExpressionEvaluatorVariableTests {
     @Test("BOUND function form resolves variable")
     func boundFunctionForm() throws {
         let binding = makeBinding([("?x", "value")])
-        let expr = QueryIR.Expression.function(QueryIR.FunctionCall(
+        let expr = Expression.function(FunctionCall(
             name: "BOUND",
-            arguments: [.variable(QueryIR.Variable("x"))],
+            arguments: [.variable(Variable("x"))],
             distinct: false
         ))
         let result = try ExpressionEvaluator.evaluateAsBoolean(expr, binding: binding)

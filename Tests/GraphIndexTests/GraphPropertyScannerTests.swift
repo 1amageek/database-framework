@@ -4,16 +4,15 @@
 
 import Testing
 import Foundation
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import Graph
 import StorageKit
 import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
 
-@Suite("GraphPropertyScanner Tests", .serialized, .heartbeat)
+@Suite("GraphPropertyScanner Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct GraphPropertyScannerTests {
 
     // MARK: - Test Models
@@ -26,25 +25,36 @@ struct GraphPropertyScannerTests {
         var from: String = ""
         var target: String = ""
         var label: String = ""
-        var since: Int = 0
+        var since: Int64 = 0
         var status: String? = nil
         var score: Double = 0.0
 
-        #Index(GraphIndexKind<SocialEdge>(
-            from: \.from,
-            edge: \.label,
-            to: \.target,
-            graph: nil,
-            strategy: .tripleStore
-        ), storedFields: [\SocialEdge.since, \SocialEdge.status, \SocialEdge.score], name: "social_graph_index")
+        #Index(
+            .propertyGraph(strategy: .tripleStore),
+            from: \SocialEdge.from,
+            edge: \SocialEdge.label,
+            to: \SocialEdge.target,
+            storedFields: [
+                \SocialEdge.since,
+                \SocialEdge.status,
+                \SocialEdge.score,
+            ],
+            name: "social_graph_index"
+        )
 
-        #Index(GraphIndexKind<SocialEdge>(
-            from: \.from,
-            edge: \.label,
-            to: \.target,
-            graph: \.id,
-            strategy: .adjacency
-        ), storedFields: [\SocialEdge.since, \SocialEdge.status, \SocialEdge.score], name: "adjacency_graph_index")
+        #Index(
+            .propertyGraph(strategy: .adjacency),
+            from: \SocialEdge.from,
+            edge: \SocialEdge.label,
+            to: \SocialEdge.target,
+            graph: \SocialEdge.id,
+            storedFields: [
+                \SocialEdge.since,
+                \SocialEdge.status,
+                \SocialEdge.score,
+            ],
+            name: "adjacency_graph_index"
+        )
     }
 
     // MARK: - Setup
@@ -57,7 +67,7 @@ struct GraphPropertyScannerTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func makeEdge(from: String, target: String, label: String, since: Int, status: String?, score: Double, graphId: String? = nil) -> SocialEdge {
+    private func makeEdge(from: String, target: String, label: String, since: Int64, status: String?, score: Double, graphId: String? = nil) -> SocialEdge {
         var edge = SocialEdge(from: from, target: target, label: label, since: since, status: status, score: score)
         if let graphId {
             edge.id = graphId
@@ -67,7 +77,12 @@ struct GraphPropertyScannerTests {
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try SocialEdge.schemaEntity
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
@@ -81,6 +96,19 @@ struct GraphPropertyScannerTests {
         try await container.ensureIndexesReady()
 
         return container
+    }
+
+    private func makeScanner(
+        container: DBContainer,
+        indexName: String,
+        strategy: GraphIndexStrategy
+    ) async throws -> GraphPropertyScanner {
+        let subspace = try await container.resolveDirectory(for: SocialEdge.self)
+        return GraphPropertyScanner(
+            indexSubspace: subspace.subspace("I").subspace(indexName),
+            strategy: strategy,
+            storedFieldNames: ["since", "status", "score"]
+        )
     }
 
     // MARK: - Basic Scanning Tests
@@ -100,17 +128,12 @@ struct GraphPropertyScannerTests {
         try context.insert(edge2)
         try await context.save()
 
+        let scanner = try await makeScanner(
+            container: container,
+            indexName: "social_graph_index",
+            strategy: .tripleStore
+        )
         try await container.engine.withTransaction { transaction in
-            let subspace = try await container.resolveDirectory(for: SocialEdge.self)
-            let indexSubspace = subspace.subspace("I")
-            let graphIndexSubspace = indexSubspace.subspace("social_graph_index")
-
-            let scanner = GraphPropertyScanner(
-                indexSubspace: graphIndexSubspace,
-                strategy: .tripleStore,
-                storedFieldNames: ["since", "status", "score"]
-            )
-
             var edges: [GraphEdgeWithProperties] = []
             for try await edge in scanner.scanEdges(from: .identifier(alice), edge: "KNOWS", to: nil, propertyFilters: nil, transaction: transaction) {
                 edges.append(edge)
@@ -123,13 +146,13 @@ struct GraphPropertyScannerTests {
             if let e1 = edge1 {
                 #expect(e1.properties["since"] == .int64(2020))
                 #expect(e1.properties["status"] == .string("active"))
-                #expect(e1.properties["score"] == .double(0.9))
+                #expect(e1.properties["score"] == .float64(0.9))
             }
 
             if let e2 = edge2 {
                 #expect(e2.properties["since"] == .int64(2021))
                 #expect(e2.properties["status"] == .string("inactive"))
-                #expect(e2.properties["score"] == .double(0.5))
+                #expect(e2.properties["score"] == .float64(0.5))
             }
         }
     }
@@ -146,17 +169,12 @@ struct GraphPropertyScannerTests {
         try context.insert(makeEdge(from: alice, target: uniqueID("dave"), label: "KNOWS", since: 2021, status: "active", score: 0.7))
         try await context.save()
 
+        let scanner = try await makeScanner(
+            container: container,
+            indexName: "social_graph_index",
+            strategy: .tripleStore
+        )
         try await container.engine.withTransaction { transaction in
-            let subspace = try await container.resolveDirectory(for: SocialEdge.self)
-            let indexSubspace = subspace.subspace("I")
-            let graphIndexSubspace = indexSubspace.subspace("social_graph_index")
-
-            let scanner = GraphPropertyScanner(
-                indexSubspace: graphIndexSubspace,
-                strategy: .tripleStore,
-                storedFieldNames: ["since", "status", "score"]
-            )
-
             let filters = [PropertyFilter(fieldName: "since", op: .equal, value: .int64(2020))]
 
             var edges: [GraphEdgeWithProperties] = []
@@ -176,22 +194,17 @@ struct GraphPropertyScannerTests {
 
         let alice = uniqueID("alice")
 
-        for year in [2018, 2019, 2020, 2021, 2022] {
+        for year: Int64 in [2018, 2019, 2020, 2021, 2022] {
             try context.insert(makeEdge(from: alice, target: uniqueID("user-\(year)"), label: "KNOWS", since: year, status: "active", score: 0.5))
         }
         try await context.save()
 
+        let scanner = try await makeScanner(
+            container: container,
+            indexName: "social_graph_index",
+            strategy: .tripleStore
+        )
         try await container.engine.withTransaction { transaction in
-            let subspace = try await container.resolveDirectory(for: SocialEdge.self)
-            let indexSubspace = subspace.subspace("I")
-            let graphIndexSubspace = indexSubspace.subspace("social_graph_index")
-
-            let scanner = GraphPropertyScanner(
-                indexSubspace: graphIndexSubspace,
-                strategy: .tripleStore,
-                storedFieldNames: ["since", "status", "score"]
-            )
-
             let filters = [PropertyFilter(fieldName: "since", op: .greaterThanOrEqual, value: .int64(2020))]
 
             var edges: [GraphEdgeWithProperties] = []
@@ -224,17 +237,12 @@ struct GraphPropertyScannerTests {
         try context.insert(makeEdge(from: alice, target: uniqueID("dave"), label: "KNOWS", since: 2020, status: "active", score: 0.7))
         try await context.save()
 
+        let scanner = try await makeScanner(
+            container: container,
+            indexName: "social_graph_index",
+            strategy: .tripleStore
+        )
         try await container.engine.withTransaction { transaction in
-            let subspace = try await container.resolveDirectory(for: SocialEdge.self)
-            let indexSubspace = subspace.subspace("I")
-            let graphIndexSubspace = indexSubspace.subspace("social_graph_index")
-
-            let scanner = GraphPropertyScanner(
-                indexSubspace: graphIndexSubspace,
-                strategy: .tripleStore,
-                storedFieldNames: ["since", "status", "score"]
-            )
-
             // Test .isNil operator - should match only nil values
             let nilFilters = [PropertyFilter(fieldName: "status", op: .isNil, value: .null)]
             var nilEdges: [GraphEdgeWithProperties] = []
@@ -243,7 +251,7 @@ struct GraphPropertyScannerTests {
             }
 
             #expect(nilEdges.count == 1, "Should find exactly 1 edge with nil status")
-            #expect(nilEdges.allSatisfy { $0.properties["status"] == nil }, "All matched edges should have nil status")
+            #expect(nilEdges.allSatisfy { $0.properties["status"] == .null }, "All matched edges should preserve the stored null value")
 
             // Test .isNotNil operator - should match non-nil values (including empty string)
             let notNilFilters = [PropertyFilter(fieldName: "status", op: .isNotNil, value: .null)]
@@ -283,17 +291,12 @@ struct GraphPropertyScannerTests {
         try context.insert(edge2)
         try await context.save()
 
+        let scanner = try await makeScanner(
+            container: container,
+            indexName: "adjacency_graph_index",
+            strategy: .adjacency
+        )
         try await container.engine.withTransaction { transaction in
-            let subspace = try await container.resolveDirectory(for: SocialEdge.self)
-            let indexSubspace = subspace.subspace("I")
-            let graphIndexSubspace = indexSubspace.subspace("adjacency_graph_index")
-
-            let scanner = GraphPropertyScanner(
-                indexSubspace: graphIndexSubspace,
-                strategy: .adjacency,
-                storedFieldNames: ["since", "status", "score"]
-            )
-
             // Test: Scan with graph filter (should only return edges in "graph-social")
             var socialEdges: [GraphEdgeWithProperties] = []
             for try await edge in scanner.scanEdges(

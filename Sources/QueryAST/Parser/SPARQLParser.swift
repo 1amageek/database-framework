@@ -5,8 +5,8 @@
 /// - W3C SPARQL 1.1 Query Language
 /// - W3C SPARQL 1.2 (Draft)
 
-import DatabaseValue
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 import Synchronization
 
 /// SPARQL Parser for converting SPARQL strings to AST
@@ -46,7 +46,7 @@ public final class SPARQLParser {
     }
 
     private struct NegatedPathPredicate {
-        let iri: DatabaseRDFPredicateIRI
+        let iri: RDFPredicateIRI
         let isInverse: Bool
     }
 
@@ -323,7 +323,13 @@ public final class SPARQLParser {
     }
 
     private func leaveStructuralNesting() {
-        structuralLedger.leaveNesting()
+        do {
+            try structuralLedger.leaveNesting()
+        } catch {
+            if structuralError == nil {
+                structuralError = error
+            }
+        }
     }
 
     private func consumeValuesResource(
@@ -834,7 +840,7 @@ extension SPARQLParser {
             let rawLanguage = String(input[langStart..<position])
             language = rawLanguage
             do {
-                let validated = try DatabaseRDFLanguageTag(rawLanguage)
+                let validated = try RDFLanguageTag(rawLanguage)
                 language = validated.rawValue
             } catch {
                 recordLexicalError("Invalid RDF language tag: \(rawLanguage)")
@@ -849,7 +855,7 @@ extension SPARQLParser {
                 }
                 let rawDirection = String(input[dirStart..<position])
                 let normalizedDirection = rawDirection.lowercased()
-                if let validated = DatabaseRDFDirection(
+                if let validated = RDFDirection(
                     rawValue: normalizedDirection
                 ) {
                     direction = validated.rawValue
@@ -1056,7 +1062,7 @@ extension SPARQLParser {
     }
 
     private func requireAbsoluteIRI(_ iri: String) throws -> String {
-        guard DatabaseRDFIRIValidator.isAbsolute(iri) else {
+        guard RDFIRISyntax.isAbsolute(iri) else {
             throw ParseError.invalidIRI(iri)
         }
         return iri
@@ -1356,8 +1362,8 @@ extension SPARQLParser {
     ///      | '(' ( PathOneInPropertySet ( '|' PathOneInPropertySet )* )? ')'
     /// [97] PathOneInPropertySet ::= iri | 'a' | '^' ( iri | 'a' )
     private func parsePathNegatedPropertySet() throws -> PropertyPath {
-        var forward: Set<DatabaseRDFPredicateIRI>?
-        var inverse: Set<DatabaseRDFPredicateIRI>?
+        var forward: Set<RDFPredicateIRI>?
+        var inverse: Set<RDFPredicateIRI>?
 
         if isSymbol("(") {
             advance()
@@ -1442,8 +1448,8 @@ extension SPARQLParser {
 
     private func add(
         _ predicate: NegatedPathPredicate,
-        forward: inout Set<DatabaseRDFPredicateIRI>?,
-        inverse: inout Set<DatabaseRDFPredicateIRI>?
+        forward: inout Set<RDFPredicateIRI>?,
+        inverse: inout Set<RDFPredicateIRI>?
     ) throws {
         if predicate.isInverse {
             if inverse == nil { inverse = [] }
@@ -1462,9 +1468,9 @@ extension SPARQLParser {
 
     private func parsePredicateIRI(
         _ rawValue: String
-    ) throws -> DatabaseRDFPredicateIRI {
+    ) throws -> RDFPredicateIRI {
         do {
-            return try DatabaseRDFPredicateIRI(rawValue)
+            return try RDFPredicateIRI(rawValue)
         } catch {
             throw ParseError.invalidIRI(rawValue)
         }
@@ -1806,11 +1812,11 @@ extension SPARQLParser {
     }
 
     private func parseLimitOffsetClauses() throws -> (
-        limit: Int?,
-        offset: Int?
+        limit: UInt64?,
+        offset: UInt64?
     ) {
-        var limit: Int?
-        var offset: Int?
+        var limit: UInt64?
+        var offset: UInt64?
 
         while isKeyword("LIMIT") || isKeyword("OFFSET") {
             let keyword: String
@@ -1838,12 +1844,13 @@ extension SPARQLParser {
         return (limit, offset)
     }
 
-    private func parseSolutionModifierInteger(after keyword: String) throws -> Int {
+    private func parseSolutionModifierInteger(
+        after keyword: String
+    ) throws -> UInt64 {
         guard case .integer(let lexicalForm) = currentToken,
-              let value = Int(lexicalForm),
-              value >= 0 else {
+              let value = UInt64(lexicalForm) else {
             throw ParseError.invalidSyntax(
-                message: "\(keyword) requires a non-negative integer representable by Int",
+                message: "\(keyword) requires a non-negative UInt64 integer",
                 position: input.distance(from: input.startIndex, to: position)
             )
         }
@@ -4035,15 +4042,23 @@ extension SPARQLParser {
         }
     }
 
-    private func containsBlankNode(_ term: DatabaseRDFTerm) -> Bool {
+    private func containsBlankNode(_ term: RDFTerm) -> Bool {
         switch term {
         case .blankNode:
             return true
-        case .tripleTerm(let subject, let predicate, let object):
+        case .tripleTerm(let subject, _, let object):
             return containsBlankNode(subject)
-                || containsBlankNode(predicate)
                 || containsBlankNode(object)
         case .iri, .literal:
+            return false
+        }
+    }
+
+    private func containsBlankNode(_ subject: RDFSubject) -> Bool {
+        switch subject {
+        case .blankNode:
+            return true
+        case .iri:
             return false
         }
     }

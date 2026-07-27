@@ -8,11 +8,11 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import DatabaseWire
-import Graph
+import DatabaseKit
 
 // MARK: - SPARQL Entry Point
 
@@ -51,13 +51,13 @@ public struct SPARQLEntryPoint<T: Persistable>: Sendable {
     ///   - to: KeyPath to the target/object field
     /// - Returns: SPARQL query builder
     public func index(
-        _ subject: KeyPath<T, DatabaseRDFTerm>,
-        _ predicate: KeyPath<T, DatabaseRDFTerm>,
-        _ object: KeyPath<T, DatabaseRDFTerm>
+        _ subject: Field<T, RDFTerm>,
+        _ predicate: Field<T, RDFTerm>,
+        _ object: Field<T, RDFTerm>
     ) throws -> SPARQLQueryBuilder<T> {
-        let subjectField = T.fieldName(for: subject)
-        let predicateField = T.fieldName(for: predicate)
-        let objectField = T.fieldName(for: object)
+        let subjectField = subject.name
+        let predicateField = predicate.name
+        let objectField = object.name
         let matches = try T.indexDescriptors.compactMap {
             try RDFDatasetIndexSelection(descriptor: $0)
         }
@@ -188,7 +188,7 @@ extension DatabaseContext {
         offset: Int = 0,
         orderBy: [BindingSortKey] = [],
         datasetScope: SPARQLDatasetExecutionScope = .implicit,
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLResult {
         guard offset >= 0, limit.map({ $0 >= 0 }) ?? true else {
             throw SPARQLQueryError.invalidPagination
@@ -308,7 +308,7 @@ extension DatabaseContext {
         _ plan: SPARQLSelectExecutionPlan,
         on type: T.Type,
         datasetScope: SPARQLDatasetExecutionScope = .implicit,
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLResult {
         let candidates = try T.indexDescriptors.compactMap {
             try RDFDatasetIndexSelection(descriptor: $0)

@@ -1,6 +1,5 @@
-import Core
-import DatabaseValue
-import DatabaseWire
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Shared bounded framing for canonical entity fields.
@@ -10,30 +9,73 @@ public enum PersistableFieldFrameCodec {
         version: UInt16,
         entity: String,
         fields: [PersistableField],
-        limits: DatabaseWireLimits
+        limits: StorageFrameLimits = .default
     ) throws -> Bytes {
         guard magic.count == 4 else {
             throw PersistableFieldFrameError.invalidMagicLength(actual: magic.count)
         }
 
-        let bytes = try DatabaseWireWriter.encode(limits: limits) {
-            (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
-            for byte in magic {
-                writer.writeUInt8(byte)
-            }
-            writer.writeUInt16(version)
-            try writer.writeString(entity)
-            try writer.writeCount(fields.count)
-            for field in fields {
-                writer.writeUInt32(field.number)
-                try writer.writeString(field.name)
-                try writer.writeLengthPrefixed {
-                    (writer: inout DatabaseWireWriter) throws(DatabaseWireError) -> Void in
-                    try field.value.encode(into: &writer)
-                }
-            }
+        let bytes = try StorageFrameEncoder.encode(limits: limits) {
+            (writer: inout StorageFrameEncoder) throws(StorageFrameError) in
+            try write(
+                magic: magic,
+                version: version,
+                entity: entity,
+                fields: fields,
+                to: &writer
+            )
         }
         return Bytes(retaining: bytes)
+    }
+
+    public static func encodedByteCount(
+        magic: [UInt8],
+        version: UInt16,
+        entity: String,
+        fields: [PersistableField],
+        limits: StorageFrameLimits = .default
+    ) throws -> Int {
+        guard magic.count == 4 else {
+            throw PersistableFieldFrameError.invalidMagicLength(
+                actual: magic.count
+            )
+        }
+        return try StorageFrameEncoder.measure(limits: limits) {
+            (writer: inout StorageFrameEncoder) throws(StorageFrameError) in
+            try write(
+                magic: magic,
+                version: version,
+                entity: entity,
+                fields: fields,
+                to: &writer
+            )
+        }
+    }
+
+    private static func write(
+        magic: [UInt8],
+        version: UInt16,
+        entity: String,
+        fields: [PersistableField],
+        to writer: inout StorageFrameEncoder
+    ) throws(StorageFrameError) {
+        for byte in magic {
+            writer.writeUInt8(byte)
+        }
+        writer.writeUInt16(version)
+        try writer.writeString(entity)
+        try writer.writeCount(fields.count)
+        for field in fields {
+            writer.writeUInt32(field.number)
+            try writer.writeString(field.name)
+            try writer.writeLengthPrefixed {
+                (writer: inout StorageFrameEncoder) throws(StorageFrameError) in
+                try StorageValueEncoder.write(
+                    field.value,
+                    into: &writer
+                )
+            }
+        }
     }
 
     public static func decode(
@@ -41,7 +83,7 @@ public enum PersistableFieldFrameCodec {
         magic: [UInt8],
         version: UInt16,
         expectedEntity: String? = nil,
-        limits: DatabaseWireLimits
+        limits: StorageFrameLimits = .default
     ) throws -> (entity: String, fields: [PersistableField]) {
         guard magic.count == 4 else {
             throw PersistableFieldFrameError.invalidMagicLength(actual: magic.count)
@@ -53,8 +95,8 @@ public enum PersistableFieldFrameCodec {
             )
         }
 
-        var reader = DatabaseWireReader(
-            DatabaseBytes(retaining: bytes),
+        var reader = try StorageFrameDecoder(
+            ByteString(retaining: bytes),
             limits: limits
         )
         for byte in magic {
@@ -89,11 +131,17 @@ public enum PersistableFieldFrameCodec {
                 throw PersistableFieldFrameError.duplicateFieldNumber(number)
             }
             let value = try reader.readLengthPrefixed {
-                (reader: inout DatabaseWireReader) throws(DatabaseWireError) -> DatabaseValue in
-                try DatabaseValue(from: &reader)
+                (reader: inout StorageFrameDecoder) throws(
+                    StorageFrameError
+                ) in
+                try StorageValueDecoder.read(from: &reader)
             }
             fields.append(
-                PersistableField(number: number, name: name, value: value)
+                try PersistableField(
+                    number: number,
+                    name: name,
+                    value: value
+                )
             )
         }
         try reader.ensureFullyRead()
@@ -108,8 +156,8 @@ public enum PersistableFieldFrameCodec {
         version: UInt16,
         selectedFieldNames: Set<String>,
         expectedEntity: String? = nil,
-        limits: DatabaseWireLimits
-    ) throws -> (entity: String, fieldsByName: [String: DatabaseValue]) {
+        limits: StorageFrameLimits = .default
+    ) throws -> (entity: String, fieldsByName: [String: FieldValue]) {
         guard magic.count == 4 else {
             throw PersistableFieldFrameError.invalidMagicLength(actual: magic.count)
         }
@@ -120,8 +168,8 @@ public enum PersistableFieldFrameCodec {
             )
         }
 
-        var reader = DatabaseWireReader(
-            DatabaseBytes(retaining: bytes),
+        var reader = try StorageFrameDecoder(
+            ByteString(retaining: bytes),
             limits: limits
         )
         for byte in magic {
@@ -142,7 +190,7 @@ public enum PersistableFieldFrameCodec {
         }
 
         let count = try reader.readCount()
-        var fieldsByName: [String: DatabaseValue] = [:]
+        var fieldsByName: [String: FieldValue] = [:]
         fieldsByName.reserveCapacity(min(count, selectedFieldNames.count))
         var fieldNames: Set<String> = []
         var fieldNumbers: Set<UInt32> = []
@@ -157,13 +205,15 @@ public enum PersistableFieldFrameCodec {
             }
             if selectedFieldNames.contains(name) {
                 fieldsByName[name] = try reader.readLengthPrefixed {
-                    (reader: inout DatabaseWireReader) throws(DatabaseWireError) -> DatabaseValue in
-                    try DatabaseValue(from: &reader)
+                    (reader: inout StorageFrameDecoder) throws(
+                        StorageFrameError
+                    ) in
+                    try StorageValueDecoder.read(from: &reader)
                 }
             } else {
                 // readBytes advances over the same length-delimited payload and
                 // returns a retained view; assigning to `_` releases it without
-                // allocating an Array, Data, String, or DatabaseValue tree.
+                // allocating an Array, Data, String, or FieldValue tree.
                 _ = try reader.readBytes()
             }
         }

@@ -1,6 +1,7 @@
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
-import QueryIR
+import DatabaseKit
 
 enum SPARQLGroupPartitionBuilder {
     private static let scratchArrayOwnerByteCount: UInt64 = 64

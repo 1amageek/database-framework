@@ -1,5 +1,5 @@
 import StorageKit
-import Core
+import DatabaseKit
 import Synchronization
 
 /// Registers index definitions and coordinates their persisted lifecycle.

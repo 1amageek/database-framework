@@ -1,6 +1,7 @@
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
-import QueryIR
+import DatabaseKit
 
 /// Canonical SPARQL aggregate algebra. Aggregate operands remain QueryIR plans
 /// so every solution is evaluated by the same runtime expression semantics used
@@ -542,7 +543,7 @@ public enum AggregateExpression: Sendable, Hashable {
     private static func stringValue(_ value: FieldValue) -> String? {
         switch value {
         case .rdfTerm(.iri(let value)):
-            return value
+            return value.rawValue
         case .rdfTerm(.literal(let literal)):
             return literal.lexicalForm
         case .string(let value):

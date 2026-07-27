@@ -8,7 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import StorageKit
 
@@ -47,14 +48,14 @@ public struct LeaderboardEntryPoint<T: Persistable>: Sendable {
 
     /// Specify the leaderboard index by score field
     ///
-    /// - Parameter keyPath: KeyPath to the score field
+    /// - Parameter field: Compiled score field identity
     /// - Returns: Leaderboard query builder
     public func index(
-        _ keyPath: KeyPath<T, Int64>
+        _ field: Field<T, Int64>
     ) -> LeaderboardQueryBuilder<T> {
         LeaderboardQueryBuilder(
             queryContext: queryContext,
-            scoreFieldName: T.fieldName(for: keyPath)
+            scoreFieldName: field.name
         )
     }
 }
@@ -69,7 +70,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
 
     private let queryContext: IndexQueryContext
     private let scoreFieldName: String
-    private var groupingValues: [any TupleElement & Sendable]?
+    private var groupingValues: [FieldValue]?
     private var windowId: Int64?
     private var topK: Int = 10
 
@@ -86,7 +87,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Parameter values: Grouping values to filter by
     /// - Returns: Updated query builder
-    public func group(by values: [any TupleElement & Sendable]) -> Self {
+    public func group(by values: [FieldValue]) -> Self {
         var copy = self
         copy.groupingValues = values
         return copy
@@ -139,7 +140,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
                 indexKind: indexKind
             )
 
-            let grouping = self.groupingValues?.map { $0 as any TupleElement }
+            let grouping = try self.groupingTupleElements()
 
             if let wid = self.windowId {
                 return try await maintainer.getTopK(
@@ -192,7 +193,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
                 indexKind: indexKind
             )
 
-            let grouping = self.groupingValues?.map { $0 as any TupleElement }
+            let grouping = try self.groupingTupleElements()
 
             if let wid = self.windowId {
                 return try await maintainer.getBottomK(
@@ -245,7 +246,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
                 descriptor: descriptor,
                 indexKind: indexKind
             )
-            let grouping = self.groupingValues?.map { $0 as any TupleElement }
+            let grouping = try self.groupingTupleElements()
 
             return try await maintainer.getRank(
                 pk: Tuple(id),
@@ -280,7 +281,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
                 descriptor: descriptor,
                 indexKind: indexKind
             )
-            let grouping = self.groupingValues?.map { $0 as any TupleElement }
+            let grouping = try self.groupingTupleElements()
 
             return try await maintainer.getRankDense(
                 pk: Tuple(id),
@@ -310,7 +311,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
                 descriptor: descriptor,
                 indexKind: indexKind
             )
-            let grouping = self.groupingValues?.map { $0 as any TupleElement }
+            let grouping = try self.groupingTupleElements()
 
             if let wid = self.windowId {
                 return try await maintainer.getPercentile(
@@ -351,7 +352,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
 
     private func resolveIndexDescriptorAndKind() throws -> (
         descriptor: IndexDescriptor,
-        kind: TimeWindowLeaderboardIndexKind<T>
+        configuration: TimeWindowLeaderboardConfiguration
     ) {
         guard let result = try findIndexDescriptorAndKind() else {
             throw LeaderboardQueryError.indexNotFound("\(T.persistableType).\(scoreFieldName)")
@@ -361,15 +362,17 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
 
     private func findIndexDescriptorAndKind() throws -> (
         descriptor: IndexDescriptor,
-        kind: TimeWindowLeaderboardIndexKind<T>
+        configuration: TimeWindowLeaderboardConfiguration
     )? {
-        for descriptor in T.indexDescriptors {
-            guard descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<T>.identifier else {
+        for descriptor in try T.indexDescriptors {
+            guard descriptor.kind.identifier == "time_window_leaderboard" else {
                 continue
             }
-            let kind = try TimeWindowLeaderboardIndexKind<T>(canonical: descriptor.kind)
-            if kind.scoreFieldName == scoreFieldName {
-                return (descriptor, kind)
+            let configuration = try TimeWindowLeaderboardConfiguration(
+                metadata: descriptor.kind
+            )
+            if configuration.scoreFieldName == scoreFieldName {
+                return (descriptor, configuration)
             }
         }
         return nil
@@ -378,12 +381,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     private func createMaintainer(
         indexSubspace: Subspace,
         descriptor: IndexDescriptor,
-        indexKind: TimeWindowLeaderboardIndexKind<T>
+        indexKind: TimeWindowLeaderboardConfiguration
     ) -> TimeWindowLeaderboardIndexMaintainer<T> {
         return TimeWindowLeaderboardIndexMaintainer<T>(
             index: Index(
                 name: descriptor.name,
-                kind: indexKind,
+                kind: descriptor.kind,
                 rootExpression: FieldKeyExpression(fieldName: scoreFieldName),
                 subspaceKey: descriptor.name
             ),
@@ -392,6 +395,13 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
             window: indexKind.window,
             windowCount: indexKind.windowCount
         )
+    }
+
+    private func groupingTupleElements() throws -> [any TupleElement]? {
+        guard let groupingValues else {
+            return nil
+        }
+        return try FieldValue.toTupleElements(groupingValues)
     }
 }
 

@@ -1,9 +1,9 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 @testable import DatabaseServer
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 import Synchronization
 import Testing
@@ -75,13 +75,12 @@ struct DatabasePersistentJobServiceTests {
         }
         #expect(job == started.job)
         #expect(totalResponseBytes == UInt64(payloadPage.count))
-        #expect(responseDigest.bytes.count == DatabaseJobResultDigest.byteCount)
+        #expect(responseDigest.bytes.count == JobResultDigest.byteCount)
         #expect(continuation == nil)
         #expect(
-            try DatabaseEnvelopeCodec.decode(
-                JobStepValue.self,
-                from: payloadPage
-            ) == JobStepValue(9)
+            try completedStep(
+                in: TwoSliceJob.operation().decodeCompletedResponse(payloadPage)
+            ) == 9
         )
         #expect(compilationCounter.count == 1)
 
@@ -96,16 +95,21 @@ struct DatabasePersistentJobServiceTests {
     @Test("Large job results are paged without exceeding the chunk limit")
     func largeResultsArePagedAndDigestVerified() async throws {
         let payloadByteCount = 1_200_000
-        let expectedPayload = DatabaseBytes(
+        let expectedPayload = ByteString(
             [UInt8](repeating: 0xab, count: payloadByteCount)
         )
+        let expectedEncodedResponse = try LargeResultJob.operation()
+            .encodeCompletedResponse(
+                Self.commandResponse(bytes: expectedPayload)
+            )
+        let expectedResponseByteCount = expectedEncodedResponse.count
         let jobContext = try await makePersistentJobServiceContext(
             operation: LargeResultResumableOperation(
                 payload: expectedPayload
             )
         )
         let request = JobStartOperation.Request(
-            operation: try LargeResultJob.jobOperationIdentifier(),
+            operation: try LargeResultJob.operation().identifier,
             requestPayload: try encodedValue(7),
             maximumSliceWorkUnits: 1
         )
@@ -124,8 +128,8 @@ struct DatabasePersistentJobServiceTests {
         var continuation: JobResultOperation.Continuation?
         var pageCount = 0
         var receivedByteCount = 0
-        var expectedDigest: DatabaseJobResultDigest?
-        var digest = DatabaseJobResultDigestAccumulator(
+        var expectedDigest: JobResultDigest?
+        var digest = JobResultDigestAccumulator(
             operation: job.operation
         )
         repeat {
@@ -147,7 +151,9 @@ struct DatabasePersistentJobServiceTests {
                 return
             }
             #expect(responseJob == job)
-            #expect(totalResponseBytes == UInt64(payloadByteCount + 4))
+            #expect(
+                totalResponseBytes == UInt64(expectedResponseByteCount)
+            )
             #expect(
                 page.count
                     <= DatabasePersistentJobStorageLimits
@@ -165,24 +171,13 @@ struct DatabasePersistentJobServiceTests {
         } while continuation != nil
 
         #expect(pageCount == 3)
-        #expect(receivedByteCount == payloadByteCount + 4)
+        #expect(receivedByteCount == expectedResponseByteCount)
         let finalExpectedDigest = try #require(expectedDigest)
         #expect(digest.finalize() == finalExpectedDigest)
-        var independentlyComputedDigest = DatabaseJobResultDigestAccumulator(
+        var independentlyComputedDigest = JobResultDigestAccumulator(
             operation: job.operation
         )
-        let exactPayloadByteCount = try #require(
-            UInt32(exactly: payloadByteCount)
-        )
-        independentlyComputedDigest.update(
-            DatabaseBytes([
-                UInt8(truncatingIfNeeded: exactPayloadByteCount),
-                UInt8(truncatingIfNeeded: exactPayloadByteCount >> 8),
-                UInt8(truncatingIfNeeded: exactPayloadByteCount >> 16),
-                UInt8(truncatingIfNeeded: exactPayloadByteCount >> 24),
-            ])
-        )
-        independentlyComputedDigest.update(expectedPayload)
+        independentlyComputedDigest.update(expectedEncodedResponse)
         #expect(
             independentlyComputedDigest.finalize() == finalExpectedDigest
         )
@@ -190,7 +185,7 @@ struct DatabasePersistentJobServiceTests {
 
     @Test("Result continuations are bound to one job and one digest")
     func resultContinuationBindingIsStrict() async throws {
-        let expectedPayload = DatabaseBytes(
+        let expectedPayload = ByteString(
             [UInt8](repeating: 0x7a, count: 600_000)
         )
         let jobContext = try await makePersistentJobServiceContext(
@@ -199,7 +194,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
-            operation: try LargeResultJob.jobOperationIdentifier(),
+            operation: try LargeResultJob.operation().identifier,
             requestPayload: try encodedValue(7),
             maximumSliceWorkUnits: 1
         )
@@ -232,8 +227,8 @@ struct DatabasePersistentJobServiceTests {
         }
 
         let otherJobContinuation = try JobResultOperation.Continuation(
-            job: DatabaseJobIdentity(
-                jobID: DatabaseUUID(high: jobID.high ^ 1, low: jobID.low),
+            job: JobIdentity(
+                jobID: DatabaseTypes.UUID(high: jobID.high ^ 1, low: jobID.low),
                 operation: job.operation
             ),
             responseDigest: responseDigest,
@@ -251,9 +246,9 @@ struct DatabasePersistentJobServiceTests {
             )
         }
 
-        let otherKindJob = DatabaseJobIdentity(
+        let otherKindJob = JobIdentity(
             jobID: jobID,
-            operation: try DatabaseJobOperationIdentifier(
+            operation: try JobOperationIdentifier(
                 family: job.operation.family,
                 kind: "database.test.other-kind"
             )
@@ -275,8 +270,8 @@ struct DatabasePersistentJobServiceTests {
             )
         }
 
-        let otherDigest = try DatabaseJobResultDigest(
-            [UInt8](repeating: 0, count: DatabaseJobResultDigest.byteCount)
+        let otherDigest = try JobResultDigest(
+            [UInt8](repeating: 0, count: JobResultDigest.byteCount)
         )
         let otherDigestContinuation = try JobResultOperation.Continuation(
             job: job,
@@ -310,9 +305,9 @@ struct DatabasePersistentJobServiceTests {
             request,
             context: context
         ).response.job
-        let mismatchedJob = DatabaseJobIdentity(
+        let mismatchedJob = JobIdentity(
             jobID: persistedJob.jobID,
-            operation: try DatabaseJobOperationIdentifier(
+            operation: try JobOperationIdentifier(
                 family: persistedJob.operation.family,
                 kind: "database.test.other-kind"
             )
@@ -338,7 +333,7 @@ struct DatabasePersistentJobServiceTests {
         let cancelRequest = JobCancelOperation.Request(job: mismatchedJob)
         let cancelContext = try operationContext(
             container: jobContext.container,
-            operation: JobCancelOperation.self,
+            operation: DatabaseOperations.jobCancel,
             request: cancelRequest,
             idempotencyKey: "job-operation-binding-cancel"
         )
@@ -354,13 +349,13 @@ struct DatabasePersistentJobServiceTests {
     func missingAndCorruptedResultChunksAreRejected() async throws {
         let jobContext = try await makePersistentJobServiceContext(
             operation: LargeResultResumableOperation(
-                payload: DatabaseBytes(
+                payload: ByteString(
                     [UInt8](repeating: 0x6b, count: 600_000)
                 )
             )
         )
         let request = JobStartOperation.Request(
-            operation: try LargeResultJob.jobOperationIdentifier(),
+            operation: try LargeResultJob.operation().identifier,
             requestPayload: try encodedValue(7),
             maximumSliceWorkUnits: 1
         )
@@ -526,7 +521,7 @@ struct DatabasePersistentJobServiceTests {
 
     @Test("Persistent job operation identifiers cannot be tampered")
     func persistentOperationTamperingIsRejected() async throws {
-        let alternateOperation = try DatabaseJobOperationIdentifier(
+        let alternateOperation = try JobOperationIdentifier(
             family: .maintenanceExecute,
             kind: "database.test.tampered"
         )
@@ -656,7 +651,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
-            operation: try RetryingUnsuccessfulOutcomeJob.jobOperationIdentifier(),
+            operation: try RetryingUnsuccessfulOutcomeJob.operation().identifier,
             requestPayload: try encodedValue(8),
             maximumSliceWorkUnits: 1,
             retryPolicy: .init(
@@ -716,7 +711,7 @@ struct DatabasePersistentJobServiceTests {
         )
         #expect(rolledBackMarker == nil)
 
-        let scheduledRetryAt = DatabaseTimestamp(
+        let scheduledRetryAt = try Timestamp(
             secondsSinceUnixEpoch: 1_000,
             nanoseconds: 100_000_000
         )
@@ -727,7 +722,7 @@ struct DatabasePersistentJobServiceTests {
         try await service.runScheduledWork()
         #expect(commitProbe.attemptCount == 1)
 
-        jobContext.clock.advance(milliseconds: 100)
+        try jobContext.clock.advance(milliseconds: 100)
         let recreatedService = try await jobContext.makeService()
         try await recreatedService.runScheduledWork()
 
@@ -766,7 +761,7 @@ struct DatabasePersistentJobServiceTests {
         )
         let request = JobStartOperation.Request(
             operation: try RetryingUnsuccessfulOutcomeJob
-                .jobOperationIdentifier(),
+                .operation().identifier,
             requestPayload: try encodedValue(8),
             maximumSliceWorkUnits: 1
         )
@@ -783,7 +778,7 @@ struct DatabasePersistentJobServiceTests {
         let cancelRequest = JobCancelOperation.Request(job: job)
         let cancelContext = try operationContext(
             container: jobContext.container,
-            operation: JobCancelOperation.self,
+            operation: DatabaseOperations.jobCancel,
             request: cancelRequest,
             idempotencyKey: "cancelled-outcome-retry-request"
         )
@@ -811,7 +806,7 @@ struct DatabasePersistentJobServiceTests {
         )
         #expect(rolledBackMarker == nil)
 
-        jobContext.clock.advance(milliseconds: 100)
+        try jobContext.clock.advance(milliseconds: 100)
         let recreatedService = try await jobContext.makeService()
         try await recreatedService.runScheduledWork()
 
@@ -847,7 +842,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
-            operation: try RetryingUnsuccessfulOutcomeJob.jobOperationIdentifier(),
+            operation: try RetryingUnsuccessfulOutcomeJob.operation().identifier,
             requestPayload: try encodedValue(8),
             maximumSliceWorkUnits: 1,
             retryPolicy: .init(
@@ -885,8 +880,8 @@ struct DatabasePersistentJobServiceTests {
                 throw PersistentJobScenarioError.missingEntity
             }
             let abandonedLease = try snapshot.state.acquiringLease(
-                owner: DatabaseUUID(high: 29, low: 1),
-                token: DatabaseUUID(high: 39, low: 1),
+                owner: DatabaseTypes.UUID(high: 29, low: 1),
+                token: DatabaseTypes.UUID(high: 39, low: 1),
                 expiresAt: expiredAt,
                 updatedAt: expiredAt
             )
@@ -946,8 +941,8 @@ struct DatabasePersistentJobServiceTests {
                 throw PersistentJobScenarioError.missingEntity
             }
             let abandonedLease = try snapshot.state.acquiringLease(
-                owner: DatabaseUUID(high: 41, low: 1),
-                token: DatabaseUUID(high: 42, low: 1),
+                owner: DatabaseTypes.UUID(high: 41, low: 1),
+                token: DatabaseTypes.UUID(high: 42, low: 1),
                 expiresAt: expiredAt,
                 updatedAt: expiredAt
             )
@@ -1031,7 +1026,7 @@ struct DatabasePersistentJobServiceTests {
             operation: OversizedPlanResumableOperation()
         )
         let request = JobStartOperation.Request(
-            operation: try OversizedPlanJob.jobOperationIdentifier(),
+            operation: try OversizedPlanJob.operation().identifier,
             requestPayload: try encodedValue(9),
             maximumSliceWorkUnits: 1
         )
@@ -1066,7 +1061,7 @@ struct DatabasePersistentJobServiceTests {
             operation: OversizedStateResumableOperation()
         )
         let request = JobStartOperation.Request(
-            operation: try OversizedStateJob.jobOperationIdentifier(),
+            operation: try OversizedStateJob.operation().identifier,
             requestPayload: try encodedValue(10),
             maximumSliceWorkUnits: 1
         )
@@ -1111,7 +1106,7 @@ struct DatabasePersistentJobServiceTests {
             operation: OversizedResultResumableOperation()
         )
         let request = JobStartOperation.Request(
-            operation: try OversizedResultJob.jobOperationIdentifier(),
+            operation: try OversizedResultJob.operation().identifier,
             requestPayload: try encodedValue(11),
             maximumSliceWorkUnits: 1
         )
@@ -1149,7 +1144,7 @@ struct DatabasePersistentJobServiceTests {
     func oversizedFailureDoesNotRerunOperationWork() async throws {
         let jobContext = try await makePersistentJobServiceContext(
             operation: AlwaysFailingResumableOperation(
-                failure: DatabaseRemoteError(
+                failure: RemoteOperationError(
                     category: .constraint,
                     code: String(repeating: "C", count: 200 * 1_024),
                     message: String(repeating: "x", count: 200 * 1_024),
@@ -1158,7 +1153,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
-            operation: try AlwaysFailingJob.jobOperationIdentifier(),
+            operation: try AlwaysFailingJob.operation().identifier,
             requestPayload: try encodedValue(12),
             maximumSliceWorkUnits: 1
         )
@@ -1199,83 +1194,9 @@ struct DatabasePersistentJobServiceTests {
         #expect(failure.category == .constraint)
         #expect(failure.code == "JOB_FAILURE_STORAGE_BUDGET_EXCEEDED")
         #expect(
-            failure.details.first?.value
+            failure.details["originalCode"]
                 == .string(String(repeating: "C", count: 1_024))
         )
-    }
-
-    @Test("Invalid failure details terminate without rerunning operation work")
-    func invalidFailureDetailsBecomeExplicitPersistentFailure() async throws {
-        let jobContext = try await makePersistentJobServiceContext(
-            operation: AlwaysFailingResumableOperation(
-                failure: DatabaseRemoteError(
-                    category: .constraint,
-                    code: "INVALID_FAILURE_DETAIL",
-                    message: "The failure detail is not canonical",
-                    retryability: .immediate,
-                    details: [
-                        DatabaseObjectField(
-                            number: 1,
-                            name: "term",
-                            value: .rdfTerm(.iri("not an iri"))
-                        ),
-                    ]
-                )
-            )
-        )
-        let request = JobStartOperation.Request(
-            operation: try AlwaysFailingJob.jobOperationIdentifier(),
-            requestPayload: try encodedValue(12),
-            maximumSliceWorkUnits: 1
-        )
-        let context = try operationContext(
-            container: jobContext.container,
-            request: request,
-            idempotencyKey: "invalid-failure-detail"
-        )
-        let service = try await jobContext.makeService()
-        let job = try await service.start(
-            request,
-            context: context
-        ).response.job
-
-        try await service.runScheduledWork()
-        let prepared = try await service.status(
-            JobStatusOperation.Request(job: job),
-            context: context
-        )
-        #expect(prepared.state == .committingUnsuccessfulOutcome)
-        #expect(prepared.executionCount == 1)
-
-        try await service.runScheduledWork()
-        let completed = try await service.status(
-            JobStatusOperation.Request(job: job),
-            context: context
-        )
-        #expect(completed.state == .failed)
-        #expect(completed.executionCount == 1)
-        let result = try await service.result(
-            JobResultOperation.Request(job: job),
-            context: context
-        )
-        guard case .failed(_, let failure) = result else {
-            Issue.record("Expected an explicit failure encoding diagnostic")
-            return
-        }
-        #expect(failure.category == .internalFailure)
-        #expect(failure.code == "JOB_FAILURE_ENCODING_FAILED")
-        #expect(failure.retryability == .never)
-        #expect(
-            failure.details.first?.value == .string("INVALID_FAILURE_DETAIL")
-        )
-
-        try await service.runScheduledWork()
-        let stable = try await service.status(
-            JobStatusOperation.Request(job: job),
-            context: context
-        )
-        #expect(stable.state == .failed)
-        #expect(stable.executionCount == 1)
     }
 
     @Test("Pending job cancellation commits its unsuccessful outcome")
@@ -1296,7 +1217,7 @@ struct DatabasePersistentJobServiceTests {
         let cancelRequest = JobCancelOperation.Request(job: started.job)
         let cancelContext = try operationContext(
             container: jobContext.container,
-            operation: JobCancelOperation.self,
+            operation: DatabaseOperations.jobCancel,
             request: cancelRequest,
             idempotencyKey: "job-cancel-request"
         )
@@ -1352,7 +1273,7 @@ struct DatabasePersistentJobServiceTests {
         let cancelRequest = JobCancelOperation.Request(job: started.job)
         let firstCancelContext = try operationContext(
             container: jobContext.container,
-            operation: JobCancelOperation.self,
+            operation: DatabaseOperations.jobCancel,
             request: cancelRequest,
             idempotencyKey: "in-flight-cancel-first"
         )
@@ -1365,7 +1286,7 @@ struct DatabasePersistentJobServiceTests {
 
         let secondCancelContext = try operationContext(
             container: jobContext.container,
-            operation: JobCancelOperation.self,
+            operation: DatabaseOperations.jobCancel,
             request: cancelRequest,
             idempotencyKey: "in-flight-cancel-second"
         )
@@ -1421,7 +1342,7 @@ struct DatabasePersistentJobServiceTests {
         )
         let request = JobStartOperation.Request(
             operation: try CheckpointedCancellationJob
-                .jobOperationIdentifier(),
+                .operation().identifier,
             requestPayload: try encodedValue(13),
             maximumSliceWorkUnits: 1
         )
@@ -1443,7 +1364,7 @@ struct DatabasePersistentJobServiceTests {
         let cancelRequest = JobCancelOperation.Request(job: job)
         let cancelContext = try operationContext(
             container: jobContext.container,
-            operation: JobCancelOperation.self,
+            operation: DatabaseOperations.jobCancel,
             request: cancelRequest,
             idempotencyKey: "checkpointed-cancel-request"
         )
@@ -1497,7 +1418,7 @@ struct DatabasePersistentJobServiceTests {
     func rejectsNonResumableOperation() async throws {
         let jobContext = try await makePersistentJobServiceContext()
         let request = JobStartOperation.Request(
-            operation: try DatabaseJobOperationIdentifier(
+            operation: try JobOperationIdentifier(
                 family: .maintenanceExecute,
                 kind: "database.test.unregistered"
             ),
@@ -1520,7 +1441,7 @@ struct DatabasePersistentJobServiceTests {
     func exhaustedLeaseCommitsUnsuccessfulOutcome() async throws {
         let jobContext = try await makePersistentJobServiceContext()
         let request = JobStartOperation.Request(
-            operation: try TwoSliceJob.jobOperationIdentifier(),
+            operation: try TwoSliceJob.operation().identifier,
             requestPayload: try encodedValue(1),
             maximumSliceWorkUnits: 1,
             retryPolicy: .init(
@@ -1556,14 +1477,14 @@ struct DatabasePersistentJobServiceTests {
                 throw PersistentJobScenarioError.missingEntity
             }
             let firstLease = try snapshot.state.acquiringLease(
-                owner: DatabaseUUID(high: 9, low: 1),
-                token: DatabaseUUID(high: 19, low: 1),
+                owner: DatabaseTypes.UUID(high: 9, low: 1),
+                token: DatabaseTypes.UUID(high: 19, low: 1),
                 expiresAt: expiredAt,
                 updatedAt: expiredAt
             )
             let finalLease = try firstLease.acquiringLease(
-                owner: DatabaseUUID(high: 9, low: 2),
-                token: DatabaseUUID(high: 19, low: 2),
+                owner: DatabaseTypes.UUID(high: 9, low: 2),
+                token: DatabaseTypes.UUID(high: 19, low: 2),
                 expiresAt: expiredAt,
                 updatedAt: expiredAt
             )
@@ -1616,7 +1537,7 @@ struct DatabasePersistentJobServiceTests {
     func missingOperationRegistrationPreservesUnsuccessfulOutcome() async throws {
         let jobContext = try await makePersistentJobServiceContext()
         let request = JobStartOperation.Request(
-            operation: try TwoSliceJob.jobOperationIdentifier(),
+            operation: try TwoSliceJob.operation().identifier,
             requestPayload: try encodedValue(1),
             maximumSliceWorkUnits: 1,
             retryPolicy: .init(
@@ -1652,8 +1573,8 @@ struct DatabasePersistentJobServiceTests {
                 throw PersistentJobScenarioError.missingEntity
             }
             let exhausted = try snapshot.state.acquiringLease(
-                owner: DatabaseUUID(high: 9, low: 3),
-                token: DatabaseUUID(high: 19, low: 3),
+                owner: DatabaseTypes.UUID(high: 9, low: 3),
+                token: DatabaseTypes.UUID(high: 19, low: 3),
                 expiresAt: expiredAt,
                 updatedAt: expiredAt
             )
@@ -1716,7 +1637,7 @@ struct DatabasePersistentJobServiceTests {
             )
         }
 
-        jobContext.clock.advance(milliseconds: 100)
+        try jobContext.clock.advance(milliseconds: 100)
         let restoredService = try await jobContext.makeService()
         try await restoredService.runScheduledWork()
 
@@ -1793,7 +1714,7 @@ struct DatabasePersistentJobServiceTests {
             operation: FiveSliceResumableOperation()
         )
         let request = JobStartOperation.Request(
-            operation: try FiveSliceJob.jobOperationIdentifier(),
+            operation: try FiveSliceJob.operation().identifier,
             requestPayload: try encodedValue(5),
             maximumSliceWorkUnits: 1,
             retryPolicy: .init(
@@ -1833,7 +1754,7 @@ struct DatabasePersistentJobServiceTests {
             operation: RetryingResumableOperation()
         )
         let request = JobStartOperation.Request(
-            operation: try RetryingJob.jobOperationIdentifier(),
+            operation: try RetryingJob.operation().identifier,
             requestPayload: try encodedValue(3),
             maximumSliceWorkUnits: 1,
             retryPolicy: .init(
@@ -1916,7 +1837,7 @@ struct DatabasePersistentJobServiceTests {
             stateStore: stateStore
         )
         let clock = FixedDatabaseWallClock(
-            initial: DatabaseTimestamp(secondsSinceUnixEpoch: 1_000)
+            initial: try Timestamp(secondsSinceUnixEpoch: 1_000)
         )
         let scheduler = RecordingDatabaseJobScheduler()
         let identifiers = SequentialDatabaseUUIDGenerator()
@@ -1938,7 +1859,7 @@ struct DatabasePersistentJobServiceTests {
 
     private func jobRequest() throws -> JobStartOperation.Request {
         JobStartOperation.Request(
-            operation: try TwoSliceJob.jobOperationIdentifier(),
+            operation: try TwoSliceJob.operation().identifier,
             requestPayload: try encodedValue(1),
             maximumSliceWorkUnits: 1,
             retryPolicy: .init(
@@ -1949,8 +1870,21 @@ struct DatabasePersistentJobServiceTests {
         )
     }
 
-    private func encodedValue(_ value: UInt8) throws -> DatabaseBytes {
-        try DatabaseEnvelopeCodec.encode(JobStepValue(value))
+    private func encodedValue(_ value: UInt8) throws -> ByteString {
+        try DatabaseWireEncoder().encodeRequestPayload(
+            DatabaseOperations.commandExecute,
+            request: CommandRequest(
+                command: CommandDeclaration(
+                    identifier: try CommandIdentifier(
+                        "database.test.persistent.job"
+                    ),
+                    access: .readOnly
+                ),
+                input: try FieldObject([
+                    (key: "step", value: .uint8(value)),
+                ])
+            )
+        )
     }
 
     private func storedMarker(
@@ -1977,7 +1911,7 @@ struct DatabasePersistentJobServiceTests {
     private func persistentJobKey(
         container: DBContainer,
         component: String,
-        jobID: DatabaseUUID
+        jobID: DatabaseTypes.UUID
     ) async throws -> Bytes {
         let root = try await container.engine.createOrOpenDirectory(
             path: ["database-framework", "persistent-jobs"]
@@ -1987,7 +1921,7 @@ struct DatabasePersistentJobServiceTests {
 
     private func persistentJobChunkKey(
         container: DBContainer,
-        jobID: DatabaseUUID,
+        jobID: DatabaseTypes.UUID,
         index: UInt32
     ) async throws -> Bytes {
         let root = try await container.engine.createOrOpenDirectory(
@@ -1998,10 +1932,10 @@ struct DatabasePersistentJobServiceTests {
         )
     }
 
-    private func replacePersistentComponent<Value: DatabaseWireValue>(
+    private func replacePersistentComponent<Value: ServerPayloadValue>(
         container: DBContainer,
         component: String,
-        jobID: DatabaseUUID,
+        jobID: DatabaseTypes.UUID,
         as type: Value.Type,
         transform: (Value) throws -> Value
     ) async throws {
@@ -2017,12 +1951,14 @@ struct DatabasePersistentJobServiceTests {
             ) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
-            let decoded = try DatabaseEnvelopeCodec.decode(
+            let decoded = try ServerPayloadDecoder.decode(
                 type,
-                from: DatabaseBytes(retaining: stored)
+                from: ByteString(retaining: stored),
+                limits: .default
             )
-            let replacement = try DatabaseEnvelopeCodec.encode(
-                transform(decoded)
+            let replacement = try ServerPayloadEncoder.encode(
+                transform(decoded),
+                limits: .default
             )
             try transaction.setValue(
                 Bytes(retaining: replacement),
@@ -2038,26 +1974,29 @@ struct DatabasePersistentJobServiceTests {
     ) throws -> DatabaseOperationContext {
         try operationContext(
             container: container,
-            operation: JobStartOperation.self,
+            operation: DatabaseOperations.jobStart,
             request: request,
             idempotencyKey: idempotencyKey
         )
     }
 
-    private func operationContext<Operation: DatabaseOperation>(
+    private func operationContext<Request, Response>(
         container: DBContainer,
-        operation: Operation.Type,
-        request: Operation.Request,
+        operation: DatabaseOperation<Request, Response>,
+        request: Request,
         idempotencyKey: String
     ) throws -> DatabaseOperationContext {
         DatabaseOperationContext(
             container: container,
             requestID: 7,
-            metadata: DatabaseRequestMetadata(
+            metadata: OperationRequestMetadata(
                 traceID: "trace",
                 idempotencyKey: idempotencyKey
             ),
-            requestPayload: try DatabaseEnvelopeCodec.encode(request)
+            requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
+                operation,
+                request: request
+            )
         )
     }
 
@@ -2090,42 +2029,46 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    private struct JobStepValue: DatabaseWireValue, Sendable, Hashable {
+    private struct JobStepValue: PersistentJobPayload, Hashable {
         let value: UInt8
 
         init(_ value: UInt8) {
             self.value = value
         }
 
-        func encode(
-            into writer: inout DatabaseWireWriter
-        ) throws(DatabaseWireError) {
-            writer.writeUInt8(value)
+        func persistentJobValue()
+            throws(PersistentJobPayloadError) -> FieldValue {
+            .uint8(value)
         }
 
         init(
-            from reader: inout DatabaseWireReader
-        ) throws(DatabaseWireError) {
-            self.init(try reader.readUInt8())
+            persistentJobValue: FieldValue
+        ) throws(PersistentJobPayloadError) {
+            guard case .uint8(let value) = persistentJobValue else {
+                throw .invalidValue("Expected UInt8 job state")
+            }
+            self.init(value)
         }
     }
 
-    private struct JobPayload: DatabaseWireValue, Sendable, Hashable {
-        let value: DatabaseBytes
+    private struct JobPayload: PersistentJobPayload, Hashable {
+        let value: ByteString
 
-        func encode(
-            into writer: inout DatabaseWireWriter
-        ) throws(DatabaseWireError) {
-            try writer.writeBytes(value)
+        func persistentJobValue()
+            throws(PersistentJobPayloadError) -> FieldValue {
+            .bytes(value)
         }
 
         init(
-            from reader: inout DatabaseWireReader
-        ) throws(DatabaseWireError) {
-            value = try reader.readBytes()
+            persistentJobValue: FieldValue
+        ) throws(PersistentJobPayloadError) {
+            guard case .bytes(let value) = persistentJobValue else {
+                throw .invalidValue("Expected bytes job payload")
+            }
+            self.value = value
         }
 
-        init(_ value: DatabaseBytes) {
+        init(_ value: ByteString) {
             self.value = value
         }
     }
@@ -2141,7 +2084,7 @@ struct DatabasePersistentJobServiceTests {
             var marker = DatabaseEndpointEntity()
             marker.id = id
             marker.title = title
-            marker.priority = Int(value)
+            marker.priority = Int64(value)
             try await transaction.save(marker, precondition: .none)
         }
     }
@@ -2150,134 +2093,151 @@ struct DatabasePersistentJobServiceTests {
         case invalidStoredValue
     }
 
-    private struct TwoSliceJob: DatabaseJobDescriptor {
-        typealias Request = JobStepValue
-        typealias Response = JobStepValue
+    private protocol PersistentJobTestDescriptor {
+        static var kind: String { get }
+        static func operation()
+            throws(DatabaseWireError)
+            -> JobOperation<
+                CommandExecuteOperation.Request,
+                CommandExecuteOperation.Response
+            >
+    }
 
-        static func jobOperationIdentifier()
-            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-            try DatabaseJobOperationIdentifier(
-                family: .maintenanceExecute,
-                kind: "database.test.two-slice"
+    private enum PersistentJobTestOperations {
+        static func operation<Descriptor>(
+            for descriptor: Descriptor.Type
+        )
+            throws(DatabaseWireError)
+            -> JobOperation<
+                CommandExecuteOperation.Request,
+                CommandExecuteOperation.Response
+            > where Descriptor: PersistentJobTestDescriptor {
+            try DatabaseOperations.commandExecute.resumableJob(
+                kind: descriptor.kind
             )
         }
     }
 
-    private struct FiveSliceJob: DatabaseJobDescriptor {
-        typealias Request = JobStepValue
-        typealias Response = JobStepValue
-
-        static func jobOperationIdentifier()
-            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-            try DatabaseJobOperationIdentifier(
-                family: .maintenanceExecute,
-                kind: "database.test.five-slice"
-            )
+    private enum TwoSliceJob: PersistentJobTestDescriptor {
+        static let kind = "database.test.two-slice"
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
         }
     }
 
-    private struct LargeResultJob: DatabaseJobDescriptor {
-        typealias Request = JobStepValue
-        typealias Response = JobPayload
-
-        static func jobOperationIdentifier()
-            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-            try DatabaseJobOperationIdentifier(
-                family: .maintenanceExecute,
-                kind: "database.test.large-result"
-            )
+    private enum FiveSliceJob: PersistentJobTestDescriptor {
+        static let kind = "database.test.five-slice"
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
         }
     }
 
-    private struct RetryingUnsuccessfulOutcomeJob: DatabaseJobDescriptor {
-        typealias Request = JobStepValue
-        typealias Response = JobStepValue
-
-        static func jobOperationIdentifier()
-            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-            try DatabaseJobOperationIdentifier(
-                family: .maintenanceExecute,
-                kind: "database.test.retrying-unsuccessful-outcome"
-            )
+    private enum LargeResultJob: PersistentJobTestDescriptor {
+        static let kind = "database.test.large-result"
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
         }
     }
 
-    private struct OversizedPlanJob: DatabaseJobDescriptor {
-        typealias Request = JobStepValue
-        typealias Response = JobStepValue
-
-        static func jobOperationIdentifier()
-            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-            try DatabaseJobOperationIdentifier(
-                family: .maintenanceExecute,
-                kind: "database.test.oversized-plan"
-            )
+    private enum RetryingUnsuccessfulOutcomeJob:
+        PersistentJobTestDescriptor {
+        static let kind = "database.test.retrying-unsuccessful-outcome"
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
         }
     }
 
-    private struct OversizedStateJob: DatabaseJobDescriptor {
-        typealias Request = JobStepValue
-        typealias Response = JobStepValue
-
-        static func jobOperationIdentifier()
-            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-            try DatabaseJobOperationIdentifier(
-                family: .maintenanceExecute,
-                kind: "database.test.oversized-state"
-            )
+    private enum OversizedPlanJob: PersistentJobTestDescriptor {
+        static let kind = "database.test.oversized-plan"
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
         }
     }
 
-    private struct OversizedResultJob: DatabaseJobDescriptor {
-        typealias Request = JobStepValue
-        typealias Response = JobPayload
-
-        static func jobOperationIdentifier()
-            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-            try DatabaseJobOperationIdentifier(
-                family: .maintenanceExecute,
-                kind: "database.test.oversized-result"
-            )
+    private enum OversizedStateJob: PersistentJobTestDescriptor {
+        static let kind = "database.test.oversized-state"
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
         }
     }
 
-    private struct AlwaysFailingJob: DatabaseJobDescriptor {
-        typealias Request = JobStepValue
-        typealias Response = JobStepValue
-
-        static func jobOperationIdentifier()
-            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-            try DatabaseJobOperationIdentifier(
-                family: .maintenanceExecute,
-                kind: "database.test.always-failing"
-            )
+    private enum OversizedResultJob: PersistentJobTestDescriptor {
+        static let kind = "database.test.oversized-result"
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
         }
     }
 
-    private struct CheckpointedCancellationJob: DatabaseJobDescriptor {
-        typealias Request = JobStepValue
-        typealias Response = JobStepValue
-
-        static func jobOperationIdentifier()
-            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-            try DatabaseJobOperationIdentifier(
-                family: .maintenanceExecute,
-                kind: "database.test.checkpointed-cancellation"
-            )
+    private enum AlwaysFailingJob: PersistentJobTestDescriptor {
+        static let kind = "database.test.always-failing"
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
         }
     }
 
-    private struct RetryingJob: DatabaseJobDescriptor {
-        typealias Request = JobStepValue
-        typealias Response = JobStepValue
-
-        static func jobOperationIdentifier()
-            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
-            try DatabaseJobOperationIdentifier(
-                family: .maintenanceExecute,
-                kind: "database.test.retrying"
-            )
+    private enum CheckpointedCancellationJob:
+        PersistentJobTestDescriptor {
+        static let kind = "database.test.checkpointed-cancellation"
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
         }
+    }
+
+    private enum RetryingJob: PersistentJobTestDescriptor {
+        static let kind = "database.test.retrying"
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
+        }
+    }
+
+    private protocol PersistentJobTestOperation: DatabaseResumableOperation
+    where Request == CommandRequest,
+          Response == CommandExecuteOperation.Response {
+        associatedtype TestDescriptor: PersistentJobTestDescriptor
+        static func job()
+            throws(DatabaseWireError)
+            -> JobOperation<Request, Response>
+    }
+
+    private static func jobStep(
+        in request: CommandRequest
+    ) throws -> JobStepValue {
+        guard case .uint8(let value) = request.input["step"] else {
+            throw PersistentJobScenarioError.invalidPayload
+        }
+        return JobStepValue(value)
+    }
+
+    private static func commandResponse(
+        step: UInt8
+    ) -> CommandExecuteOperation.Response {
+        .read(output: .uint8(step), continuation: nil)
+    }
+
+    private static func commandResponse(
+        bytes: ByteString
+    ) -> CommandExecuteOperation.Response {
+        .read(output: .bytes(bytes), continuation: nil)
+    }
+
+    private func completedStep(
+        in response: CommandExecuteOperation.Response
+    ) throws -> UInt8 {
+        guard case .read(let output, nil) = response,
+              case .uint8(let value) = output else {
+            throw PersistentJobScenarioError.invalidPayload
+        }
+        return value
     }
 
     private final class CompilationCounter: Sendable {
@@ -2343,14 +2303,21 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    private struct TwoSliceResumableOperation: DatabaseResumableOperation {
+    private struct TwoSliceResumableOperation:
+        PersistentJobTestOperation {
         static let stateMarkerID = "job-test-state"
         static let unsuccessfulOutcomeMarkerID =
             "job-test-unsuccessful-outcome"
 
-        typealias Job = TwoSliceJob
+        typealias TestDescriptor = TwoSliceJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
+
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
+
         let compilationCounter: CompilationCounter
         let executionGate: OperationExecutionGate?
 
@@ -2363,9 +2330,10 @@ struct DatabasePersistentJobServiceTests {
         }
 
         func compile(
-            _ request: JobStepValue,
+            _ request: CommandRequest,
             context: DatabaseResumableOperationStartContext
         ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(in: request)
             guard request == JobStepValue(1) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2383,7 +2351,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(1), maximumWorkUnits == 1 else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2411,7 +2379,7 @@ struct DatabasePersistentJobServiceTests {
                 return .complete(
                     completedWorkUnits: 1,
                     totalWorkUnits: 2,
-                    result: JobStepValue(9)
+                    result: DatabasePersistentJobServiceTests.commandResponse(step: 9)
                 )
             default:
                 throw PersistentJobScenarioError.invalidContinuation
@@ -2442,22 +2410,28 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private struct CheckpointedCancellationOperation:
-        DatabaseResumableOperation {
+        PersistentJobTestOperation {
         static let checkpointKey = Bytes("job-checkpointed-progress".utf8)
         static let unsuccessfulOutcomeStateMarkerID =
             "job-checkpointed-unsuccessful-outcome"
 
-        typealias Job = CheckpointedCancellationJob
+        typealias TestDescriptor = CheckpointedCancellationJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
+
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
 
         let executionGate: OperationExecutionGate
         let executionCounter: SliceExecutionCounter
 
         func compile(
-            _ request: JobStepValue,
+            _ request: CommandRequest,
             context: DatabaseResumableOperationStartContext
         ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(in: request)
             guard request == JobStepValue(13) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2481,7 +2455,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             _ = plan
             _ = state
             _ = maximumWorkUnits
@@ -2494,7 +2468,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseCheckpointedResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(13),
                   state == JobStepValue(0),
                   maximumWorkUnits == 1 else {
@@ -2533,15 +2507,22 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private struct FiveSliceResumableOperation:
+        PersistentJobTestOperation,
         DatabaseUnsuccessfulOutcomeIndependentOperation {
-        typealias Job = FiveSliceJob
+        typealias TestDescriptor = FiveSliceJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
 
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
+
         func compile(
-            _ request: JobStepValue,
+            _ request: CommandRequest,
             context: DatabaseResumableOperationStartContext
         ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(in: request)
             guard request == JobStepValue(5) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2558,7 +2539,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(5), maximumWorkUnits == 1 else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2572,7 +2553,7 @@ struct DatabasePersistentJobServiceTests {
                 return .complete(
                     completedWorkUnits: 1,
                     totalWorkUnits: 5,
-                    result: JobStepValue(0x55)
+                    result: DatabasePersistentJobServiceTests.commandResponse(step: 0x55)
                 )
             }
             return .incomplete(
@@ -2584,16 +2565,24 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private struct LargeResultResumableOperation:
+        PersistentJobTestOperation,
         DatabaseUnsuccessfulOutcomeIndependentOperation {
-        typealias Job = LargeResultJob
+        typealias TestDescriptor = LargeResultJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
-        let payload: DatabaseBytes
+
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
+
+        let payload: ByteString
 
         func compile(
-            _ request: JobStepValue,
+            _ request: CommandRequest,
             context: DatabaseResumableOperationStartContext
         ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(in: request)
             guard request == JobStepValue(7) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2610,7 +2599,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(7),
                   state == JobStepValue(0),
                   maximumWorkUnits == 1 else {
@@ -2620,23 +2609,31 @@ struct DatabasePersistentJobServiceTests {
             return .complete(
                 completedWorkUnits: 1,
                 totalWorkUnits: 1,
-                result: JobPayload(payload)
+                result: DatabasePersistentJobServiceTests.commandResponse(bytes: payload)
             )
         }
     }
 
-    private struct RetryingUnsuccessfulOutcomeOperation: DatabaseResumableOperation {
+    private struct RetryingUnsuccessfulOutcomeOperation:
+        PersistentJobTestOperation {
         static let markerID = "job-unsuccessful-outcome-marker"
 
-        typealias Job = RetryingUnsuccessfulOutcomeJob
+        typealias TestDescriptor = RetryingUnsuccessfulOutcomeJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
+
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
+
         let commitProbe: UnsuccessfulOutcomeCommitProbe
 
         func compile(
-            _ request: JobStepValue,
+            _ request: CommandRequest,
             context: DatabaseResumableOperationStartContext
         ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(in: request)
             guard request == JobStepValue(8) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2653,7 +2650,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(8),
                   state == JobStepValue(0),
                   maximumWorkUnits == 1 else {
@@ -2688,17 +2685,24 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private struct OversizedPlanResumableOperation:
+        PersistentJobTestOperation,
         DatabaseUnsuccessfulOutcomeIndependentOperation {
         static let markerID = "job-oversized-plan-marker"
 
-        typealias Job = OversizedPlanJob
+        typealias TestDescriptor = OversizedPlanJob
         typealias Plan = JobPayload
         typealias State = JobStepValue
 
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
+
         func compile(
-            _ request: JobStepValue,
+            _ request: CommandRequest,
             context: DatabaseResumableOperationStartContext
         ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(in: request)
             guard request == JobStepValue(9) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2709,7 +2713,7 @@ struct DatabasePersistentJobServiceTests {
             )
             return DatabasePreparedResumableJob(
                 plan: JobPayload(
-                    DatabaseBytes(
+                    ByteString(
                         [UInt8](
                             repeating: 0x09,
                             count: 256 * 1_024
@@ -2726,7 +2730,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             _ = plan
             _ = state
             _ = maximumWorkUnits
@@ -2736,17 +2740,24 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private struct OversizedStateResumableOperation:
+        PersistentJobTestOperation,
         DatabaseUnsuccessfulOutcomeIndependentOperation {
         static let markerID = "job-oversized-state-marker"
 
-        typealias Job = OversizedStateJob
+        typealias TestDescriptor = OversizedStateJob
         typealias Plan = JobStepValue
         typealias State = JobPayload
 
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
+
         func compile(
-            _ request: JobStepValue,
+            _ request: CommandRequest,
             context: DatabaseResumableOperationStartContext
         ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(in: request)
             guard request == JobStepValue(10) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2763,7 +2774,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobPayload,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(10),
                   state.value.isEmpty,
                   maximumWorkUnits == 1 else {
@@ -2778,7 +2789,7 @@ struct DatabasePersistentJobServiceTests {
                 completedWorkUnits: 1,
                 totalWorkUnits: 2,
                 state: JobPayload(
-                    DatabaseBytes(
+                    ByteString(
                         [UInt8](
                             repeating: 0x0a,
                             count: 64 * 1_024
@@ -2790,17 +2801,24 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private struct OversizedResultResumableOperation:
+        PersistentJobTestOperation,
         DatabaseUnsuccessfulOutcomeIndependentOperation {
         static let markerID = "job-oversized-result-marker"
 
-        typealias Job = OversizedResultJob
+        typealias TestDescriptor = OversizedResultJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
 
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
+
         func compile(
-            _ request: JobStepValue,
+            _ request: CommandRequest,
             context: DatabaseResumableOperationStartContext
         ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(in: request)
             guard request == JobStepValue(11) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2817,7 +2835,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(11),
                   state == JobStepValue(0),
                   maximumWorkUnits == 1 else {
@@ -2831,8 +2849,8 @@ struct DatabasePersistentJobServiceTests {
             return .complete(
                 completedWorkUnits: 1,
                 totalWorkUnits: 1,
-                result: JobPayload(
-                    DatabaseBytes(
+                result: DatabasePersistentJobServiceTests.commandResponse(
+                    bytes: ByteString(
                         [UInt8](
                             repeating: 0x0b,
                             count: 4 * 1_024 * 1_024
@@ -2844,17 +2862,24 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private struct AlwaysFailingResumableOperation:
+        PersistentJobTestOperation,
         DatabaseUnsuccessfulOutcomeIndependentOperation {
-        typealias Job = AlwaysFailingJob
+        typealias TestDescriptor = AlwaysFailingJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
 
-        let failure: DatabaseRemoteError
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
+
+        let failure: RemoteOperationError
 
         func compile(
-            _ request: JobStepValue,
+            _ request: CommandRequest,
             context: DatabaseResumableOperationStartContext
         ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(in: request)
             guard request == JobStepValue(12) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2871,7 +2896,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(12),
                   state == JobStepValue(0),
                   maximumWorkUnits == 1 else {
@@ -2883,18 +2908,25 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private final class RetryingResumableOperation:
+        PersistentJobTestOperation,
         DatabaseUnsuccessfulOutcomeIndependentOperation,
         Sendable {
-        typealias Job = RetryingJob
+        typealias TestDescriptor = RetryingJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
+
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
 
         private let shouldFailSecondSlice = Mutex(true)
 
         func compile(
-            _ request: JobStepValue,
+            _ request: CommandRequest,
             context: DatabaseResumableOperationStartContext
         ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(in: request)
             guard request == JobStepValue(3) else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2911,7 +2943,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(3), maximumWorkUnits == 1 else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2930,7 +2962,7 @@ struct DatabasePersistentJobServiceTests {
                     return true
                 }
                 if shouldFail {
-                    throw DatabaseRemoteError(
+                    throw RemoteOperationError(
                         category: .resourceLimit,
                         code: "INJECTED_RETRYABLE_FAILURE",
                         message: "Injected retryable slice failure",
@@ -2946,7 +2978,7 @@ struct DatabasePersistentJobServiceTests {
                 return .complete(
                     completedWorkUnits: 1,
                     totalWorkUnits: 3,
-                    result: JobStepValue(0x33)
+                    result: DatabasePersistentJobServiceTests.commandResponse(step: 0x33)
                 )
             default:
                 throw PersistentJobScenarioError.invalidContinuation
@@ -2955,23 +2987,23 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private final class FixedDatabaseWallClock: DatabaseWallClock, Sendable {
-        private let timestamp: Mutex<DatabaseTimestamp>
+        private let timestamp: Mutex<Timestamp>
 
-        init(initial: DatabaseTimestamp) {
+        init(initial: Timestamp) {
             self.timestamp = Mutex(initial)
         }
 
-        func now() -> DatabaseTimestamp {
+        func now() -> Timestamp {
             timestamp.withLock { $0 }
         }
 
-        func advance(milliseconds: UInt32) {
-            timestamp.withLock { timestamp in
+        func advance(milliseconds: UInt32) throws {
+            try timestamp.withLock { timestamp in
                 let addedNanoseconds = UInt64(milliseconds % 1_000)
                     * 1_000_000
                 let nanoseconds = UInt64(timestamp.nanoseconds)
                     + addedNanoseconds
-                timestamp = DatabaseTimestamp(
+                timestamp = try Timestamp(
                     secondsSinceUnixEpoch:
                         timestamp.secondsSinceUnixEpoch
                         + Int64(milliseconds / 1_000)
@@ -3015,10 +3047,10 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private actor RecordingDatabaseJobScheduler: DatabaseJobScheduler {
-        private var timestamps: [DatabaseTimestamp] = []
+        private var timestamps: [Timestamp] = []
 
         func ensureWakeUp(
-            noLaterThan timestamp: DatabaseTimestamp
+            noLaterThan timestamp: Timestamp
         ) async throws {
             timestamps.append(timestamp)
         }
@@ -3027,7 +3059,7 @@ struct DatabasePersistentJobServiceTests {
             timestamps.count
         }
 
-        func requestedTimestamps() -> [DatabaseTimestamp] {
+        func requestedTimestamps() -> [Timestamp] {
             timestamps
         }
     }
@@ -3036,7 +3068,7 @@ struct DatabasePersistentJobServiceTests {
         private var attempts = 0
 
         func ensureWakeUp(
-            noLaterThan timestamp: DatabaseTimestamp
+            noLaterThan timestamp: Timestamp
         ) async throws {
             _ = timestamp
             attempts += 1
@@ -3053,10 +3085,10 @@ struct DatabasePersistentJobServiceTests {
     private final class SequentialDatabaseUUIDGenerator: DatabaseUUIDGenerator, Sendable {
         private let nextValue = Mutex<UInt64>(1)
 
-        func generate() -> DatabaseUUID {
+        func generate() -> DatabaseTypes.UUID {
             nextValue.withLock { value in
                 defer { value += 1 }
-                return DatabaseUUID(high: 0, low: value)
+                return DatabaseTypes.UUID(high: 0, low: value)
             }
         }
     }

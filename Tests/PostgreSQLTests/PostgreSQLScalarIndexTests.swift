@@ -7,7 +7,7 @@ import Foundation
 import StorageKit
 import PostgreSQLStorage
 @testable import DatabaseEngine
-@testable import Core
+@testable import DatabaseKit
 @testable import ScalarIndex
 import TestSupport
 
@@ -16,21 +16,30 @@ import TestSupport
 @Persistable
 struct PGUser: Equatable {
     #Directory<PGUser>("test", "pg", "users")
-    #Index(ScalarIndexKind<PGUser>(fields: [\.email]), unique: true, name: "PGUser_email")
-    #Index(ScalarIndexKind<PGUser>(fields: [\.age]), name: "PGUser_age")
+    #Index(
+        .scalar,
+        fields: [\PGUser.email],
+        unique: true,
+        name: "PGUser_email"
+    )
+    #Index(.scalar, fields: [\PGUser.age], name: "PGUser_age")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var email: String = ""
     var name: String = ""
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 @Persistable
 struct PGProduct: Equatable {
     #Directory<PGProduct>("test", "pg", "products")
-    #Index(ScalarIndexKind<PGProduct>(fields: [\.category, \.price]), name: "PGProduct_category_price")
+    #Index(
+        .scalar,
+        fields: [\PGProduct.category, \PGProduct.price],
+        name: "PGProduct_category_price"
+    )
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var category: String = ""
     var price: Double = 0.0
     var name: String = ""
@@ -44,12 +53,12 @@ struct PostgreSQLScalarIndexTests {
     }
 
     private func setupUserContainer() async throws -> DBContainer {
-        let schema = Schema([PGUser.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try PGUser.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGUser.self])
     }
 
     private func setupProductContainer() async throws -> DBContainer {
-        let schema = Schema([PGProduct.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try PGProduct.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGProduct.self])
     }
 

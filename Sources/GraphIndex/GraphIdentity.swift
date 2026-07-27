@@ -1,5 +1,5 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 
 /// Canonical identity used by graph scanners and algorithms.
@@ -17,8 +17,8 @@ public struct GraphIdentity: Sendable, Hashable, Comparable {
     private enum Storage: Sendable {
         case propertyGraph(String)
         case rdf(
-            DatabaseBytes,
-            fingerprint: DatabaseRDFTermEncodingFingerprint
+            ByteString,
+            fingerprint: RDFTermStorageFingerprint
         )
     }
 
@@ -33,10 +33,10 @@ public struct GraphIdentity: Sendable, Hashable, Comparable {
     }
 
     public static func rdf(
-        _ term: DatabaseRDFTerm
-    ) throws(DatabaseRDFTermCodecError) -> GraphIdentity {
-        let encoded = try DatabaseRDFTermCodec.encode(term)
-        return try DatabaseRDFTermCodec.withValidatedBytes(encoded) {
+        _ term: RDFTerm
+    ) throws(RDFTermStorageError) -> GraphIdentity {
+        let encoded = try RDFTermStorageFormat.encode(term)
+        return try RDFTermStorageFormat.withValidatedBytes(encoded) {
             _, validation in
             GraphIdentity(storage: .rdf(
                 encoded,
@@ -46,8 +46,8 @@ public struct GraphIdentity: Sendable, Hashable, Comparable {
     }
 
     package static func retainingValidatedRDFBytes(
-        _ encoded: DatabaseBytes,
-        fingerprint: DatabaseRDFTermEncodingFingerprint
+        _ encoded: ByteString,
+        fingerprint: RDFTermStorageFingerprint
     ) -> GraphIdentity {
         GraphIdentity(storage: .rdf(
             encoded,
@@ -70,9 +70,9 @@ public struct GraphIdentity: Sendable, Hashable, Comparable {
     }
 
     public func decodeRDFTerm(
-    ) throws(DatabaseRDFTermCodecError) -> DatabaseRDFTerm? {
+    ) throws(RDFTermStorageError) -> RDFTerm? {
         guard case .rdf(let encoded, _) = storage else { return nil }
-        return try DatabaseRDFTermCodec.decode(encoded)
+        return try RDFTermStorageFormat.decode(encoded)
     }
 
     package var tupleElement: any TupleElement {
@@ -84,7 +84,7 @@ public struct GraphIdentity: Sendable, Hashable, Comparable {
         }
     }
 
-    package var canonicalRDFBytes: DatabaseBytes? {
+    package var canonicalRDFBytes: ByteString? {
         guard case .rdf(let encoded, _) = storage else { return nil }
         return encoded
     }

@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 
 /// One concrete path connection in the active RDF graph.
 ///
@@ -7,12 +7,12 @@ import DatabaseValue
 /// are constructed once, after the complete path expression has been
 /// evaluated.
 struct SPARQLPropertyPathMatch: Sendable, Hashable {
-    let start: DatabaseRDFTerm
-    let end: DatabaseRDFTerm
+    let start: RDFTerm
+    let end: RDFTerm
 
     init(
-        start: DatabaseRDFTerm,
-        end: DatabaseRDFTerm
+        start: RDFTerm,
+        end: RDFTerm
     ) {
         self.start = start
         self.end = end

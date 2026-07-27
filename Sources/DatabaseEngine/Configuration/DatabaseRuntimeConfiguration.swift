@@ -126,6 +126,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 source: source,
                 indexName: descriptor.name,
                 kindIdentifier: descriptor.kindIdentifier,
+                requiresUniqueness: descriptor.isUnique,
                 requirements: requirements
             )
         }
@@ -149,6 +150,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 source: source,
                 indexName: descriptor.name,
                 kindIdentifier: descriptor.kindIdentifier,
+                requiresUniqueness: descriptor.unique,
                 requirements: requirements
             )
         }
@@ -172,6 +174,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 source: source,
                 indexName: descriptor.name,
                 kindIdentifier: descriptor.kindIdentifier,
+                requiresUniqueness: descriptor.commonOptions.unique,
                 requirements: requirements
             )
         }
@@ -181,12 +184,23 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         source: DatabaseRuntimeIndexRequirementSource,
         indexName: String,
         kindIdentifier: String,
+        requiresUniqueness: Bool,
         requirements: IndexRuntimeRequirements
     ) throws(DatabaseRuntimeConfigurationError) {
         guard indexMaintainerProviders.contains(
             kindIdentifier: kindIdentifier
         ) else {
             throw .missingIndexMaintainerProvider(
+                source: source,
+                indexName: indexName,
+                kindIdentifier: kindIdentifier
+            )
+        }
+        if requiresUniqueness,
+           indexMaintainerProviders.supportsUniquenessConstraints(
+               for: kindIdentifier
+           ) != true {
+            throw .missingIndexUniquenessSupport(
                 source: source,
                 indexName: indexName,
                 kindIdentifier: kindIdentifier

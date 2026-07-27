@@ -1,8 +1,8 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import GraphIndex
-import QueryIR
+import DatabaseKit
 import StorageKit
 import Testing
 
@@ -28,7 +28,7 @@ struct SPARQLValuesExecutionTests {
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget()
+                budget: ExecutionBudget()
             )
         )
 
@@ -58,7 +58,7 @@ struct SPARQLValuesExecutionTests {
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget()
+                budget: ExecutionBudget()
             )
         )
 
@@ -83,7 +83,7 @@ struct SPARQLValuesExecutionTests {
             database: InMemoryEngine(),
             sources: []
         )
-        let meter = DatabaseWorkMeter(budget: DatabaseExecutionBudget())
+        let meter = DatabaseWorkMeter(budget: ExecutionBudget())
 
         let (present, _) = try await executor.execute(
             pattern: .filter(
@@ -102,7 +102,7 @@ struct SPARQLValuesExecutionTests {
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget()
+                budget: ExecutionBudget()
             )
         )
 
@@ -127,7 +127,7 @@ struct SPARQLValuesExecutionTests {
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget()
+                budget: ExecutionBudget()
             )
         )
 
@@ -152,7 +152,7 @@ struct SPARQLValuesExecutionTests {
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget()
+                budget: ExecutionBudget()
             )
         )
 
@@ -179,7 +179,7 @@ struct SPARQLValuesExecutionTests {
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget()
+                budget: ExecutionBudget()
             )
         )
 
@@ -190,7 +190,7 @@ struct SPARQLValuesExecutionTests {
     @Test("A large VALUES table compiles and executes without recursive UNION")
     func largeValuesTableIsLinear() async throws {
         let rowCount = 10_000
-        var rows: [[QueryIR.Literal?]] = []
+        var rows: [[Literal?]] = []
         rows.reserveCapacity(rowCount)
         for value in 0..<rowCount {
             rows.append([.int(Int64(value))])
@@ -213,7 +213,7 @@ struct SPARQLValuesExecutionTests {
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget(
+                budget: ExecutionBudget(
                     maximumRows: UInt32(rowCount),
                     maximumWorkUnits: 100_000,
                     timeoutMilliseconds: 30_000

@@ -1,7 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import Relationship
+import DatabaseTypes
 
 /// Resolves typed relationship fields to complete entity identities.
 public struct RelationshipReferenceResolver: Sendable {
@@ -14,14 +13,14 @@ public struct RelationshipReferenceResolver: Sendable {
     public func references(
         from model: any Persistable,
         descriptor: RelationshipDescriptor
-    ) throws -> Set<PersistableIdentity> {
+    ) throws -> Set<EntityReference> {
         Set(try orderedReferences(from: model, descriptor: descriptor))
     }
 
     public func orderedReferences(
         from model: any Persistable,
         descriptor: RelationshipDescriptor
-    ) throws -> [PersistableIdentity] {
+    ) throws -> [EntityReference] {
         let ownerType = type(of: model)
         guard descriptor.ownerTypeName == ownerType.persistableType else {
             throw RelationshipReferenceError.descriptorMismatch(
@@ -49,7 +48,7 @@ public struct RelationshipReferenceResolver: Sendable {
             )
         }
 
-        let values: [DatabaseValue]
+        let values: [FieldValue]
         switch descriptor.cardinality {
         case .requiredToOne:
             guard relationshipField.value != .null else {
@@ -79,9 +78,9 @@ public struct RelationshipReferenceResolver: Sendable {
     }
 
     package func identity(
-        from value: DatabaseValue,
+        from value: FieldValue,
         descriptor: RelationshipDescriptor
-    ) throws -> PersistableIdentity {
+    ) throws -> EntityReference {
         guard case .reference(let identity) = value else {
             throw RelationshipReferenceError.invalidRelationshipValue(
                 entity: descriptor.ownerTypeName,
@@ -98,19 +97,14 @@ public struct RelationshipReferenceResolver: Sendable {
         return identity
     }
 
-    private func validatePartition(_ identity: PersistableIdentity) throws {
+    private func validatePartition(_ identity: EntityReference) throws {
         guard let entity = schema.entity(named: identity.entity) else {
             throw RelationshipReferenceError.unknownRelatedEntity(identity.entity)
         }
-        guard let targetType = entity.persistableType else {
-            throw RelationshipReferenceError.relatedEntityHasNoCompiledType(
-                identity.entity
-            )
-        }
         do {
-            try PersistableIdentifierValidator.validate(
+            try PersistableIdentifierKeyCodec.validate(
                 identity.id,
-                as: targetType.persistableIdentifierType
+                expectedType: entity.identifierType
             )
         } catch let error {
             throw RelationshipReferenceError.invalidTargetIdentifier(
@@ -119,9 +113,9 @@ public struct RelationshipReferenceResolver: Sendable {
             )
         }
         do {
-            _ = try CanonicalPartitionBinding.makeAnyBinding(
-                for: targetType,
-                partitions: identity.partitions
+            try CanonicalPartitionBinding.validate(
+                identity.partitions,
+                for: entity
             )
         } catch {
             throw RelationshipReferenceError.invalidTargetPartition(

@@ -12,13 +12,25 @@ import Database
 @Persistable
 struct User {
     #Directory<User>("app", "users")
-    #Index(ScalarIndexKind<User>(fields: [\.email]), unique: true)
+    #Index(
+        .scalar,
+        fields: [\User.email],
+        unique: true,
+        name: "User_email"
+    )
 
+    var id: String = ""
     var email: String
     var name: String
 }
 
-let schema = Schema([User.self])
+let schema = try Schema(
+    entities: [try User.schemaEntity],
+    version: .init(1, 0, 0)
+)
+let runtime = try DatabaseFrameworkRuntime.configuration(
+    persistableTypes: [User.self]
+)
 ~~~
 
 database-kit owns model metadata and index declarations. The framework
@@ -32,11 +44,12 @@ Use a backend-specific configuration:
 import Database
 import SQLiteStorage
 
-let container = try await DBContainer(
+let container = try await DBContainer.open(
     for: schema,
     configuration: SQLiteStorageEngine.Configuration.file(
         "/var/lib/app/application.sqlite"
-    )
+    ),
+    runtimeConfiguration: runtime
 )
 ~~~
 
@@ -52,16 +65,20 @@ let postgres = PostgreSQLConfiguration(
     database: "app"
 )
 
-let container = try await DBContainer(
+let container = try await DBContainer.open(
     for: schema,
-    configuration: postgres
+    configuration: postgres,
+    runtimeConfiguration: runtime
 )
 ~~~
 
 FoundationDB uses the default trait:
 
 ~~~swift
-let container = try await DBContainer(for: schema)
+let container = try await DBContainer.open(
+    for: schema,
+    runtimeConfiguration: runtime
+)
 ~~~
 
 See [Backend Guide](backends.md) for trait selection and deployment
@@ -75,20 +92,20 @@ transaction:
 ~~~swift
 let context = container.newContext()
 
-context.insert(User(email: "alice@example.com", name: "Alice"))
-context.insert(User(email: "bob@example.com", name: "Bob"))
+try context.insert(User(id: "alice", email: "alice@example.com", name: "Alice"))
+try context.insert(User(id: "bob", email: "bob@example.com", name: "Bob"))
 
 try await context.save()
 ~~~
 
-DBContainer owns the storage engine and schema. FDBContext is the historical
-public type name for the backend-neutral user context.
+DBContainer owns the storage engine, schema, and runtime configuration.
+DatabaseContext is the backend-neutral user-facing unit of work.
 
 ## 4. Queries
 
 ~~~swift
 let users = try await context.fetch(User.self)
-    .where(\.name == "Alice")
+    .where(User.fields.name == "Alice")
     .execute()
 ~~~
 
@@ -99,18 +116,19 @@ Use partition binding for a dynamic directory:
 struct TenantOrder {
     #Directory<TenantOrder>(
         "tenants",
-        Field(\.tenantID),
+        \TenantOrder.tenantID,
         "orders",
         layer: .partition
     )
 
+    var id: String = ""
     var tenantID: String
     var status: String
 }
 
 let orders = try await context.fetch(TenantOrder.self)
-    .partition(\.tenantID, equals: "tenant-1")
-    .where(\.status == "open")
+    .partition(TenantOrder.fields.tenantID, equals: "tenant-1")
+    .where(TenantOrder.fields.status == "open")
     .execute()
 ~~~
 
@@ -141,13 +159,15 @@ Declare indexes with the model:
 @Persistable
 struct Document {
     #Directory<Document>("app", "documents")
-    #Index(VectorIndexKind<Document>(
-        embedding: \.embedding,
-        dimensions: 1536
-    ))
+    #Index(
+        .vector(dimensions: 1536),
+        embedding: \Document.embedding,
+        name: "Document_embedding"
+    )
 
+    var id: String = ""
     var title: String
-    var embedding: [Float]
+    var embedding: Vector
 }
 ~~~
 

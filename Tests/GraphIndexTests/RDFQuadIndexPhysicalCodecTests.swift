@@ -1,5 +1,5 @@
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 import Testing
 @testable import DatabaseEngine
@@ -11,7 +11,7 @@ struct RDFQuadIndexPhysicalCodecTests {
     func allOrderingsMatchReferenceBytes() throws {
         let base = Subspace(prefix: Tuple("rdf-physical-codec").pack())
         let codec = RDFQuadIndexPhysicalCodec(baseSubspace: base)
-        let quad = namedQuad()
+        let quad = try namedQuad()
         let writePlan = try RDFQuadIndexWritePlan(quad: quad)
         var visited: [GraphIndexOrdering] = []
 
@@ -37,7 +37,7 @@ struct RDFQuadIndexPhysicalCodecTests {
     func defaultGraphRoundTrips() throws {
         let base = Subspace(prefix: Tuple("rdf-default-graph-codec").pack())
         let codec = RDFQuadIndexPhysicalCodec(baseSubspace: base)
-        let quad = defaultQuad()
+        let quad = try defaultQuad()
 
         try RDFQuadIndexWritePlan(quad: quad).forEachEntry { entry in
             let key = try codec.encode(entry)
@@ -52,7 +52,7 @@ struct RDFQuadIndexPhysicalCodecTests {
     func directRangesMatchReference() throws {
         let base = Subspace(prefix: Tuple("rdf-range-codec").pack())
         let codec = RDFQuadIndexPhysicalCodec(baseSubspace: base)
-        let quad = namedQuad()
+        let quad = try namedQuad()
 
         for ordering in canonicalOrderings {
             let components = try referenceComponents(
@@ -85,13 +85,22 @@ struct RDFQuadIndexPhysicalCodecTests {
     func malformedKeysAreTyped() throws {
         let base = Subspace(prefix: Tuple("rdf-malformed-codec").pack())
         let codec = RDFQuadIndexPhysicalCodec(baseSubspace: base)
-        let subject = try encoded(.iri("https://example.com/subject"), role: .subject)
-        let predicate = try encoded(.iri("https://example.com/predicate"), role: .predicate)
-        let object = try encoded(.literal(DatabaseRDFLiteral(
+        let subject = try encoded(
+            .iri(validating: "https://example.com/subject"),
+            role: .subject
+        )
+        let predicate = try encoded(
+            .iri(validating: "https://example.com/predicate"),
+            role: .predicate
+        )
+        let object = try encoded(.literal(RDFLiteral(
             lexicalForm: "value",
             datatype: .xsdString
         )), role: .object)
-        let graph = try encoded(.iri("https://example.com/graph"), role: .graphName)
+        let graph = try encoded(
+            .iri(validating: "https://example.com/graph"),
+            role: .graphName
+        )
         let spo = base.subspace(Int64(2))
 
         let truncated = spo.pack(Tuple(subject, predicate, object))
@@ -110,7 +119,7 @@ struct RDFQuadIndexPhysicalCodecTests {
         }
 
         let literalPredicate = try encoded(
-            .literal(DatabaseRDFLiteral(
+            .literal(RDFLiteral(
                 lexicalForm: "not-an-iri",
                 datatype: .xsdString
             )),
@@ -139,7 +148,7 @@ struct RDFQuadIndexPhysicalCodecTests {
         do {
             _ = try codec.decodeQuad(key: trailing, ordering: .spo)
             Issue.record("Expected trailing tuple data to fail")
-        } catch let error {
+        } catch let error as RDFQuadIndexPhysicalCodecError {
             guard case .unexpectedTrailingTupleData = error else {
                 Issue.record("Unexpected error: \(error)")
                 return
@@ -159,8 +168,8 @@ struct RDFQuadIndexPhysicalCodecTests {
         let base = Subspace(prefix: Tuple("rdf-scanner-e2e").pack())
         let codec = RDFQuadIndexPhysicalCodec(baseSubspace: base)
         let engine = InMemoryEngine()
-        let defaultQuad = defaultQuad()
-        let namedQuad = namedQuad()
+        let defaultQuad = try defaultQuad()
+        let namedQuad = try namedQuad()
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             for quad in [defaultQuad, namedQuad] {
@@ -177,12 +186,12 @@ struct RDFQuadIndexPhysicalCodecTests {
             coverage: .dataset
         )
         let scanner = IndexedRDFDatasetScanner(sources: [source])
-        let namedGraph = try RDFGraphName(#require(namedQuad.graph))
+        let namedGraph = try #require(namedQuad.graph)
 
         try await expectScan(
             scanner,
             engine: engine,
-            subject: defaultQuad.subject,
+            subject: defaultQuad.subject.term,
             predicate: nil,
             object: nil,
             graphScope: .defaultGraph,
@@ -192,7 +201,7 @@ struct RDFQuadIndexPhysicalCodecTests {
             scanner,
             engine: engine,
             subject: nil,
-            predicate: defaultQuad.predicate,
+            predicate: defaultQuad.predicate.term,
             object: nil,
             graphScope: .defaultGraph,
             expected: defaultQuad
@@ -209,7 +218,7 @@ struct RDFQuadIndexPhysicalCodecTests {
         try await expectScan(
             scanner,
             engine: engine,
-            subject: namedQuad.subject,
+            subject: namedQuad.subject.term,
             predicate: nil,
             object: nil,
             graphScope: .named(namedGraph),
@@ -219,7 +228,7 @@ struct RDFQuadIndexPhysicalCodecTests {
             scanner,
             engine: engine,
             subject: nil,
-            predicate: namedQuad.predicate,
+            predicate: namedQuad.predicate.term,
             object: nil,
             graphScope: .named(namedGraph),
             expected: namedQuad
@@ -239,11 +248,17 @@ struct RDFQuadIndexPhysicalCodecTests {
         [.spo, .pos, .osp, .gspo, .gpos, .gosp]
     }
 
-    private func defaultQuad() -> RDFQuad {
+    private func defaultQuad() throws -> RDFQuad {
         RDFQuad(
-            subject: .iri("https://example.com/default-subject"),
-            predicate: .iri("https://example.com/default-predicate"),
-            object: .literal(DatabaseRDFLiteral(
+            subject: .iri(
+                try RDFIRI(
+                    "https://example.com/default-subject"
+                )
+            ),
+            predicate: try RDFPredicateIRI(
+                "https://example.com/default-predicate"
+            ),
+            object: .literal(RDFLiteral(
                 lexicalForm: "default-value",
                 datatype: .xsdString
             )),
@@ -251,19 +266,31 @@ struct RDFQuadIndexPhysicalCodecTests {
         )
     }
 
-    private func namedQuad() -> RDFQuad {
+    private func namedQuad() throws -> RDFQuad {
         RDFQuad(
-            subject: .blankNode("named-subject"),
-            predicate: .iri("https://example.com/named-predicate"),
+            subject: .blankNode(
+                try RDFBlankNodeIdentifier("named-subject")
+            ),
+            predicate: try RDFPredicateIRI(
+                "https://example.com/named-predicate"
+            ),
             object: .tripleTerm(
-                subject: .iri("https://example.com/quoted-subject"),
-                predicate: .iri("https://example.com/quoted-predicate"),
-                object: .literal(DatabaseRDFLiteral(
+                subject: .iri(
+                    try RDFIRI(
+                        "https://example.com/quoted-subject"
+                    )
+                ),
+                predicate: try RDFPredicateIRI(
+                    "https://example.com/quoted-predicate"
+                ),
+                object: .literal(RDFLiteral(
                     lexicalForm: "quoted-value",
                     datatype: .xsdString
                 ))
             ),
-            graph: .iri("https://example.com/named-graph")
+            graph: try RDFGraphName(
+                iri: "https://example.com/named-graph"
+            )
         )
     }
 
@@ -272,11 +299,11 @@ struct RDFQuadIndexPhysicalCodecTests {
         ordering: GraphIndexOrdering
     ) throws -> [RDFQuadIndexComponentWritePlan] {
         let subject = try RDFQuadIndexComponentWritePlan(
-            term: quad.subject,
+            term: quad.subject.term,
             role: .subject
         )
         let predicate = try RDFQuadIndexComponentWritePlan(
-            term: quad.predicate,
+            term: quad.predicate.term,
             role: .predicate
         )
         let object = try RDFQuadIndexComponentWritePlan(
@@ -286,7 +313,7 @@ struct RDFQuadIndexPhysicalCodecTests {
         let graph: RDFQuadIndexComponentWritePlan
         if let value = quad.graph {
             graph = try RDFQuadIndexComponentWritePlan(
-                term: value,
+                term: value.term,
                 role: .graphName
             )
         } else {
@@ -319,12 +346,18 @@ struct RDFQuadIndexPhysicalCodecTests {
         for quad: RDFQuad,
         ordering: GraphIndexOrdering
     ) throws -> [Bytes] {
-        let subject = try encoded(quad.subject, role: .subject)
-        let predicate = try encoded(quad.predicate, role: .predicate)
+        let subject = try encoded(
+            quad.subject.term,
+            role: .subject
+        )
+        let predicate = try encoded(
+            quad.predicate.term,
+            role: .predicate
+        )
         let object = try encoded(quad.object, role: .object)
         let graph: Bytes
         if let value = quad.graph {
-            graph = try encoded(value, role: .graphName)
+            graph = try encoded(value.term, role: .graphName)
         } else {
             graph = Bytes(
                 retaining: RDFQuadIndexPhysicalLayout.defaultGraphDiscriminator
@@ -374,10 +407,10 @@ struct RDFQuadIndexPhysicalCodecTests {
     }
 
     private func encoded(
-        _ term: DatabaseRDFTerm,
-        role: DatabaseRDFTermRole
+        _ term: RDFTerm,
+        role: RDFTermRole
     ) throws -> Bytes {
-        Bytes(retaining: try DatabaseRDFTermCodec.encode(
+        Bytes(retaining: try RDFTermStorageFormat.encode(
             term,
             role: role
         ))
@@ -386,9 +419,9 @@ struct RDFQuadIndexPhysicalCodecTests {
     private func expectScan(
         _ scanner: IndexedRDFDatasetScanner,
         engine: InMemoryEngine,
-        subject: DatabaseRDFTerm?,
-        predicate: DatabaseRDFTerm?,
-        object: DatabaseRDFTerm?,
+        subject: RDFTerm?,
+        predicate: RDFTerm?,
+        object: RDFTerm?,
         graphScope: RDFGraphScanScope,
         expected: RDFQuad
     ) async throws {

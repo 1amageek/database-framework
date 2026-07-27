@@ -22,7 +22,7 @@ struct DatabaseCLI: AsyncParsableCommand {
         ]
     )
 
-    /// 引数なし → REPLモード
+    /// No arguments starts interactive REPL mode.
     mutating func run() async throws {
         let (database, _) = try await ClusterConnection.openDatabase()
         let repl = try await DatabaseREPL(database: database)

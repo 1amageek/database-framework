@@ -10,9 +10,9 @@
 // For better build performance, consider importing individual modules instead.
 
 // database-kit (client-safe model definitions)
-@_exported import Core
-@_exported import Graph
-@_exported import Relationship
+@_exported import DatabaseKit
+@_exported import DatabaseKit
+@_exported import DatabaseKit
 
 // storage-kit (storage engine abstraction)
 @_exported import StorageKit
@@ -41,5 +41,5 @@
 @_exported import LeaderboardIndex
 @_exported import RelationshipIndex
 @_exported import OntologyIndex
-@_exported import QueryIR
+@_exported import DatabaseKit
 @_exported import QueryAST

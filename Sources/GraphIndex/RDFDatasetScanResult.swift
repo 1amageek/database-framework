@@ -1,6 +1,30 @@
 import DatabaseEngine
-import DatabaseValue
-import Graph
+import DatabaseTypes
+import DatabaseKit
+import StorageKit
+
+package struct RDFDatasetScanStorageRow: Sendable, Hashable {
+    package let quad: RDFQuad
+    package let coveringValue: Bytes
+    package let storedFieldNames: [String]
+
+    package init(
+        quad: RDFQuad,
+        coveringValue: Bytes = Bytes(),
+        storedFieldNames: [String] = []
+    ) {
+        self.quad = quad
+        self.coveringValue = coveringValue
+        self.storedFieldNames = storedFieldNames
+    }
+
+    package func decodeProperties() throws -> [String: FieldValue] {
+        try CoveringValueBuilder.decode(
+            coveringValue,
+            storedFieldNames: storedFieldNames
+        )
+    }
+}
 
 /// Canonical quads returned by one logical dataset scan.
 ///
@@ -23,10 +47,11 @@ public struct RDFDatasetScanResult: Sendable, RandomAccessCollection {
         quads: consuming [RDFQuad],
         physicalScanCount: Int
     ) {
-        self.owner = quads.isEmpty
+        let rows = quads.map { RDFDatasetScanStorageRow(quad: $0) }
+        self.owner = rows.isEmpty
             ? Self.emptyOwner
             : RDFDatasetScanOwner(
-                storage: quads,
+                storage: rows,
                 intermediateReservation: nil
             )
         self.physicalScanCount = physicalScanCount
@@ -50,8 +75,9 @@ public struct RDFDatasetScanResult: Sendable, RandomAccessCollection {
         physicalScanCount: Int,
         intermediateReservation: DatabaseIntermediateReservation
     ) {
+        let rows = quads.map { RDFDatasetScanStorageRow(quad: $0) }
         self.owner = RDFDatasetScanOwner(
-            storage: quads,
+            storage: rows,
             intermediateReservation: intermediateReservation
         )
         self.physicalScanCount = physicalScanCount
@@ -62,11 +88,28 @@ public struct RDFDatasetScanResult: Sendable, RandomAccessCollection {
         physicalScanCount: Int,
         intermediateReservation: DatabaseIntermediateReservation?
     ) {
-        if quads.isEmpty, intermediateReservation == nil {
+        let rows = quads.map { RDFDatasetScanStorageRow(quad: $0) }
+        if rows.isEmpty, intermediateReservation == nil {
             self.owner = Self.emptyOwner
         } else {
             self.owner = RDFDatasetScanOwner(
-                storage: quads,
+                storage: rows,
+                intermediateReservation: intermediateReservation
+            )
+        }
+        self.physicalScanCount = physicalScanCount
+    }
+
+    package init(
+        rows: consuming [RDFDatasetScanStorageRow],
+        physicalScanCount: Int,
+        intermediateReservation: DatabaseIntermediateReservation?
+    ) {
+        if rows.isEmpty, intermediateReservation == nil {
+            self.owner = Self.emptyOwner
+        } else {
+            self.owner = RDFDatasetScanOwner(
+                storage: rows,
                 intermediateReservation: intermediateReservation
             )
         }
@@ -113,21 +156,30 @@ public struct RDFDatasetScanRow: Sendable {
         self.position = position
     }
 
-    package var quad: RDFQuad { owner.storage[position] }
-    package var subject: DatabaseRDFTerm { owner.storage[position].subject }
-    package var predicate: DatabaseRDFTerm { owner.storage[position].predicate }
-    package var object: DatabaseRDFTerm { owner.storage[position].object }
-    package var graph: DatabaseRDFTerm? { owner.storage[position].graph }
+    package var quad: RDFQuad { owner.storage[position].quad }
+    package var subject: RDFTerm {
+        owner.storage[position].quad.subject.term
+    }
+    package var predicate: RDFTerm {
+        owner.storage[position].quad.predicate.term
+    }
+    package var object: RDFTerm { owner.storage[position].quad.object }
+    package var graph: RDFTerm? {
+        owner.storage[position].quad.graph?.term
+    }
+    package func decodeProperties() throws -> [String: FieldValue] {
+        try owner.storage[position].decodeProperties()
+    }
 }
 
 private final class RDFDatasetScanOwner: Sendable {
     // Declaration order is intentional: storage is destroyed before the
     // reservation releases its request ledger claim.
-    let storage: [RDFQuad]
+    let storage: [RDFDatasetScanStorageRow]
     let intermediateReservation: DatabaseIntermediateReservation?
 
     init(
-        storage: consuming [RDFQuad],
+        storage: consuming [RDFDatasetScanStorageRow],
         intermediateReservation: DatabaseIntermediateReservation?
     ) {
         self.storage = storage

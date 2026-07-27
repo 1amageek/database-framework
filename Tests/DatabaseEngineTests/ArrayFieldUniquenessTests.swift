@@ -8,7 +8,8 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
-@testable import Core
+@testable import DatabaseKit
+import DatabaseKitFoundation
 
 /// Tests for Array Field Uniqueness Enforcement
 ///
@@ -23,7 +24,7 @@ import DatabaseRuntime
 /// **Fixed Behavior**:
 /// - Each array element is checked individually for uniqueness
 /// - Matches how ScalarIndexMaintainer creates index entries
-@Suite("Array Field Uniqueness Tests", .serialized, .heartbeat)
+@Suite("Array Field Uniqueness Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct ArrayFieldUniquenessTests {
 
     // MARK: - Test Models
@@ -32,9 +33,9 @@ struct ArrayFieldUniquenessTests {
     @Persistable
     struct TaggedDocument {
         #Directory<TaggedDocument>("array_uniqueness_tests", "documents")
-        #Index(ScalarIndexKind<TaggedDocument>(fields: [\.tags]), unique: true, name: "TaggedDocument_tags")
+        #Index(.scalar, fields: [\TaggedDocument.tags], unique: true, name: "TaggedDocument_tags")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var title: String
         var tags: [String]
     }
@@ -43,9 +44,9 @@ struct ArrayFieldUniquenessTests {
     @Persistable
     struct UniqueEmail {
         #Directory<UniqueEmail>("array_uniqueness_tests", "emails")
-        #Index(ScalarIndexKind<UniqueEmail>(fields: [\.email]), unique: true, name: "UniqueEmail_email")
+        #Index(.scalar, fields: [\UniqueEmail.email], unique: true, name: "UniqueEmail_email")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var email: String
         var name: String
     }
@@ -55,9 +56,9 @@ struct ArrayFieldUniquenessTests {
     @Persistable
     struct UUIDTaggedDocument {
         #Directory<UUIDTaggedDocument>("array_uniqueness_tests", "uuid_docs")
-        #Index(ScalarIndexKind<UUIDTaggedDocument>(fields: [\.tags]), unique: true, name: "UUIDTaggedDocument_tags")
+        #Index(.scalar, fields: [\UUIDTaggedDocument.tags], unique: true, name: "UUIDTaggedDocument_tags")
 
-        var id: UUID = UUID()
+        var id: Foundation.UUID = Foundation.UUID()
         var title: String
         var tags: [String]
     }
@@ -66,7 +67,7 @@ struct ArrayFieldUniquenessTests {
     @Persistable
     struct Int64TaggedDocument {
         #Directory<Int64TaggedDocument>("array_uniqueness_tests", "int64_docs")
-        #Index(ScalarIndexKind<Int64TaggedDocument>(fields: [\.tags]), unique: true, name: "Int64TaggedDocument_tags")
+        #Index(.scalar, fields: [\Int64TaggedDocument.tags], unique: true, name: "Int64TaggedDocument_tags")
 
         var id: Int64 = Int64(Date().timeIntervalSince1970 * 1000000) + Int64.random(in: 0..<1000000)
         var title: String
@@ -176,7 +177,7 @@ struct ArrayFieldUniquenessTests {
             Issue.record("Expected UniquenessViolationError but save succeeded")
         } catch let error as UniquenessViolationError {
             #expect(error.indexName == "UniqueEmail_email")
-            #expect(error.conflictingValues.contains(email))
+            #expect(error.conflictingValues.contains(.string(email)))
         } catch {
             Issue.record("Expected UniquenessViolationError but got: \(error)")
         }
@@ -203,7 +204,10 @@ struct ArrayFieldUniquenessTests {
 
         // Verify both exist
         let count = try await context.fetch(UniqueEmail.self)
-            .where(\.email == email1 || \.email == email2)
+            .where(
+                UniqueEmail.fields.email == email1
+                    || UniqueEmail.fields.email == email2
+            )
             .execute()
             .count
         #expect(count == 2)
@@ -235,7 +239,7 @@ struct ArrayFieldUniquenessTests {
             Issue.record("Expected UniquenessViolationError but save succeeded - array uniqueness not enforced!")
         } catch let error as UniquenessViolationError {
             #expect(error.indexName == "TaggedDocument_tags")
-            #expect(error.conflictingValues.contains(sharedTag))
+            #expect(error.conflictingValues.contains(.string(sharedTag)))
         } catch {
             Issue.record("Expected UniquenessViolationError but got: \(error)")
         }
@@ -287,17 +291,13 @@ struct ArrayFieldUniquenessTests {
             try await context.save()
             Issue.record("Expected UniquenessViolationError - middle array elements not checked!")
         } catch let error as UniquenessViolationError {
-            #expect(error.conflictingValues.contains(sharedTag))
+            #expect(error.conflictingValues.contains(.string(sharedTag)))
         } catch {
             Issue.record("Expected UniquenessViolationError but got: \(error)")
         }
     }
 
     // MARK: - Update Cases
-
-    // Note: Tests for self-update scenarios are complex because try context.insert()
-    // for an existing entity requires the system to detect it as an update.
-    // This is handled by DatabaseDataStore when it detects the entity already exists.
 
     @Test("Array field update: cannot add element that exists elsewhere")
     func arrayUpdateAddDuplicateThrows() async throws {
@@ -323,7 +323,7 @@ struct ArrayFieldUniquenessTests {
         let fetched = try await context.model(for: doc2.id, as: TaggedDocument.self)
         var updated = fetched!
         updated.tags = [myTag, takenTag]  // Adding takenTag which belongs to doc1
-        try context.insert(updated)
+        try context.update(updated)
 
         // Should throw
         do {
@@ -403,7 +403,7 @@ struct ArrayFieldUniquenessTests {
         let fetched = try await context.model(for: doc.id, as: UUIDTaggedDocument.self)
         var updated = fetched!
         updated.title = "Updated Title"  // Change title only, keep tags
-        try context.insert(updated)
+        try context.update(updated)
 
         // Should succeed - same entity, same tags
         // Before fix: Fails because UUID comparison returns false (falls through to else branch)
@@ -437,7 +437,7 @@ struct ArrayFieldUniquenessTests {
         let fetched = try await context.model(for: doc2.id, as: UUIDTaggedDocument.self)
         var updated = fetched!
         updated.tags = [myTag, takenTag]
-        try context.insert(updated)
+        try context.update(updated)
 
         // Should throw - takenTag belongs to doc1
         do {
@@ -486,7 +486,7 @@ struct ArrayFieldUniquenessTests {
         let fetched = try await context.model(for: doc.id, as: Int64TaggedDocument.self)
         var updated = fetched!
         updated.title = "Updated Title"
-        try context.insert(updated)
+        try context.update(updated)
 
         // Should succeed - Int64 was already supported, but verify it still works
         try await context.save()
@@ -518,7 +518,7 @@ struct ArrayFieldUniquenessTests {
         let fetched = try await context.model(for: doc2.id, as: Int64TaggedDocument.self)
         var updated = fetched!
         updated.tags = [myTag, takenTag]
-        try context.insert(updated)
+        try context.update(updated)
 
         // Should throw - takenTag belongs to doc1
         do {

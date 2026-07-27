@@ -10,7 +10,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Core
+import DatabaseKit
 import Synchronization
 
 // MARK: - BatchFetchConfiguration

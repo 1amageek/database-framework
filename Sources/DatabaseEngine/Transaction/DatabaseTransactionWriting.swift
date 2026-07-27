@@ -1,5 +1,5 @@
 // Transaction-scoped typed database write contract.
-import Core
+import DatabaseKit
 
 /// Typed persistence mutations scoped to one database transaction.
 public protocol DatabaseTransactionWriting: DatabaseTransactionReading {

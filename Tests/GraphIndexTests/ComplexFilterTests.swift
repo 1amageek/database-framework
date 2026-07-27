@@ -8,10 +8,9 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseRuntime
-import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -23,21 +22,21 @@ import TestSupport
 struct FilterEdge {
     #Directory<FilterEdge>("complex_filter_tests")
     var id: String = UUID().uuidString
-    var from: String = ""
-    var relationship: String = ""
-    var to: String = ""
+    var from: RDFTerm = .iri(.xsdString)
+    var relationship: RDFTerm = .iri(.xsdString)
+    var to: RDFTerm = .string("")
 
-    #Index(GraphIndexKind<FilterEdge>(
-        from: \.from,
-        edge: \.relationship,
-        to: \.to,
-        strategy: .tripleStore
-    ))
+    #Index(
+        .rdfDataset,
+        from: \FilterEdge.from,
+        edge: \FilterEdge.relationship,
+        to: \FilterEdge.to
+    )
 }
 
 // MARK: - Test Suite
 
-@Suite("Complex FILTER Tests", .serialized, .heartbeat)
+@Suite("Complex FILTER Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct ComplexFilterTests {
 
     init() async throws {
@@ -52,7 +51,10 @@ struct ComplexFilterTests {
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([FilterEdge.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try FilterEdge.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
@@ -68,12 +70,54 @@ struct ComplexFilterTests {
         try await context.save()
     }
 
-    private func makeEdge(from: String, relationship: String, to: String) -> FilterEdge {
+    private func makeEdge(
+        from: String,
+        relationship: String,
+        to: String
+    ) throws -> FilterEdge {
         var edge = FilterEdge()
-        edge.from = from
-        edge.relationship = relationship
-        edge.to = to
+        edge.from = try Self.resource(from)
+        edge.relationship = try Self.predicate(relationship)
+        edge.to = .string(to)
         return edge
+    }
+
+    private func makeEdge(
+        from: String,
+        relationship: String,
+        to: Int
+    ) throws -> FilterEdge {
+        var edge = FilterEdge()
+        edge.from = try Self.resource(from)
+        edge.relationship = try Self.predicate(relationship)
+        edge.to = .integer(to)
+        return edge
+    }
+
+    private static func resource(_ identifier: String) throws -> RDFTerm {
+        try .iri(validating: "did:database-framework:test-resource:\(identifier)")
+    }
+
+    private static func predicate(_ identifier: String) throws -> RDFTerm {
+        try .iri(validating: "did:database-framework:test-predicate:\(identifier)")
+    }
+
+    private static func subjectTerm(_ value: String) throws -> ExecutionTerm {
+        value.hasPrefix("?")
+            ? .variable(value)
+            : .value(.rdfTerm(try resource(value)))
+    }
+
+    private static func predicateTerm(_ value: String) throws -> ExecutionTerm {
+        value.hasPrefix("?")
+            ? .variable(value)
+            : .value(.rdfTerm(try predicate(value)))
+    }
+
+    private static func objectTerm(_ value: String) -> ExecutionTerm {
+        value.hasPrefix("?")
+            ? .variable(value)
+            : .value(.rdfTerm(.string(value)))
     }
 
     // MARK: - Deeply Nested Logical Expression Tests
@@ -93,10 +137,10 @@ struct ComplexFilterTests {
         let predD = uniqueID("labelD")
 
         let edges = [
-            makeEdge(from: item, relationship: predA, to: "15"),
-            makeEdge(from: item, relationship: predB, to: "18"),
-            makeEdge(from: item, relationship: predC, to: "x"),
-            makeEdge(from: item, relationship: predD, to: "y"),
+            try makeEdge(from: item, relationship: predA, to: 15),
+            try makeEdge(from: item, relationship: predB, to: 18),
+            try makeEdge(from: item, relationship: predC, to: "x"),
+            try makeEdge(from: item, relationship: predD, to: "y"),
         ]
 
         try await insertEdges(edges, context: context)
@@ -104,8 +148,8 @@ struct ComplexFilterTests {
         // Query with compound FILTER
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", predA, "?a")
-            .filter(.greaterThan("?a", 10))
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(predA), Self.objectTerm("?a"))
+            .filter(.greaterThan("?a", .rdfTerm(.integer(10))))
             .execute()
 
         #expect(!result.isEmpty)
@@ -127,17 +171,17 @@ struct ComplexFilterTests {
         let predValue = uniqueID("value")
 
         let edges = [
-            makeEdge(from: item1, relationship: predValue, to: "15"),  // Passes first condition
-            makeEdge(from: item2, relationship: predValue, to: "5"),   // Might pass second
-            makeEdge(from: item3, relationship: predValue, to: "25"),  // May or may not pass
+            try makeEdge(from: item1, relationship: predValue, to: 15),  // Passes first condition
+            try makeEdge(from: item2, relationship: predValue, to: 5),   // Might pass second
+            try makeEdge(from: item3, relationship: predValue, to: 25),  // May or may not pass
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", predValue, "?val")
-            .filter(.greaterThan("?val", 10))
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(predValue), Self.objectTerm("?val"))
+            .filter(.greaterThan("?val", .rdfTerm(.integer(10))))
             .execute()
 
         // Items with value > 10: item1 (15), item3 (25)
@@ -155,9 +199,9 @@ struct ComplexFilterTests {
         let pred = uniqueID("score")
 
         let edges = [
-            makeEdge(from: "E1", relationship: pred, to: "7"),
-            makeEdge(from: "E2", relationship: pred, to: "3"),
-            makeEdge(from: "E3", relationship: pred, to: "12"),
+            try makeEdge(from: "E1", relationship: pred, to: 7),
+            try makeEdge(from: "E2", relationship: pred, to: 3),
+            try makeEdge(from: "E3", relationship: pred, to: 12),
         ]
 
         try await insertEdges(edges, context: context)
@@ -165,14 +209,14 @@ struct ComplexFilterTests {
         // Filter for scores between 5 and 10
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?entity", pred, "?score")
-            .filter(.greaterThan("?score", 5))
-            .filter(.lessThan("?score", 10))
+            .where(try Self.subjectTerm("?entity"), try Self.predicateTerm(pred), Self.objectTerm("?score"))
+            .filter(.greaterThan("?score", .rdfTerm(.integer(5))))
+            .filter(.lessThan("?score", .rdfTerm(.integer(10))))
             .execute()
 
         // Only E1 (7) should pass
         #expect(result.count == 1)
-        #expect(result.bindings.first?["?score"] == .string("7"))
+        #expect(result.bindings.first?["?score"] == .rdfTerm(.integer(7)))
     }
 
     // MARK: - Multiple Sequential FILTER Tests
@@ -190,10 +234,10 @@ struct ComplexFilterTests {
         let predValue = uniqueID("value")
 
         let edges = [
-            makeEdge(from: "Item1", relationship: predValue, to: "50"),
-            makeEdge(from: "Item2", relationship: predValue, to: "150"),
-            makeEdge(from: "Item3", relationship: predValue, to: "-10"),
-            makeEdge(from: "Item4", relationship: predValue, to: "75"),
+            try makeEdge(from: "Item1", relationship: predValue, to: 50),
+            try makeEdge(from: "Item2", relationship: predValue, to: 150),
+            try makeEdge(from: "Item3", relationship: predValue, to: -10),
+            try makeEdge(from: "Item4", relationship: predValue, to: 75),
         ]
 
         try await insertEdges(edges, context: context)
@@ -201,9 +245,9 @@ struct ComplexFilterTests {
         // Apply multiple filters: 0 < x < 100
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", predValue, "?val")
-            .filter(.greaterThan("?val", 0))
-            .filter(.lessThan("?val", 100))
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(predValue), Self.objectTerm("?val"))
+            .filter(.greaterThan("?val", .rdfTerm(.integer(0))))
+            .filter(.lessThan("?val", .rdfTerm(.integer(100))))
             .execute()
 
         // Item1 (50) and Item4 (75) should pass
@@ -222,11 +266,11 @@ struct ComplexFilterTests {
         let pred = uniqueID("num")
 
         let edges = [
-            makeEdge(from: "N1", relationship: pred, to: "25"),
-            makeEdge(from: "N2", relationship: pred, to: "35"),
-            makeEdge(from: "N3", relationship: pred, to: "45"),
-            makeEdge(from: "N4", relationship: pred, to: "55"),
-            makeEdge(from: "N5", relationship: pred, to: "65"),
+            try makeEdge(from: "N1", relationship: pred, to: 25),
+            try makeEdge(from: "N2", relationship: pred, to: 35),
+            try makeEdge(from: "N3", relationship: pred, to: 45),
+            try makeEdge(from: "N4", relationship: pred, to: 55),
+            try makeEdge(from: "N5", relationship: pred, to: 65),
         ]
 
         try await insertEdges(edges, context: context)
@@ -234,10 +278,10 @@ struct ComplexFilterTests {
         // Filters: > 20, < 60, != 35
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?n", pred, "?val")
-            .filter(.greaterThan("?val", 20))
-            .filter(.lessThan("?val", 60))
-            .filter(.notEquals("?val", 35))
+            .where(try Self.subjectTerm("?n"), try Self.predicateTerm(pred), Self.objectTerm("?val"))
+            .filter(.greaterThan("?val", .rdfTerm(.integer(20))))
+            .filter(.lessThan("?val", .rdfTerm(.integer(60))))
+            .filter(.notEquals("?val", .rdfTerm(.integer(35))))
             .execute()
 
         // Should pass: 25, 45, 55 (not 35)
@@ -263,12 +307,12 @@ struct ComplexFilterTests {
         let predStatus = uniqueID("status")
 
         let edges = [
-            makeEdge(from: "Product1", relationship: predPrice, to: "150"),
-            makeEdge(from: "Product1", relationship: predStatus, to: "active"),
-            makeEdge(from: "Product2", relationship: predPrice, to: "250"),
-            makeEdge(from: "Product2", relationship: predStatus, to: "inactive"),
-            makeEdge(from: "Product3", relationship: predPrice, to: "50"),
-            makeEdge(from: "Product3", relationship: predStatus, to: "active"),
+            try makeEdge(from: "Product1", relationship: predPrice, to: 150),
+            try makeEdge(from: "Product1", relationship: predStatus, to: "active"),
+            try makeEdge(from: "Product2", relationship: predPrice, to: 250),
+            try makeEdge(from: "Product2", relationship: predStatus, to: "inactive"),
+            try makeEdge(from: "Product3", relationship: predPrice, to: 50),
+            try makeEdge(from: "Product3", relationship: predStatus, to: "active"),
         ]
 
         try await insertEdges(edges, context: context)
@@ -276,9 +320,9 @@ struct ComplexFilterTests {
         // Query with price filter
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?product", predPrice, "?price")
-            .filter(.greaterThanOrEqual("?price", 100))
-            .filter(.lessThanOrEqual("?price", 500))
+            .where(try Self.subjectTerm("?product"), try Self.predicateTerm(predPrice), Self.objectTerm("?price"))
+            .filter(.greaterThanOrEqual("?price", .rdfTerm(.integer(100))))
+            .filter(.lessThanOrEqual("?price", .rdfTerm(.integer(500))))
             .execute()
 
         // Products in range: Product1 (150), Product2 (250)
@@ -296,17 +340,17 @@ struct ComplexFilterTests {
         let pred = uniqueID("name")
 
         let edges = [
-            makeEdge(from: "P1", relationship: pred, to: "Premium Widget"),
-            makeEdge(from: "P2", relationship: pred, to: "Basic Widget"),
-            makeEdge(from: "P3", relationship: pred, to: "Premium Gadget"),
-            makeEdge(from: "P4", relationship: pred, to: "Standard Item"),
+            try makeEdge(from: "P1", relationship: pred, to: "Premium Widget"),
+            try makeEdge(from: "P2", relationship: pred, to: "Basic Widget"),
+            try makeEdge(from: "P3", relationship: pred, to: "Premium Gadget"),
+            try makeEdge(from: "P4", relationship: pred, to: "Standard Item"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?product", pred, "?name")
+            .where(try Self.subjectTerm("?product"), try Self.predicateTerm(pred), Self.objectTerm("?name"))
             .filter("?name", contains: "Premium")
             .execute()
 
@@ -329,18 +373,18 @@ struct ComplexFilterTests {
         let pred = uniqueID("status")
 
         let edges = [
-            makeEdge(from: "Task1", relationship: pred, to: "active"),
-            makeEdge(from: "Task2", relationship: pred, to: "completed"),
-            makeEdge(from: "Task3", relationship: pred, to: "pending"),
-            makeEdge(from: "Task4", relationship: pred, to: "archived"),
-            makeEdge(from: "Task5", relationship: pred, to: "review"),
+            try makeEdge(from: "Task1", relationship: pred, to: "active"),
+            try makeEdge(from: "Task2", relationship: pred, to: "completed"),
+            try makeEdge(from: "Task3", relationship: pred, to: "pending"),
+            try makeEdge(from: "Task4", relationship: pred, to: "archived"),
+            try makeEdge(from: "Task5", relationship: pred, to: "review"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?task", pred, "?status")
+            .where(try Self.subjectTerm("?task"), try Self.predicateTerm(pred), Self.objectTerm("?status"))
             .filter(.custom { binding in
                 guard let status = binding.string("?status") else { return false }
                 return ["active", "pending", "review"].contains(status)
@@ -364,15 +408,15 @@ struct ComplexFilterTests {
         let pred = uniqueID("type")
 
         let edges = [
-            makeEdge(from: "E1", relationship: pred, to: "TypeA"),
-            makeEdge(from: "E2", relationship: pred, to: "TypeB"),
+            try makeEdge(from: "E1", relationship: pred, to: "TypeA"),
+            try makeEdge(from: "E2", relationship: pred, to: "TypeB"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?entity", pred, "?type")
+            .where(try Self.subjectTerm("?entity"), try Self.predicateTerm(pred), Self.objectTerm("?type"))
             .filter("?type", equals: "TypeA")
             .execute()
 
@@ -393,18 +437,18 @@ struct ComplexFilterTests {
         let pred = uniqueID("category")
 
         let edges = [
-            makeEdge(from: "Item1", relationship: pred, to: "active"),
-            makeEdge(from: "Item2", relationship: pred, to: "deleted"),
-            makeEdge(from: "Item3", relationship: pred, to: "pending"),
-            makeEdge(from: "Item4", relationship: pred, to: "archived"),
-            makeEdge(from: "Item5", relationship: pred, to: "draft"),
+            try makeEdge(from: "Item1", relationship: pred, to: "active"),
+            try makeEdge(from: "Item2", relationship: pred, to: "deleted"),
+            try makeEdge(from: "Item3", relationship: pred, to: "pending"),
+            try makeEdge(from: "Item4", relationship: pred, to: "archived"),
+            try makeEdge(from: "Item5", relationship: pred, to: "draft"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", pred, "?category")
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(pred), Self.objectTerm("?category"))
             .filter(.custom { binding in
                 guard let category = binding.string("?category") else { return false }
                 return !["deleted", "archived"].contains(category)
@@ -429,17 +473,17 @@ struct ComplexFilterTests {
         let pred = uniqueID("color")
 
         let edges = [
-            makeEdge(from: "C1", relationship: pred, to: "red"),
-            makeEdge(from: "C2", relationship: pred, to: "blue"),
-            makeEdge(from: "C3", relationship: pred, to: "red"),
-            makeEdge(from: "C4", relationship: pred, to: "green"),
+            try makeEdge(from: "C1", relationship: pred, to: "red"),
+            try makeEdge(from: "C2", relationship: pred, to: "blue"),
+            try makeEdge(from: "C3", relationship: pred, to: "red"),
+            try makeEdge(from: "C4", relationship: pred, to: "green"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", pred, "?color")
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(pred), Self.objectTerm("?color"))
             .filter("?color", equals: "red")
             .execute()
 
@@ -455,17 +499,17 @@ struct ComplexFilterTests {
         let pred = uniqueID("status")
 
         let edges = [
-            makeEdge(from: "S1", relationship: pred, to: "enabled"),
-            makeEdge(from: "S2", relationship: pred, to: "disabled"),
-            makeEdge(from: "S3", relationship: pred, to: "enabled"),
+            try makeEdge(from: "S1", relationship: pred, to: "enabled"),
+            try makeEdge(from: "S2", relationship: pred, to: "disabled"),
+            try makeEdge(from: "S3", relationship: pred, to: "enabled"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", pred, "?status")
-            .filter(.notEquals("?status", "disabled"))
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(pred), Self.objectTerm("?status"))
+            .filter(.notEquals("?status", .rdfTerm(.string("disabled"))))
             .execute()
 
         #expect(result.count == 2)
@@ -482,17 +526,17 @@ struct ComplexFilterTests {
         let pred = uniqueID("name")
 
         let edges = [
-            makeEdge(from: "P1", relationship: pred, to: "Alice Smith"),
-            makeEdge(from: "P2", relationship: pred, to: "Bob Jones"),
-            makeEdge(from: "P3", relationship: pred, to: "Alice Brown"),
-            makeEdge(from: "P4", relationship: pred, to: "Charlie"),
+            try makeEdge(from: "P1", relationship: pred, to: "Alice Smith"),
+            try makeEdge(from: "P2", relationship: pred, to: "Bob Jones"),
+            try makeEdge(from: "P3", relationship: pred, to: "Alice Brown"),
+            try makeEdge(from: "P4", relationship: pred, to: "Charlie"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?person", pred, "?name")
+            .where(try Self.subjectTerm("?person"), try Self.predicateTerm(pred), Self.objectTerm("?name"))
             .filter("?name", startsWith: "Alice")
             .execute()
 
@@ -510,16 +554,16 @@ struct ComplexFilterTests {
         let pred = uniqueID("email")
 
         let edges = [
-            makeEdge(from: "U1", relationship: pred, to: "alice@example.com"),
-            makeEdge(from: "U2", relationship: pred, to: "bob@other.org"),
-            makeEdge(from: "U3", relationship: pred, to: "carol@example.com"),
+            try makeEdge(from: "U1", relationship: pred, to: "alice@example.com"),
+            try makeEdge(from: "U2", relationship: pred, to: "bob@other.org"),
+            try makeEdge(from: "U3", relationship: pred, to: "carol@example.com"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?user", pred, "?email")
+            .where(try Self.subjectTerm("?user"), try Self.predicateTerm(pred), Self.objectTerm("?email"))
             .filter("?email", endsWith: ".com")
             .execute()
 
@@ -537,17 +581,17 @@ struct ComplexFilterTests {
         let pred = uniqueID("code")
 
         let edges = [
-            makeEdge(from: "E1", relationship: pred, to: "ABC123"),
-            makeEdge(from: "E2", relationship: pred, to: "XYZ456"),
-            makeEdge(from: "E3", relationship: pred, to: "ABC789"),
-            makeEdge(from: "E4", relationship: pred, to: "DEF000"),
+            try makeEdge(from: "E1", relationship: pred, to: "ABC123"),
+            try makeEdge(from: "E2", relationship: pred, to: "XYZ456"),
+            try makeEdge(from: "E3", relationship: pred, to: "ABC789"),
+            try makeEdge(from: "E4", relationship: pred, to: "DEF000"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?entity", pred, "?code")
+            .where(try Self.subjectTerm("?entity"), try Self.predicateTerm(pred), Self.objectTerm("?code"))
             .filter(.regex("?code", "^ABC"))
             .execute()
 
@@ -565,17 +609,17 @@ struct ComplexFilterTests {
         let pred = uniqueID("label")
 
         let edges = [
-            makeEdge(from: "L1", relationship: pred, to: "HELLO"),
-            makeEdge(from: "L2", relationship: pred, to: "hello"),
-            makeEdge(from: "L3", relationship: pred, to: "Hello"),
-            makeEdge(from: "L4", relationship: pred, to: "World"),
+            try makeEdge(from: "L1", relationship: pred, to: "HELLO"),
+            try makeEdge(from: "L2", relationship: pred, to: "hello"),
+            try makeEdge(from: "L3", relationship: pred, to: "Hello"),
+            try makeEdge(from: "L4", relationship: pred, to: "World"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", pred, "?label")
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(pred), Self.objectTerm("?label"))
             .filter(.regexWithFlags("?label", "hello", "i"))
             .execute()
 
@@ -595,9 +639,9 @@ struct ComplexFilterTests {
         let predEmail = uniqueID("email")
 
         let edges = [
-            makeEdge(from: "User1", relationship: predName, to: "Alice"),
-            makeEdge(from: "User1", relationship: predEmail, to: "alice@example.com"),
-            makeEdge(from: "User2", relationship: predName, to: "Bob"),
+            try makeEdge(from: "User1", relationship: predName, to: "Alice"),
+            try makeEdge(from: "User1", relationship: predEmail, to: "alice@example.com"),
+            try makeEdge(from: "User2", relationship: predName, to: "Bob"),
             // User2 has no email
         ]
 
@@ -606,7 +650,7 @@ struct ComplexFilterTests {
         // Query users with name
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?user", predName, "?name")
+            .where(try Self.subjectTerm("?user"), try Self.predicateTerm(predName), Self.objectTerm("?name"))
             .execute()
 
         // Both users have names
@@ -624,17 +668,17 @@ struct ComplexFilterTests {
         let pred = uniqueID("note")
 
         let edges = [
-            makeEdge(from: "N1", relationship: pred, to: ""),
-            makeEdge(from: "N2", relationship: pred, to: "Some text"),
-            makeEdge(from: "N3", relationship: pred, to: ""),
+            try makeEdge(from: "N1", relationship: pred, to: ""),
+            try makeEdge(from: "N2", relationship: pred, to: "Some text"),
+            try makeEdge(from: "N3", relationship: pred, to: ""),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", pred, "?note")
-            .filter(.notEquals("?note", ""))
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(pred), Self.objectTerm("?note"))
+            .filter(.notEquals("?note", .rdfTerm(.string(""))))
             .execute()
 
         #expect(result.count == 1)
@@ -651,10 +695,10 @@ struct ComplexFilterTests {
 
         // String comparison vs numeric comparison
         let edges = [
-            makeEdge(from: "V1", relationship: pred, to: "9"),
-            makeEdge(from: "V2", relationship: pred, to: "10"),
-            makeEdge(from: "V3", relationship: pred, to: "100"),
-            makeEdge(from: "V4", relationship: pred, to: "2"),
+            try makeEdge(from: "V1", relationship: pred, to: 9),
+            try makeEdge(from: "V2", relationship: pred, to: 10),
+            try makeEdge(from: "V3", relationship: pred, to: 100),
+            try makeEdge(from: "V4", relationship: pred, to: 2),
         ]
 
         try await insertEdges(edges, context: context)
@@ -662,8 +706,8 @@ struct ComplexFilterTests {
         // Numeric filter > 5
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", pred, "?val")
-            .filter(.greaterThan("?val", 5))
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(pred), Self.objectTerm("?val"))
+            .filter(.greaterThan("?val", .rdfTerm(.integer(5))))
             .execute()
 
         // 9, 10, 100 should pass (2 doesn't)
@@ -679,8 +723,8 @@ struct ComplexFilterTests {
         let pred = uniqueID("score")
 
         let edges = [
-            makeEdge(from: "S1", relationship: pred, to: "50"),
-            makeEdge(from: "S2", relationship: pred, to: "60"),
+            try makeEdge(from: "S1", relationship: pred, to: 50),
+            try makeEdge(from: "S2", relationship: pred, to: 60),
         ]
 
         try await insertEdges(edges, context: context)
@@ -688,8 +732,8 @@ struct ComplexFilterTests {
         // Filter that no value can pass
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", pred, "?score")
-            .filter(.greaterThan("?score", 100))
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(pred), Self.objectTerm("?score"))
+            .filter(.greaterThan("?score", .rdfTerm(.integer(100))))
             .execute()
 
         #expect(result.isEmpty)
@@ -704,9 +748,9 @@ struct ComplexFilterTests {
         let pred = uniqueID("value")
 
         let edges = [
-            makeEdge(from: "E1", relationship: pred, to: "10"),
-            makeEdge(from: "E2", relationship: pred, to: "20"),
-            makeEdge(from: "E3", relationship: pred, to: "30"),
+            try makeEdge(from: "E1", relationship: pred, to: 10),
+            try makeEdge(from: "E2", relationship: pred, to: 20),
+            try makeEdge(from: "E3", relationship: pred, to: 30),
         ]
 
         try await insertEdges(edges, context: context)
@@ -714,8 +758,8 @@ struct ComplexFilterTests {
         // Filter that everything passes
         let result = try await context.sparql(FilterEdge.self)
             .defaultIndex()
-            .where("?item", pred, "?val")
-            .filter(.greaterThan("?val", 0))
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(pred), Self.objectTerm("?val"))
+            .filter(.greaterThan("?val", .rdfTerm(.integer(0))))
             .execute()
 
         #expect(result.count == 3)

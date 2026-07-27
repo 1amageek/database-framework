@@ -1,4 +1,5 @@
-import Graph
+import DatabaseKit
+import DatabaseTypes
 
 public enum SHACLTargetResolutionError: Error, Sendable, Equatable,
     CustomStringConvertible {

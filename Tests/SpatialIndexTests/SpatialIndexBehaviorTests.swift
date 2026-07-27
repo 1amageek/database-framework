@@ -6,72 +6,32 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Geospatial
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import SpatialIndex
 
 // MARK: - Test Model
 
-struct GeospatialLocation: Persistable {
-    typealias ID = String
-
+@Persistable
+struct GeospatialLocation {
     var id: String
     var name: String
-    var latitude: Double
-    var longitude: Double
+    var location: GeographicPoint
 
-    init(id: String = UUID().uuidString, name: String, latitude: Double, longitude: Double) {
+    init(
+        id: String = UUID().uuidString,
+        name: String,
+        latitude: Double,
+        longitude: Double
+    ) throws {
         self.id = id
         self.name = name
-        self.latitude = latitude
-        self.longitude = longitude
-    }
-
-    static var persistableType: String { "GeospatialLocation" }
-    static var allFields: [String] { ["id", "name", "latitude", "longitude"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "latitude": return latitude
-        case "longitude": return longitude
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<GeospatialLocation, Value>) -> String {
-        switch keyPath {
-        case \GeospatialLocation.id: return "id"
-        case \GeospatialLocation.name: return "name"
-        case \GeospatialLocation.latitude: return "latitude"
-        case \GeospatialLocation.longitude: return "longitude"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<GeospatialLocation>) -> String {
-        switch keyPath {
-        case \GeospatialLocation.id: return "id"
-        case \GeospatialLocation.name: return "name"
-        case \GeospatialLocation.latitude: return "latitude"
-        case \GeospatialLocation.longitude: return "longitude"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<GeospatialLocation> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
+        self.location = try GeographicPoint(
+            latitude: latitude,
+            longitude: longitude
+        )
     }
 }
 
@@ -82,7 +42,6 @@ private struct SpatialIndexContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: SpatialIndexMaintainer<GeospatialLocation>
-    let kind: SpatialIndexKind<GeospatialLocation>
     let level: Int
 
     /// Create test context
@@ -96,29 +55,23 @@ private struct SpatialIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.level = level
 
-        self.kind = SpatialIndexKind<GeospatialLocation>(
-            latitude: \.latitude,
-            longitude: \.longitude,
-            encoding: encoding,
-            level: level
-        )
-
-        // Expression: latitude + longitude
         let index = Index(
             name: indexName,
-            kind: kind,
-            rootExpression: ConcatenateKeyExpression(children: [
-                FieldKeyExpression(fieldName: "latitude"),
-                FieldKeyExpression(fieldName: "longitude")
-            ]),
+            kind: spatialIndexMetadata(
+                fieldName: "location",
+                fieldNumber: 3,
+                encoding: encoding,
+                level: level
+            ),
+            rootExpression: FieldKeyExpression(fieldName: "location"),
             subspaceKey: indexName,
             itemTypes: Set(["GeospatialLocation"])
         )
 
         self.maintainer = SpatialIndexMaintainer<GeospatialLocation>(
             index: index,
-            encoding: kind.encoding,
-            level: kind.level,
+            encoding: encoding,
+            level: level,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )
@@ -168,6 +121,27 @@ private struct SpatialIndexContext {
     }
 }
 
+func spatialIndexMetadata(
+    fieldName: String,
+    fieldNumber: Int,
+    encoding: SpatialEncoding,
+    level: Int
+) -> IndexKindMetadata {
+    IndexKindMetadata(
+        identifier: "spatial",
+        subspaceStructure: .flat,
+        fields: [
+            IndexFieldMetadata(
+                identity: FieldIdentity(name: fieldName, number: fieldNumber)
+            )
+        ],
+        metadata: [
+            "encoding": .string(encoding.rawValue),
+            "level": .int64(Int64(level)),
+        ]
+    )
+}
+
 // MARK: - Behavior Tests
 
 @Suite("SpatialIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
@@ -181,7 +155,7 @@ struct SpatialIndexBehaviorTests {
         let ctx = try await SpatialIndexContext()
 
         // Tokyo Station
-        let location = GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
+        let location = try GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -203,9 +177,9 @@ struct SpatialIndexBehaviorTests {
         let ctx = try await SpatialIndexContext()
 
         let locations = [
-            GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671),
-            GeospatialLocation(id: "shibuya", name: "Shibuya Station", latitude: 35.6580, longitude: 139.7016),
-            GeospatialLocation(id: "shinjuku", name: "Shinjuku Station", latitude: 35.6896, longitude: 139.7006)
+            try GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671),
+            try GeospatialLocation(id: "shibuya", name: "Shibuya Station", latitude: 35.6580, longitude: 139.7016),
+            try GeospatialLocation(id: "shinjuku", name: "Shinjuku Station", latitude: 35.6896, longitude: 139.7006)
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -231,7 +205,7 @@ struct SpatialIndexBehaviorTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await SpatialIndexContext()
 
-        let location = GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
+        let location = try GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -267,7 +241,7 @@ struct SpatialIndexBehaviorTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await SpatialIndexContext()
 
-        let location = GeospatialLocation(id: "point", name: "Original", latitude: 35.0, longitude: 139.0)
+        let location = try GeospatialLocation(id: "point", name: "Original", latitude: 35.0, longitude: 139.0)
 
         // Insert
         try await ctx.database.withTransaction { transaction in
@@ -279,7 +253,7 @@ struct SpatialIndexBehaviorTests {
         }
 
         // Update with new coordinates
-        let updatedLocation = GeospatialLocation(id: "point", name: "Moved", latitude: 36.0, longitude: 140.0)
+        let updatedLocation = try GeospatialLocation(id: "point", name: "Moved", latitude: 36.0, longitude: 140.0)
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: location,
@@ -302,7 +276,7 @@ struct SpatialIndexBehaviorTests {
         // Use coarse level (8) to reduce cell count
         let ctx = try await SpatialIndexContext(level: 8)
 
-        let location = GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
+        let location = try GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -328,7 +302,7 @@ struct SpatialIndexBehaviorTests {
         let ctx = try await SpatialIndexContext(level: 8)
 
         // Insert location in Tokyo area
-        let location = GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
+        let location = try GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -359,8 +333,8 @@ struct SpatialIndexBehaviorTests {
         let ctx = try await SpatialIndexContext()
 
         let locations = [
-            GeospatialLocation(id: "p1", name: "Point 1", latitude: 35.0, longitude: 139.0),
-            GeospatialLocation(id: "p2", name: "Point 2", latitude: 36.0, longitude: 140.0)
+            try GeospatialLocation(id: "p1", name: "Point 1", latitude: 35.0, longitude: 139.0),
+            try GeospatialLocation(id: "p2", name: "Point 2", latitude: 36.0, longitude: 140.0)
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -386,7 +360,7 @@ struct SpatialIndexBehaviorTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await SpatialIndexContext(encoding: .morton, level: 16)
 
-        let location = GeospatialLocation(id: "test", name: "Test", latitude: 35.6812, longitude: 139.7671)
+        let location = try GeospatialLocation(id: "test", name: "Test", latitude: 35.6812, longitude: 139.7671)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -408,7 +382,7 @@ struct SpatialIndexBehaviorTests {
         let ctx = try await SpatialIndexContext(encoding: .s2, level: 10)
 
         // Insert same location twice (should produce same cell)
-        let location = GeospatialLocation(id: "test", name: "Test", latitude: 35.6812, longitude: 139.7671)
+        let location = try GeospatialLocation(id: "test", name: "Test", latitude: 35.6812, longitude: 139.7671)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -449,7 +423,7 @@ struct SpatialIndexBehaviorTests {
         let ctx = try await SpatialIndexContext()
 
         // Singapore (near equator)
-        let location = GeospatialLocation(id: "singapore", name: "Singapore", latitude: 1.3521, longitude: 103.8198)
+        let location = try GeospatialLocation(id: "singapore", name: "Singapore", latitude: 1.3521, longitude: 103.8198)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -471,7 +445,7 @@ struct SpatialIndexBehaviorTests {
         let ctx = try await SpatialIndexContext()
 
         // Svalbard (high latitude)
-        let location = GeospatialLocation(id: "svalbard", name: "Svalbard", latitude: 78.2232, longitude: 15.6469)
+        let location = try GeospatialLocation(id: "svalbard", name: "Svalbard", latitude: 78.2232, longitude: 15.6469)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
@@ -493,9 +467,9 @@ struct SpatialIndexBehaviorTests {
         let ctx = try await SpatialIndexContext()
 
         // Sydney, Australia (negative latitude)
-        let sydney = GeospatialLocation(id: "sydney", name: "Sydney", latitude: -33.8688, longitude: 151.2093)
+        let sydney = try GeospatialLocation(id: "sydney", name: "Sydney", latitude: -33.8688, longitude: 151.2093)
         // Rio de Janeiro (negative longitude)
-        let rio = GeospatialLocation(id: "rio", name: "Rio", latitude: -22.9068, longitude: -43.1729)
+        let rio = try GeospatialLocation(id: "rio", name: "Rio", latitude: -22.9068, longitude: -43.1729)
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(oldItem: nil, newItem: sydney, transaction: transaction)

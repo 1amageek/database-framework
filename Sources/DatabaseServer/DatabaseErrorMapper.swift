@@ -1,12 +1,12 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
-import Graph
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 import GraphIndex
 import OntologyIndex
 import QueryAST
-import QueryIR
+import DatabaseKit
 import RelationshipIndex
 import StorageKit
 
@@ -15,14 +15,14 @@ public protocol DatabaseErrorMapper: Sendable {
         for error: any Error,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
-    ) -> DatabaseRemoteError
+    ) -> RemoteOperationError
 }
 
 extension DatabaseErrorMapper {
     public func remoteError(
         for error: any Error,
         context: DatabaseOperationContext
-    ) -> DatabaseRemoteError {
+    ) -> RemoteOperationError {
         remoteError(for: error, context: context, limits: .default)
     }
 }
@@ -34,7 +34,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         for error: any Error,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
-    ) -> DatabaseRemoteError {
+    ) -> RemoteOperationError {
         remoteError(
             for: error,
             context: context,
@@ -48,17 +48,17 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits,
         mappingDepth: Int
-    ) -> DatabaseRemoteError {
+    ) -> RemoteOperationError {
         let mappingDepthLimit = max(0, limits.maximumNestingDepth / 2)
         guard mappingDepth <= mappingDepthLimit else {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .internalFailure,
                 code: "ERROR_MAPPING_DEPTH_EXCEEDED",
                 message: "Nested error mapping exceeded the configured depth",
                 retryability: .never
             )
         }
-        if let remote = error as? DatabaseRemoteError {
+        if let remote = error as? RemoteOperationError {
             return remote
         }
         if let cleanupError = error as? StorageTransactionCleanupError {
@@ -70,7 +70,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if let responseError = error as? DatabaseResponsePreparationError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .resourceLimit,
                 code: "RESPONSE_RESOURCE_LIMIT",
                 message: responseError.description,
@@ -78,7 +78,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if error is DatabaseWireError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_WIRE_PAYLOAD",
                 message: String(describing: error),
@@ -86,7 +86,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if error is PersistableDecodingError || error is QueryRowCodecError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_ENTITY",
                 message: String(describing: error),
@@ -95,21 +95,19 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         }
         if let limitError = error as? DatabaseRuntimeLimitError {
             if case .executionTimedOut(let timeoutMilliseconds) = limitError {
-                return DatabaseRemoteError(
+                return RemoteOperationError(
                     category: .resourceLimit,
                     code: "EXECUTION_TIMED_OUT",
                     message: limitError.description,
                     retryability: .never,
-                    details: [
-                        DatabaseObjectField(
-                            number: 1,
-                            name: "timeoutMilliseconds",
+                    details: Self.errorDetails([
+                        (key: "timeoutMilliseconds",
                             value: .uint64(UInt64(timeoutMilliseconds))
                         ),
-                    ]
+                    ])
                 )
             }
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .resourceLimit,
                 code: "RESOURCE_LIMIT",
                 message: limitError.description,
@@ -117,22 +115,20 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if let deadlineError = error as? TransactionExecutionDeadlineExceeded {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .resourceLimit,
                 code: "EXECUTION_TIMED_OUT",
                 message: deadlineError.description,
                 retryability: .never,
-                details: [
-                    DatabaseObjectField(
-                        number: 1,
-                        name: "timeoutMilliseconds",
+                details: Self.errorDetails([
+                    (key: "timeoutMilliseconds",
                         value: .uint64(deadlineError.timeoutMilliseconds)
                     ),
-                ]
+                ])
             )
         }
         if let workLimitError = error as? DatabaseWorkLimitError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .resourceLimit,
                 code: "QUERY_RESOURCE_LIMIT",
                 message: workLimitError.description,
@@ -149,7 +145,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return Self.map(queryError)
         }
         if let datasetError = error as? RDFDatasetValidationError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_SPARQL_DATASET",
                 message: datasetError.description,
@@ -157,7 +153,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if let conversionError = error as? GraphPatternConversionError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_GRAPH_PATTERN",
                 message: String(describing: conversionError),
@@ -165,7 +161,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if let planError = error as? SPARQLSelectPlanCompilationError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_SPARQL_SELECT_PLAN",
                 message: String(describing: planError),
@@ -173,7 +169,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if let compilationError = error as? SPARQLExpressionCompilationError {
-            let category: DatabaseErrorCategory
+            let category: OperationErrorCategory
             let code: String
             switch compilationError {
             case .resourceLimitExceeded:
@@ -183,7 +179,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 category = .invalidRequest
                 code = "INVALID_SPARQL_EXPRESSION"
             }
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: category,
                 code: code,
                 message: compilationError.description,
@@ -200,7 +196,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return Self.map(sparqlError)
         }
         if let scannerError = error as? RDFDatasetScannerError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .internalFailure,
                 code: "CORRUPTED_RDF_INDEX",
                 message: String(describing: scannerError),
@@ -216,16 +212,24 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let graphError = error as? DatabaseGraphAlgorithmError {
             return Self.map(graphError)
         }
-        if error is QueryParameterBindingError {
-            return DatabaseRemoteError(
+        if let bindingError = error as? QueryParameterBindingError {
+            if case .invalidStructure(let structuralError) = bindingError {
+                return RemoteOperationError(
+                    category: .resourceLimit,
+                    code: "QUERY_RESOURCE_LIMIT",
+                    message: structuralError.description,
+                    retryability: .never
+                )
+            }
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_QUERY_PARAMETER",
-                message: String(describing: error),
+                message: bindingError.description,
                 retryability: .never
             )
         }
         if let structuralError = error as? QueryStructuralValidationError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .resourceLimit,
                 code: "QUERY_RESOURCE_LIMIT",
                 message: structuralError.description,
@@ -233,7 +237,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if let semanticError = error as? SPARQLSemanticValidationError {
-            let category: DatabaseErrorCategory
+            let category: OperationErrorCategory
             let code: String
             switch semanticError {
             case .structural:
@@ -243,7 +247,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 category = .invalidRequest
                 code = "INVALID_SPARQL_SEMANTICS"
             }
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: category,
                 code: code,
                 message: semanticError.description,
@@ -251,7 +255,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if error is SQLParser.ParseError || error is SPARQLParser.ParseError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_QUERY_SYNTAX",
                 message: String(describing: error),
@@ -276,7 +280,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let contextError = error as? DatabaseContextError {
             return Self.map(contextError)
         }
-        if let identityError = error as? PersistableIdentityEncodingError {
+        if let identityError = error as? EntityReferenceEncodingError {
             return Self.map(identityError)
         }
         if let projectionError = error as? PolymorphicProjectionError {
@@ -298,7 +302,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return Self.map(compactionError)
         }
         if let registryError = error as? DatabaseResumableOperationRegistryError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "JOB_OPERATION_NOT_RESUMABLE",
                 message: registryError.description,
@@ -324,7 +328,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return Self.map(dataSourceError)
         }
         if let expressionError = error as? DatabaseExpressionEvaluationError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_MUTATION_EXPRESSION",
                 message: expressionError.description,
@@ -332,7 +336,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if error is SecurityError {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .authorization,
                 code: "ACCESS_DENIED",
                 message: String(describing: error),
@@ -346,7 +350,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return Self.map(referenceError)
         }
         if let storageError = error as? StorageError {
-            let retryability: DatabaseRetryability
+            let retryability: OperationRetryability
             switch storageError.retryDisposition {
             case .safe:
                 retryability = .backoff
@@ -355,7 +359,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             case .never:
                 retryability = .never
             }
-            let category: DatabaseErrorCategory
+            let category: OperationErrorCategory
             switch storageError.code {
             case .transactionTooLarge, .keyTooLarge, .valueTooLarge:
                 category = .resourceLimit
@@ -364,48 +368,38 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             default:
                 category = .unavailable
             }
-            var details: [DatabaseObjectField] = []
+            var detailFields: [(key: String, value: FieldValue)] = []
             if let backendCode = storageError.backendCode {
-                details.append(DatabaseObjectField(
-                    number: 1,
-                    name: "backendCode",
+                detailFields.append((key: "backendCode",
                     value: .int64(Int64(backendCode))
                 ))
             }
             if let byteLimitViolation = storageError.byteLimitViolation {
-                details.append(DatabaseObjectField(
-                    number: 2,
-                    name: "observedByteCount",
+                detailFields.append((key: "observedByteCount",
                     value: .uint64(byteLimitViolation.observedByteCount)
                 ))
-                details.append(DatabaseObjectField(
-                    number: 3,
-                    name: "maximumByteCount",
+                detailFields.append((key: "maximumByteCount",
                     value: .uint64(byteLimitViolation.maximumByteCount)
                 ))
-                details.append(DatabaseObjectField(
-                    number: 4,
-                    name: "resource",
+                detailFields.append((key: "resource",
                     value: .string(byteLimitViolation.resource.rawValue)
                 ))
-                details.append(DatabaseObjectField(
-                    number: 5,
-                    name: "measurement",
+                detailFields.append((key: "measurement",
                     value: .string(byteLimitViolation.measurement.rawValue)
                 ))
             }
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: category,
                 code: storageError.code.rawValue.uppercased(),
                 message: storageError.description,
                 retryability: retryability,
-                details: details
+                details: Self.errorDetails(detailFields)
             )
         }
         if let readError = error as? CanonicalReadError {
             return Self.map(readError)
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: .internalFailure,
             code: "SERVER_FAILURE",
             message: String(describing: error),
@@ -418,7 +412,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits,
         mappingDepth: Int
-    ) -> DatabaseRemoteError {
+    ) -> RemoteOperationError {
         let operationError = remoteError(
             for: error.operationError,
             context: context,
@@ -432,7 +426,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 limits.maximumObjectCount / 6
             )
         )
-        var cancellationErrors: [DatabaseRemoteError] = []
+        var cancellationErrors: [RemoteOperationError] = []
         cancellationErrors.reserveCapacity(
             min(error.cancellationErrors.count, maximumCancellationErrors)
         )
@@ -447,103 +441,97 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 )
             )
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: .internalFailure,
             code: "TRANSACTION_CLEANUP_FAILURE",
             message: "Transaction operation and cancellation both failed",
             retryability: .never,
-            details: [
-                DatabaseObjectField(
-                    number: 1,
-                    name: "operationError",
+            details: Self.errorDetails([
+                (key: "operationError",
                     value: .object(Self.fields(for: operationError))
                 ),
-                DatabaseObjectField(
-                    number: 2,
-                    name: "cancellationErrors",
+                (key: "cancellationErrors",
                     value: .array(
                         cancellationErrors.map {
                             .object(Self.fields(for: $0))
                         }
                     )
                 ),
-            ]
+            ])
         )
     }
 
     private static func fields(
-        for error: DatabaseRemoteError
-    ) -> [DatabaseObjectField] {
-        [
-            DatabaseObjectField(
-                number: 1,
-                name: "category",
+        for error: RemoteOperationError
+    ) -> FieldObject {
+        errorDetails([
+            (key: "category",
                 value: .uint64(UInt64(error.category.rawValue))
             ),
-            DatabaseObjectField(
-                number: 2,
-                name: "code",
+            (key: "code",
                 value: .string(error.code)
             ),
-            DatabaseObjectField(
-                number: 3,
-                name: "message",
+            (key: "message",
                 value: .string(error.message)
             ),
-            DatabaseObjectField(
-                number: 4,
-                name: "retryability",
+            (key: "retryability",
                 value: .uint64(UInt64(error.retryability.rawValue))
             ),
-            DatabaseObjectField(
-                number: 5,
-                name: "details",
+            (key: "details",
                 value: .object(error.details)
             ),
-        ]
+        ])
+    }
+
+    private static func errorDetails(
+        _ fields: consuming [(key: String, value: FieldValue)]
+    ) -> FieldObject {
+        do {
+            return try FieldObject(consume fields)
+        } catch {
+            preconditionFailure(
+                "Database error detail keys must be unique: \(error)"
+            )
+        }
     }
 
     private static func map(
         _ error: TransactionMutationByteLimitError
-    ) -> DatabaseRemoteError {
+    ) -> RemoteOperationError {
         switch error {
         case .exceeded(let actual, let maximum):
             guard let actualBytes = UInt64(exactly: actual),
                   let maximumBytes = UInt64(exactly: maximum) else {
-                return DatabaseRemoteError(
+                return RemoteOperationError(
                     category: .internalFailure,
                     code: "MUTATION_ADMISSION_INVARIANT_VIOLATION",
                     message: error.description,
                     retryability: .never
                 )
             }
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .resourceLimit,
                 code: "MUTATION_AGGREGATE_TOO_LARGE",
                 message: error.description,
                 retryability: .never,
-                details: [
-                    DatabaseObjectField(
-                        number: 1,
-                        name: "actualBytes",
+                details: Self.errorDetails([
+                    (key: "actualBytes",
                         value: .uint64(actualBytes)
                     ),
-                    DatabaseObjectField(
-                        number: 2,
-                        name: "maximumBytes",
+                    (key: "maximumBytes",
                         value: .uint64(maximumBytes)
                     ),
-                ]
+                ])
             )
         case .invalidMaximum:
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .internalFailure,
                 code: "MUTATION_ADMISSION_CONFIGURATION_FAILURE",
                 message: error.description,
                 retryability: .never
             )
         case .alreadyConfigured, .configurationAfterAdmission:
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .internalFailure,
                 code: "MUTATION_ADMISSION_STATE_FAILURE",
                 message: error.description,
@@ -554,7 +542,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseStorageLimitError
-    ) -> DatabaseRemoteError {
+    ) -> RemoteOperationError {
         let code: String
         let actual: Int
         let maximum: Int
@@ -570,39 +558,35 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         }
         guard let actualBytes = UInt64(exactly: actual),
               let maximumBytes = UInt64(exactly: maximum) else {
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .internalFailure,
                 code: "STORAGE_LIMIT_INVARIANT_VIOLATION",
                 message: error.description,
                 retryability: .never
             )
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: .resourceLimit,
             code: code,
             message: error.description,
             retryability: .never,
-            details: [
-                DatabaseObjectField(
-                    number: 1,
-                    name: "actualBytes",
+            details: Self.errorDetails([
+                (key: "actualBytes",
                     value: .uint64(actualBytes)
                 ),
-                DatabaseObjectField(
-                    number: 2,
-                    name: "maximumBytes",
+                (key: "maximumBytes",
                     value: .uint64(maximumBytes)
                 ),
-            ]
+            ])
         )
     }
 
     private static func map(
         _ error: SPARQLLoadSourceError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
-        let retryability: DatabaseRetryability
+        let retryability: OperationRetryability
         switch error {
         case .notConfigured:
             category = .internalFailure
@@ -633,7 +617,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             code = "SPARQL_LOAD_SOURCE_FAILURE"
             retryability = .never
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -643,8 +627,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: SPARQLUpdateError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .unresolvedPrefixedName, .variableInGroundData,
@@ -655,7 +639,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "SPARQL_UPDATE_RUNTIME_FAILURE"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -665,8 +649,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: RDFGraphStoreError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .graphAlreadyExists:
@@ -689,7 +673,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "RDF_GRAPH_STORE_FAILURE"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: String(describing: error),
@@ -699,8 +683,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseQueryExecutionError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .rdfLiteralTooLarge:
@@ -716,7 +700,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_QUERY"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -726,8 +710,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: SPARQLLiteralConversionError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .literalTooLarge:
@@ -738,7 +722,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_RDF_LITERAL"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: String(describing: error),
@@ -748,8 +732,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: SPARQLExpressionEvaluationError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .resourceLimitExceeded:
@@ -766,7 +750,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_SPARQL_EXPRESSION"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -776,8 +760,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: SPARQLQueryError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .propertyPathExpressionDepthLimitExceeded,
@@ -796,7 +780,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_SPARQL_QUERY"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -806,8 +790,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: XSDValidationFailure
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .resourceLimitExceeded:
@@ -817,7 +801,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_XSD_VALUE"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -825,8 +809,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         )
     }
 
-    private static func map(_ error: DatabaseMutationError) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    private static func map(_ error: DatabaseMutationError) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .emptyMutation:
@@ -885,7 +869,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_MUTATION_FIELDS"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -895,8 +879,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseTransactionError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .concurrentOperation:
@@ -936,7 +920,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .conflict
             code = "DERIVED_MUTATION_CONFLICT"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: String(describing: error),
@@ -946,10 +930,10 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseContextError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
-        let retryability: DatabaseRetryability
+        let retryability: OperationRetryability
         switch error {
         case .concurrentSaveNotAllowed:
             category = .internalFailure
@@ -976,7 +960,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             code = "PRECONDITION_FAILED"
             retryability = .never
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -985,18 +969,18 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
     }
 
     private static func map(
-        _ error: PersistableIdentityEncodingError
-    ) -> DatabaseRemoteError {
+        _ error: EntityReferenceEncodingError
+    ) -> RemoteOperationError {
         switch error {
         case .invalidCompiledSchema:
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .internalFailure,
                 code: "PERSISTABLE_SCHEMA_INVALID",
                 message: String(describing: error),
                 retryability: .never
             )
         case .identifierNotRepresentable:
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_PERSISTED_IDENTITY",
                 message: String(describing: error),
@@ -1007,7 +991,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: PolymorphicProjectionError
-    ) -> DatabaseRemoteError {
+    ) -> RemoteOperationError {
         let code: String
         switch error {
         case .missingProjection:
@@ -1015,7 +999,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .unexpectedProjection:
             code = "POLYMORPHIC_PROJECTION_UNEXPECTED"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: .internalFailure,
             code: code,
             message: String(describing: error),
@@ -1025,8 +1009,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: RelationshipError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .deleteRuleDenied:
@@ -1042,7 +1026,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "RELATIONSHIP_CATALOG_CORRUPTED"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -1052,8 +1036,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: RelationshipReferenceError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .unknownRelatedEntity:
@@ -1105,7 +1089,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "RELATIONSHIP_PROJECTION_DECODING_FAILED"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: String(describing: error),
@@ -1115,8 +1099,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseJobRuntimeError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .jobNotFound:
@@ -1143,7 +1127,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "JOB_RUNTIME_FAILURE"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -1153,8 +1137,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseMaintenanceRuntimeError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .compactionRequiresJob:
@@ -1171,7 +1155,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_MAINTENANCE_REQUEST"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: String(describing: error),
@@ -1181,8 +1165,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseIndexRebuildError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .entityNotFound, .indexNotFound:
@@ -1204,7 +1188,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "INDEX_REBUILD_FAILURE"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: String(describing: error),
@@ -1214,8 +1198,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabasePartitionCatalogError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .invalidEntity, .invalidPartitions, .invalidContinuation,
@@ -1226,7 +1210,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "PARTITION_CATALOG_FAILURE"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: String(describing: error),
@@ -1236,10 +1220,10 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseStorageCompactionError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
-        let retryability: DatabaseRetryability
+        let retryability: OperationRetryability
         switch error {
         case .invalidContinuation, .unsupportedContinuationVersion,
              .incompatibleContinuation:
@@ -1267,7 +1251,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             code = "COMPACTION_BACKEND_FAILURE"
             retryability = .backoff
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: String(describing: error),
@@ -1277,8 +1261,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseGraphQueryError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .continuationSnapshotChanged:
@@ -1293,7 +1277,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_QUERY_CONTINUATION"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -1303,8 +1287,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseGraphAlgorithmError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .sourceIndexNotFound:
@@ -1332,7 +1316,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_GRAPH_REQUEST"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -1342,17 +1326,17 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseCommandRegistryError
-    ) -> DatabaseRemoteError {
+    ) -> RemoteOperationError {
         switch error {
         case .commandNotFound:
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .notFound,
                 code: "COMMAND_NOT_FOUND",
                 message: error.description,
                 retryability: .never
             )
-        case .emptyIdentifier, .duplicate:
-            return DatabaseRemoteError(
+        case .duplicate:
+            return RemoteOperationError(
                 category: .internalFailure,
                 code: "COMMAND_CONFIGURATION_INVALID",
                 message: error.description,
@@ -1363,8 +1347,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseRDFDocumentStoreError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .documentNotFound:
@@ -1380,7 +1364,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "RDF_DOCUMENT_STORE_FAILURE"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -1390,8 +1374,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseOntologyProcessingError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .ontologyNotFound, .importedOntologyNotFound, .resourceNotFound:
@@ -1411,7 +1395,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_ONTOLOGY"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -1421,8 +1405,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseSHACLValidationError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .shapesGraphNotFound:
@@ -1443,7 +1427,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_SHACL_SHAPES"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -1451,8 +1435,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         )
     }
 
-    private static func map(_ error: SHACLError) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    private static func map(_ error: SHACLError) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .resourceLimitExceeded:
@@ -1475,7 +1459,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "SHACL_RUNTIME_FAILURE"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -1485,8 +1469,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(
         _ error: DatabaseSHACLDataSourceError
-    ) -> DatabaseRemoteError {
-        let category: DatabaseErrorCategory
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
         let code: String
         switch error {
         case .schemaEntityNotFound, .indexNotFound, .focusEntityNotFound:
@@ -1501,7 +1485,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_SHACL_DATA_SOURCE"
         }
-        return DatabaseRemoteError(
+        return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
@@ -1509,38 +1493,38 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         )
     }
 
-    private static func map(_ error: CanonicalReadError) -> DatabaseRemoteError {
+    private static func map(_ error: CanonicalReadError) -> RemoteOperationError {
         switch error {
         case .invalidContinuation:
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_CONTINUATION",
                 message: "The query continuation is invalid",
                 retryability: .never
             )
         case .unsupportedSelectQuery(let reason):
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "UNSUPPORTED_QUERY",
                 message: reason,
                 retryability: .never
             )
         case .unsupportedSource(let reason):
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "UNSUPPORTED_SOURCE",
                 message: reason,
                 retryability: .never
             )
         case .invalidPartition(let entity, let reason):
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_PARTITION",
                 message: "Invalid partition for '\(entity)': \(reason)",
                 retryability: .never
             )
         default:
-            return DatabaseRemoteError(
+            return RemoteOperationError(
                 category: .internalFailure,
                 code: "QUERY_FAILURE",
                 message: String(describing: error),

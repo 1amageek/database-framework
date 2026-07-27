@@ -17,8 +17,12 @@ in-memory engine, or another StorageEngine implementation.
 
 The package separates application behavior from storage deployment:
 
+    database-types
+      FieldValue and portable database primitives
+            |
+            v
     database-kit
-      Models, schema metadata, IndexKind, QueryIR, DatabaseWire
+      Model contracts, schema metadata, EntityReference, QueryIR, DatabaseWire
             |
             v
     database-framework
@@ -83,7 +87,7 @@ documented semantic mapping.
 
 ### Requirements
 
-- Swift 6.2 or later
+- Swift 6.4 development snapshot baseline and matching Swift SDK
 - macOS 26 or later, iOS 26 or later, or a supported Linux Swift toolchain
 - One StorageKit backend selected for the target
 
@@ -108,26 +112,41 @@ The model and application code are backend-neutral:
     @Persistable
     struct User {
         #Directory<User>("app", "users")
-        #Index(ScalarIndexKind<User>(fields: [\.email]), unique: true)
+        #Index(
+            .scalar,
+            fields: [\User.email],
+            unique: true,
+            name: "User_email"
+        )
 
+        var id: String = ""
         var email: String
         var name: String
     }
 
-    let schema = Schema([User.self])
+    let schema = try Schema(
+        entities: [try User.schemaEntity],
+        version: .init(1, 0, 0)
+    )
+    let runtime = try DatabaseFrameworkRuntime.configuration(
+        persistableTypes: [User.self]
+    )
 
     // Supply a backend-specific configuration here.
-    let container = try await DBContainer(
+    let container = try await DBContainer.open(
         for: schema,
-        configuration: DBConfiguration(backend: .custom(engine))
+        configuration: DBConfiguration(backend: .custom(engine)),
+        runtimeConfiguration: runtime
     )
 
     let context = container.newContext()
-    context.insert(User(email: "alice@example.com", name: "Alice"))
+    try context.insert(
+        User(id: "alice", email: "alice@example.com", name: "Alice")
+    )
     try await context.save()
 
     let users = try await context.fetch(User.self)
-        .where(\.name == "Alice")
+        .where(User.fields.name == "Alice")
         .execute()
 
 The engine in the example is intentionally abstract. Choose one of the
@@ -141,25 +160,30 @@ FoundationDB is the default trait. It provides distributed transactions,
 native versionstamps, and the dynamic FoundationDB DirectoryLayer.
 
     swift build
-    swift test
+    xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS'
 
     import Database
 
-    let container = try await DBContainer(for: schema)
+    let container = try await DBContainer.open(
+        for: schema,
+        runtimeConfiguration: runtime
+    )
 
 The explicit form is useful when supplying FoundationDB configuration:
 
     let configuration = DBConfiguration(backend: .fdb())
-    let container = try await DBContainer(
+    let container = try await DBContainer.open(
         for: schema,
-        configuration: configuration
+        configuration: configuration,
+        runtimeConfiguration: runtime
     )
 
 For local testing, the repository includes an isolated cluster wrapper:
 
     scripts/fdb-test-env run --clean -- \
-      perl -e 'alarm shift; exec @ARGV' 240 \
-      swift test --filter FDBContextTests
+      perl -e 'alarm shift; exec @ARGV' 120 \
+      xcodebuild test -scheme DatabaseCoreFocused \
+        -destination 'platform=macOS,arch=arm64'
 
 ### SQLite
 
@@ -167,23 +191,25 @@ SQLite is the local and embedded backend. It does not load libfdb_c and does
 not require a FoundationDB process.
 
     swift build --traits SQLite
-    swift test --traits SQLite
+    xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS'
 
     import Database
     import SQLiteStorage
 
-    let container = try await DBContainer(
+    let container = try await DBContainer.open(
         for: schema,
         configuration: SQLiteStorageEngine.Configuration.file(
             "/path/to/application.sqlite"
-        )
+        ),
+        runtimeConfiguration: runtime
     )
 
 For tests and disposable processes:
 
-    let container = try await DBContainer(
+    let container = try await DBContainer.open(
         for: schema,
-        configuration: SQLiteStorageEngine.Configuration.inMemory
+        configuration: SQLiteStorageEngine.Configuration.inMemory,
+        runtimeConfiguration: runtime
     )
 
 ### PostgreSQL and Cloud SQL
@@ -194,7 +220,7 @@ consistency model. It can connect over TCP, a Unix domain socket, or the
 Cloud SQL socket mounted into Cloud Run.
 
     swift build --traits PostgreSQL
-    swift test --traits PostgreSQL
+    xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
 
     import Database
     import PostgreSQLStorage
@@ -208,9 +234,10 @@ Cloud SQL socket mounted into Cloud Run.
         schemaManagement: .createIfNeeded
     )
 
-    let container = try await DBContainer(
+    let container = try await DBContainer.open(
         for: schema,
-        configuration: postgres
+        configuration: postgres,
+        runtimeConfiguration: runtime
     )
 
 Cloud Run with Cloud SQL uses the same DBContainer API; only the storage
@@ -224,9 +251,10 @@ configuration changes:
         schemaManagement: .assumeExists
     )
 
-    let container = try await DBContainer(
+    let container = try await DBContainer.open(
         for: schema,
-        configuration: postgres
+        configuration: postgres,
+        runtimeConfiguration: runtime
     )
 
 Use assumeExists when the Cloud SQL role is restricted to DML and the KV table
@@ -243,9 +271,10 @@ tests, local tools, storage proxies, and future backends.
     import StorageKit
 
     let engine = InMemoryEngine()
-    let container = try await DBContainer(
+    let container = try await DBContainer.open(
         for: schema,
-        configuration: DBConfiguration(backend: .custom(engine))
+        configuration: DBConfiguration(backend: .custom(engine)),
+        runtimeConfiguration: runtime
     )
 
 The same injection path is used for a custom remote or host-provided engine:
@@ -255,9 +284,10 @@ The same injection path is used for a custom remote or host-provided engine:
         backend: .custom(customEngine),
         indexConfigurations: [vectorConfiguration]
     )
-    let container = try await DBContainer(
+    let container = try await DBContainer.open(
         for: schema,
-        configuration: configuration
+        configuration: configuration,
+        runtimeConfiguration: runtime
     )
 
 ## Transaction and Context Model
@@ -278,9 +308,9 @@ for transactions.
 
     let context = container.newContext()
 
-    context.insert(user)
-    context.insert(order)
-    context.delete(previousUser)
+    try context.insert(user)
+    try context.insert(order)
+    try context.delete(previousUser)
 
     // All staged mutations are committed as one transaction.
     try await context.save()
@@ -322,10 +352,15 @@ Index declarations remain independent of backend choice:
     @Persistable
     struct Document {
         #Directory<Document>("app", "documents")
-        #Index(VectorIndexKind<Document>(embedding: \.embedding, dimensions: 1536))
+        #Index(
+            .vector(dimensions: 1536),
+            embedding: \Document.embedding,
+            name: "Document_embedding"
+        )
 
+        var id: String = ""
         var title: String
-        var embedding: [Float]
+        var embedding: Vector
     }
 
 Backend capability differences are handled at the storage boundary. FoundationDB
@@ -441,15 +476,17 @@ products when compile time and dependency size matter.
 
     # FoundationDB trait (default)
     swift build
-    swift test
 
     # SQLite: no FoundationDB process required
     swift build --traits SQLite
-    swift test --traits SQLite
 
     # PostgreSQL: requires a reachable PostgreSQL instance
     swift build --traits PostgreSQL
-    swift test --traits PostgreSQL
+
+    # Native test suite (120-second timeout)
+    perl -e 'alarm shift; exec @ARGV' 120 \
+      xcodebuild test -scheme DatabaseCoreFocused \
+        -destination 'platform=macOS,arch=arm64'
 
     # Release build for the selected traits
     swift build -c release
@@ -466,9 +503,9 @@ Performance benchmarks are in the PerformanceBenchmarks test target. Results
 depend on the selected backend and must not be compared across backends as if
 they were the same deployment.
 
-    swift test --filter 'PerformanceBenchmarks.CoveringIndexBenchmark'
-    swift test --filter 'PerformanceBenchmarks.IndexedQueryAndWriteBenchmarkTests'
-    swift test --filter 'PerformanceBenchmarks.SerializationBenchmark'
+    xcodebuild test -scheme DatabaseCoreFocused \
+      -destination 'platform=macOS,arch=arm64' \
+      -only-testing:PerformanceBenchmarks
 
 The latest checked-in snapshot is documented in the individual index READMEs.
 FoundationDB benchmark numbers describe a local Docker cluster and are not a

@@ -154,7 +154,7 @@ let similar = try await context.findSimilar(Image.self)
 | 10K - 1M | HNSW | ~95-99% | O(log n) |
 | > 1M | HNSW + Sharding | ~95-99% | O(log n) |
 
-**Configuration via IndexConfiguration**:
+**Configuration via IndexRuntimeConfiguration**:
 ```swift
 // At container initialization
 let vectorConfig = VectorIndexConfiguration<Product>(

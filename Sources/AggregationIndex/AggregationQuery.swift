@@ -7,7 +7,8 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseEngine
-import Core
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 // MARK: - Aggregation Query Builder
@@ -19,25 +20,25 @@ import StorageKit
 /// import AggregationIndex
 ///
 /// let stats = try await context.aggregate(Order.self)
-///     .groupBy(\.region)
+///     .groupBy(Order.fields.region)
 ///     .count(as: "orderCount")
-///     .sum(\.amount, as: "totalSales")
+///     .sum(Order.fields.amount, as: "totalSales")
 ///     .having { $0.aggregateInt64("orderCount") ?? 0 > 10 }
 ///     .execute()
 /// // Returns: [AggregateResult<Order>]
 /// ```
 ///
 /// **Type Preservation**:
-/// - Group keys retain original types via `FieldValue` (int64, double, string, bool, data)
+/// - Group keys retain their canonical `FieldValue` representation.
 /// - Aggregates return typed results:
 ///   - count: `FieldValue.int64`
-///   - sum: exact integer type for integer inputs, `FieldValue.double` for floating-point inputs
-///   - avg: exact integer when integral, otherwise an exactly convertible `FieldValue.double`
+///   - sum: exact integer result for integer inputs, `FieldValue.float64` for floating-point inputs
+///   - avg: exact integer when integral, otherwise an exactly convertible `FieldValue.float64`
 ///   - min/max: `FieldValue?` (original type, nil for empty groups)
 ///   - sum/avg/min/max: `nil` when every input is null
 ///
 /// **Grouping Behavior**:
-/// - Empty `groupByFieldNames`: All items grouped into single group (global aggregation)
+/// - Empty grouping fields: All items grouped into single group (global aggregation)
 /// - Null field values: Treated as `FieldValue.null` and grouped together
 ///
 /// **Numeric Type Support** (via FieldValue):
@@ -45,9 +46,13 @@ import StorageKit
 /// - Floating-point: Float, Double
 public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
-    private var groupByFieldNames: [String] = []
+    private var groupByFields: [FieldIdentity] = []
     private var aggregations: [AggregationSpec] = []
     private var havingPredicate: (@Sendable (AggregateResult<T>) -> Bool)?
+
+    private var groupByFieldNames: [String] {
+        groupByFields.map(\.name)
+    }
 
     /// Forced index name (set via AggregationEntryPoint.using(index:))
     internal var forcedIndexName: String?
@@ -64,11 +69,11 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
     /// Add a field to GROUP BY
     ///
-    /// - Parameter keyPath: KeyPath to the field to group by
+    /// - Parameter field: Typed field to group by
     /// - Returns: Updated query builder
-    public func groupBy<V>(_ keyPath: KeyPath<T, V>) -> Self {
+    public func groupBy<V>(_ field: Field<T, V>) -> Self {
         var copy = self
-        copy.groupByFieldNames.append(T.fieldName(for: keyPath))
+        copy.groupByFields.append(field.identity)
         return copy
     }
 
@@ -85,14 +90,31 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     /// Add a SUM aggregation
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the numeric field to sum
+    ///   - field: Typed numeric field to sum
     ///   - name: Name for the aggregation result (defaults to "sum_fieldName")
     /// - Returns: Updated query builder
-    public func sum<V: IndexNumericValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> Self {
+    public func sum<V: IndexNumericValue>(
+        _ field: Field<T, V>,
+        as name: String? = nil
+    ) -> Self {
         var copy = self
-        let fieldName = T.fieldName(for: keyPath)
+        let fieldName = field.name
         let aggName = name ?? "sum_\(fieldName)"
-        copy.aggregations.append(AggregationSpec(name: aggName, type: .sum(field: fieldName)))
+        copy.aggregations.append(
+            AggregationSpec(name: aggName, type: .sum(field: field.identity))
+        )
+        return copy
+    }
+
+    public func sum<V: IndexNumericValue>(
+        _ field: Field<T, V?>,
+        as name: String? = nil
+    ) -> Self {
+        var copy = self
+        let aggName = name ?? "sum_\(field.name)"
+        copy.aggregations.append(
+            AggregationSpec(name: aggName, type: .sum(field: field.identity))
+        )
         return copy
     }
 
@@ -102,11 +124,28 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     ///   - keyPath: KeyPath to the numeric field to average
     ///   - name: Name for the aggregation result (defaults to "avg_fieldName")
     /// - Returns: Updated query builder
-    public func avg<V: IndexNumericValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> Self {
+    public func avg<V: IndexNumericValue>(
+        _ field: Field<T, V>,
+        as name: String? = nil
+    ) -> Self {
         var copy = self
-        let fieldName = T.fieldName(for: keyPath)
+        let fieldName = field.name
         let aggName = name ?? "avg_\(fieldName)"
-        copy.aggregations.append(AggregationSpec(name: aggName, type: .avg(field: fieldName)))
+        copy.aggregations.append(
+            AggregationSpec(name: aggName, type: .avg(field: field.identity))
+        )
+        return copy
+    }
+
+    public func avg<V: IndexNumericValue>(
+        _ field: Field<T, V?>,
+        as name: String? = nil
+    ) -> Self {
+        var copy = self
+        let aggName = name ?? "avg_\(field.name)"
+        copy.aggregations.append(
+            AggregationSpec(name: aggName, type: .avg(field: field.identity))
+        )
         return copy
     }
 
@@ -116,11 +155,28 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     ///   - keyPath: KeyPath to the comparable field
     ///   - name: Name for the aggregation result (defaults to "min_fieldName")
     /// - Returns: Updated query builder
-    public func min<V: IndexComparableValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> Self {
+    public func min<V: IndexComparableValue>(
+        _ field: Field<T, V>,
+        as name: String? = nil
+    ) -> Self {
         var copy = self
-        let fieldName = T.fieldName(for: keyPath)
+        let fieldName = field.name
         let aggName = name ?? "min_\(fieldName)"
-        copy.aggregations.append(AggregationSpec(name: aggName, type: .min(field: fieldName)))
+        copy.aggregations.append(
+            AggregationSpec(name: aggName, type: .min(field: field.identity))
+        )
+        return copy
+    }
+
+    public func min<V: IndexComparableValue>(
+        _ field: Field<T, V?>,
+        as name: String? = nil
+    ) -> Self {
+        var copy = self
+        let aggName = name ?? "min_\(field.name)"
+        copy.aggregations.append(
+            AggregationSpec(name: aggName, type: .min(field: field.identity))
+        )
         return copy
     }
 
@@ -130,11 +186,28 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     ///   - keyPath: KeyPath to the comparable field
     ///   - name: Name for the aggregation result (defaults to "max_fieldName")
     /// - Returns: Updated query builder
-    public func max<V: IndexComparableValue>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> Self {
+    public func max<V: IndexComparableValue>(
+        _ field: Field<T, V>,
+        as name: String? = nil
+    ) -> Self {
         var copy = self
-        let fieldName = T.fieldName(for: keyPath)
+        let fieldName = field.name
         let aggName = name ?? "max_\(fieldName)"
-        copy.aggregations.append(AggregationSpec(name: aggName, type: .max(field: fieldName)))
+        copy.aggregations.append(
+            AggregationSpec(name: aggName, type: .max(field: field.identity))
+        )
+        return copy
+    }
+
+    public func max<V: IndexComparableValue>(
+        _ field: Field<T, V?>,
+        as name: String? = nil
+    ) -> Self {
+        var copy = self
+        let aggName = name ?? "max_\(field.name)"
+        copy.aggregations.append(
+            AggregationSpec(name: aggName, type: .max(field: field.identity))
+        )
         return copy
     }
 
@@ -150,11 +223,16 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     ///
     /// **Note**: In-memory computation is exact. Precomputed index (HyperLogLog++)
     /// provides approximate results with ~1% error but O(1) lookup.
-    public func distinct<V>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> Self {
+    public func distinct<V>(
+        _ field: Field<T, V>,
+        as name: String? = nil
+    ) -> Self {
         var copy = self
-        let fieldName = T.fieldName(for: keyPath)
+        let fieldName = field.name
         let aggName = name ?? "distinct_\(fieldName)"
-        copy.aggregations.append(AggregationSpec(name: aggName, type: .distinct(field: fieldName)))
+        copy.aggregations.append(
+            AggregationSpec(name: aggName, type: .distinct(field: field.identity))
+        )
         return copy
     }
 
@@ -171,15 +249,44 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     ///
     /// **Note**: In-memory computation is exact. Precomputed index (t-digest)
     /// provides approximate results with high accuracy at extremes.
-    public func percentile<V: IndexNumericValue>(_ keyPath: KeyPath<T, V>, p: Double, as name: String? = nil) -> Self {
+    public func percentile<V: IndexNumericValue>(
+        _ field: Field<T, V>,
+        p: Double,
+        as name: String? = nil
+    ) -> Self {
         var copy = self
-        let fieldName = T.fieldName(for: keyPath)
+        let fieldName = field.name
         let percentileLabel = DatabaseTextFormatting.fixedDecimal(
             p * 100,
             fractionDigits: 0
         )
         let aggName = name ?? "p\(percentileLabel)_\(fieldName)"
-        copy.aggregations.append(AggregationSpec(name: aggName, type: .percentile(field: fieldName, percentile: p)))
+        copy.aggregations.append(
+            AggregationSpec(
+                name: aggName,
+                type: .percentile(field: field.identity, percentile: p)
+            )
+        )
+        return copy
+    }
+
+    public func percentile<V: IndexNumericValue>(
+        _ field: Field<T, V?>,
+        p: Double,
+        as name: String? = nil
+    ) -> Self {
+        var copy = self
+        let percentileLabel = DatabaseTextFormatting.fixedDecimal(
+            p * 100,
+            fractionDigits: 0
+        )
+        let aggName = name ?? "p\(percentileLabel)_\(field.name)"
+        copy.aggregations.append(
+            AggregationSpec(
+                name: aggName,
+                type: .percentile(field: field.identity, percentile: p)
+            )
+        )
         return copy
     }
 
@@ -254,7 +361,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         for item in items {
             let groupFieldValues = try CanonicalAggregationReducer.groupIdentity(
                 item: item,
-                fields: groupByFieldNames
+                fields: groupByFields
             )
 
             groups[groupFieldValues, default: []].append(item)
@@ -373,17 +480,17 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         case .count:
             return nil
         case .sum(let field):
-            return field
+            return field.name
         case .avg(let field):
-            return field
+            return field.name
         case .min(let field):
-            return field
+            return field.name
         case .max(let field):
-            return field
+            return field.name
         case .distinct(let field):
-            return field
+            return field.name
         case .percentile(let field, _):
-            return field
+            return field.name
         }
     }
 
@@ -627,10 +734,10 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
                     return (result.grouping, nil)
                 }
                 try CanonicalAggregationReducer.validate(
-                    value: .double(value),
+                    value: .float64(value),
                     field: index.name
                 )
-                return (result.grouping, FieldValue.double(value))
+                return (result.grouping, FieldValue.float64(value))
             }
 
         case .min:
@@ -672,8 +779,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         switch valueType {
-        case .int:
-            return try await querySums(Int.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+
         case .int8:
             return try await querySums(Int8.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .int16:
@@ -682,8 +788,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             return try await querySums(Int32.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .int64:
             return try await querySums(Int64.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .uint:
-            return try await querySums(UInt.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+
         case .uint8:
             return try await querySums(UInt8.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .uint16:
@@ -692,11 +797,11 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             return try await querySums(UInt32.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .uint64:
             return try await querySums(UInt64.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .float:
+        case .float32:
             return try await querySums(Float.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .double:
+        case .float64:
             return try await querySums(Double.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .string, .date:
+        case .string, .date, .timestamp:
             throw AggregationQueryError.invalidIndexMetadata(index.name)
         }
     }
@@ -731,8 +836,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         switch valueType {
-        case .int:
-            return try await queryAverages(Int.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+
         case .int8:
             return try await queryAverages(Int8.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .int16:
@@ -741,8 +845,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             return try await queryAverages(Int32.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .int64:
             return try await queryAverages(Int64.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .uint:
-            return try await queryAverages(UInt.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+
         case .uint8:
             return try await queryAverages(UInt8.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .uint16:
@@ -751,11 +854,11 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             return try await queryAverages(UInt32.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .uint64:
             return try await queryAverages(UInt64.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .float:
+        case .float32:
             return try await queryAverages(Float.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .double:
+        case .float64:
             return try await queryAverages(Double.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .string, .date:
+        case .string, .date, .timestamp:
             throw AggregationQueryError.invalidIndexMetadata(index.name)
         }
     }
@@ -792,8 +895,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         switch valueType {
-        case .int:
-            return try await queryMinimums(Int.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+
         case .int8:
             return try await queryMinimums(Int8.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .int16:
@@ -802,8 +904,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             return try await queryMinimums(Int32.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .int64:
             return try await queryMinimums(Int64.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .uint:
-            return try await queryMinimums(UInt.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+
         case .uint8:
             return try await queryMinimums(UInt8.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .uint16:
@@ -812,14 +913,16 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             return try await queryMinimums(UInt32.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .uint64:
             return try await queryMinimums(UInt64.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .float:
+        case .float32:
             return try await queryMinimums(Float.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .double:
+        case .float64:
             return try await queryMinimums(Double.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .string:
             return try await queryMinimums(String.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .date:
-            return try await queryMinimums(Date.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+            return try await queryMinimums(CivilDate.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+        case .timestamp:
+            return try await queryMinimums(Timestamp.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         }
     }
 
@@ -853,8 +956,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
         switch valueType {
-        case .int:
-            return try await queryMaximums(Int.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+
         case .int8:
             return try await queryMaximums(Int8.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .int16:
@@ -863,8 +965,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             return try await queryMaximums(Int32.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .int64:
             return try await queryMaximums(Int64.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .uint:
-            return try await queryMaximums(UInt.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+
         case .uint8:
             return try await queryMaximums(UInt8.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .uint16:
@@ -873,14 +974,16 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             return try await queryMaximums(UInt32.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .uint64:
             return try await queryMaximums(UInt64.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .float:
+        case .float32:
             return try await queryMaximums(Float.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
-        case .double:
+        case .float64:
             return try await queryMaximums(Double.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .string:
             return try await queryMaximums(String.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .date:
-            return try await queryMaximums(Date.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+            return try await queryMaximums(CivilDate.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
+        case .timestamp:
+            return try await queryMaximums(Timestamp.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         }
     }
 
@@ -962,7 +1065,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         }
 
         switch schema.type {
-        case .uint, .uint8, .uint16, .uint32, .uint64:
+        case .uint8, .uint16, .uint32, .uint64:
             let unsigned: UInt64
             switch value {
             case .int64(let signed) where signed >= 0:
@@ -979,9 +1082,22 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
                 schemaType: schema.type,
                 fieldName: fieldName
             )
-            return .uint64(unsigned)
+            switch schema.type {
+            case .uint8:
+                return .uint8(UInt8(unsigned))
+            case .uint16:
+                return .uint16(UInt16(unsigned))
+            case .uint32:
+                return .uint32(UInt32(unsigned))
+            case .uint64:
+                return .uint64(unsigned)
+            default:
+                throw AggregationQueryError.invalidIndexMetadata(
+                    "Unsigned group field '\(fieldName)' has invalid schema"
+                )
+            }
 
-        case .int, .int8, .int16, .int32, .int64:
+        case .int8, .int16, .int32, .int64:
             let signed: Int64
             switch value {
             case .int64(let stored):
@@ -1003,10 +1119,26 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
                 schemaType: schema.type,
                 fieldName: fieldName
             )
-            return .int64(signed)
+            switch schema.type {
+            case .int8:
+                return .int8(Int8(signed))
+            case .int16:
+                return .int16(Int16(signed))
+            case .int32:
+                return .int32(Int32(signed))
+            case .int64:
+                return .int64(signed)
+            default:
+                throw AggregationQueryError.invalidIndexMetadata(
+                    "Signed group field '\(fieldName)' has invalid schema"
+                )
+            }
 
-        case .string, .double, .float, .bool, .date, .uuid, .data,
-             .rdfTerm, .reference, .nested, .enum:
+        case .bool, .float32, .float64, .decimal, .string, .bytes,
+             .date, .time, .dateTime, .timestamp, .timeSpan,
+             .calendarPeriod, .geographicPoint, .geographicPosition,
+             .vector, .uuid, .object, .rdfTerm, .reference, .nested,
+             .enum:
             return value
         }
     }
@@ -1024,7 +1156,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             maximum = UInt64(UInt16.max)
         case .uint32:
             maximum = UInt64(UInt32.max)
-        case .uint, .uint64:
+        case .uint64:
             maximum = nil
         default:
             throw AggregationQueryError.invalidIndexMetadata(
@@ -1051,7 +1183,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             range = Int64(Int16.min)...Int64(Int16.max)
         case .int32:
             range = Int64(Int32.min)...Int64(Int32.max)
-        case .int, .int64:
+        case .int64:
             range = nil
         default:
             throw AggregationQueryError.invalidIndexMetadata(
@@ -1123,6 +1255,12 @@ public enum AggregationQueryError: Error, Sendable, Equatable, CustomStringConve
     /// A persisted field cannot be represented by the canonical aggregation value model.
     case invalidFieldValue(field: String, reason: TypeConversionError)
 
+    /// A compiled model failed to encode a schema-identified persisted field.
+    case persistedFieldEncodingFailed(
+        field: String,
+        reason: PersistableEncodingError
+    )
+
     /// A numeric aggregation received a non-numeric value.
     case nonNumericValue(field: String, value: FieldValue)
 
@@ -1160,6 +1298,8 @@ public enum AggregationQueryError: Error, Sendable, Equatable, CustomStringConve
             return "Aggregation index metadata is invalid: \(name)"
         case .invalidFieldValue(let field, let reason):
             return "Field '\(field)' cannot be converted for aggregation: \(reason)"
+        case .persistedFieldEncodingFailed(let field, let reason):
+            return "Field '\(field)' could not be encoded for aggregation: \(reason)"
         case .nonNumericValue(let field, let value):
             return "Field '\(field)' contains a non-numeric aggregation value: \(value)"
         case .nonFiniteNumericValue(let field):

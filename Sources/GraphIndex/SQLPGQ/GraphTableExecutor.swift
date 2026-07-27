@@ -1,12 +1,12 @@
 /// GraphTableExecutor.swift
 /// SQL/PGQ GRAPH_TABLE query executor
 
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
-import QueryIR
+import DatabaseKit
 
 // MARK: - GraphTableRow
 
@@ -22,7 +22,7 @@ public struct GraphTableRow: Sendable {
     public let edgeLabel: String
 
     /// Properties from edge
-    public let properties: [String: DatabaseValue]
+    public let properties: [String: FieldValue]
 
     /// Flattened row fields used by canonical graph-table projection.
     public let fields: [String: FieldValue]
@@ -31,7 +31,7 @@ public struct GraphTableRow: Sendable {
         source: String,
         target: String,
         edgeLabel: String,
-        properties: [String: DatabaseValue],
+        properties: [String: FieldValue],
         fields: [String: FieldValue]? = nil
     ) throws {
         self.source = source
@@ -47,12 +47,7 @@ public struct GraphTableRow: Sendable {
                 "edgeLabel": .string(edgeLabel)
             ]
             for (key, value) in properties {
-                guard let fieldValue = FieldValue(databaseValue: value) else {
-                    throw GraphTableError.typeMismatch(
-                        "Property '\(key)' cannot be represented by GRAPH_TABLE"
-                    )
-                }
-                fields[key] = fieldValue
+                fields[key] = value
             }
             self.fields = fields
         }
@@ -427,7 +422,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         return .any
     }
 
-    private func extractNodeID(from expression: QueryIR.Expression) throws -> String {
+    private func extractNodeID(from expression: Expression) throws -> String {
         switch expression {
         case .literal(let literal):
             let value = try convertLiteralToFieldValue(literal)
@@ -474,12 +469,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
                 return nil
             }
             for (propertyName, propertyValue) in edge.properties {
-                guard let fieldValue = FieldValue(databaseValue: propertyValue) else {
-                    throw GraphTableError.typeMismatch(
-                        "Property '\(propertyName)' cannot be represented by GRAPH_TABLE"
-                    )
-                }
-                guard bind("\(edgeVariable).\(propertyName)", value: fieldValue, into: &bindings) else {
+                guard bind("\(edgeVariable).\(propertyName)", value: propertyValue, into: &bindings) else {
                     return nil
                 }
             }
@@ -523,12 +513,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
             "edgeLabel": .string(edgeLabel)
         ]
         for (key, value) in mergedProperties {
-            guard let fieldValue = FieldValue(databaseValue: value) else {
-                throw GraphTableError.typeMismatch(
-                    "Property '\(key)' cannot be represented by GRAPH_TABLE"
-                )
-            }
-            fields[key] = fieldValue
+            fields[key] = value
         }
         for (key, value) in state.bindings {
             fields[key] = value
@@ -544,7 +529,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
     }
 
     private func evaluateBoolean(
-        _ expression: QueryIR.Expression,
+        _ expression: Expression,
         fields: [String: FieldValue]
     ) throws -> Bool {
         switch expression {
@@ -555,7 +540,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
             }
             return boolValue
         case .literal(let literal):
-            guard let boolValue = try literal.toDatabaseValue().boolValue else {
+            guard let boolValue = try literal.toFieldValue().boolValue else {
                 throw GraphTableError.typeMismatch("Boolean expression must resolve to Bool")
             }
             return boolValue
@@ -591,7 +576,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
     }
 
     private func evaluateExpression(
-        _ expression: QueryIR.Expression,
+        _ expression: Expression,
         fields: [String: FieldValue]
     ) throws -> FieldValue {
         switch expression {
@@ -729,7 +714,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
 
     /// Validate that expression is a field reference matching the expected field name
     private func validateFieldReference(
-        _ expression: QueryIR.Expression,
+        _ expression: Expression,
         fieldName: String
     ) throws {
         switch expression {
@@ -750,7 +735,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
     }
 
     /// Extract literal value from expression
-    private func extractLiteralValue(from expression: QueryIR.Expression) throws -> FieldValue {
+    private func extractLiteralValue(from expression: Expression) throws -> FieldValue {
         guard case .literal(let literal) = expression else {
             throw GraphTableError.complexPropertyExpression(
                 "Property comparison value must be a literal, not an expression"
@@ -759,7 +744,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         return try convertLiteralToFieldValue(literal)
     }
 
-    /// Convert QueryIR.Literal to DatabaseEngine.FieldValue
+    /// Convert Literal to DatabaseEngine.FieldValue
     private func convertLiteralToFieldValue(_ literal: Literal) throws -> FieldValue {
         try literal.toFieldValue()
     }
@@ -768,7 +753,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
 
     /// Find graph index for the given type
     private func findGraphIndex() throws -> IndexDescriptor {
-        let descriptors = T.indexDescriptors
+        let descriptors = try T.indexDescriptors
 
         for descriptor in descriptors where descriptor.kindIdentifier == "graph" {
             return descriptor

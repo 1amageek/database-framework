@@ -1,7 +1,6 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
-import Relationship
+import DatabaseKit
 import Testing
 
 @Suite("Typed relationship schema", .heartbeat)
@@ -18,7 +17,7 @@ struct RelationshipReferenceMacroTests {
         )
 
         #expect(RelationshipOptionalOwner.relationshipDescriptors.count == 1)
-        #expect(RelationshipOptionalOwner.indexDescriptors.isEmpty)
+        #expect(try RelationshipOptionalOwner.indexDescriptors.isEmpty)
         #expect(descriptor.ownerTypeName == RelationshipOptionalOwner.persistableType)
         #expect(descriptor.propertyName == "target")
         #expect(descriptor.propertyFieldNumber == UInt32(field.fieldNumber))

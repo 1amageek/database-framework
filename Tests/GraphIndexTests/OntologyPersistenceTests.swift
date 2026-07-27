@@ -14,10 +14,9 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseRuntime
-import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -30,22 +29,22 @@ import TestSupport
 struct OntologyPersistenceEntity {
     #Directory<OntologyPersistenceEntity>("ontology_persistence_entities")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var subject: String = ""
     var predicate: String = ""
     var object: String = ""
 
-    #Index(GraphIndexKind<OntologyPersistenceEntity>(
-        from: \.subject,
-        edge: \.predicate,
-        to: \.object,
-        strategy: .tripleStore
-    ))
+    #Index(
+        .propertyGraph(strategy: .tripleStore),
+        from: \OntologyPersistenceEntity.subject,
+        edge: \OntologyPersistenceEntity.predicate,
+        to: \OntologyPersistenceEntity.object
+    )
 }
 
 // MARK: - Ontology Persistence Tests
 
-@Suite("Ontology Persistence", .serialized, .heartbeat)
+@Suite("Ontology Persistence", .serialized, .foundationDBScenario, .heartbeat)
 struct OntologyPersistenceTests {
 
     private static let testOntologyIRI = "http://test.org/ontology-persistence"
@@ -55,7 +54,10 @@ struct OntologyPersistenceTests {
     private func setupContext() async throws -> DatabaseContext {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([OntologyPersistenceEntity.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try OntologyPersistenceEntity.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),

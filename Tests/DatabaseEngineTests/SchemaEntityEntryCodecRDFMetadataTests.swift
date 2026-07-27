@@ -1,6 +1,6 @@
-import Core
-import DatabaseValue
-import DatabaseWire
+import DatabaseKit
+import DatabaseTypes
+import StorageKit
 import Testing
 @testable import DatabaseEngine
 
@@ -8,8 +8,8 @@ import Testing
 struct SchemaEntityEntryCodecRDFMetadataTests {
     @Test("RDF metadata round-trips through the binary schema catalog")
     func rdfMetadataRoundTrips() throws {
-        let graph = DatabaseRDFTerm.blankNode("calendar")
-        let entity = makeEntity(graph: graph)
+        let graph = try RDFTerm.blankNode(identifier: "calendar")
+        let entity = try makeEntity(graph: graph)
 
         let encoded = try SchemaEntityEntryCodec.encode(entity)
         let decoded = try SchemaEntityEntryCodec.decode(encoded)
@@ -18,22 +18,34 @@ struct SchemaEntityEntryCodecRDFMetadataTests {
         #expect(decoded.indexes[0].kind.metadata["graph"] == .rdfTerm(graph))
     }
 
-    @Test("invalid RDF metadata cannot enter the schema catalog")
-    func invalidRDFMetadataFailsEncoding() {
-        let entity = makeEntity(graph: .iri("relative"))
+    @Test("Invalid persisted RDF metadata is rejected during decoding")
+    func invalidRDFMetadataFailsDecoding() throws {
+        let graph = try RDFTerm.iri(validating: "urn:valid")
+        var encoded = try SchemaEntityEntryCodec.encode(
+            try makeEntity(graph: graph)
+        )
+        let validBytes = Array("urn:valid".utf8)
+        let invalidBytes = Array("relative!".utf8)
+        let start = try #require(
+            firstOffset(of: validBytes, in: encoded)
+        )
+        for offset in invalidBytes.indices {
+            encoded[start + offset] = invalidBytes[offset]
+        }
 
         #expect(
-            throws: DatabaseWireError.invalidCanonicalRDFTerm(
+            throws: StorageFrameError.invalidRDFTerm(
                 .invalidIRI(.missingScheme)
             )
         ) {
-            _ = try SchemaEntityEntryCodec.encode(entity)
+            _ = try SchemaEntityEntryCodec.decode(encoded)
         }
     }
 
-    private func makeEntity(graph: DatabaseRDFTerm) -> Schema.Entity {
-        Schema.Entity(
+    private func makeEntity(graph: RDFTerm) throws -> Schema.Entity {
+        try Schema.Entity(
             name: "CalendarEvent",
+            identifierType: .string,
             fields: [
                 FieldSchema(
                     name: "id",
@@ -44,19 +56,41 @@ struct SchemaEntityEntryCodecRDFMetadataTests {
             directoryComponents: [.staticPath("calendar")],
             indexes: [
                 IndexDescriptorMetadata(
+                    entityName: "CalendarEvent",
                     name: "calendar_graph",
                     kind: IndexKindMetadata(
                         identifier: "owl_class_rdf",
                         subspaceStructure: .hierarchical,
-                        fieldNames: [],
+                        fields: [],
                         metadata: [
                             "individualIRIBase": .string("urn:calendar:event:"),
                             "graph": .rdfTerm(graph),
                         ]
-                    ),
-                    commonMetadata: [:]
+                    )
                 ),
             ]
         )
+    }
+
+    private func firstOffset(
+        of signature: [UInt8],
+        in bytes: Bytes
+    ) -> Int? {
+        guard !signature.isEmpty, signature.count <= bytes.count else {
+            return nil
+        }
+        let finalStart = bytes.count - signature.count
+        for start in 0...finalStart {
+            var matches = true
+            for offset in signature.indices
+            where bytes[bytes.startIndex + start + offset] != signature[offset] {
+                matches = false
+                break
+            }
+            if matches {
+                return start
+            }
+        }
+        return nil
     }
 }

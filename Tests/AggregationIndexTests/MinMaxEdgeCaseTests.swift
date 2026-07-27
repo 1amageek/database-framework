@@ -3,10 +3,30 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
+
+private func productExtremumIndexMetadata(
+    _ definition: IndexDefinition,
+    groupedByCategory: Bool
+) -> IndexKindMetadata {
+    var groupingFields = [
+        FieldIdentity(name: "region", number: 2)
+    ]
+    if groupedByCategory {
+        groupingFields.append(
+            FieldIdentity(name: "category", number: 3)
+        )
+    }
+    return numericAggregationIndexMetadata(
+        definition,
+        groupingFields: groupingFields,
+        valueField: FieldIdentity(name: "price", number: 4),
+        valueType: .int64
+    )
+}
 
 @Suite("MIN/MAX Edge Case Tests", .serialized, .heartbeat)
 struct MinMaxEdgeCaseTests {
@@ -23,13 +43,6 @@ struct MinMaxEdgeCaseTests {
         var region: String
         var category: String
         var price: Int64
-
-        init(id: String, region: String, category: String, price: Int64) {
-            self.id = id
-            self.region = region
-            self.category = category
-            self.price = price
-        }
     }
 
     // MARK: - Composite Grouping Tests
@@ -43,7 +56,10 @@ struct MinMaxEdgeCaseTests {
         // Index with composite grouping: region + category
         let index = Index(
             name: "product_min_by_region_category",
-            kind: MinIndexKind<Product, Int64>(groupBy: [\.region, \.category], value: \.price),
+            kind: productExtremumIndexMetadata(
+                .minimum,
+                groupedByCategory: true
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
@@ -108,7 +124,10 @@ struct MinMaxEdgeCaseTests {
         // Index with composite grouping: region + category
         let index = Index(
             name: "product_max_by_region_category",
-            kind: MaxIndexKind<Product, Int64>(groupBy: [\.region, \.category], value: \.price),
+            kind: productExtremumIndexMetadata(
+                .maximum,
+                groupedByCategory: true
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
@@ -172,7 +191,10 @@ struct MinMaxEdgeCaseTests {
 
         let index = Index(
             name: "product_min_by_region_category",
-            kind: MinIndexKind<Product, Int64>(groupBy: [\.region, \.category], value: \.price),
+            kind: productExtremumIndexMetadata(
+                .minimum,
+                groupedByCategory: true
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
@@ -243,7 +265,10 @@ struct MinMaxEdgeCaseTests {
 
         let index = Index(
             name: "product_max_by_region_category",
-            kind: MaxIndexKind<Product, Int64>(groupBy: [\.region, \.category], value: \.price),
+            kind: productExtremumIndexMetadata(
+                .maximum,
+                groupedByCategory: true
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
@@ -316,7 +341,10 @@ struct MinMaxEdgeCaseTests {
 
         let index = Index(
             name: "product_min_by_region",
-            kind: MinIndexKind<Product, Int64>(groupBy: [\.region], value: \.price),
+            kind: productExtremumIndexMetadata(
+                .minimum,
+                groupedByCategory: false
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "price")
@@ -358,7 +386,7 @@ struct MinMaxEdgeCaseTests {
         }
 
         // Should throw error (group is empty, Layer 2 should be cleared)
-        await #expect(throws: IndexError.self) {
+        await #expect(throws: AggregationIndexError.self) {
             try await database.withTransaction { transaction in
                 _ = try await maintainer.getMin(groupingValues: ["US"], transaction: transaction)
             }
@@ -373,7 +401,10 @@ struct MinMaxEdgeCaseTests {
 
         let index = Index(
             name: "product_max_by_region",
-            kind: MaxIndexKind<Product, Int64>(groupBy: [\.region], value: \.price),
+            kind: productExtremumIndexMetadata(
+                .maximum,
+                groupedByCategory: false
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "price")
@@ -415,7 +446,7 @@ struct MinMaxEdgeCaseTests {
         }
 
         // Should throw error (group is empty, Layer 2 should be cleared)
-        await #expect(throws: IndexError.self) {
+        await #expect(throws: AggregationIndexError.self) {
             try await database.withTransaction { transaction in
                 _ = try await maintainer.getMax(groupingValues: ["US"], transaction: transaction)
             }
@@ -430,7 +461,10 @@ struct MinMaxEdgeCaseTests {
 
         let index = Index(
             name: "product_min_by_region",
-            kind: MinIndexKind<Product, Int64>(groupBy: [\.region], value: \.price),
+            kind: productExtremumIndexMetadata(
+                .minimum,
+                groupedByCategory: false
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "price")
@@ -499,7 +533,10 @@ struct MinMaxEdgeCaseTests {
 
         let index = Index(
             name: "product_min_by_region",
-            kind: MinIndexKind<Product, Int64>(groupBy: [\.region], value: \.price),
+            kind: productExtremumIndexMetadata(
+                .minimum,
+                groupedByCategory: false
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "price")
@@ -590,7 +627,10 @@ struct MinMaxEdgeCaseTests {
 
         let index = Index(
             name: "product_max_by_region",
-            kind: MaxIndexKind<Product, Int64>(groupBy: [\.region], value: \.price),
+            kind: productExtremumIndexMetadata(
+                .maximum,
+                groupedByCategory: false
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "price")

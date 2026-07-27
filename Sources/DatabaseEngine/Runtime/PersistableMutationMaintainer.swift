@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 
 /// Maintains container-wide invariants derived from persisted model mutations.
 public protocol PersistableMutationMaintainer: Sendable {

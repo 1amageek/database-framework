@@ -1,9 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
-import QueryIR
 import QueryAST
 import StorageKit
 import Testing
@@ -40,15 +38,24 @@ struct SPARQLBlankNodePatternTests {
     func blankNodeIsExistential() async throws {
         let executionContext = try await makeSPARQLExecutionContext(
             quads: [
-                RDFQuad(
-                    subject: .blankNode("stored"),
-                    predicate: .iri(predicate),
-                    object: .iri("https://example.invalid/object/blank")
+                try quad(
+                    subject: .blankNode(identifier: "stored"),
+                    predicate: predicate,
+                    object: .iri(
+                        validating:
+                            "https://example.invalid/object/blank"
+                    )
                 ),
-                RDFQuad(
-                    subject: .iri("https://example.invalid/subject/iri"),
-                    predicate: .iri(predicate),
-                    object: .iri("https://example.invalid/object/iri")
+                try quad(
+                    subject: .iri(
+                        validating:
+                            "https://example.invalid/subject/iri"
+                    ),
+                    predicate: predicate,
+                    object: .iri(
+                        validating:
+                            "https://example.invalid/object/iri"
+                    )
                 ),
             ]
         )
@@ -74,7 +81,7 @@ struct SPARQLBlankNodePatternTests {
             guard case .rdfTerm(.iri(let iri)) = binding["?object"] else {
                 return nil
             }
-            return iri
+            return iri.rawValue
         })
         #expect(
             objects == [
@@ -86,20 +93,26 @@ struct SPARQLBlankNodePatternTests {
 
     @Test("Repeated query blank labels impose an equality constraint")
     func repeatedBlankNodeLabelSharesOneExistential() async throws {
-        let selfNode = DatabaseRDFTerm.iri(
-            "https://example.invalid/subject/self"
+        let selfNode = try RDFTerm.iri(
+            validating: "https://example.invalid/subject/self"
         )
         let executionContext = try await makeSPARQLExecutionContext(
             quads: [
-                RDFQuad(
+                try quad(
                     subject: selfNode,
-                    predicate: .iri(predicate),
+                    predicate: predicate,
                     object: selfNode
                 ),
-                RDFQuad(
-                    subject: .iri("https://example.invalid/subject/other"),
-                    predicate: .iri(predicate),
-                    object: .iri("https://example.invalid/object/other")
+                try quad(
+                    subject: .iri(
+                        validating:
+                            "https://example.invalid/subject/other"
+                    ),
+                    predicate: predicate,
+                    object: .iri(
+                        validating:
+                            "https://example.invalid/object/other"
+                    )
                 ),
             ]
         )
@@ -128,54 +141,60 @@ struct SPARQLBlankNodePatternTests {
         let firstPredicate = "https://example.invalid/first"
         let stepPredicate = "https://example.invalid/step"
         let lastPredicate = "https://example.invalid/last"
-        let matchingSubject = DatabaseRDFTerm.iri(
-            "https://example.invalid/subject/matching"
+        let matchingSubject = try RDFTerm.iri(
+            validating: "https://example.invalid/subject/matching"
         )
-        let tripleOnlySubject = DatabaseRDFTerm.iri(
-            "https://example.invalid/subject/triple-only"
+        let tripleOnlySubject = try RDFTerm.iri(
+            validating: "https://example.invalid/subject/triple-only"
         )
-        let pathOnlySubject = DatabaseRDFTerm.iri(
-            "https://example.invalid/subject/path-only"
+        let pathOnlySubject = try RDFTerm.iri(
+            validating: "https://example.invalid/subject/path-only"
         )
-        let matchingMiddle = DatabaseRDFTerm.iri(
-            "https://example.invalid/middle/matching"
+        let matchingMiddle = try RDFTerm.iri(
+            validating: "https://example.invalid/middle/matching"
         )
-        let pathOnlyMiddle = DatabaseRDFTerm.iri(
-            "https://example.invalid/middle/path-only"
+        let pathOnlyMiddle = try RDFTerm.iri(
+            validating: "https://example.invalid/middle/path-only"
         )
         let expectedValue = "https://example.invalid/value/matching"
         let expectedTarget = "https://example.invalid/target/matching"
         let executionContext = try await makeSPARQLExecutionContext(
             quads: [
-                RDFQuad(
+                try quad(
                     subject: matchingSubject,
-                    predicate: .iri(firstPredicate),
-                    object: .iri(expectedValue)
+                    predicate: firstPredicate,
+                    object: .iri(validating: expectedValue)
                 ),
-                RDFQuad(
+                try quad(
                     subject: matchingSubject,
-                    predicate: .iri(stepPredicate),
+                    predicate: stepPredicate,
                     object: matchingMiddle
                 ),
-                RDFQuad(
+                try quad(
                     subject: matchingMiddle,
-                    predicate: .iri(lastPredicate),
-                    object: .iri(expectedTarget)
+                    predicate: lastPredicate,
+                    object: .iri(validating: expectedTarget)
                 ),
-                RDFQuad(
+                try quad(
                     subject: tripleOnlySubject,
-                    predicate: .iri(firstPredicate),
-                    object: .iri("https://example.invalid/value/triple-only")
+                    predicate: firstPredicate,
+                    object: .iri(
+                        validating:
+                            "https://example.invalid/value/triple-only"
+                    )
                 ),
-                RDFQuad(
+                try quad(
                     subject: pathOnlySubject,
-                    predicate: .iri(stepPredicate),
+                    predicate: stepPredicate,
                     object: pathOnlyMiddle
                 ),
-                RDFQuad(
+                try quad(
                     subject: pathOnlyMiddle,
-                    predicate: .iri(lastPredicate),
-                    object: .iri("https://example.invalid/target/path-only")
+                    predicate: lastPredicate,
+                    object: .iri(
+                        validating:
+                            "https://example.invalid/target/path-only"
+                    )
                 ),
             ]
         )
@@ -202,8 +221,20 @@ struct SPARQLBlankNodePatternTests {
 
         #expect(bindings.count == 1)
         let binding = try #require(bindings.first)
-        #expect(binding["?value"] == .rdfTerm(.iri(expectedValue)))
-        #expect(binding["?target"] == .rdfTerm(.iri(expectedTarget)))
+        let expectedValueTerm = try RDFTerm.iri(
+            validating: expectedValue
+        )
+        let expectedTargetTerm = try RDFTerm.iri(
+            validating: expectedTarget
+        )
+        #expect(
+            binding["?value"]
+                == .rdfTerm(expectedValueTerm)
+        )
+        #expect(
+            binding["?target"]
+                == .rdfTerm(expectedTargetTerm)
+        )
     }
 
     private struct SPARQLExecutionContext {
@@ -239,9 +270,21 @@ struct SPARQLBlankNodePatternTests {
         )
     }
 
+    private func quad(
+        subject: RDFTerm,
+        predicate: String,
+        object: RDFTerm
+    ) throws -> RDFQuad {
+        try RDFQuad(
+            validatingSubject: subject,
+            predicate: .iri(validating: predicate),
+            object: object
+        )
+    }
+
     private func makeMeter() -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 1_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000

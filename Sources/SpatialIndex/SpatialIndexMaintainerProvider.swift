@@ -1,6 +1,5 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import Geospatial
 import StorageKit
 
 /// Canonical runtime provider for spatial indexes.
@@ -13,13 +12,25 @@ public struct SpatialIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
-        let kind = try SpatialIndexKind<Item>(canonical: index.kind)
+        guard index.kind.identifier == kindIdentifier else {
+            throw IndexMaintainerProviderError.kindMismatch(
+                registered: kindIdentifier,
+                actual: index.kind.identifier
+            )
+        }
+        let definition = try IndexDefinition(metadata: index.kind)
+        guard case .spatial(let encoding, let level) = definition else {
+            throw IndexMaintainerProviderError.invalidMetadata(
+                kindIdentifier: kindIdentifier,
+                key: "encoding"
+            )
+        }
         return SpatialIndexMaintainer<Item>(
             index: index,
-            encoding: kind.encoding,
-            level: kind.level,
+            encoding: encoding,
+            level: level,
             subspace: subspace,
             idExpression: idExpression
         )

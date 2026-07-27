@@ -1,4 +1,4 @@
-import QueryIR
+import DatabaseKit
 
 enum PreparedSPARQLUpdateOperation: Sendable {
     case insertData(InsertDataQuery)

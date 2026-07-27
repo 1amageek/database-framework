@@ -1,9 +1,9 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseResumableOperationRegistry: Sendable {
     private let operations: [AnyDatabaseResumableOperation]
 
-    public var identifiers: [DatabaseJobOperationIdentifier] {
+    public var identifiers: [JobOperationIdentifier] {
         operations.map(\.operation)
     }
 
@@ -24,7 +24,7 @@ public struct DatabaseResumableOperationRegistry: Sendable {
     }
 
     public func resolve(
-        _ identifier: DatabaseJobOperationIdentifier
+        _ identifier: JobOperationIdentifier
     ) throws -> AnyDatabaseResumableOperation {
         guard let operation = operations.first(where: {
             $0.operation == identifier

@@ -1,5 +1,4 @@
-import Core
-import DatabaseWire
+import DatabaseKit
 import StorageKit
 
 /// Encodes compiled entities into the single canonical binary storage format.
@@ -7,14 +6,13 @@ public enum PersistableStorageCodec {
     public static let formatVersion: UInt16 = 1
 
     private static let magic: [UInt8] = [0x44, 0x42, 0x52, 0x43]
-    private static func wireLimits() throws -> DatabaseWireLimits {
-        try DatabaseWireLimits(
+    private static func storageLimits() throws -> StorageFrameLimits {
+        try StorageFrameLimits(
             maximumFrameBytes: 16 * 1_024 * 1_024,
             maximumStringBytes: 1 * 1_024 * 1_024,
             maximumByteStringBytes: 16 * 1_024 * 1_024,
             maximumCollectionCount: 100_000,
-            maximumNestingDepth: 64,
-            maximumObjectCount: 250_000
+            maximumNestingDepth: 64
         )
     }
 
@@ -30,6 +28,22 @@ public enum PersistableStorageCodec {
         )
     }
 
+    /// Measures the canonical frame without allocating its final byte buffer.
+    public static func encodedByteCount(
+        _ model: any Persistable
+    ) throws -> Int {
+        let modelType = type(of: model)
+        try requireCompiledSchema(modelType)
+        let fields = try PersistableFieldEncoder.encode(model)
+        return try PersistableFieldFrameCodec.encodedByteCount(
+            magic: magic,
+            version: formatVersion,
+            entity: modelType.persistableType,
+            fields: fields,
+            limits: try storageLimits()
+        )
+    }
+
     /// Encodes catalog-validated fields into the canonical DBRC v1 frame.
     public static func encode(
         entity: String,
@@ -40,7 +54,7 @@ public enum PersistableStorageCodec {
             version: formatVersion,
             entity: entity,
             fields: fields,
-            limits: try wireLimits()
+            limits: try storageLimits()
         )
     }
 
@@ -78,7 +92,7 @@ public enum PersistableStorageCodec {
             magic: magic,
             version: formatVersion,
             expectedEntity: expectedEntity,
-            limits: try wireLimits()
+            limits: try storageLimits()
         )
     }
 

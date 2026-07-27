@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 
 /// Persisted migration progress for the container's compiled schema.
 public struct DatabaseMigrationStatus: Sendable, Hashable {

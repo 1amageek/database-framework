@@ -1,9 +1,8 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
-import Graph
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 import GraphIndex
-import QueryIR
 
 struct SPARQLUpdateQuadResolver: Sendable {
     private enum Role {
@@ -12,7 +11,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
         case object
         case graphName
 
-        var binaryRole: DatabaseRDFTermRole {
+        var binaryRole: RDFTermRole {
             switch self {
             case .subject: .subject
             case .predicate: .predicate
@@ -23,14 +22,14 @@ struct SPARQLUpdateQuadResolver: Sendable {
     }
 
     func resolve(
-        _ quad: QueryIR.Quad,
+        _ quad: Quad,
         row: VariableBinding?,
         blankNodeScope: SPARQLBlankNodeScope?,
         variablesAllowed: Bool,
         blankNodesAllowed: Bool
-    ) throws -> [Graph.RDFQuad] {
-        var reifications: [Graph.RDFQuad] = []
-        let graph: DatabaseRDFTerm?
+    ) throws -> [RDFQuad] {
+        var reifications: [RDFQuad] = []
+        let graph: RDFTerm?
         if let graphTerm = quad.graph {
             guard let resolvedGraph = try resolve(
                 graphTerm,
@@ -77,11 +76,11 @@ struct SPARQLUpdateQuadResolver: Sendable {
             return []
         }
 
-        var result: [Graph.RDFQuad] = []
+        var result: [RDFQuad] = []
         result.reserveCapacity(1 + reifications.count)
         result.append(
-            Graph.RDFQuad(
-                subject: subject,
+            try RDFQuad(
+                validatingSubject: subject,
                 predicate: predicate,
                 object: object,
                 graph: graph
@@ -89,11 +88,11 @@ struct SPARQLUpdateQuadResolver: Sendable {
         )
         for reification in reifications {
             result.append(
-                Graph.RDFQuad(
+                RDFQuad(
                     subject: reification.subject,
                     predicate: reification.predicate,
                     object: reification.object,
-                    graph: graph
+                    graph: try graph.map(RDFGraphName.init)
                 )
             )
         }
@@ -107,9 +106,9 @@ struct SPARQLUpdateQuadResolver: Sendable {
         blankNodeScope: SPARQLBlankNodeScope?,
         variablesAllowed: Bool,
         blankNodesAllowed: Bool,
-        reifications: inout [Graph.RDFQuad]
-    ) throws -> DatabaseRDFTerm? {
-        let resolved: DatabaseRDFTerm
+        reifications: inout [RDFQuad]
+    ) throws -> RDFTerm? {
+        let resolved: RDFTerm
         let isVariableSubstitution: Bool
         switch term {
         case .variable(let name):
@@ -130,7 +129,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
 
         case .iri(let value):
             isVariableSubstitution = false
-            resolved = .iri(value)
+            resolved = .iri(try RDFIRI(value))
 
         case .literal(let literal):
             isVariableSubstitution = false
@@ -188,8 +187,8 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 return nil
             }
             resolved = .tripleTerm(
-                subject: subject,
-                predicate: predicate,
+                subject: try rdfSubject(subject),
+                predicate: try rdfPredicate(predicate),
                 object: object
             )
 
@@ -236,14 +235,14 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 return nil
             }
             reifications.append(
-                Graph.RDFQuad(
-                    subject: reifier,
-                    predicate: .iri(
+                RDFQuad(
+                    subject: try rdfSubject(reifier),
+                    predicate: try RDFPredicateIRI(
                         "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"
                     ),
                     object: .tripleTerm(
-                        subject: subject,
-                        predicate: predicate,
+                        subject: try rdfSubject(subject),
+                        predicate: try rdfPredicate(predicate),
                         object: object
                     )
                 )
@@ -252,7 +251,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
         }
 
         do {
-            try DatabaseRDFTermCodec.validate(
+            try RDFTermStorageFormat.validate(
                 resolved,
                 role: role.binaryRole
             )
@@ -273,14 +272,38 @@ struct SPARQLUpdateQuadResolver: Sendable {
         _ label: String,
         scope: SPARQLBlankNodeScope?,
         allowed: Bool
-    ) throws -> DatabaseRDFTerm {
+    ) throws -> RDFTerm {
         guard allowed else {
             throw SPARQLUpdateError.blankNodeNotAllowed(label)
         }
         guard let scope else {
             throw SPARQLUpdateError.blankNodeNotAllowed(label)
         }
-        return .blankNode(scope.identifier(for: label))
+        return .blankNode(
+            try RDFBlankNodeIdentifier(scope.identifier(for: label))
+        )
+    }
+
+    private func rdfSubject(_ term: RDFTerm) throws -> RDFSubject {
+        switch term {
+        case .iri(let iri):
+            return .iri(iri)
+        case .blankNode(let identifier):
+            return .blankNode(identifier)
+        case .literal, .tripleTerm:
+            throw SPARQLUpdateError.invalidRDFTermRole(
+                String(describing: term)
+            )
+        }
+    }
+
+    private func rdfPredicate(_ term: RDFTerm) throws -> RDFPredicateIRI {
+        guard case .iri(let iri) = term else {
+            throw SPARQLUpdateError.invalidRDFTermRole(
+                String(describing: term)
+            )
+        }
+        return RDFPredicateIRI(iri)
     }
 
     private func normalizedVariable(_ name: String) -> String {

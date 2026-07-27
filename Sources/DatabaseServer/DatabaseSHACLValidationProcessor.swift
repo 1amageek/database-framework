@@ -1,7 +1,6 @@
-import DatabaseDigest
-import DatabaseValue
-import DatabaseWire
-import Graph
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseTypes
+import DatabaseKit
 import GraphIndex
 import DatabaseEngine
 import StorageKit
@@ -23,7 +22,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
 
     public func validateShapes(
         graph: String,
-        quads: [DatabaseRDFQuad],
+        quads: [RDFQuad],
         workBudget: SHACLValidationWorkBudget
     ) throws {
         try Task.checkCancellation()
@@ -39,7 +38,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
         page: QueryExecuteOperation.Page,
         workBudget: SHACLValidationWorkBudget,
         transaction: any TransactionAccess
-    ) async throws -> DatabaseValidationReport {
+    ) async throws -> ValidationReport {
         let budget = workBudget.workMeter.budget
         let stored = try await loadShapes(
             graph: shapesGraph,
@@ -117,7 +116,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
         let upper = min(lower + Int(page.limit), allIssues.count)
         let nextOffset = upper < allIssues.count ? upper : nil
         let issues = Array(allIssues[lower..<upper])
-        return DatabaseValidationReport(
+        return ValidationReport(
             conforms: validationReport.conforms,
             issues: issues,
             continuation: try nextOffset.map {
@@ -132,7 +131,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
 
     private func loadShapes(
         graph: String,
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         transaction: any TransactionAccess
     ) async throws -> DatabaseRDFStoredDocumentPage {
         guard budget.maximumWorkUnits > 0,
@@ -164,7 +163,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
 
     private func decodeShapes(
         graph: String,
-        quads: [DatabaseRDFQuad]
+        quads: [RDFQuad]
     ) throws -> SHACLShapesGraph {
         do {
             let dataset = RDFDataset(databaseQuads: quads)
@@ -217,7 +216,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
     }
 
     private func focusTerms(
-        _ nodes: [DatabaseRDFTerm]
+        _ nodes: [RDFTerm]
     ) -> [RDFTerm] {
         nodes
     }
@@ -225,24 +224,24 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
     private func canonicalIssues(
         _ results: [SHACLValidationResult],
         workBudget: SHACLValidationWorkBudget
-    ) throws -> [DatabaseValidationReport.Issue] {
+    ) throws -> [ValidationReport.Issue] {
         try workBudget.consume(UInt64(results.count), at: .sortInput)
-        var encoded: [(DatabaseBytes, DatabaseValidationReport.Issue)] = []
+        var encoded: [(ByteString, ValidationReport.Issue)] = []
         encoded.reserveCapacity(results.count)
         for result in results {
             try workBudget.consume(at: .resultMaterialization)
-            let issue = DatabaseValidationReport.Issue(
+            let issue = ValidationReport.Issue(
                 severity: severity(result.resultSeverity),
                 code: result.sourceConstraintComponent,
                 messages: result.resultMessage,
                 focusNode: result.focusNode,
-                path: result.resultPath.map(wirePath),
+                path: result.resultPath,
                 value: result.value,
                 sourceConstraintComponent: result.sourceConstraintComponent,
                 sourceShape: result.sourceShape
             )
             encoded.append((
-                try DatabaseEnvelopeCodec.encode(issue, limits: wireLimits),
+                try ServerPayloadEncoder.encode(issue, limits: wireLimits),
                 issue
             ))
         }
@@ -255,7 +254,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
 
     private func severity(
         _ severity: SHACLSeverity
-    ) -> DatabaseValidationReport.Severity {
+    ) -> ValidationReport.Severity {
         switch severity {
         case .info: return .information
         case .warning: return .warning
@@ -263,28 +262,15 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
         }
     }
 
-    private func wirePath(_ path: SHACLPath) -> DatabaseSHACLPath {
-        switch path {
-        case .predicate(let iri): return .predicate(iri)
-        case .inverse(let inner): return .inverse(wirePath(inner))
-        case .sequence(let values): return .sequence(values.map(wirePath))
-        case .alternative(let values):
-            return .alternative(values.map(wirePath))
-        case .zeroOrMore(let inner): return .zeroOrMore(wirePath(inner))
-        case .oneOrMore(let inner): return .oneOrMore(wirePath(inner))
-        case .zeroOrOne(let inner): return .zeroOrOne(wirePath(inner))
-        }
-    }
-
     private func pageOffset(
         _ page: QueryExecuteOperation.Page,
         shapesGraph: String,
-        fingerprint: DatabaseBytes
+        fingerprint: ByteString
     ) throws -> Int {
         guard let bytes = page.continuation else { return 0 }
         let cursor: DatabaseSHACLPageCursor
         do {
-            cursor = try DatabaseEnvelopeCodec.decode(
+            cursor = try ServerPayloadDecoder.decode(
                 DatabaseSHACLPageCursor.self,
                 from: bytes,
                 limits: wireLimits
@@ -302,13 +288,13 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
 
     private func continuation(
         shapesGraph: String,
-        fingerprint: DatabaseBytes,
+        fingerprint: ByteString,
         offset: Int
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         guard let encodedOffset = UInt64(exactly: offset) else {
             throw DatabaseSHACLValidationError.invalidContinuation
         }
-        return try DatabaseEnvelopeCodec.encode(
+        return try ServerPayloadEncoder.encode(
             DatabaseSHACLPageCursor(
                 shapesGraph: shapesGraph,
                 validationFingerprint: fingerprint,
@@ -324,101 +310,52 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
         data: SHACLExecuteOperation.DataSource,
         focus: SHACLExecuteOperation.Focus,
         entailment: SHACLExecuteOperation.Entailment,
-        selectedFocusNodes: [DatabaseRDFTerm]?,
-        snapshotFingerprint: DatabaseBytes
-    ) throws -> DatabaseBytes {
+        selectedFocusNodes: [RDFTerm]?,
+        snapshotFingerprint: ByteString
+    ) throws -> ByteString {
+        let encoder = DatabaseWireEncoder(limits: wireLimits)
+        let requestPayload = try encoder.encodeRequestPayload(
+            DatabaseOperations.shaclExecute,
+            request: SHACLExecuteOperation.Request(
+                invocation: .validate(
+                    shapesGraph: shapesGraph,
+                    data: data,
+                    focus: focus,
+                    entailment: entailment
+                )
+            )
+        )
+        let selectedFocusPayload: ByteString?
+        if let selectedFocusNodes {
+            selectedFocusPayload = try encoder.encodeRequestPayload(
+                DatabaseOperations.shaclExecute,
+                request: SHACLExecuteOperation.Request(
+                    invocation: .validate(
+                        shapesGraph: shapesGraph,
+                        data: data,
+                        focus: .nodes(selectedFocusNodes),
+                        entailment: entailment
+                    )
+                )
+            )
+        } else {
+            selectedFocusPayload = nil
+        }
         let encoded = try DatabaseWireWriter.encode(
             limits: wireLimits
         ) {
             (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
-            try writer.writeString(shapesGraph)
             writer.writeUInt64(shapesRevision)
-            try encode(data, into: &writer)
-            try encode(focus, into: &writer)
-            try encode(entailment, into: &writer)
-            writer.writeBool(selectedFocusNodes != nil)
-            if let selectedFocusNodes {
-                try encodeTerms(selectedFocusNodes, into: &writer)
+            try writer.writeBytes(requestPayload)
+            writer.writeBool(selectedFocusPayload != nil)
+            if let selectedFocusPayload {
+                try writer.writeBytes(selectedFocusPayload)
             }
             try writer.writeBytes(snapshotFingerprint)
         }
         var hasher = SHA256Accumulator()
         hasher.update(encoded)
         return hasher.finalize()
-    }
-
-    private func encode(
-        _ data: SHACLExecuteOperation.DataSource,
-        into writer: inout DatabaseWireWriter
-    ) throws(DatabaseWireError) {
-        try writer.writeString(data.entity)
-        try writer.writeString(data.index)
-        try writer.writeCount(data.partitions.count)
-        for partition in data.partitions {
-            try partition.encode(into: &writer)
-        }
-        switch data.graph {
-        case .defaultGraph:
-            writer.writeUInt8(1)
-        case .named(let graph):
-            writer.writeUInt8(2)
-            try graph.encode(into: &writer)
-        }
-    }
-
-    private func encode(
-        _ focus: SHACLExecuteOperation.Focus,
-        into writer: inout DatabaseWireWriter
-    ) throws(DatabaseWireError) {
-        switch focus {
-        case .targets:
-            writer.writeUInt8(1)
-        case .nodes(let nodes):
-            writer.writeUInt8(2)
-            try encodeTerms(nodes, into: &writer)
-        case .entities(let identities):
-            writer.writeUInt8(3)
-            try writer.writeCount(identities.count)
-            for identity in identities {
-                try identity.encode(into: &writer)
-            }
-        }
-    }
-
-    private func encode(
-        _ entailment: SHACLExecuteOperation.Entailment,
-        into writer: inout DatabaseWireWriter
-    ) throws(DatabaseWireError) {
-        switch entailment {
-        case .none:
-            writer.writeUInt8(1)
-        case .rdfs:
-            writer.writeUInt8(2)
-        case .owl(let ontology):
-            writer.writeUInt8(3)
-            try writer.writeString(ontology)
-        }
-    }
-
-    private func encodeTerms(
-        _ terms: [DatabaseRDFTerm],
-        into writer: inout DatabaseWireWriter
-    ) throws(DatabaseWireError) {
-        var encoded: [DatabaseBytes] = []
-        encoded.reserveCapacity(terms.count)
-        for term in terms {
-            encoded.append(
-                try DatabaseWireWriter.encode(limits: wireLimits) {
-                    (termWriter: inout DatabaseWireWriter) throws(DatabaseWireError) in
-                    try term.encode(into: &termWriter)
-                }
-            )
-        }
-        let canonical = Array(Set(encoded)).sorted {
-            $0.lexicographicallyPrecedes($1)
-        }
-        try writer.writeCount(canonical.count)
-        for term in canonical { try writer.writeBytes(term) }
     }
 
 }

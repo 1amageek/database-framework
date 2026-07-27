@@ -1,7 +1,7 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import StorageKit
 import TestHeartbeat
 import Testing
@@ -18,7 +18,7 @@ struct CanonicalRDFGraphStoreTests {
         let engine = InMemoryEngine()
         let store = makeStore()
         let graph = try RDFGraphName(iri: "https://example.com/graph/empty")
-        let quad = makeQuad(graph: graph)
+        let quad = try makeQuad(graph: graph)
 
         _ = try await engine.withTransaction(configuration: .batch) { transaction in
             let meter = makeMeter()
@@ -133,7 +133,7 @@ struct CanonicalRDFGraphStoreTests {
         let root = makeRoot()
         let store = CanonicalRDFGraphStore(rootSubspace: root)
         let graph = try RDFGraphName(iri: "https://example.com/graph/indexes")
-        let quad = makeQuad(graph: graph)
+        let quad = try makeQuad(graph: graph)
 
         _ = try await engine.withTransaction(configuration: .batch) { transaction in
             let inserted = try await store.insert(
@@ -189,9 +189,9 @@ struct CanonicalRDFGraphStoreTests {
         let store = makeStore()
         let first = try RDFGraphName(iri: "https://example.com/graph/first")
         let second = try RDFGraphName(iri: "https://example.com/graph/second")
-        let firstQuad = makeQuad(graph: first, suffix: "first")
-        let secondQuad = makeQuad(graph: second, suffix: "second")
-        let defaultQuad = makeQuad(graph: nil, suffix: "default")
+        let firstQuad = try makeQuad(graph: first, suffix: "first")
+        let secondQuad = try makeQuad(graph: second, suffix: "second")
+        let defaultQuad = try makeQuad(graph: nil, suffix: "default")
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             let meter = makeMeter()
@@ -280,17 +280,17 @@ struct CanonicalRDFGraphStoreTests {
         try await engine.withTransaction(configuration: .batch) { transaction in
             let meter = makeMeter()
             let insertedFirst = try await store.insert(
-                makeQuad(graph: first, suffix: "a"),
+                try makeQuad(graph: first, suffix: "a"),
                 transaction: transaction,
                 workMeter: meter
             )
             let insertedSecond = try await store.insert(
-                makeQuad(graph: second, suffix: "b"),
+                try makeQuad(graph: second, suffix: "b"),
                 transaction: transaction,
                 workMeter: meter
             )
             let insertedDefault = try await store.insert(
-                makeQuad(graph: nil, suffix: "default"),
+                try makeQuad(graph: nil, suffix: "default"),
                 transaction: transaction,
                 workMeter: meter
             )
@@ -346,17 +346,17 @@ struct CanonicalRDFGraphStoreTests {
         let blankGraph = try RDFGraphName(
             blankNodeIdentifier: "named-range"
         )
-        let defaultQuad = makeQuad(graph: nil, suffix: "default-range")
+        let defaultQuad = try makeQuad(graph: nil, suffix: "default-range")
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             let meter = makeMeter()
             let insertedIRI = try await store.insert(
-                makeQuad(graph: iriGraph, suffix: "iri-range"),
+                try makeQuad(graph: iriGraph, suffix: "iri-range"),
                 transaction: transaction,
                 workMeter: meter
             )
             let insertedBlank = try await store.insert(
-                makeQuad(graph: blankGraph, suffix: "blank-range"),
+                try makeQuad(graph: blankGraph, suffix: "blank-range"),
                 transaction: transaction,
                 workMeter: meter
             )
@@ -434,12 +434,21 @@ struct CanonicalRDFGraphStoreTests {
         let graph = try RDFGraphName(iri: "https://example.com/graph/large")
         let oversizedQuad = RDFQuad(
             subject: .iri(
-                "https://example.com/subject/"
-                    + String(repeating: "x", count: databaseMaximumKeySize)
+                try RDFIRI(
+                    "https://example.com/subject/"
+                        + String(
+                            repeating: "x",
+                            count: databaseMaximumKeySize
+                        )
+                )
             ),
-            predicate: .iri("https://example.com/predicate"),
-            object: .iri("https://example.com/object"),
-            graph: graph.term
+            predicate: try RDFPredicateIRI(
+                "https://example.com/predicate"
+            ),
+            object: try .iri(
+                validating: "https://example.com/object"
+            ),
+            graph: graph
         )
 
         try await engine.withTransaction(configuration: .batch) { transaction in
@@ -485,7 +494,7 @@ struct CanonicalRDFGraphStoreTests {
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             let meter = DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget(
+                budget: ExecutionBudget(
                     maximumRows: 10,
                     maximumWorkUnits: 4,
                     timeoutMilliseconds: 30_000
@@ -493,7 +502,7 @@ struct CanonicalRDFGraphStoreTests {
             )
             do {
                 _ = try await store.insert(
-                    makeQuad(graph: graph, suffix: "budget"),
+                    try makeQuad(graph: graph, suffix: "budget"),
                     transaction: transaction,
                     workMeter: meter
                 )
@@ -532,7 +541,7 @@ struct CanonicalRDFGraphStoreTests {
         let graph = try RDFGraphName(
             iri: "https://example.com/graph/delete-budget"
         )
-        let quad = makeQuad(graph: graph, suffix: "delete-budget")
+        let quad = try makeQuad(graph: graph, suffix: "delete-budget")
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             let inserted = try await store.insert(
@@ -547,7 +556,7 @@ struct CanonicalRDFGraphStoreTests {
         }
         try await engine.withTransaction(configuration: .batch) { transaction in
             let meter = DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget(
+                budget: ExecutionBudget(
                     maximumRows: 10,
                     maximumWorkUnits: 4,
                     timeoutMilliseconds: 30_000
@@ -599,7 +608,7 @@ struct CanonicalRDFGraphStoreTests {
         let graph = try RDFGraphName(
             iri: "https://example.com/graph/orphaned"
         )
-        let quad = makeQuad(graph: graph, suffix: "orphaned")
+        let quad = try makeQuad(graph: graph, suffix: "orphaned")
         let physicalCodec = RDFQuadIndexPhysicalCodec(
             baseSubspace: root.subspace(Int64(1))
         )
@@ -646,8 +655,8 @@ struct CanonicalRDFGraphStoreTests {
         let graph = try RDFGraphName(
             iri: "https://example.com/graph/orphaned-sibling"
         )
-        let storedQuad = makeQuad(graph: graph, suffix: "stored")
-        let candidateQuad = makeQuad(graph: graph, suffix: "candidate")
+        let storedQuad = try makeQuad(graph: graph, suffix: "stored")
+        let candidateQuad = try makeQuad(graph: graph, suffix: "candidate")
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             try writePhysicalQuad(
@@ -679,8 +688,8 @@ struct CanonicalRDFGraphStoreTests {
         let graph = try RDFGraphName(
             iri: "https://example.com/graph/orphaned-delete"
         )
-        let storedQuad = makeQuad(graph: graph, suffix: "stored")
-        let absentQuad = makeQuad(graph: graph, suffix: "absent")
+        let storedQuad = try makeQuad(graph: graph, suffix: "stored")
+        let absentQuad = try makeQuad(graph: graph, suffix: "absent")
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             try writePhysicalQuad(
@@ -715,7 +724,7 @@ struct CanonicalRDFGraphStoreTests {
 
         try await engine.withTransaction(configuration: .batch) { transaction in
             try writePhysicalQuad(
-                makeQuad(graph: graph, suffix: "stored"),
+                try makeQuad(graph: graph, suffix: "stored"),
                 root: root,
                 transaction: transaction
             )
@@ -752,7 +761,7 @@ struct CanonicalRDFGraphStoreTests {
         await #expect(throws: ExpectedFailure.self) {
             try await engine.withTransaction(configuration: .batch) { transaction in
                 _ = try await store.insert(
-                    makeQuad(graph: graph),
+                    try makeQuad(graph: graph),
                     transaction: transaction,
                     workMeter: makeMeter()
                 )
@@ -819,7 +828,7 @@ struct CanonicalRDFGraphStoreTests {
 
     private func makeMeter() -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000
@@ -830,15 +839,21 @@ struct CanonicalRDFGraphStoreTests {
     private func makeQuad(
         graph: RDFGraphName?,
         suffix: String = "value"
-    ) -> RDFQuad {
+    ) throws -> RDFQuad {
         RDFQuad(
-            subject: .iri("https://example.com/subject/\(suffix)"),
-            predicate: .iri("https://example.com/predicate"),
-            object: .literal(DatabaseRDFLiteral(
+            subject: .iri(
+                try RDFIRI(
+                    "https://example.com/subject/\(suffix)"
+                )
+            ),
+            predicate: try RDFPredicateIRI(
+                "https://example.com/predicate"
+            ),
+            object: .literal(RDFLiteral(
                 lexicalForm: suffix,
                 datatype: .xsdString
             )),
-            graph: graph?.term
+            graph: graph
         )
     }
 

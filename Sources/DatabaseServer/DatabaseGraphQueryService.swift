@@ -1,7 +1,7 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
-import QueryIR
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 import StorageKit
 
 struct DatabaseGraphQueryService: Sendable {
@@ -21,7 +21,7 @@ struct DatabaseGraphQueryService: Sendable {
         request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter
-    ) async throws -> QueryExecuteOperation.GraphPage {
+    ) async throws -> RDFGraphPage {
         try await execute(
             kind: .construct,
             statement: .construct(query),
@@ -51,7 +51,7 @@ struct DatabaseGraphQueryService: Sendable {
         request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter
-    ) async throws -> QueryExecuteOperation.GraphPage {
+    ) async throws -> RDFGraphPage {
         try await execute(
             kind: .describe,
             statement: .describe(query),
@@ -81,9 +81,9 @@ struct DatabaseGraphQueryService: Sendable {
         workMeter: DatabaseWorkMeter,
         materialize: @escaping @Sendable (
             _ transaction: any TransactionAccess,
-            _ requestFingerprint: DatabaseBytes
+            _ requestFingerprint: ByteString
         ) async throws -> DatabaseRetainedRDFGraph
-    ) async throws -> QueryExecuteOperation.GraphPage {
+    ) async throws -> RDFGraphPage {
         guard request.page.limit <= request.budget.maximumRows else {
             throw DatabaseGraphQueryError.pageLimitExceedsMaximum(
                 requested: request.page.limit,
@@ -171,7 +171,7 @@ struct DatabaseGraphQueryService: Sendable {
                 }
                 try workMeter.recordOutputRows(emittedRows)
 
-                let continuation: DatabaseBytes?
+                let continuation: ByteString?
                 if end < graph.count {
                     continuation = try DatabaseGraphQueryPageCursor(
                         kind: kind,
@@ -184,8 +184,8 @@ struct DatabaseGraphQueryService: Sendable {
                     continuation = nil
                 }
                 let page = graph.promotePage(offset..<end)
-                return QueryExecuteOperation.GraphPage(
-                    triples: consume page,
+                return RDFGraphPage(
+                    quads: consume page,
                     continuation: continuation,
                     snapshotVersion: readVersion
                 )
@@ -216,8 +216,8 @@ struct DatabaseGraphQueryService: Sendable {
     }
 
     private static func isCanonicalPredecessor(
-        _ lhs: borrowing DatabaseRDFQuad,
-        _ rhs: borrowing DatabaseRDFQuad
+        _ lhs: borrowing RDFQuad,
+        _ rhs: borrowing RDFQuad
     ) -> Bool {
         if lhs.subject != rhs.subject {
             return lhs.subject < rhs.subject
@@ -241,21 +241,21 @@ struct DatabaseGraphQueryService: Sendable {
     private func fingerprint(
         statement: QueryStatement,
         request: QueryExecuteOperation.Request
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         let normalized = QueryExecuteOperation.Request(
             input: .ir(statement),
-            graphPartitions: request.graphPartitions.sorted {
-                ($0.number, $0.name) < ($1.number, $1.name)
-            },
+            graphPartitions: request.graphPartitions,
             page: QueryExecuteOperation.Page(
                 limit: request.page.limit,
                 continuation: nil
             ),
             budget: request.budget
         )
-        let payload = try DatabaseEnvelopeCodec.encode(
-            normalized,
+        let payload = try DatabaseWireEncoder(
             limits: wireLimits
+        ).encodeRequestPayload(
+            DatabaseOperations.queryExecute,
+            request: normalized
         )
         return DatabaseRequestDigest.compute(
             operation: .queryExecute,

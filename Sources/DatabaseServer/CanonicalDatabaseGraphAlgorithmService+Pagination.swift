@@ -1,13 +1,13 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 extension CanonicalDatabaseGraphAlgorithmService {
     func page(
         _ response: GraphAlgorithmOperation.Response,
         offset: UInt64,
         limit: UInt32,
-        requestFingerprint: DatabaseBytes,
-        resultFingerprint: DatabaseBytes
+        requestFingerprint: ByteString,
+        resultFingerprint: ByteString
     ) throws -> GraphAlgorithmOperation.Response {
         guard limit > 0, let offset = Int(exactly: offset) else {
             throw DatabaseGraphAlgorithmError.invalidContinuation
@@ -22,19 +22,28 @@ extension CanonicalDatabaseGraphAlgorithmService {
                 }
                 return response
             }
-            let edgeCount = max(0, result.nodes.count - 1)
+            let allNodes = try result.materializedNodes(
+                maximumCount: result.nodeCount
+            )
+            let allEdgeLabels = try result.materializedEdgeLabels(
+                maximumCount: result.edgeLabelCount
+            )
+            let allWeights = try result.materializedWeights(
+                maximumCount: result.weightCount
+            )
+            let edgeCount = max(0, allNodes.count - 1)
             guard edgeCount == 0 ? offset == 0 : offset < edgeCount else {
                 throw DatabaseGraphAlgorithmError.invalidContinuation
             }
             let upperEdge = offset + min(edgeCount - offset, limit)
             let nextOffset = upperEdge < edgeCount ? upperEdge : nil
-            let nodes = Array(result.nodes[offset...upperEdge])
-            let edgeLabels = result.edgeLabels.isEmpty
+            let nodes = Array(allNodes[offset...upperEdge])
+            let edgeLabels = allEdgeLabels.isEmpty
                 ? []
-                : Array(result.edgeLabels[offset..<upperEdge])
-            let weights = result.weights.isEmpty
+                : Array(allEdgeLabels[offset..<upperEdge])
+            let weights = allWeights.isEmpty
                 ? []
-                : Array(result.weights[offset..<upperEdge])
+                : Array(allWeights[offset..<upperEdge])
             return .path(
                 GraphAlgorithmOperation.PathResult(
                     found: true,
@@ -55,7 +64,10 @@ extension CanonicalDatabaseGraphAlgorithmService {
             )
 
         case .ranking(let result):
-            let slice = try pageSlice(result.scores, offset: offset, limit: limit)
+            let scores = try result.materializedScores(
+                maximumCount: result.scoreCount
+            )
+            let slice = try pageSlice(scores, offset: offset, limit: limit)
             return .ranking(
                 GraphAlgorithmOperation.RankingPage(
                     scores: slice.values,
@@ -72,7 +84,14 @@ extension CanonicalDatabaseGraphAlgorithmService {
             )
 
         case .communities(let result):
-            let slice = try pageSlice(result.assignments, offset: offset, limit: limit)
+            let assignments = try result.materializedAssignments(
+                maximumCount: result.assignmentCount
+            )
+            let slice = try pageSlice(
+                assignments,
+                offset: offset,
+                limit: limit
+            )
             return .communities(
                 GraphAlgorithmOperation.CommunityPage(
                     assignments: slice.values,
@@ -89,17 +108,23 @@ extension CanonicalDatabaseGraphAlgorithmService {
             )
 
         case .cycles(let result):
-            let totalCount = result.cycles.count + result.backEdges.count
+            let allCycles = try result.materializedCycles(
+                maximumCount: result.cycleCount
+            )
+            let allBackEdges = try result.materializedBackEdges(
+                maximumCount: result.backEdgeCount
+            )
+            let totalCount = allCycles.count + allBackEdges.count
             try validateOffset(offset, count: totalCount)
             let upper = offset + min(totalCount - offset, limit)
-            let cycleUpper = min(result.cycles.count, upper)
+            let cycleUpper = min(allCycles.count, upper)
             let cycles = offset < cycleUpper
-                ? Array(result.cycles[offset..<cycleUpper])
+                ? Array(allCycles[offset..<cycleUpper])
                 : []
-            let edgeLower = max(offset, result.cycles.count) - result.cycles.count
-            let edgeUpper = max(upper, result.cycles.count) - result.cycles.count
+            let edgeLower = max(offset, allCycles.count) - allCycles.count
+            let edgeUpper = max(upper, allCycles.count) - allCycles.count
             let backEdges = edgeLower < edgeUpper
-                ? Array(result.backEdges[edgeLower..<edgeUpper])
+                ? Array(allBackEdges[edgeLower..<edgeUpper])
                 : []
             let nextOffset = upper < totalCount ? upper : nil
             return .cycles(
@@ -118,7 +143,14 @@ extension CanonicalDatabaseGraphAlgorithmService {
             )
 
         case .components(let result):
-            let slice = try pageSlice(result.components, offset: offset, limit: limit)
+            let components = try result.materializedComponents(
+                maximumCount: result.componentCount
+            )
+            let slice = try pageSlice(
+                components,
+                offset: offset,
+                limit: limit
+            )
             return .components(
                 GraphAlgorithmOperation.ComponentPage(
                     components: slice.values,
@@ -134,7 +166,9 @@ extension CanonicalDatabaseGraphAlgorithmService {
             )
 
         case .topologicalOrder(let result):
-            if let order = result.order {
+            if let order = try result.materializedOrder(
+                maximumCount: result.orderCount ?? 0
+            ) {
                 let slice = try pageSlice(order, offset: offset, limit: limit)
                 return .topologicalOrder(
                     GraphAlgorithmOperation.TopologicalResult(
@@ -151,7 +185,14 @@ extension CanonicalDatabaseGraphAlgorithmService {
                     )
                 )
             }
-            let slice = try pageSlice(result.cyclicNodes, offset: offset, limit: limit)
+            let cyclicNodes = try result.materializedCyclicNodes(
+                maximumCount: result.cyclicNodeCount
+            )
+            let slice = try pageSlice(
+                cyclicNodes,
+                offset: offset,
+                limit: limit
+            )
             return .topologicalOrder(
                 GraphAlgorithmOperation.TopologicalResult(
                     order: nil,
@@ -173,8 +214,8 @@ extension CanonicalDatabaseGraphAlgorithmService {
         _ progress: GraphAlgorithmOperation.Progress,
         nextOffset: Int?,
         kind: DatabaseGraphAlgorithmPageCursor.Kind,
-        requestFingerprint: DatabaseBytes,
-        resultFingerprint: DatabaseBytes
+        requestFingerprint: ByteString,
+        resultFingerprint: ByteString
     ) throws -> GraphAlgorithmOperation.Progress {
         let continuation = try nextOffset.map {
             try DatabaseGraphAlgorithmPageCursor(

@@ -1,12 +1,10 @@
 #if FOUNDATION_DB
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import FDBStorage
 import Foundation
-import Graph
-import QueryIR
 import StorageKit
 import TestHeartbeat
 import Testing
@@ -22,26 +20,22 @@ struct RuntimeSemanticPathEdge {
     )
 
     var id: String = UUID().uuidString
-    var from: DatabaseRDFTerm = .iri(
-        "https://example.invalid/node/default-from"
-    )
-    var relationship: DatabaseRDFTerm = .iri(
-        "https://example.invalid/property/default"
-    )
-    var to: DatabaseRDFTerm = .iri(
-        "https://example.invalid/node/default-to"
-    )
+    var from: RDFTerm = .iri(.xsdString)
+    var relationship: RDFTerm = .iri(.xsdString)
+    var to: RDFTerm = .iri(.xsdString)
 
-    #Index(RDFQuadIndexKind<RuntimeSemanticPathEdge>(
-        subject: \.from,
-        predicate: \.relationship,
-        object: \.to
-    ))
+    #Index(
+        .rdfDataset,
+        from: \RuntimeSemanticPathEdge.from,
+        edge: \RuntimeSemanticPathEdge.relationship,
+        to: \RuntimeSemanticPathEdge.to
+    )
 }
 
 @Suite(
     "SPARQL property-path runtime semantics",
     .serialized,
+    .foundationDBScenario,
     .heartbeat
 )
 struct SPARQLPropertyPathRuntimeSemanticsTests {
@@ -64,7 +58,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
             let boundSubject = try await Self.execute(
                 .propertyPath(
-                    subject: Self.iriTerm(absent),
+                    subject: try Self.iriTerm(absent),
                     path: path,
                     object: .variable("?object")
                 ),
@@ -80,7 +74,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 .propertyPath(
                     subject: .variable("?subject"),
                     path: path,
-                    object: Self.iriTerm(absent)
+                    object: try Self.iriTerm(absent)
                 ),
                 using: executor
             ).bindings
@@ -92,9 +86,9 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
             let bothBound = try await Self.execute(
                 .propertyPath(
-                    subject: Self.iriTerm(absent),
+                    subject: try Self.iriTerm(absent),
                     path: path,
-                    object: Self.iriTerm(absent)
+                    object: try Self.iriTerm(absent)
                 ),
                 using: executor
             ).bindings
@@ -107,7 +101,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             )
             let optionalBoundSubject = try await Self.execute(
                 .propertyPath(
-                    subject: Self.iriTerm(absent),
+                    subject: try Self.iriTerm(absent),
                     path: optionalPath,
                     object: .variable("?object")
                 ),
@@ -128,7 +122,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 .propertyPath(
                     subject: .variable("?subject"),
                     path: optionalPath,
-                    object: Self.iriTerm(absent)
+                    object: try Self.iriTerm(absent)
                 ),
                 using: executor
             ).bindings
@@ -160,12 +154,12 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             )
             try await Self.insertEdges(
                 [
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: source,
                         relationship: forwardPredicate,
                         to: target
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: target,
                         relationship: inversePredicate,
                         to: source
@@ -178,13 +172,13 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 context: context
             )
             let exclusions = try PropertyPathNegatedSet(
-                forward: Set<DatabaseRDFPredicateIRI>(),
-                inverse: Set<DatabaseRDFPredicateIRI>()
+                forward: Set<RDFPredicateIRI>(),
+                inverse: Set<RDFPredicateIRI>()
             )
 
             let rows = try await Self.execute(
                 .propertyPath(
-                    subject: Self.iriTerm(source),
+                    subject: try Self.iriTerm(source),
                     path: .negatedPropertySet(exclusions),
                     object: .variable("?target")
                 ),
@@ -208,7 +202,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             let predicate = try Self.uniquePredicate("exact-one")
             try await Self.insertEdges(
                 [
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: source,
                         relationship: predicate,
                         to: target
@@ -224,7 +218,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
             let rows = try await Self.execute(
                 .propertyPath(
-                    subject: Self.iriTerm(source),
+                    subject: try Self.iriTerm(source),
                     path: .range(
                         .alternative(.iri(predicate), .iri(predicate)),
                         bounds
@@ -253,22 +247,22 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             let predicate = try Self.uniquePredicate("exact-two")
             try await Self.insertEdges(
                 [
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: source,
                         relationship: predicate,
                         to: firstMiddle
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: source,
                         relationship: predicate,
                         to: secondMiddle
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: firstMiddle,
                         relationship: predicate,
                         to: target
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: secondMiddle,
                         relationship: predicate,
                         to: target
@@ -284,7 +278,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
             let rows = try await Self.execute(
                 .propertyPath(
-                    subject: Self.iriTerm(source),
+                    subject: try Self.iriTerm(source),
                     path: .range(.iri(predicate), bounds),
                     object: .variable("?target")
                 ),
@@ -318,12 +312,12 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             let predicate = try Self.uniquePredicate("correlated-limit")
             try await Self.insertEdges(
                 [
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: noiseStart,
                         relationship: predicate,
                         to: noiseTarget
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: correlatedStart,
                         relationship: predicate,
                         to: correlatedTarget
@@ -335,14 +329,14 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             let existsQuery = SelectQuery(
                 projection: .all,
                 source: .graphPattern(
-                    QueryIR.GraphPattern.propertyPath(
+                    GraphPattern.propertyPath(
                         subject: .variable("start"),
-                        path: QueryIR.PropertyPath.iri(predicate),
+                        path: DatabaseKit.PropertyPath.iri(predicate),
                         object: .variable("target")
                     )
                 )
             )
-            let query = QueryIR.GraphPattern.filter(
+            let query = GraphPattern.filter(
                 .values(
                     variables: ["start"],
                     bindings: [
@@ -386,22 +380,22 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             let predicate = try Self.uniquePredicate("same-variable-cycle")
             try await Self.insertEdges(
                 [
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: acyclicStart,
                         relationship: predicate,
                         to: acyclicMiddle
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: acyclicMiddle,
                         relationship: predicate,
                         to: acyclicEnd
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: cycleFirst,
                         relationship: predicate,
                         to: cycleSecond
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: cycleSecond,
                         relationship: predicate,
                         to: cycleFirst
@@ -447,17 +441,17 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             let third = Self.uniqueIRI("typed-overflow-third")
             try await Self.insertEdges(
                 [
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: first,
                         relationship: predicate,
                         to: first
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: second,
                         relationship: predicate,
                         to: second
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: third,
                         relationship: predicate,
                         to: third
@@ -517,7 +511,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             let target = Self.uniqueIRI("ontology-composed-target")
             try await Self.insertEdges(
                 [
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: target,
                         relationship: inverse,
                         to: source
@@ -552,7 +546,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
             let rows = try await Self.execute(
                 .propertyPath(
-                    subject: Self.iriTerm(source),
+                    subject: try Self.iriTerm(source),
                     path: .iri(requested),
                     object: .variable("?target")
                 ),
@@ -580,17 +574,17 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             let inverseTarget = Self.uniqueIRI("ontology-inverse-target")
             try await Self.insertEdges(
                 [
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: source,
                         relationship: symmetric,
                         to: directTarget
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: symmetricTarget,
                         relationship: symmetric,
                         to: source
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: inverseTarget,
                         relationship: declaredInverse,
                         to: source
@@ -618,7 +612,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
             let rows = try await Self.execute(
                 .propertyPath(
-                    subject: Self.iriTerm(source),
+                    subject: try Self.iriTerm(source),
                     path: .iri(symmetric),
                     object: .variable("?target")
                 ),
@@ -651,12 +645,12 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             let secondPredicate = try Self.uniquePredicate("builder-second")
             try await Self.insertEdges(
                 [
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: source,
                         relationship: firstPredicate,
                         to: middle
                     ),
-                    Self.makeEdge(
+                    try Self.makeEdge(
                         from: middle,
                         relationship: secondPredicate,
                         to: target
@@ -669,7 +663,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 .sparql(RuntimeSemanticPathEdge.self)
                 .defaultIndex()
                 .wherePath(
-                    Self.iriTerm(source),
+                    try Self.iriTerm(source),
                     path: .sequence(
                         .iri(firstPredicate),
                         .iri(secondPredicate)
@@ -688,8 +682,8 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
     private static func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema(
-            [RuntimeSemanticPathEdge.self],
+        let schema = try Schema(
+            entities: [try RuntimeSemanticPathEdge.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
         return try await DBContainer.open(
@@ -739,7 +733,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         workMeter: DatabaseWorkMeter
     ) {
         let workMeter = DatabaseWorkMeter(
-            budget: DatabaseExecutionBudget()
+            budget: ExecutionBudget()
         )
         let result = try await executor.execute(
             pattern: pattern,
@@ -762,18 +756,18 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
     private static func makeEdge(
         from: String,
-        relationship: DatabaseRDFPredicateIRI,
+        relationship: RDFPredicateIRI,
         to: String
-    ) -> RuntimeSemanticPathEdge {
+    ) throws -> RuntimeSemanticPathEdge {
         var edge = RuntimeSemanticPathEdge()
-        edge.from = .iri(from)
+        edge.from = try .iri(validating: from)
         edge.relationship = relationship.term
-        edge.to = .iri(to)
+        edge.to = try .iri(validating: to)
         return edge
     }
 
-    private static func iriTerm(_ value: String) -> ExecutionTerm {
-        .value(.rdfTerm(.iri(value)))
+    private static func iriTerm(_ value: String) throws -> ExecutionTerm {
+        .value(.rdfTerm(try .iri(validating: value)))
     }
 
     private static func iriValue(
@@ -783,7 +777,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         guard case .rdfTerm(.iri(let value)) = binding[variable] else {
             return nil
         }
-        return value
+        return value.rawValue
     }
 
     private static func uniqueIRI(_ prefix: String) -> String {
@@ -796,8 +790,8 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
 
     private static func uniquePredicate(
         _ prefix: String
-    ) throws -> DatabaseRDFPredicateIRI {
-        try DatabaseRDFPredicateIRI(
+    ) throws -> RDFPredicateIRI {
+        try RDFPredicateIRI(
             "https://example.invalid/property/\(prefix)-"
                 + UUID().uuidString.lowercased()
         )

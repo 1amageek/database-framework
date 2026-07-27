@@ -1,8 +1,8 @@
-import DatabaseWire
-import Graph
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 
 extension RDFDataset {
-    init(databaseQuads: [DatabaseRDFQuad]) {
+    init(databaseQuads: [RDFQuad]) {
         self.init(
             quads: databaseQuads.map { quad in
                 RDFQuad(

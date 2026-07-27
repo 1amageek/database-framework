@@ -4,13 +4,9 @@
 // This file is part of RankIndex module, not DatabaseEngine.
 // Rank is a reranking operation that scores items based on a numeric field.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
+import DatabaseKit
 import DatabaseEngine
+import DatabaseTypes
 import StorageKit
 
 /// Rank-based scoring query for Fusion
@@ -44,7 +40,7 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
     }
 
     private let queryContext: IndexQueryContext
-    private let fieldName: String
+    private let field: FieldIdentity
     private var order: Order = .descending
 
     // MARK: - Initialization (FusionContext)
@@ -60,20 +56,20 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
     ///     Rank(\.rating).order(.descending)
     /// }
     /// ```
-    public init<Value: RankNumericValue>(_ keyPath: KeyPath<T, Value>) {
+    public init<Value: RankNumericValue>(_ field: Field<T, Value>) {
         guard let context = FusionContext.current else {
             fatalError("Rank must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.queryContext = context
     }
 
     /// Create a Rank query for an optional exact numeric field.
-    public init<Value: RankNumericValue>(_ keyPath: KeyPath<T, Value?>) {
+    public init<Value: RankNumericValue>(_ field: Field<T, Value?>) {
         guard let context = FusionContext.current else {
             fatalError("Rank must be used within context.fuse { } block")
         }
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -81,25 +77,19 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
 
     /// Create a Rank query for an exact numeric field with explicit context.
     public init<Value: RankNumericValue>(
-        _ keyPath: KeyPath<T, Value>,
+        _ field: Field<T, Value>,
         context: IndexQueryContext
     ) {
-        self.fieldName = T.fieldName(for: keyPath)
+        self.field = field.identity
         self.queryContext = context
     }
 
     /// Create a Rank query for an optional exact numeric field with explicit context.
     public init<Value: RankNumericValue>(
-        _ keyPath: KeyPath<T, Value?>,
+        _ field: Field<T, Value?>,
         context: IndexQueryContext
     ) {
-        self.fieldName = T.fieldName(for: keyPath)
-        self.queryContext = context
-    }
-
-    /// Create a Rank query with a field name string
-    public init(fieldName: String, context: IndexQueryContext) {
-        self.fieldName = fieldName
+        self.field = field.identity
         self.queryContext = context
     }
 
@@ -136,8 +126,8 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
         entries.reserveCapacity(items.count)
         for item in items {
             let value = try RankValueOrdering.numericValue(
-                from: item[dynamicMember: fieldName],
-                fieldName: fieldName
+                from: try item.persistedFieldValue(for: field),
+                fieldName: field.name
             )
             let identifierKey = try RankValueOrdering.identifierKey(for: item.id)
             entries.append(

@@ -9,7 +9,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -74,7 +74,7 @@ public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaint
             // Same ID: checked read/replace preserves overflow semantics on
             // every storage backend instead of relying on wrapping atomics.
             guard let stored = try await transaction.getValue(for: oldKey) else {
-                throw IndexError.invalidStructure(
+                throw AggregationIndexError.invalidStructure(
                     "COUNT_UPDATES entry is missing for an existing entity"
                 )
             }

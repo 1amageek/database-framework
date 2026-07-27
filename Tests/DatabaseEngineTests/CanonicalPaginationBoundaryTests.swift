@@ -1,7 +1,7 @@
 #if !os(WASI)
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
+import DatabaseKit
 import Testing
 @testable import DatabaseEngine
 
@@ -39,7 +39,9 @@ struct CanonicalPaginationBoundaryTests {
             options: execution(pageSize: 1)
         )
         let continuation = try #require(first.continuation)
-        var bytes = continuation.bytes.contiguousArray()
+        // A mutable copy is required only to corrupt this bounded cursor
+        // fixture; production pagination retains the immutable ByteString.
+        var bytes = Array(continuation.bytes)
         for index in (bytes.count - 8)..<bytes.count {
             bytes[index] = 0xff
         }
@@ -50,7 +52,7 @@ struct CanonicalPaginationBoundaryTests {
                 selectQuery: selectQuery(),
                 options: execution(
                     pageSize: 1,
-                    continuation: QueryContinuation(DatabaseBytes(bytes))
+                    continuation: QueryContinuation(ByteString(bytes))
                 )
             )
         }
@@ -123,8 +125,8 @@ struct CanonicalPaginationBoundaryTests {
 
     private func selectQuery(
         table: String = "PaginationEntity",
-        limit: Int? = nil,
-        offset: Int? = nil
+        limit: UInt64? = nil,
+        offset: UInt64? = nil
     ) -> SelectQuery {
         SelectQuery(
             projection: .all,
@@ -134,9 +136,11 @@ struct CanonicalPaginationBoundaryTests {
         )
     }
 
-    private func rows(_ count: Int) -> [QueryRow] {
+    private func rows(_ count: Int) -> [DatabaseEngine.QueryRow] {
         (0..<count).map {
-            QueryRow(fields: ["id": .int64(Int64($0))])
+            DatabaseEngine.QueryRow(
+                fields: ["id": .int64(Int64($0))]
+            )
         }
     }
 
@@ -144,7 +148,7 @@ struct CanonicalPaginationBoundaryTests {
         pageSize: Int,
         continuation: QueryContinuation? = nil
     ) -> ReadExecutionContext {
-        let budget = DatabaseExecutionBudget(
+        let budget = ExecutionBudget(
             maximumRows: UInt32.max,
             maximumWorkUnits: UInt64.max,
             timeoutMilliseconds: 30_000

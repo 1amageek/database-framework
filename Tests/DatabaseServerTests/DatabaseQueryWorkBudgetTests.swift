@@ -1,10 +1,10 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
+import DatabaseKit
 import StorageKit
 import Testing
 
@@ -41,7 +41,7 @@ struct DatabaseQueryWorkBudgetTests {
                 context: try operationContext(container: container, request: request)
             )
             Issue.record("Expected the QueryIR collection limit to reject the query")
-        } catch let error as QueryStructuralValidationError {
+        } catch QueryParameterBindingError.invalidStructure(let error) {
             #expect(
                 error == .resourceLimitExceeded(
                     resource: .collectionElements,
@@ -57,7 +57,7 @@ struct DatabaseQueryWorkBudgetTests {
     @Test("Parameter payloads are rejected before recursive binding")
     func parameterPayloadIsValidatedBeforeBinding() async throws {
         let container = try await makeContainer()
-        var value = DatabaseValue.object([])
+        var value = FieldValue.object(FieldObject())
         for _ in 0..<7 {
             value = .array([value])
         }
@@ -70,7 +70,11 @@ struct DatabaseQueryWorkBudgetTests {
         let request = QueryExecuteOperation.Request(
             input: .ir(.select(query)),
             parameters: [
-                DatabaseObjectField(number: 1, name: "value", value: value),
+                QueryParameter(
+                    position: 1,
+                    name: "value",
+                    value: value
+                ),
             ],
             page: QueryExecuteOperation.Page(limit: 1)
         )
@@ -91,7 +95,7 @@ struct DatabaseQueryWorkBudgetTests {
                 context: try operationContext(container: container, request: request)
             )
             Issue.record("Expected parameter preflight to reject recursive binding")
-        } catch let error as QueryStructuralValidationError {
+        } catch QueryParameterBindingError.invalidStructure(let error) {
             #expect(
                 error == .resourceLimitExceeded(
                     resource: .nestingDepth,
@@ -187,7 +191,7 @@ struct DatabaseQueryWorkBudgetTests {
             context: DatabaseOperationContext(
                 container: container,
                 requestID: 1,
-                metadata: DatabaseRequestMetadata(),
+                metadata: OperationRequestMetadata(),
                 requestPayload: []
             )
         )
@@ -196,7 +200,7 @@ struct DatabaseQueryWorkBudgetTests {
             Issue.record("Expected a row page")
             return
         }
-        #expect(page.rows.count == 1)
+        #expect(page.rowCount == 1)
     }
 
     @Test("Direct QueryIR cannot hide an RDF blank node inside Literal")
@@ -209,7 +213,11 @@ struct DatabaseQueryWorkBudgetTests {
                     TriplePattern(
                         subject: .variable("subject"),
                         predicate: .iri("urn:predicate"),
-                        object: .literal(.rdfTerm(.blankNode("hidden")))
+                        object: .literal(
+                            .rdfTerm(
+                                try RDFTerm.blankNode(identifier: "hidden")
+                            )
+                        )
                     )
                 ])
             )
@@ -225,8 +233,12 @@ struct DatabaseQueryWorkBudgetTests {
                 context: DatabaseOperationContext(
                     container: container,
                     requestID: 1,
-                    metadata: DatabaseRequestMetadata(),
-                    requestPayload: try DatabaseEnvelopeCodec.encode(request)
+                    metadata: OperationRequestMetadata(),
+                    requestPayload: try DatabaseWireEncoder()
+                        .encodeRequestPayload(
+                            DatabaseOperations.queryExecute,
+                            request: request
+                        )
                 )
             )
             Issue.record("Expected semantic validation to reject the query")
@@ -245,7 +257,7 @@ struct DatabaseQueryWorkBudgetTests {
             _ = try await execute(
                 container: container,
                 pageLimit: 2,
-                budget: DatabaseExecutionBudget(
+                budget: ExecutionBudget(
                     maximumRows: 2,
                     maximumWorkUnits: 1,
                     timeoutMilliseconds: 1_000
@@ -264,7 +276,7 @@ struct DatabaseQueryWorkBudgetTests {
         let response = try await execute(
             container: container,
             pageLimit: 2,
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumRows: 2,
                 maximumWorkUnits: 1_000,
                 timeoutMilliseconds: 1_000
@@ -298,7 +310,7 @@ struct DatabaseQueryWorkBudgetTests {
             var entity = DatabaseEndpointEntity()
             entity.id = "entity-\(index)"
             entity.title = "Title \(index)"
-            entity.priority = index
+            entity.priority = Int64(index)
             try context.insert(entity)
         }
         try await context.save()
@@ -308,7 +320,7 @@ struct DatabaseQueryWorkBudgetTests {
     private func execute(
         container: DBContainer,
         pageLimit: UInt32,
-        budget: DatabaseExecutionBudget
+        budget: ExecutionBudget
     ) async throws -> QueryExecuteOperation.Response {
         let request = QueryExecuteOperation.Request(
             input: .ir(
@@ -339,8 +351,11 @@ struct DatabaseQueryWorkBudgetTests {
         DatabaseOperationContext(
             container: container,
             requestID: 1,
-            metadata: DatabaseRequestMetadata(),
-            requestPayload: try DatabaseEnvelopeCodec.encode(request)
+            metadata: OperationRequestMetadata(),
+            requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
+                DatabaseOperations.queryExecute,
+                request: request
+            )
         )
     }
 }

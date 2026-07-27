@@ -3,14 +3,9 @@
 //
 // Maintains spatial indexes using S2 or Morton encoding.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
+import DatabaseKit
 import DatabaseEngine
-import Geospatial
+import DatabaseTypes
 import StorageKit
 
 /// Spatial index maintainer
@@ -193,37 +188,43 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// **Sparse index behavior**:
     /// If the coordinate field is nil, returns nil (no index entry).
     ///
-    /// **KeyPath Optimization**:
-    /// When `index.keyPaths` is available, uses direct KeyPath subscript access
-    /// which is more efficient than string-based `@dynamicMemberLookup`.
     private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> Bytes? {
-        // Use optimized DataAccess method - KeyPath when available, falls back to KeyExpression
-        // Sparse index: if coordinate field is nil, return nil (no index entry)
-        let fieldValues: [any TupleElement]
-        do {
-            fieldValues = try DataAccess.evaluate(
-                item: item,
-                expression: index.rootExpression
+        guard let expression = index.rootExpression as? FieldKeyExpression,
+              let fieldNumber = Item.fieldNumber(for: expression.fieldName) else {
+            throw SpatialIndexMaintenanceError.invalidFieldExpression(
+                indexName: index.name
             )
-        } catch DataAccessError.nilValueCannotBeIndexed {
-            // Sparse index: nil coordinates are not indexed
+        }
+        guard let value = try item.persistedFieldValue(
+            for: FieldIdentity(
+                name: expression.fieldName,
+                number: fieldNumber
+            )
+        ) else {
+            throw SpatialIndexMaintenanceError.missingCoordinate(
+                fieldName: expression.fieldName
+            )
+        }
+        guard value != .null else {
             return nil
         }
 
-        guard fieldValues.count >= 2 else {
-            return nil
+        let point: GeographicPoint
+        let height: Double?
+        switch value {
+        case .geographicPoint(let coordinate):
+            point = coordinate
+            height = nil
+        case .geographicPosition(let coordinate):
+            point = coordinate.point
+            height = coordinate.ellipsoidalHeightInMeters
+        default:
+            throw SpatialIndexMaintenanceError.unsupportedCoordinateValue(
+                fieldName: expression.fieldName
+            )
         }
 
-        var coordinates: [Double] = []
-        for value in fieldValues {
-            if let d = TypeConversion.asDouble(value) {
-                coordinates.append(d)
-            } else {
-                throw SpatialIndexError.invalidCoordinates("Spatial coordinates must be numeric")
-            }
-        }
-
-        let spatialCode = try encodeSpatialCode(coordinates: coordinates)
+        let spatialCode = encodeSpatialCode(point: point, height: height)
 
         // Extract primary key
         let primaryKeyTuple: Tuple
@@ -243,27 +244,38 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         return try packAndValidate(Tuple(allElements))
     }
 
-    private func encodeSpatialCode(coordinates: [Double]) throws -> UInt64 {
+    private func encodeSpatialCode(
+        point: GeographicPoint,
+        height: Double?
+    ) -> UInt64 {
         switch encoding {
         case .s2:
-            guard coordinates.count == 2 else {
-                throw SpatialIndexError.invalidCoordinates("S2 encoding requires 2 coordinates (latitude, longitude)")
-            }
-            return S2Geometry.encode(latitude: coordinates[0], longitude: coordinates[1], level: level)
+            return S2Geometry.encode(
+                latitude: point.latitude,
+                longitude: point.longitude,
+                level: level
+            )
 
         case .morton:
-            if coordinates.count == 2 {
-                let x = MortonCode.normalize(coordinates[1], min: -180, max: 180)
-                let y = MortonCode.normalize(coordinates[0], min: -90, max: 90)
-                return MortonCode.encode2D(x: x, y: y, level: level)
-            } else if coordinates.count == 3 {
-                let x = MortonCode.normalize(coordinates[1], min: -180, max: 180)
-                let y = MortonCode.normalize(coordinates[0], min: -90, max: 90)
-                let z = MortonCode.normalize(coordinates[2], min: -1000, max: 10000)
+            let x = MortonCode.normalize(
+                point.longitude,
+                min: -180,
+                max: 180
+            )
+            let y = MortonCode.normalize(
+                point.latitude,
+                min: -90,
+                max: 90
+            )
+            if let height {
+                let z = MortonCode.normalize(
+                    height,
+                    min: -1000,
+                    max: 10000
+                )
                 return MortonCode.encode3D(x: x, y: y, z: z, level: level)
-            } else {
-                throw SpatialIndexError.invalidCoordinates("Morton encoding requires 2 or 3 coordinates")
             }
+            return MortonCode.encode2D(x: x, y: y, level: level)
         }
     }
 }

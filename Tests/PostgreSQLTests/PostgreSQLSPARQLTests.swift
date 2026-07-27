@@ -8,9 +8,9 @@ import Testing
 import Foundation
 import StorageKit
 import PostgreSQLStorage
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -21,17 +21,17 @@ import TestSupport
 struct PGStatement {
     #Directory<PGStatement>("test", "pg", "sparql", "statements")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var subject: String = ""
     var predicate: String = ""
     var object: String = ""
 
-    #Index(GraphIndexKind<PGStatement>(
-        from: \.subject,
-        edge: \.predicate,
-        to: \.object,
-        strategy: .hexastore
-    ))
+    #Index(
+        .propertyGraph(strategy: .hexastore),
+        from: \PGStatement.subject,
+        edge: \PGStatement.predicate,
+        to: \PGStatement.object
+    )
 }
 
 @Suite("PostgreSQL SPARQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
@@ -40,7 +40,7 @@ struct PostgreSQLSPARQLTests {
     // MARK: - Setup
 
     private func setupContainer() async throws -> DBContainer {
-        let schema = Schema([PGStatement.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try PGStatement.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGStatement.self])
     }
 

@@ -1,104 +1,29 @@
 import Testing
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
-import Geospatial
 import StorageKit
 @testable import SpatialIndex
 
-private struct SpatialPlannerItem: Persistable {
-    typealias ID = String
-
+@Persistable
+private struct SpatialPlannerItem {
     var id: String
-    var latitude: Double
-    var longitude: Double
+    var location: GeographicPoint
 
-    static var persistableType: String { "SpatialPlannerItem" }
-    static var allFields: [String] { ["id", "latitude", "longitude"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "latitude": return latitude
-        case "longitude": return longitude
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<SpatialPlannerItem, Value>) -> String {
-        switch keyPath {
-        case \SpatialPlannerItem.id: return "id"
-        case \SpatialPlannerItem.latitude: return "latitude"
-        case \SpatialPlannerItem.longitude: return "longitude"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<SpatialPlannerItem>) -> String {
-        switch keyPath {
-        case \SpatialPlannerItem.id: return "id"
-        case \SpatialPlannerItem.latitude: return "latitude"
-        case \SpatialPlannerItem.longitude: return "longitude"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<SpatialPlannerItem> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
+    init(id: String, latitude: Double, longitude: Double) throws {
+        self.id = id
+        self.location = try GeographicPoint(
+            latitude: latitude,
+            longitude: longitude
+        )
     }
 }
 
-private struct SpatialPlannerIntIDItem: Persistable {
-    typealias ID = Int64
-
+@Persistable
+private struct SpatialPlannerIntIDItem {
     var id: Int64
-    var location: GeoPoint
-
-    static var persistableType: String { "SpatialPlannerIntIDItem" }
-    static var allFields: [String] { ["id", "location"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "location": return location
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<SpatialPlannerIntIDItem, Value>) -> String {
-        switch keyPath {
-        case \SpatialPlannerIntIDItem.id: return "id"
-        case \SpatialPlannerIntIDItem.location: return "location"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<SpatialPlannerIntIDItem>) -> String {
-        switch keyPath {
-        case \SpatialPlannerIntIDItem.id: return "id"
-        case \SpatialPlannerIntIDItem.location: return "location"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<SpatialPlannerIntIDItem> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var location: GeographicPoint
 }
 
 @Suite("Spatial scan planning")
@@ -147,18 +72,15 @@ struct SpatialScanPlannerTests {
 
     @Test("Morton write code matches scan planner coordinate contract")
     func mortonWriteCodeMatchesPlannerCoordinateContract() async throws {
-        let kind = SpatialIndexKind<SpatialPlannerItem>(
-            latitude: \.latitude,
-            longitude: \.longitude,
-            encoding: .morton,
-            level: 12
-        )
         let index = Index(
             name: "location",
-            kind: kind,
-            rootExpression: KeyExpressionFactory.from(
-                keyPaths: ["latitude", "longitude"]
-            )
+            kind: spatialIndexMetadata(
+                fieldName: "location",
+                fieldNumber: 2,
+                encoding: .morton,
+                level: 12
+            ),
+            rootExpression: FieldKeyExpression(fieldName: "location")
         )
         let maintainer = SpatialIndexMaintainer<SpatialPlannerItem>(
             index: index,
@@ -167,15 +89,19 @@ struct SpatialScanPlannerTests {
             subspace: Subspace("spatial"),
             idExpression: FieldKeyExpression(fieldName: "id")
         )
-        let item = SpatialPlannerItem(id: "tokyo", latitude: 35.6812, longitude: 139.7671)
+        let item = try SpatialPlannerItem(
+            id: "tokyo",
+            latitude: 35.6812,
+            longitude: 139.7671
+        )
         let keys = try await maintainer.computeIndexKeys(for: item, id: Tuple("tokyo"))
 
         let keyTuple = try Subspace("spatial").unpack(keys[0])
         let storedElement = try #require(keyTuple[0])
         let storedCode = UInt64(bitPattern: try TypeConversion.int64(from: storedElement))
         let plannerCode = SpatialScanPlanner.mortonCode(
-            latitude: item.latitude,
-            longitude: item.longitude,
+            latitude: item.location.latitude,
+            longitude: item.location.longitude,
             level: 12
         )
 
@@ -203,7 +129,10 @@ struct SpatialScanPlannerTests {
     func spatialPrimaryKeyExtractionSupportsNonStringIDs() throws {
         let item = SpatialPlannerIntIDItem(
             id: 42,
-            location: GeoPoint(35.6812, 139.7671)
+            location: try GeographicPoint(
+                latitude: 35.6812,
+                longitude: 139.7671
+            )
         )
 
         let primaryKey = try SpatialPrimaryKey.tuple(for: item)

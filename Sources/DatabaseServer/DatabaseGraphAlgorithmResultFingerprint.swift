@@ -1,12 +1,12 @@
-import DatabaseDigest
-import DatabaseValue
-import DatabaseWire
+import DatabaseKit
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseTypes
 
 enum DatabaseGraphAlgorithmResultFingerprint {
     static func compute(
         _ response: GraphAlgorithmOperation.Response,
         limits: DatabaseWireLimits
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         var hasher = SHA256Accumulator()
         update([0x47, 0x52, 0x02], hasher: &hasher)
 
@@ -14,10 +14,23 @@ enum DatabaseGraphAlgorithmResultFingerprint {
         case .path(let result):
             updateByte(1, hasher: &hasher)
             updateBool(result.found, hasher: &hasher)
-            try updateTerms(result.nodes, limits: limits, hasher: &hasher)
-            try updateTerms(result.edgeLabels, limits: limits, hasher: &hasher)
-            updateUInt64(UInt64(result.weights.count), hasher: &hasher)
-            for weight in result.weights {
+            var nodes = result.makeNodeIterator()
+            var edgeLabels = result.makeEdgeLabelIterator()
+            var weights = result.makeWeightIterator()
+            try updateTerms(
+                count: result.nodeCount,
+                iterator: &nodes,
+                limits: limits,
+                hasher: &hasher
+            )
+            try updateTerms(
+                count: result.edgeLabelCount,
+                iterator: &edgeLabels,
+                limits: limits,
+                hasher: &hasher
+            )
+            updateUInt64(UInt64(result.weightCount), hasher: &hasher)
+            while let weight = try weights.next() {
                 updateDouble(weight, hasher: &hasher)
             }
             updateBool(result.totalWeight != nil, hasher: &hasher)
@@ -29,8 +42,9 @@ enum DatabaseGraphAlgorithmResultFingerprint {
 
         case .ranking(let result):
             updateByte(2, hasher: &hasher)
-            updateUInt64(UInt64(result.scores.count), hasher: &hasher)
-            for score in result.scores {
+            var scores = result.makeScoreIterator()
+            updateUInt64(UInt64(result.scoreCount), hasher: &hasher)
+            while let score = try scores.next() {
                 try updateTerm(score.vertex, limits: limits, hasher: &hasher)
                 updateDouble(score.score, hasher: &hasher)
             }
@@ -40,8 +54,9 @@ enum DatabaseGraphAlgorithmResultFingerprint {
 
         case .communities(let result):
             updateByte(3, hasher: &hasher)
-            updateUInt64(UInt64(result.assignments.count), hasher: &hasher)
-            for assignment in result.assignments {
+            var assignments = result.makeAssignmentIterator()
+            updateUInt64(UInt64(result.assignmentCount), hasher: &hasher)
+            while let assignment = try assignments.next() {
                 try updateTerm(assignment.vertex, limits: limits, hasher: &hasher)
                 try updateTerm(assignment.community, limits: limits, hasher: &hasher)
             }
@@ -54,12 +69,20 @@ enum DatabaseGraphAlgorithmResultFingerprint {
 
         case .cycles(let result):
             updateByte(4, hasher: &hasher)
-            updateUInt64(UInt64(result.cycles.count), hasher: &hasher)
-            for cycle in result.cycles {
-                try updateTerms(cycle, limits: limits, hasher: &hasher)
+            var cycles = result.makeCycleIterator()
+            var backEdges = result.makeBackEdgeIterator()
+            updateUInt64(UInt64(result.cycleCount), hasher: &hasher)
+            while let cycle = try cycles.next() {
+                var terms = cycle.makeTermIterator()
+                try updateTerms(
+                    count: cycle.termCount,
+                    iterator: &terms,
+                    limits: limits,
+                    hasher: &hasher
+                )
             }
-            updateUInt64(UInt64(result.backEdges.count), hasher: &hasher)
-            for edge in result.backEdges {
+            updateUInt64(UInt64(result.backEdgeCount), hasher: &hasher)
+            while let edge = try backEdges.next() {
                 try updateTerm(edge.source, limits: limits, hasher: &hasher)
                 try updateTerm(edge.target, limits: limits, hasher: &hasher)
             }
@@ -68,20 +91,39 @@ enum DatabaseGraphAlgorithmResultFingerprint {
 
         case .components(let result):
             updateByte(5, hasher: &hasher)
-            updateUInt64(UInt64(result.components.count), hasher: &hasher)
-            for component in result.components {
-                try updateTerms(component, limits: limits, hasher: &hasher)
+            var components = result.makeComponentIterator()
+            updateUInt64(UInt64(result.componentCount), hasher: &hasher)
+            while let component = try components.next() {
+                var terms = component.makeTermIterator()
+                try updateTerms(
+                    count: component.termCount,
+                    iterator: &terms,
+                    limits: limits,
+                    hasher: &hasher
+                )
             }
             updateUInt64(result.nodesExplored, hasher: &hasher)
             updateProgress(result.progress, hasher: &hasher)
 
         case .topologicalOrder(let result):
             updateByte(6, hasher: &hasher)
-            updateBool(result.order != nil, hasher: &hasher)
-            if let order = result.order {
-                try updateTerms(order, limits: limits, hasher: &hasher)
+            let order = result.makeOrderIterator()
+            var cyclicNodes = result.makeCyclicNodeIterator()
+            updateBool(order != nil, hasher: &hasher)
+            if var order {
+                try updateTerms(
+                    count: result.orderCount ?? 0,
+                    iterator: &order,
+                    limits: limits,
+                    hasher: &hasher
+                )
             }
-            try updateTerms(result.cyclicNodes, limits: limits, hasher: &hasher)
+            try updateTerms(
+                count: result.cyclicNodeCount,
+                iterator: &cyclicNodes,
+                limits: limits,
+                hasher: &hasher
+            )
             updateUInt64(result.totalNodes, hasher: &hasher)
             updateProgress(result.progress, hasher: &hasher)
         }
@@ -98,24 +140,32 @@ enum DatabaseGraphAlgorithmResultFingerprint {
     }
 
     private static func updateTerms(
-        _ values: [DatabaseGraphTerm],
+        count: Int,
+        iterator: inout ResultIterator<GraphAlgorithmOperation.Term>,
         limits: DatabaseWireLimits,
         hasher: inout SHA256Accumulator
     ) throws {
-        updateUInt64(UInt64(values.count), hasher: &hasher)
-        for value in values {
+        updateUInt64(UInt64(count), hasher: &hasher)
+        while let value = try iterator.next() {
             try updateTerm(value, limits: limits, hasher: &hasher)
         }
     }
 
     private static func updateTerm(
-        _ value: DatabaseGraphTerm,
+        _ value: GraphAlgorithmOperation.Term,
         limits: DatabaseWireLimits,
         hasher: inout SHA256Accumulator
     ) throws {
-        let bytes = try DatabaseEnvelopeCodec.encode(value, limits: limits)
-        updateUInt64(UInt64(bytes.count), hasher: &hasher)
-        update(bytes, hasher: &hasher)
+        try ServerPayloadEncoder.emit(
+            value,
+            limits: limits,
+            prepare: { byteCount in
+                updateUInt64(UInt64(byteCount), hasher: &hasher)
+            },
+            consume: { bytes in
+                hasher.update(bytes)
+            }
+        )
     }
 
     private static func updateBool(
@@ -157,7 +207,7 @@ enum DatabaseGraphAlgorithmResultFingerprint {
     }
 
     private static func update(
-        _ bytes: DatabaseBytes,
+        _ bytes: ByteString,
         hasher: inout SHA256Accumulator
     ) {
         hasher.update(bytes)

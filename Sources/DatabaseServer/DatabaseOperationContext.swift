@@ -1,20 +1,20 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseOperationContext: Sendable {
     public let container: DBContainer
     public let requestID: UInt64
-    public let metadata: DatabaseRequestMetadata
-    public let requestPayload: DatabaseBytes
-    public let requestDigest: DatabaseBytes?
+    public let metadata: OperationRequestMetadata
+    public let requestPayload: ByteString
+    public let requestDigest: ByteString?
 
     public init(
         container: DBContainer,
         requestID: UInt64,
-        metadata: DatabaseRequestMetadata,
-        requestPayload: DatabaseBytes,
-        requestDigest: DatabaseBytes? = nil
+        metadata: OperationRequestMetadata,
+        requestPayload: ByteString,
+        requestDigest: ByteString? = nil
     ) {
         self.container = container
         self.requestID = requestID

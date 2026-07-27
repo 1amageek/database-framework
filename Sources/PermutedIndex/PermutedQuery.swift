@@ -8,10 +8,9 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import Permuted
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
-import QueryIR
 import StorageKit
 
 // MARK: - Permuted Entry Point
@@ -274,17 +273,35 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
             throw PermutedQueryError.indexNotFound(indexName)
         }
-        guard descriptor.kindIdentifier == PermutedIndexKind<T>.identifier else {
+        guard descriptor.kind.identifier == "permuted" else {
             throw PermutedQueryError.unexpectedIndexKind(
                 name: indexName,
                 actual: descriptor.kindIdentifier
             )
         }
-        guard let indices = descriptor.kind.metadata["permutation"]?.intArrayValue else {
+        guard
+            case .array(let encodedIndices)? =
+                descriptor.kind.metadata["permutation"]
+        else {
             throw PermutedQueryError.invalidMetadata(
                 name: indexName,
                 key: "permutation"
             )
+        }
+        let parameters = IndexReadParameters(["permutation": .array(encodedIndices)])
+        let values = try parameters.requireArray(named: "permutation")
+        var indices: [Int] = []
+        indices.reserveCapacity(values.count)
+        for value in values {
+            let element = IndexReadParameters(["value": value])
+            do {
+                indices.append(try element.requireInteger(named: "value"))
+            } catch {
+                throw PermutedQueryError.invalidMetadata(
+                    name: indexName,
+                    key: "permutation"
+                )
+            }
         }
 
         let canonicalPermutation = try Permutation(indices: indices)
@@ -301,12 +318,19 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal func toSelectQuery() throws -> SelectQuery {
-        var parameters: [String: QueryParameterValue] = [:]
+        var parameters: [String: FieldValue] = [:]
+        let queryLimit: UInt64?
         if let permutation {
             parameters[PermutedReadParameter.permutation] = .array(permutation.indices.map { .int64(Int64($0)) })
         }
         if let limitCount {
+            guard limitCount >= 0 else {
+                throw PermutedQueryError.invalidLimit(limitCount)
+            }
             parameters[PermutedReadParameter.limit] = .int64(Int64(limitCount))
+            queryLimit = UInt64(limitCount)
+        } else {
+            queryLimit = nil
         }
 
         switch queryType {
@@ -330,11 +354,11 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
             accessPath: .index(
                 IndexScanSource(
                     indexName: indexName,
-                    kindIdentifier: PermutedIndexKind<T>.identifier,
+                    kindIdentifier: "permuted",
                     parameters: parameters
                 )
             ),
-            limit: limitCount
+            limit: queryLimit
         )
     }
 }
@@ -383,6 +407,9 @@ public enum PermutedQueryError: Error, CustomStringConvertible {
     /// Query-local metadata conflicts with the schema descriptor.
     case permutationMismatch(name: String)
 
+    /// Query limits cannot be negative.
+    case invalidLimit(Int)
+
     public var description: String {
         switch self {
         case .indexNotFound(let name):
@@ -395,6 +422,8 @@ public enum PermutedQueryError: Error, CustomStringConvertible {
             return "Index '\(name)' has invalid metadata for '\(key)'"
         case .permutationMismatch(let name):
             return "Query permutation does not match index '\(name)'"
+        case .invalidLimit(let limit):
+            return "Permuted query limit must be nonnegative, got \(limit)"
         }
     }
 }

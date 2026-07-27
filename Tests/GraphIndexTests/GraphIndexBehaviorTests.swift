@@ -6,9 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -21,15 +20,8 @@ struct GraphIndexEdge {
     var source: String
     var target: String
     var label: String
-    var weight: Double
+    var weight: Double = 1.0
 
-    init(id: String = UUID().uuidString, source: String, target: String, label: String, weight: Double = 1.0) {
-        self.id = id
-        self.source = source
-        self.target = target
-        self.label = label
-        self.weight = weight
-    }
 }
 
 // MARK: - Test Helper
@@ -39,7 +31,6 @@ private struct GraphIndexContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: GraphIndexMaintainer<GraphIndexEdge>
-    let kind: GraphIndexKind<GraphIndexEdge>
     let strategy: PropertyGraphIndexStrategy
 
     init(
@@ -52,10 +43,10 @@ private struct GraphIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.strategy = strategy
 
-        self.kind = GraphIndexKind<GraphIndexEdge>(
-            from: \.source,
-            edge: \.label,
-            to: \.target,
+        let kind = propertyGraphIndexMetadata(
+            sourceFieldName: "source",
+            labelFieldName: "label",
+            targetFieldName: "target",
             strategy: strategy
         )
 
@@ -71,14 +62,11 @@ private struct GraphIndexContext {
             itemTypes: Set(["GraphIndexEdge"])
         )
 
-        self.maintainer = GraphIndexMaintainer<GraphIndexEdge>(
+        self.maintainer = try GraphIndexMaintainer<GraphIndexEdge>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            fromField: kind.fromField,
-            edgeField: kind.edgeField,
-            toField: kind.toField,
-            strategy: strategy
+            metadata: try PropertyGraphIndexMetadata(canonical: index.kind)
         )
     }
 
@@ -113,45 +101,43 @@ private struct GraphIndexContext {
     }
 
     func getOutgoingNeighbors(from source: String, label: String) async throws -> [String] {
-        // For adjacency: [out=0]/[edge]/[from]/[to]
-        let outSubspace = indexSubspace.subspace(Int64(0))
-        let prefixSubspace = outSubspace.subspace(label).subspace(source)
+        let scanner = GraphEdgeScanner(
+            indexSubspace: indexSubspace,
+            strategy: .adjacency
+        )
         return try await database.withTransaction { transaction -> [String] in
-            let (begin, end) = prefixSubspace.range()
-            var targets: [String] = []
-            for (key, _) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
-                let unpacked = try prefixSubspace.unpack(key)
-                let elements = try Tuple.unpack(from: unpacked.pack())
-                if let target = elements.first as? String {
-                    targets.append(target)
-                }
+            let edges = try await scanner.scanAllOutgoing(
+                from: .identifier(source),
+                edgeLabel: .identifier(label),
+                transaction: transaction
+            )
+            return edges.compactMap { edge in
+                edge.target.identifier
             }
-            return targets
         }
     }
 
     func getIncomingNeighbors(to target: String, label: String) async throws -> [String] {
-        // For adjacency: [in=1]/[edge]/[to]/[from]
-        let inSubspace = indexSubspace.subspace(Int64(1))
-        let prefixSubspace = inSubspace.subspace(label).subspace(target)
+        let scanner = GraphEdgeScanner(
+            indexSubspace: indexSubspace,
+            strategy: .adjacency
+        )
         return try await database.withTransaction { transaction -> [String] in
-            let (begin, end) = prefixSubspace.range()
-            var sources: [String] = []
-            for (key, _) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
-                let unpacked = try prefixSubspace.unpack(key)
-                let elements = try Tuple.unpack(from: unpacked.pack())
-                if let source = elements.first as? String {
-                    sources.append(source)
-                }
+            let edges = try await scanner.scanAllIncoming(
+                to: .identifier(target),
+                edgeLabel: .identifier(label),
+                transaction: transaction
+            )
+            return edges.compactMap { edge in
+                edge.source.identifier
             }
-            return sources
         }
     }
 }
 
 // MARK: - Adjacency Strategy Tests
 
-@Suite("GraphIndex Adjacency Strategy Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("GraphIndex Adjacency Strategy Tests", .tags(.fdb), .serialized, .foundationDBScenario, .heartbeat)
 struct GraphIndexAdjacencyTests {
 
     @Test("Insert creates outgoing edge entry")
@@ -327,7 +313,7 @@ struct GraphIndexAdjacencyTests {
 
 // MARK: - TripleStore Strategy Tests
 
-@Suite("GraphIndex TripleStore Strategy Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("GraphIndex TripleStore Strategy Tests", .tags(.fdb), .serialized, .foundationDBScenario, .heartbeat)
 struct GraphIndexTripleStoreTests {
 
     @Test("TripleStore creates 3 index entries")
@@ -407,7 +393,7 @@ struct GraphIndexTripleStoreTests {
 
 // MARK: - Hexastore Strategy Tests
 
-@Suite("GraphIndex Hexastore Strategy Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("GraphIndex Hexastore Strategy Tests", .tags(.fdb), .serialized, .foundationDBScenario, .heartbeat)
 struct GraphIndexHexastoreTests {
 
     @Test("Hexastore creates 6 index entries")

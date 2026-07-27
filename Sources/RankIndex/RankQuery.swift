@@ -3,16 +3,10 @@
 //
 // Follows GraphIndex pattern: execute() uses the actual index, not in-memory processing.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
-import Core
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
-import Rank
 
 // MARK: - Rank Query Builder
 
@@ -40,6 +34,7 @@ import Rank
 public struct RankQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
     private let fieldName: String
+    private let selectedIndexName: String?
     private var queryMode: RankQueryMode = .top(10)
 
     /// Query mode for ranking
@@ -50,9 +45,14 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         case percentile(Double)
     }
 
-    internal init(queryContext: IndexQueryContext, fieldName: String) {
+    internal init(
+        queryContext: IndexQueryContext,
+        fieldName: String,
+        selectedIndexName: String? = nil
+    ) {
         self.queryContext = queryContext
         self.fieldName = fieldName
+        self.selectedIndexName = selectedIndexName
     }
 
     /// Get top N items (highest values).
@@ -138,7 +138,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         try validateMode()
 
         let response = try await queryContext.context.query(
-            toSelectQuery(),
+            try toSelectQuery(),
             as: T.self,
             options: .default
         )
@@ -159,14 +159,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     ) async throws -> [(item: T, rank: Int)] {
         try validateMode()
 
-        // Build index name: {TypeName}_rank_{field}
-        let indexName = "\(T.persistableType)_rank_\(fieldName)"
-
-        // Check if index exists
-        guard let _ = queryContext.schema.indexDescriptor(named: indexName) else {
-            // No index - fall back to in-memory processing
-            return try await executeInMemory(cachePolicy: cachePolicy)
-        }
+        let indexName = try resolvedIndexName()
 
         // Get index subspace
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
@@ -322,88 +315,29 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         return results
     }
 
-    /// Execute using in-memory calculation (fallback when no index exists)
-    private func executeInMemory(cachePolicy: CachePolicy) async throws -> [(item: T, rank: Int)] {
-        let items = try await queryContext.context.fetch(T.self)
-            .cachePolicy(cachePolicy)
-            .execute()
-
-        var entries: [RankValueEntry<T>] = []
-        entries.reserveCapacity(items.count)
-        for item in items {
-            let value = try RankValueOrdering.numericValue(
-                from: item[dynamicMember: fieldName],
-                fieldName: fieldName
-            )
-            let identifierKey = try RankValueOrdering.identifierKey(for: item.id)
-            entries.append(
-                RankValueEntry(
-                    item: item,
-                    value: value,
-                    identifierKey: identifierKey
-                )
-            )
-        }
-
-        switch queryMode {
-        case .top(let n):
-            let sorted = try RankValueOrdering.sorted(entries, direction: .descending)
-            return rankedResults(sorted, range: 0..<min(n, sorted.count))
-
-        case .bottom(let n):
-            let sorted = try RankValueOrdering.sorted(entries, direction: .ascending)
-            return rankedResults(sorted, range: 0..<min(n, sorted.count))
-
-        case .range(let from, let to):
-            let sorted = try RankValueOrdering.sorted(entries, direction: .descending)
-            let lowerBound = min(from, sorted.count)
-            let upperBound = min(to, sorted.count)
-            return rankedResults(sorted, range: lowerBound..<upperBound)
-
-        case .percentile(let p):
-            guard !entries.isEmpty else { return [] }
-            let sorted = try RankValueOrdering.sorted(entries, direction: .descending)
-            let targetRank = Int(Double(sorted.count) * (1.0 - p))
-            let safeTargetRank = max(0, min(targetRank, sorted.count - 1))
-            return [(item: sorted[safeTargetRank].item, rank: safeTargetRank)]
-        }
-    }
-
-    private func rankedResults(
-        _ sorted: [RankValueEntry<T>],
-        range: Range<Int>
-    ) -> [(item: T, rank: Int)] {
-        var results: [(item: T, rank: Int)] = []
-        results.reserveCapacity(range.count)
-        for rank in range {
-            results.append((item: sorted[rank].item, rank: rank))
-        }
-        return results
-    }
-
-    internal func toSelectQuery() -> SelectQuery {
-        var parameters: [String: QueryParameterValue] = [
+    internal func toSelectQuery() throws -> SelectQuery {
+        var parameters: [String: FieldValue] = [
             RankReadParameter.fieldName: .string(fieldName)
         ]
 
-        let limit: Int?
+        let limit: UInt64?
         switch queryMode {
         case .top(let count):
             parameters[RankReadParameter.mode] = .string(RankReadParameter.topMode)
             parameters[RankReadParameter.count] = .int64(Int64(count))
-            limit = count
+            limit = try queryLimit(count)
         case .bottom(let count):
             parameters[RankReadParameter.mode] = .string(RankReadParameter.bottomMode)
             parameters[RankReadParameter.count] = .int64(Int64(count))
-            limit = count
+            limit = try queryLimit(count)
         case .range(let from, let to):
             parameters[RankReadParameter.mode] = .string(RankReadParameter.rangeMode)
             parameters[RankReadParameter.from] = .int64(Int64(from))
             parameters[RankReadParameter.to] = .int64(Int64(to))
-            limit = max(to - from, 0)
+            limit = try queryLimit(to - from)
         case .percentile(let percentile):
             parameters[RankReadParameter.mode] = .string(RankReadParameter.percentileMode)
-            parameters[RankReadParameter.percentile] = .double(percentile)
+            parameters[RankReadParameter.percentile] = .float64(percentile)
             limit = 1
         }
 
@@ -412,13 +346,52 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             source: .table(TableRef(table: T.persistableType)),
             accessPath: .index(
                 IndexScanSource(
-                    indexName: "\(T.persistableType)_rank_\(fieldName)",
-                    kindIdentifier: RankIndexKind<T, Int64>.identifier,
+                    indexName: try resolvedIndexName(),
+                    kindIdentifier: "rank",
                     parameters: parameters
                 )
             ),
             limit: limit
         )
+    }
+
+    private func queryLimit(_ value: Int) throws -> UInt64 {
+        guard let limit = UInt64(exactly: value) else {
+            throw RankQueryError.invalidCount(value)
+        }
+        return limit
+    }
+
+    private func resolvedIndexName() throws -> String {
+        if let selectedIndexName {
+            guard let descriptor = queryContext.schema.indexDescriptor(
+                named: selectedIndexName
+            ),
+            descriptor.entityName == T.persistableType,
+            descriptor.kind.identifier == "rank",
+            descriptor.fieldNames == [fieldName] else {
+                throw RankQueryError.indexNotFound(selectedIndexName)
+            }
+            return selectedIndexName
+        }
+
+        let matches = queryContext.schema.indexDescriptors.filter {
+            $0.entityName == T.persistableType
+                && $0.kind.identifier == "rank"
+                && $0.fieldNames == [fieldName]
+        }
+        guard let match = matches.first else {
+            throw RankQueryError.indexNotFound(
+                "\(T.persistableType).\(fieldName)"
+            )
+        }
+        guard matches.count == 1 else {
+            throw RankQueryError.ambiguousIndexes(
+                entity: T.persistableType,
+                field: fieldName
+            )
+        }
+        return match.name
     }
 
     /// Execute and return a single item (useful for percentile queries)
@@ -447,11 +420,11 @@ public struct RankEntryPoint<T: Persistable>: Sendable {
     /// - Parameter keyPath: KeyPath to an exact numeric field
     /// - Returns: Rank query builder
     public func by<Value: RankNumericValue>(
-        _ keyPath: KeyPath<T, Value>
+        _ field: Field<T, Value>
     ) -> RankQueryBuilder<T> {
         RankQueryBuilder(
             queryContext: queryContext,
-            fieldName: T.fieldName(for: keyPath)
+            fieldName: field.name
         )
     }
 }
@@ -507,6 +480,9 @@ public enum RankQueryError: Error, Sendable, Equatable, CustomStringConvertible 
     /// Index not found
     case indexNotFound(String)
 
+    /// More than one rank index targets the selected field.
+    case ambiguousIndexes(entity: String, field: String)
+
     /// Canonical query response is missing required metadata
     case invalidResponse(String)
 
@@ -525,6 +501,8 @@ public enum RankQueryError: Error, Sendable, Equatable, CustomStringConvertible 
             return "Invalid percentile value: \(p). Must be between 0.0 and 1.0"
         case .indexNotFound(let name):
             return "Rank index not found: \(name)"
+        case .ambiguousIndexes(let entity, let field):
+            return "Multiple rank indexes target \(entity).\(field)"
         case .invalidResponse(let reason):
             return "Invalid rank query response: \(reason)"
         case .missingIndexedEntity(let rank):

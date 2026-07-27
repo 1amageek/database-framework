@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -7,12 +7,18 @@ import FoundationEssentials
 import Foundation
 #endif
 
+#if canImport(FoundationEssentials)
+private typealias TupleUUID = FoundationEssentials.UUID
+#else
+private typealias TupleUUID = Foundation.UUID
+#endif
+
 /// Resolves every model and wire identifier through one canonical storage-key path.
 public enum PersistableIdentifierKeyCodec {
     public static func tuple<ID: PersistableIdentifier>(
         for identifier: ID,
-        limits: PersistableIdentifierLimits = .default
-    ) throws(PersistableIdentifierValidationError) -> Tuple {
+        limits: PersistableIdentifierKeyLimits = .default
+    ) throws(PersistableIdentifierKeyError) -> Tuple {
         try tuple(
             for: identifier.persistableIdentifierValue,
             expectedType: ID.persistableIdentifierType,
@@ -22,8 +28,8 @@ public enum PersistableIdentifierKeyCodec {
 
     public static func tuple(
         for model: any Persistable,
-        limits: PersistableIdentifierLimits = .default
-    ) throws(PersistableIdentifierValidationError) -> Tuple {
+        limits: PersistableIdentifierKeyLimits = .default
+    ) throws(PersistableIdentifierKeyError) -> Tuple {
         try tuple(
             for: model.persistableIdentifierValue,
             expectedType: type(of: model).persistableIdentifierType,
@@ -32,10 +38,10 @@ public enum PersistableIdentifierKeyCodec {
     }
 
     public static func tuple(
-        for identity: PersistableIdentity,
+        for identity: EntityReference,
         expectedType: PersistableIdentifierType,
-        limits: PersistableIdentifierLimits = .default
-    ) throws(PersistableIdentifierValidationError) -> Tuple {
+        limits: PersistableIdentifierKeyLimits = .default
+    ) throws(PersistableIdentifierKeyError) -> Tuple {
         try tuple(
             for: identity.id,
             expectedType: expectedType,
@@ -44,10 +50,10 @@ public enum PersistableIdentifierKeyCodec {
     }
 
     public static func tuple(
-        for value: PersistableIdentifierValue,
+        for value: ReferenceIdentifier,
         expectedType: PersistableIdentifierType,
-        limits: PersistableIdentifierLimits = .default
-    ) throws(PersistableIdentifierValidationError) -> Tuple {
+        limits: PersistableIdentifierKeyLimits = .default
+    ) throws(PersistableIdentifierKeyError) -> Tuple {
         try validate(
             value,
             expectedType: expectedType,
@@ -57,15 +63,19 @@ public enum PersistableIdentifierKeyCodec {
     }
 
     public static func validate(
-        _ value: PersistableIdentifierValue,
+        _ value: ReferenceIdentifier,
         expectedType: PersistableIdentifierType,
-        limits: PersistableIdentifierLimits = .default
-    ) throws(PersistableIdentifierValidationError) {
-        try PersistableIdentifierValidator.validate(
-            value,
-            as: expectedType,
-            limits: limits
-        )
+        limits: PersistableIdentifierKeyLimits = .default
+    ) throws(PersistableIdentifierKeyError) {
+        try validateResourceLimits(value, limits: limits)
+        do {
+            try PersistableIdentifierValidator.validate(
+                value,
+                as: expectedType
+            )
+        } catch let error {
+            throw .invalidIdentifier(error)
+        }
     }
 
     /// Recovers the logical identifier carried by a canonical storage tuple.
@@ -76,13 +86,9 @@ public enum PersistableIdentifierKeyCodec {
     public static func value(
         from identifier: Tuple,
         expectedType: PersistableIdentifierType,
-        limits: PersistableIdentifierLimits = .default
-    ) throws(PersistableIdentifierKeyError) -> PersistableIdentifierValue {
-        do {
-            try PersistableIdentifierValidator.validate(expectedType, limits: limits)
-        } catch let error {
-            throw .invalidIdentifier(error)
-        }
+        limits: PersistableIdentifierKeyLimits = .default
+    ) throws(PersistableIdentifierKeyError) -> ReferenceIdentifier {
+        try validateTypeResourceLimits(expectedType, limits: limits)
         guard identifier.count == 1 else {
             throw .invalidTupleElementCount(actual: identifier.count)
         }
@@ -109,29 +115,23 @@ public enum PersistableIdentifierKeyCodec {
         expectedType: PersistableIdentifierType,
         depth: Int,
         componentCount: inout Int,
-        limits: PersistableIdentifierLimits
-    ) throws(PersistableIdentifierKeyError) -> PersistableIdentifierValue {
+        limits: PersistableIdentifierKeyLimits
+    ) throws(PersistableIdentifierKeyError) -> ReferenceIdentifier {
         let (nextCount, overflow) = componentCount.addingReportingOverflow(1)
         guard !overflow, nextCount <= limits.maximumComponentCount else {
-            throw .invalidIdentifier(
-                .componentCountExceeded(
-                    actual: overflow ? Int.max : nextCount,
-                    maximum: limits.maximumComponentCount
-                )
+            throw .componentCountExceeded(
+                actual: overflow ? Int.max : nextCount,
+                maximum: limits.maximumComponentCount
             )
         }
         componentCount = nextCount
 
         if let canonical = element as? PersistableIdentifierTupleElement {
-            do {
-                try validate(
-                    canonical.value,
-                    expectedType: expectedType,
-                    limits: limits
-                )
-            } catch let error {
-                throw .invalidIdentifier(error)
-            }
+            try validate(
+                canonical.value,
+                expectedType: expectedType,
+                limits: limits
+            )
             return canonical.value
         }
 
@@ -142,12 +142,60 @@ public enum PersistableIdentifierKeyCodec {
             }
             return .bool(value)
 
+        case .int8:
+            return .int8(
+                try signedInteger(
+                    element,
+                    expectedType: expectedType,
+                    as: Int8.self
+                )
+            )
+        case .int16:
+            return .int16(
+                try signedInteger(
+                    element,
+                    expectedType: expectedType,
+                    as: Int16.self
+                )
+            )
+        case .int32:
+            return .int32(
+                try signedInteger(
+                    element,
+                    expectedType: expectedType,
+                    as: Int32.self
+                )
+            )
         case .int64:
             guard let value = element as? Int64 else {
                 throw .invalidTupleValue(expected: expectedType)
             }
             return .int64(value)
 
+        case .uint8:
+            return .uint8(
+                try unsignedInteger(
+                    element,
+                    expectedType: expectedType,
+                    as: UInt8.self
+                )
+            )
+        case .uint16:
+            return .uint16(
+                try unsignedInteger(
+                    element,
+                    expectedType: expectedType,
+                    as: UInt16.self
+                )
+            )
+        case .uint32:
+            return .uint32(
+                try unsignedInteger(
+                    element,
+                    expectedType: expectedType,
+                    as: UInt32.self
+                )
+            )
         case .uint64:
             if let value = element as? UInt64 {
                 return .uint64(value)
@@ -167,41 +215,39 @@ public enum PersistableIdentifierKeyCodec {
             guard let value = element as? Bytes else {
                 throw .invalidTupleValue(expected: expectedType)
             }
-            return .bytes(DatabaseBytes(retaining: value))
+            return .bytes(ByteString(retaining: value))
 
         case .uuid:
-            guard let value = element as? UUID else {
+            guard let value = element as? TupleUUID else {
                 throw .invalidTupleValue(expected: expectedType)
             }
             let bytes = value.uuid
-            let high = UInt64(bytes.0) << 56
-                | UInt64(bytes.1) << 48
-                | UInt64(bytes.2) << 40
-                | UInt64(bytes.3) << 32
-                | UInt64(bytes.4) << 24
-                | UInt64(bytes.5) << 16
-                | UInt64(bytes.6) << 8
-                | UInt64(bytes.7)
-            let low = UInt64(bytes.8) << 56
-                | UInt64(bytes.9) << 48
-                | UInt64(bytes.10) << 40
-                | UInt64(bytes.11) << 32
-                | UInt64(bytes.12) << 24
-                | UInt64(bytes.13) << 16
-                | UInt64(bytes.14) << 8
-                | UInt64(bytes.15)
-            return .uuid(DatabaseUUID(high: high, low: low))
+            var high = UInt64(bytes.0) << 56
+            high |= UInt64(bytes.1) << 48
+            high |= UInt64(bytes.2) << 40
+            high |= UInt64(bytes.3) << 32
+            high |= UInt64(bytes.4) << 24
+            high |= UInt64(bytes.5) << 16
+            high |= UInt64(bytes.6) << 8
+            high |= UInt64(bytes.7)
+            var low = UInt64(bytes.8) << 56
+            low |= UInt64(bytes.9) << 48
+            low |= UInt64(bytes.10) << 40
+            low |= UInt64(bytes.11) << 32
+            low |= UInt64(bytes.12) << 24
+            low |= UInt64(bytes.13) << 16
+            low |= UInt64(bytes.14) << 8
+            low |= UInt64(bytes.15)
+            return .uuid(DatabaseTypes.UUID(high: high, low: low))
 
         case .composite(let expectedComponents):
             guard !expectedComponents.isEmpty else {
-                throw .invalidIdentifier(.emptyComposite)
+            throw .invalidTupleValue(expected: expectedType)
             }
             guard depth < limits.maximumCompositeDepth else {
-                throw .invalidIdentifier(
-                    .compositeDepthExceeded(
-                        actual: depth + 1,
-                        maximum: limits.maximumCompositeDepth
-                    )
+                throw .compositeDepthExceeded(
+                    actual: depth + 1,
+                    maximum: limits.maximumCompositeDepth
                 )
             }
             guard let tuple = element as? Tuple,
@@ -209,7 +255,7 @@ public enum PersistableIdentifierKeyCodec {
                 throw .invalidTupleValue(expected: expectedType)
             }
 
-            var components: [PersistableIdentifierValue] = []
+            var components: [ReferenceIdentifier] = []
             components.reserveCapacity(expectedComponents.count)
             for index in expectedComponents.indices {
                 let component: any TupleElement
@@ -229,6 +275,103 @@ public enum PersistableIdentifierKeyCodec {
                 )
             }
             return .composite(components)
+        }
+    }
+
+    private static func signedInteger<Value: FixedWidthInteger & SignedInteger>(
+        _ element: any TupleElement,
+        expectedType: PersistableIdentifierType,
+        as type: Value.Type
+    ) throws(PersistableIdentifierKeyError) -> Value {
+        guard let encoded = element as? Int64,
+              let value = Value(exactly: encoded) else {
+            throw .invalidTupleValue(expected: expectedType)
+        }
+        return value
+    }
+
+    private static func unsignedInteger<
+        Value: FixedWidthInteger & UnsignedInteger
+    >(
+        _ element: any TupleElement,
+        expectedType: PersistableIdentifierType,
+        as type: Value.Type
+    ) throws(PersistableIdentifierKeyError) -> Value {
+        if let encoded = element as? UInt64,
+           let value = Value(exactly: encoded) {
+            return value
+        }
+        guard let encoded = element as? Int64,
+              encoded >= 0,
+              let value = Value(exactly: encoded) else {
+            throw .invalidTupleValue(expected: expectedType)
+        }
+        return value
+    }
+
+    private static func validateResourceLimits(
+        _ value: ReferenceIdentifier,
+        limits: PersistableIdentifierKeyLimits
+    ) throws(PersistableIdentifierKeyError) {
+        var pending: [(value: ReferenceIdentifier, depth: Int)] = [(value, 0)]
+        var count = 0
+        while let node = pending.popLast() {
+            let nextCount = count.addingReportingOverflow(1)
+            guard !nextCount.overflow,
+                  nextCount.partialValue <= limits.maximumComponentCount else {
+                throw .componentCountExceeded(
+                    actual: nextCount.overflow ? Int.max : nextCount.partialValue,
+                    maximum: limits.maximumComponentCount
+                )
+            }
+            count = nextCount.partialValue
+            guard case .composite(let components) = node.value else {
+                continue
+            }
+            let nextDepth = node.depth + 1
+            guard nextDepth <= limits.maximumCompositeDepth else {
+                throw .compositeDepthExceeded(
+                    actual: nextDepth,
+                    maximum: limits.maximumCompositeDepth
+                )
+            }
+            for component in components.reversed() {
+                pending.append((component, nextDepth))
+            }
+        }
+    }
+
+    private static func validateTypeResourceLimits(
+        _ type: PersistableIdentifierType,
+        limits: PersistableIdentifierKeyLimits
+    ) throws(PersistableIdentifierKeyError) {
+        var pending: [(type: PersistableIdentifierType, depth: Int)] = [
+            (type, 0)
+        ]
+        var count = 0
+        while let node = pending.popLast() {
+            let nextCount = count.addingReportingOverflow(1)
+            guard !nextCount.overflow,
+                  nextCount.partialValue <= limits.maximumComponentCount else {
+                throw .componentCountExceeded(
+                    actual: nextCount.overflow ? Int.max : nextCount.partialValue,
+                    maximum: limits.maximumComponentCount
+                )
+            }
+            count = nextCount.partialValue
+            guard case .composite(let components) = node.type else {
+                continue
+            }
+            let nextDepth = node.depth + 1
+            guard nextDepth <= limits.maximumCompositeDepth else {
+                throw .compositeDepthExceeded(
+                    actual: nextDepth,
+                    maximum: limits.maximumCompositeDepth
+                )
+            }
+            for component in components.reversed() {
+                pending.append((component, nextDepth))
+            }
         }
     }
 }

@@ -6,9 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Permuted
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import PermutedIndex
@@ -29,17 +28,17 @@ private struct BenchmarkContext {
         self.indexSubspace = subspace.subspace("I").subspace("compound")
 
         // Default permutation: [1, 0, 2] - (city, country, name)
-        let perm = permutation ?? (try! Permutation(indices: [1, 0, 2]))
+        let perm: Permutation
+        if let permutation {
+            perm = permutation
+        } else {
+            perm = try Permutation(indices: [1, 0, 2])
+        }
         self.permutation = perm
-
-        let kind = PermutedIndexKind<BenchmarkLocation>(
-            fields: [\BenchmarkLocation.country, \BenchmarkLocation.city, \BenchmarkLocation.name],
-            permutation: perm
-        )
 
         let index = Index(
             name: "compound",
-            kind: kind,
+            kind: benchmarkPermutedIndexMetadata(permutation: perm),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "country"),
                 FieldKeyExpression(fieldName: "city"),
@@ -63,6 +62,31 @@ private struct BenchmarkContext {
             try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
+}
+
+private func benchmarkPermutedIndexMetadata(
+    permutation: Permutation
+) -> IndexKindMetadata {
+    IndexKindMetadata(
+        identifier: "permuted",
+        subspaceStructure: .flat,
+        fields: [
+            IndexFieldMetadata(
+                identity: FieldIdentity(name: "country", number: 2)
+            ),
+            IndexFieldMetadata(
+                identity: FieldIdentity(name: "city", number: 3)
+            ),
+            IndexFieldMetadata(
+                identity: FieldIdentity(name: "name", number: 4)
+            ),
+        ],
+        metadata: [
+            "permutation": .array(
+                permutation.indices.map { .int64(Int64($0)) }
+            )
+        ]
+    )
 }
 
 // MARK: - Benchmark Model

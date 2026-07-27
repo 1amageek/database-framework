@@ -3,7 +3,7 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -19,7 +19,8 @@ struct MinMaxCompositePrimaryKeyTests {
 
     @Persistable
     struct MultiTenantOrder {
-        var id: String = ""  // Composite: "tenantId:orderId"
+        // Composite identity encoded as "tenantId:orderId".
+        var id: String = ""
         var tenantId: String
         var orderId: String
         var region: String
@@ -52,7 +53,14 @@ struct MinMaxCompositePrimaryKeyTests {
 
         let index = Index(
             name: "order_min_by_region",
-            kind: MinIndexKind<MultiTenantOrder, Double>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .minimum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 4)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 5),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
@@ -135,7 +143,14 @@ struct MinMaxCompositePrimaryKeyTests {
 
         let index = Index(
             name: "order_max_by_region",
-            kind: MaxIndexKind<MultiTenantOrder, Double>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .maximum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 4)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 5),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")

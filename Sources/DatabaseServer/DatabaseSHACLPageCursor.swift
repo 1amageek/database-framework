@@ -1,11 +1,11 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
-struct DatabaseSHACLPageCursor: DatabaseWireValue, Hashable {
+struct DatabaseSHACLPageCursor: ServerPayloadValue, Hashable {
     private static let formatVersion: UInt8 = 1
 
     let shapesGraph: String
-    let validationFingerprint: DatabaseBytes
+    let validationFingerprint: ByteString
     let offset: UInt64
 
     func encode(
@@ -31,7 +31,7 @@ struct DatabaseSHACLPageCursor: DatabaseWireValue, Hashable {
 
     init(
         shapesGraph: String,
-        validationFingerprint: DatabaseBytes,
+        validationFingerprint: ByteString,
         offset: UInt64
     ) {
         self.shapesGraph = shapesGraph

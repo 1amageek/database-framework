@@ -1,13 +1,14 @@
-import DatabaseValue
-import Graph
+import DatabaseEngine
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 /// Borrowed canonical components decoded from one physical RDF index key.
 package struct RDFQuadIndexEncodedQuad: Sendable {
-    package let subject: DatabaseBytes
-    package let predicate: DatabaseBytes
-    package let object: DatabaseBytes
-    package let graph: DatabaseBytes?
+    package let subject: ByteString
+    package let predicate: ByteString
+    package let object: ByteString
+    package let graph: ByteString?
 }
 
 /// Role-aware physical codec for the six canonical RDF quad indexes.
@@ -124,18 +125,22 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
         let subject = try decode(encoded.subject, component: .subject)
         let predicate = try decode(encoded.predicate, component: .predicate)
         let object = try decode(encoded.object, component: .object)
-        let graph: DatabaseRDFTerm?
+        let graph: RDFTerm?
         if let encodedGraph = encoded.graph {
             graph = try decode(encodedGraph, component: .graph)
         } else {
             graph = nil
         }
-        return RDFQuad(
-            subject: subject,
-            predicate: predicate,
-            object: object,
-            graph: graph
-        )
+        do {
+            return try RDFQuad(
+                validatingSubject: subject,
+                predicate: predicate,
+                object: object,
+                graph: graph
+            )
+        } catch {
+            throw .invalidQuad(error)
+        }
     }
 
     /// Reorders four borrowed tuple slices without materializing RDF strings.
@@ -195,16 +200,16 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
             throw .unsupportedOrdering(ordering)
         }
 
-        let graph: DatabaseBytes?
+        let graph: ByteString?
         if encodedGraph.count == 1 && encodedGraph[0] == 0xff {
             graph = nil
         } else {
-            graph = DatabaseBytes(retaining: encodedGraph)
+            graph = ByteString(retaining: encodedGraph)
         }
         return RDFQuadIndexEncodedQuad(
-            subject: DatabaseBytes(retaining: subject),
-            predicate: DatabaseBytes(retaining: predicate),
-            object: DatabaseBytes(retaining: object),
+            subject: ByteString(retaining: subject),
+            predicate: ByteString(retaining: predicate),
+            object: ByteString(retaining: object),
             graph: graph
         )
     }
@@ -212,8 +217,8 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
     /// Decodes only a borrowed canonical graph component. Named-graph
     /// enumeration does not need to materialize subject, predicate, or object.
     package func decodeGraphComponent(
-        _ bytes: DatabaseBytes
-    ) throws(RDFQuadIndexPhysicalCodecError) -> DatabaseRDFTerm {
+        _ bytes: ByteString
+    ) throws(RDFQuadIndexPhysicalCodecError) -> RDFTerm {
         try decode(bytes, component: .graph)
     }
 
@@ -263,7 +268,7 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
         case .term(let role, let encoding):
             var rdfSink = RDFSink(tupleSink: sink)
             do {
-                try DatabaseRDFTermCodec.encode(
+                try RDFTermStorageFormat.encode(
                     encoding,
                     into: &rdfSink
                 )
@@ -282,10 +287,10 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
     }
 
     private func decode(
-        _ bytes: DatabaseBytes,
+        _ bytes: ByteString,
         component: RDFDatasetIndexComponent
-    ) throws(RDFQuadIndexPhysicalCodecError) -> DatabaseRDFTerm {
-        let role: DatabaseRDFTermRole
+    ) throws(RDFQuadIndexPhysicalCodecError) -> RDFTerm {
+        let role: RDFTermRole
         switch component {
         case .subject: role = .subject
         case .predicate: role = .predicate
@@ -293,7 +298,7 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
         case .graph: role = .graphName
         }
         do {
-            return try DatabaseRDFTermCodec.decode(
+            return try RDFTermStorageFormat.decode(
                 bytes,
                 role: role
             )
@@ -331,7 +336,7 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
         return result
     }
 
-    private struct RDFSink: DatabaseRDFTermEncodingSink {
+    private struct RDFSink: RDFTermStorageSink {
         var tupleSink: TupleEncodingSink
 
         mutating func write(_ byte: UInt8) {

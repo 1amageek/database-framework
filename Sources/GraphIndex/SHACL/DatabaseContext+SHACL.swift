@@ -12,8 +12,8 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Graph
-import Core
+import DatabaseKit
+import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
 
@@ -137,7 +137,7 @@ public struct SHACLContextAPI: Sendable {
         against shapesGraphIRI: String,
         entailment: SHACLEntailment = .none,
         ontologyIRI: String? = nil,
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SHACLValidationReport {
         // Load shapes graph
         guard let shapesGraph = try await getShapesGraph(iri: shapesGraphIRI) else {
@@ -217,7 +217,7 @@ public struct SHACLContextAPI: Sendable {
         node: RDFTerm,
         against shapeIdentifier: RDFTerm,
         in shapesGraphIRI: String,
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget()
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SHACLValidationReport {
         guard let shapesGraph = try await getShapesGraph(iri: shapesGraphIRI) else {
             throw SHACLError.shapesGraphNotFound(shapesGraphIRI)

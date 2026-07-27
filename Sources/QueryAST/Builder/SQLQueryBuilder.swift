@@ -5,7 +5,7 @@
 /// - ISO/IEC 9075:2023 (SQL)
 /// - ISO/IEC 9075-16:2023 (SQL/PGQ)
 
-import QueryIR
+import DatabaseKit
 
 /// SQL Query Builder for type-safe query construction
 public struct SQLQueryBuilder: Sendable {
@@ -15,8 +15,8 @@ public struct SQLQueryBuilder: Sendable {
     private var groupByExprs: [Expression]?
     private var havingExpr: Expression?
     private var orderByKeys: [SortKey]?
-    private var limitCount: Int?
-    private var offsetCount: Int?
+    private var limitCount: UInt64?
+    private var offsetCount: UInt64?
     private var distinctFlag: Bool
     private var ctes: [NamedSubquery]?
 
@@ -128,11 +128,11 @@ extension SQLQueryBuilder {
     }
 
     /// Add WHERE condition: column = value
-    public func `where`<Value: DatabaseLiteralConvertible>(
+    public func `where`<Value: QueryLiteralConvertible>(
         _ column: String,
         equals value: Value
-    ) throws(DatabaseLiteralConversionError) -> SQLQueryBuilder {
-        self.where(column, equals: try value.databaseLiteral)
+    ) throws(QueryLiteralConversionError) -> SQLQueryBuilder {
+        self.where(column, equals: try value.queryLiteral)
     }
 
     /// Add WHERE condition: column operator literal
@@ -164,12 +164,12 @@ extension SQLQueryBuilder {
     }
 
     /// Add WHERE condition: column operator value
-    public func `where`<Value: DatabaseLiteralConvertible>(
+    public func `where`<Value: QueryLiteralConvertible>(
         _ column: String,
         _ op: ComparisonOperator,
         _ value: Value
-    ) throws(DatabaseLiteralConversionError) -> SQLQueryBuilder {
-        self.where(column, op, try value.databaseLiteral)
+    ) throws(QueryLiteralConversionError) -> SQLQueryBuilder {
+        self.where(column, op, try value.queryLiteral)
     }
 
     /// Add WHERE column IS NULL
@@ -201,14 +201,14 @@ extension SQLQueryBuilder {
     }
 
     /// Add WHERE column IN (values...)
-    public func whereIn<Value: DatabaseLiteralConvertible>(
+    public func whereIn<Value: QueryLiteralConvertible>(
         _ column: String,
         _ values: [Value]
-    ) throws(DatabaseLiteralConversionError) -> SQLQueryBuilder {
+    ) throws(QueryLiteralConversionError) -> SQLQueryBuilder {
         var expressions: [Expression] = []
         expressions.reserveCapacity(values.count)
         for value in values {
-            expressions.append(.literal(try value.databaseLiteral))
+            expressions.append(.literal(try value.queryLiteral))
         }
         return self.where(
             .inList(
@@ -229,14 +229,14 @@ extension SQLQueryBuilder {
     }
 
     /// Add WHERE column NOT IN (values...)
-    public func whereNotIn<Value: DatabaseLiteralConvertible>(
+    public func whereNotIn<Value: QueryLiteralConvertible>(
         _ column: String,
         _ values: [Value]
-    ) throws(DatabaseLiteralConversionError) -> SQLQueryBuilder {
+    ) throws(QueryLiteralConversionError) -> SQLQueryBuilder {
         var expressions: [Expression] = []
         expressions.reserveCapacity(values.count)
         for value in values {
-            expressions.append(.literal(try value.databaseLiteral))
+            expressions.append(.literal(try value.queryLiteral))
         }
         return self.where(
             .notInList(
@@ -260,15 +260,15 @@ extension SQLQueryBuilder {
     }
 
     /// Add WHERE column BETWEEN low AND high values of the same type
-    public func whereBetween<Value: DatabaseLiteralConvertible>(
+    public func whereBetween<Value: QueryLiteralConvertible>(
         _ column: String,
         _ low: Value,
         _ high: Value
-    ) throws(DatabaseLiteralConversionError) -> SQLQueryBuilder {
+    ) throws(QueryLiteralConversionError) -> SQLQueryBuilder {
         self.whereBetween(
             column,
-            try low.databaseLiteral,
-            try high.databaseLiteral
+            try low.queryLiteral,
+            try high.queryLiteral
         )
     }
 
@@ -472,22 +472,34 @@ extension SQLQueryBuilder {
 
 extension SQLQueryBuilder {
     /// Set LIMIT
-    public func limit(_ count: Int) -> SQLQueryBuilder {
+    public func limit(_ count: UInt64) -> SQLQueryBuilder {
         var builder = self
         builder.limitCount = count
         return builder
     }
 
     /// Set OFFSET
-    public func offset(_ count: Int) -> SQLQueryBuilder {
+    public func offset(_ count: UInt64) -> SQLQueryBuilder {
         var builder = self
         builder.offsetCount = count
         return builder
     }
 
-    /// Set LIMIT and OFFSET (pagination)
-    public func paginate(page: Int, perPage: Int) -> SQLQueryBuilder {
-        limit(perPage).offset((page - 1) * perPage)
+    /// Set LIMIT and OFFSET using a zero-based page index.
+    public func paginate(
+        pageIndex: UInt64,
+        pageSize: UInt64
+    ) throws(QueryPaginationError) -> SQLQueryBuilder {
+        let (offset, overflow) = pageIndex.multipliedReportingOverflow(
+            by: pageSize
+        )
+        guard !overflow else {
+            throw .offsetOverflow(
+                pageIndex: pageIndex,
+                pageSize: pageSize
+            )
+        }
+        return limit(pageSize).offset(offset)
     }
 }
 

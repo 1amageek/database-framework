@@ -4,7 +4,7 @@
 
 import Testing
 import TestHeartbeat
-import DatabaseValue
+import DatabaseTypes
 @testable import QueryAST
 
 @Suite("QueryAST Tests", .heartbeat)
@@ -268,7 +268,7 @@ struct QueryASTTests {
     @Test("PropertyPath construction")
     func testPropertyPath() throws {
         let simple = PropertyPath.iri(
-            try DatabaseRDFPredicateIRI("http://example.org/knows")
+            try RDFPredicateIRI("http://example.org/knows")
         )
         if case .iri(let i) = simple {
             #expect(i.rawValue == "http://example.org/knows")
@@ -277,7 +277,7 @@ struct QueryASTTests {
         }
 
         let inverse = PropertyPath.inverse(
-            .iri(try DatabaseRDFPredicateIRI("http://example.org/parent"))
+            .iri(try RDFPredicateIRI("http://example.org/parent"))
         )
         if case .inverse(let inner) = inverse {
             if case .iri(let i) = inner {
@@ -293,20 +293,20 @@ struct QueryASTTests {
     @Test("PropertyPath SPARQL serialization")
     func testPropertyPathSerialization() throws {
         let path = PropertyPath.oneOrMore(
-            .iri(try DatabaseRDFPredicateIRI("http://example.org/knows"))
+            .iri(try RDFPredicateIRI("http://example.org/knows"))
         )
         #expect(path.toSPARQL() == "<http://example.org/knows>+")
 
         let zeroOrMore = PropertyPath.zeroOrMore(
-            .iri(try DatabaseRDFPredicateIRI("http://example.org/parent"))
+            .iri(try RDFPredicateIRI("http://example.org/parent"))
         )
         #expect(zeroOrMore.toSPARQL() == "<http://example.org/parent>*")
     }
 
     @Test("PropertyPath preserves directional exclusions and exact range bounds")
     func testDirectionalNegationAndRange() throws {
-        let forward = try DatabaseRDFPredicateIRI("http://example.org/forward")
-        let inverse = try DatabaseRDFPredicateIRI("http://example.org/inverse")
+        let forward = try RDFPredicateIRI("http://example.org/forward")
+        let inverse = try RDFPredicateIRI("http://example.org/inverse")
         let exclusions = try PropertyPathNegatedSet(
             forward: [forward],
             inverse: [inverse]

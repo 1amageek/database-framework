@@ -1,6 +1,5 @@
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
 
 @Persistable
 struct DatabaseGraphSourceEdge {
@@ -12,10 +11,12 @@ struct DatabaseGraphSourceEdge {
     var target: String = ""
     var weight: Double = 0
 
-    #Index(GraphIndexKind<DatabaseGraphSourceEdge>(
-        from: \.source,
-        edge: \.label,
-        to: \.target,
-        strategy: .tripleStore
-    ), storedFields: [\DatabaseGraphSourceEdge.weight], name: "source_graph")
+    #Index(
+        .propertyGraph(strategy: .adjacency),
+        from: \DatabaseGraphSourceEdge.source,
+        edge: \DatabaseGraphSourceEdge.label,
+        to: \DatabaseGraphSourceEdge.target,
+        storedFields: [\DatabaseGraphSourceEdge.weight],
+        name: "source_graph"
+    )
 }

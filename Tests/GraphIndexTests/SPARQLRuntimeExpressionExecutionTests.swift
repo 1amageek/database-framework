@@ -1,10 +1,8 @@
-import Core
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import GraphIndex
-import QueryIR
 import StorageKit
 import TestHeartbeat
 import Testing
@@ -13,9 +11,9 @@ import Testing
 struct SPARQLRuntimeExpressionExecutionTests {
     private struct ExistsLimitScanner: RDFDatasetScanner {
         func scan(
-            subject: DatabaseRDFTerm?,
-            predicate: DatabaseRDFTerm?,
-            object: DatabaseRDFTerm?,
+            subject: RDFTerm?,
+            predicate: RDFTerm?,
+            object: RDFTerm?,
             graphScope: RDFGraphScanScope,
             limit: Int?,
             readMode: RDFDatasetReadMode,
@@ -35,9 +33,15 @@ struct SPARQLRuntimeExpressionExecutionTests {
             return RDFDatasetScanResult(
                 quads: [
                     RDFQuad(
-                        subject: .iri("did:example:subject"),
-                        predicate: .iri("did:example:predicate"),
-                        object: .iri("did:example:object")
+                        subject: .iri(
+                            try RDFIRI("did:example:subject")
+                        ),
+                        predicate: try RDFPredicateIRI(
+                            "did:example:predicate"
+                        ),
+                        object: try .iri(
+                            validating: "did:example:object"
+                        )
                     )
                 ],
                 physicalScanCount: 1
@@ -64,7 +68,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
     }
 
     private struct EchoFunction: SPARQLFunction {
-        let identifier: DatabaseRDFIRI
+        let identifier: RDFIRI
 
         func evaluate(arguments: [FieldValue]) throws -> FieldValue {
             guard arguments.count == 1 else {
@@ -77,7 +81,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
     }
 
     private struct FailureFunction: SPARQLFunction {
-        let identifier: DatabaseRDFIRI
+        let identifier: RDFIRI
 
         func evaluate(arguments: [FieldValue]) throws -> FieldValue {
             throw SPARQLExpressionEvaluationError.runtimeInvariant(
@@ -92,7 +96,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
             projection: .all,
             source: .graphPattern(.basic([]))
         )
-        let queryPattern = QueryIR.GraphPattern.bind(
+        let queryPattern = GraphPattern.bind(
             .basic([]),
             variable: "exists",
             expression: .exists(existsQuery)
@@ -107,18 +111,21 @@ struct SPARQLRuntimeExpressionExecutionTests {
             Issue.record("BIND did not produce a canonical RDF literal")
             return
         }
-        #expect(literal.datatype == "http://www.w3.org/2001/XMLSchema#boolean")
+        #expect(
+            literal.datatypeIRI.rawValue
+                == "http://www.w3.org/2001/XMLSchema#boolean"
+        )
         #expect(literal.lexicalForm == "true")
     }
 
     @Test("Correlated EXISTS sees the outer binding inside its FILTER")
     func correlatedExistsSeesOuterBinding() async throws {
-        let outer = QueryIR.GraphPattern.bind(
+        let outer = GraphPattern.bind(
             .basic([]),
             variable: "flag",
             expression: .literal(.bool(true))
         )
-        let inner = QueryIR.GraphPattern.filter(
+        let inner = GraphPattern.filter(
             .basic([]),
             .variable(Variable("flag"))
         )
@@ -126,7 +133,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
             projection: .all,
             source: .graphPattern(inner)
         )
-        let queryPattern = QueryIR.GraphPattern.filter(
+        let queryPattern = GraphPattern.filter(
             outer,
             .exists(existsQuery)
         )
@@ -141,7 +148,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     @Test("A local BIND expression error leaves its target unbound")
     func bindExpressionErrorLeavesTargetUnbound() async throws {
-        let queryPattern = QueryIR.GraphPattern.bind(
+        let queryPattern = GraphPattern.bind(
             .basic([]),
             variable: "value",
             expression: .variable(Variable("missing"))
@@ -157,7 +164,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     @Test("Boolean short circuit does not execute an unreachable function")
     func booleanShortCircuitSkipsUnreachableFunction() async throws {
-        let identifier = try DatabaseRDFIRI("did:example:fail")
+        let identifier = try RDFIRI("did:example:fail")
         let registry = try SPARQLFunctionRegistry([
             FailureFunction(identifier: identifier)
         ])
@@ -243,11 +250,11 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     @Test("A runtime expression failure is not converted to an unbound BIND")
     func bindRuntimeFailurePropagates() async throws {
-        let identifier = try DatabaseRDFIRI("did:example:fail")
+        let identifier = try RDFIRI("did:example:fail")
         let registry = try SPARQLFunctionRegistry([
             FailureFunction(identifier: identifier)
         ])
-        let queryPattern = QueryIR.GraphPattern.bind(
+        let queryPattern = GraphPattern.bind(
             .basic([]),
             variable: "value",
             expression: .function(
@@ -305,7 +312,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget(
+                budget: ExecutionBudget(
                     maximumRows: 100,
                     maximumWorkUnits: 1_000,
                     timeoutMilliseconds: 30_000
@@ -339,7 +346,10 @@ struct SPARQLRuntimeExpressionExecutionTests {
             Issue.record("NOW did not return an RDF literal")
             return
         }
-        #expect(literal.datatype == "http://www.w3.org/2001/XMLSchema#dateTime")
+        #expect(
+            literal.datatypeIRI.rawValue
+                == "http://www.w3.org/2001/XMLSchema#dateTime"
+        )
     }
 
     @Test("BNODE labels are stable per solution occurrence, not query-global")
@@ -407,7 +417,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     @Test("Executor uses its injected extension function registry")
     func injectedFunctionRegistryIsExecuted() async throws {
-        let identifier = try DatabaseRDFIRI("did:example:echo")
+        let identifier = try RDFIRI("did:example:echo")
         let registry = try SPARQLFunctionRegistry([
             EchoFunction(identifier: identifier)
         ])
@@ -460,14 +470,17 @@ struct SPARQLRuntimeExpressionExecutionTests {
             Issue.record("RAND did not return a numeric RDF literal")
             return
         }
-        #expect(randomLiteral.datatype == "http://www.w3.org/2001/XMLSchema#double")
+        #expect(
+            randomLiteral.datatypeIRI.rawValue
+                == "http://www.w3.org/2001/XMLSchema#double"
+        )
         #expect(randomValue >= 0 && randomValue < 1)
         guard case .rdfTerm(.iri(let uuidIRI)) = uuid[0]["?value"] else {
             Issue.record("UUID did not return an IRI")
             return
         }
-        #expect(uuidIRI.hasPrefix("urn:uuid:"))
-        #expect(uuidIRI.count == 45)
+        #expect(uuidIRI.rawValue.hasPrefix("urn:uuid:"))
+        #expect(uuidIRI.rawValue.count == 45)
     }
 
     @Test("Projection expressions compile to Extend and bind their alias")
@@ -496,7 +509,10 @@ struct SPARQLRuntimeExpressionExecutionTests {
             return
         }
         #expect(result.lexicalForm == "5")
-        #expect(result.datatype == "http://www.w3.org/2001/XMLSchema#integer")
+        #expect(
+            result.datatypeIRI.rawValue
+                == "http://www.w3.org/2001/XMLSchema#integer"
+        )
     }
 
     @Test("A projection expression can use a preceding alias")
@@ -548,7 +564,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget(
+                budget: ExecutionBudget(
                     maximumRows: 1_000,
                     maximumWorkUnits: 10_000,
                     timeoutMilliseconds: 30_000

@@ -1,5 +1,5 @@
-import DatabaseValue
-import Relationship
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
 
 /// Canonical container-wide inverse-reference catalog.
@@ -9,8 +9,8 @@ public enum RelationshipReferenceCatalog {
     )
 
     public static func set(
-        target: PersistableIdentity,
-        owner: PersistableIdentity,
+        target: EntityReference,
+        owner: EntityReference,
         descriptor: RelationshipDescriptor,
         transaction: any TransactionAccess
     ) throws {
@@ -26,8 +26,8 @@ public enum RelationshipReferenceCatalog {
     }
 
     public static func clear(
-        target: PersistableIdentity,
-        owner: PersistableIdentity,
+        target: EntityReference,
+        owner: EntityReference,
         descriptor: RelationshipDescriptor,
         transaction: any TransactionAccess
     ) throws {
@@ -42,15 +42,15 @@ public enum RelationshipReferenceCatalog {
     }
 
     public static func referrers(
-        of target: PersistableIdentity,
+        of target: EntityReference,
         descriptor: RelationshipDescriptor,
         limit: Int,
         transaction: any TransactionAccess
-    ) async throws -> [PersistableIdentity] {
+    ) async throws -> [EntityReference] {
         guard limit > 0 else {
             throw RelationshipReferenceError.invalidScanLimit(limit)
         }
-        var identities: [PersistableIdentity] = []
+        var identities: [EntityReference] = []
         identities.reserveCapacity(limit)
         var continuation: Bytes?
         while identities.count < limit {
@@ -71,7 +71,7 @@ public enum RelationshipReferenceCatalog {
     }
 
     public static func referrerPage(
-        of target: PersistableIdentity,
+        of target: EntityReference,
         descriptor: RelationshipDescriptor,
         continuation: Bytes?,
         limit: Int,
@@ -111,7 +111,7 @@ public enum RelationshipReferenceCatalog {
     }
 
     private static func entryKey(
-        target: PersistableIdentity,
+        target: EntityReference,
         ownerBytes: Bytes,
         descriptor: RelationshipDescriptor
     ) throws -> Bytes {
@@ -120,7 +120,7 @@ public enum RelationshipReferenceCatalog {
     }
 
     private static func referenceSubspace(
-        target: PersistableIdentity,
+        target: EntityReference,
         descriptor: RelationshipDescriptor
     ) throws -> Subspace {
         root

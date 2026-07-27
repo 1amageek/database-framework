@@ -4,11 +4,10 @@
 
 import Testing
 import Foundation
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseValue
-import DatabaseValueCodable
-import Graph
+import DatabaseTypes
+import DatabaseKitFoundation
 import DatabaseEngine
 import StorageKit
 import FDBStorage
@@ -22,40 +21,40 @@ fileprivate struct DebugEdge {
     var from: String = ""
     var target: String = ""
     var label: String = ""
-    var score: Int = 0
+    var score: Int64 = 0
 
-    #Index(GraphIndexKind<DebugEdge>(
-        from: \.from,
-        edge: \.label,
-        to: \.target,
-        graph: nil,
-        strategy: .tripleStore
-    ), storedFields: [\DebugEdge.score], name: "debug_graph")
+    #Index(
+        .propertyGraph(strategy: .tripleStore),
+        from: \DebugEdge.from,
+        edge: \DebugEdge.label,
+        to: \DebugEdge.target,
+        storedFields: [\DebugEdge.score],
+        name: "debug_graph"
+    )
 }
 
 @Persistable
 fileprivate struct DebugRDFStatement {
     #Directory<DebugRDFStatement>("test", "debug_rdf")
     #Index(
-        RDFQuadIndexKind<DebugRDFStatement>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object,
-            graph: \.graph
-        ),
+        .rdfDataset,
+        from: \DebugRDFStatement.subject,
+        edge: \DebugRDFStatement.predicate,
+        to: \DebugRDFStatement.object,
+        graph: \DebugRDFStatement.graph,
         storedFields: [\DebugRDFStatement.score],
         name: "debug_rdf"
     )
 
     var id: String = UUID().uuidString
-    var subject: DatabaseRDFTerm = .iri("https://example.com/resource")
-    var predicate: DatabaseRDFTerm = .iri("https://example.com/predicate")
-    var object: DatabaseRDFTerm = .iri("https://example.com/object")
-    var graph: DatabaseRDFTerm? = nil
-    var score: Int = 0
+    var subject: RDFTerm = .iri(.xsdString)
+    var predicate: RDFTerm = .iri(.xsdString)
+    var object: RDFTerm = .iri(.xsdString)
+    var graph: RDFTerm? = nil
+    var score: Int64 = 0
 }
 
-@Suite("SPARQL Debug Test", .serialized, .heartbeat)
+@Suite("SPARQL Debug Test", .serialized, .foundationDBScenario, .heartbeat)
 struct SPARQLDebugTests {
 
     init() async throws {
@@ -65,8 +64,8 @@ struct SPARQLDebugTests {
     @Test("Debug: Check storedFieldNames propagation")
     func testStoredFieldNamesPropagation() async throws {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema(
-            [DebugRDFStatement.self],
+        let schema = try Schema(
+            entities: [try DebugRDFStatement.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
 
@@ -77,7 +76,17 @@ struct SPARQLDebugTests {
         }
 
         // Create container and ensure indexes are ready AFTER cleanup
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DebugEdge.self, DebugRDFStatement.self]), security: .disabled)
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    DebugEdge.self,
+                    DebugRDFStatement.self,
+                ]
+            ),
+            security: .disabled
+        )
         try await container.ensureIndexesReady()
 
         // Set index to readable
@@ -100,15 +109,17 @@ struct SPARQLDebugTests {
         let knows = "https://example.com/vocabulary/knows"
 
         var statement = DebugRDFStatement()
-        statement.subject = .iri(alice)
-        statement.predicate = .iri(knows)
-        statement.object = .iri(bob)
+        statement.subject = try .iri(validating: alice)
+        statement.predicate = try .iri(validating: knows)
+        statement.object = try .iri(validating: bob)
         statement.score = 100
         try context.insert(statement)
         try await context.save()
 
         // Check index descriptor
-        guard let indexDescriptor = DebugRDFStatement.indexDescriptors.first else {
+        guard let indexDescriptor =
+            try DebugRDFStatement.indexDescriptors.first
+        else {
             Issue.record("No index descriptor found")
             return
         }
@@ -120,8 +131,12 @@ struct SPARQLDebugTests {
         // Execute simple pattern (no filter)
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
-                subject: .value(.rdfTerm(.iri(alice))),
-                predicate: .value(.rdfTerm(.iri(knows))),
+                subject: .value(
+                    .rdfTerm(try .iri(validating: alice))
+                ),
+                predicate: .value(
+                    .rdfTerm(try .iri(validating: knows))
+                ),
                 object: .variable("?target")
             )
         ])
@@ -143,14 +158,20 @@ struct SPARQLDebugTests {
             Issue.record("Property variable ?score is not bound! Full binding: \(binding)")
         }
 
-        #expect(binding["?target"] == .rdfTerm(.iri(bob)))
+        #expect(
+            binding["?target"]
+                == .rdfTerm(try .iri(validating: bob))
+        )
         #expect(binding["?score"] == .int64(100))
     }
 
     @Test("Debug: Direct GraphPropertyScanner test")
     func testDirectGraphPropertyScanner() async throws {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([DebugEdge.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try DebugEdge.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
 
         // Clean up directory BEFORE creating container to avoid stale state
         
@@ -159,7 +180,17 @@ struct SPARQLDebugTests {
         }
 
         // Create container and ensure indexes are ready AFTER cleanup
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DebugEdge.self, DebugRDFStatement.self]), security: .disabled)
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    DebugEdge.self,
+                    DebugRDFStatement.self,
+                ]
+            ),
+            security: .disabled
+        )
         try await container.ensureIndexesReady()
 
         // Set index to readable
@@ -185,7 +216,7 @@ struct SPARQLDebugTests {
         try await context.save()
 
         // Get index descriptor
-        guard let indexDescriptor = DebugEdge.indexDescriptors.first else {
+        guard let indexDescriptor = try DebugEdge.indexDescriptors.first else {
             Issue.record("No index descriptor found")
             return
         }

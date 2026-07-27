@@ -5,12 +5,18 @@
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
+private typealias PlatformData = FoundationEssentials.Data
+private typealias PlatformDate = FoundationEssentials.Date
+private typealias PlatformUUID = FoundationEssentials.UUID
 #else
 import Foundation
+private typealias PlatformData = Foundation.Data
+private typealias PlatformDate = Foundation.Date
+private typealias PlatformUUID = Foundation.UUID
 #endif
 import StorageKit
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 // MARK: - TupleEncoder
 
@@ -68,7 +74,7 @@ public struct TupleEncoder: Sendable {
         switch value {
         case let fieldValue as FieldValue:
             return try fieldValue.toTupleElement()
-        case let rdfTerm as DatabaseRDFTerm:
+        case let rdfTerm as RDFTerm:
             return try FieldValue.rdfTerm(rdfTerm).toTupleElement()
         case let stringValue as String:
             return stringValue
@@ -114,19 +120,23 @@ public struct TupleEncoder: Sendable {
         // Other types
         case let boolValue as Bool:
             return boolValue
-        case let dateValue as Date:
+        case let dateValue as PlatformDate:
             // Return Date directly - fdb-swift-bindings encodes it as
             // timeIntervalSince1970 (Double) in Tuple.encodeTuple()
             return dateValue
-        case let uuidValue as UUID:
+        case let uuidValue as PlatformUUID:
             return uuidValue
-        case let databaseBytes as DatabaseBytes:
+        case let databaseBytes as ByteString:
             return Bytes(retaining: databaseBytes)
         case let storageBytes as Bytes:
             return storageBytes
-        case let dataValue as Data:
+        case let dataValue as PlatformData:
             return Bytes(
-                retaining: DatabaseBytes(retaining: dataValue)
+                retaining: ByteString.copying(count: dataValue.count) { output in
+                    dataValue.withUnsafeBytes { source in
+                        output.copyMemory(from: source)
+                    }
+                }
             )
         case let bytesValue as [UInt8]:
             return Bytes(bytesValue)
@@ -170,7 +180,7 @@ public struct TupleEncoder: Sendable {
             return int64Array.map { $0 as any TupleElement }
         case let stringArray as [String]:
             return stringArray.map { $0 as any TupleElement }
-        case let dateArray as [Date]:
+        case let dateArray as [PlatformDate]:
             return dateArray.map { $0 as any TupleElement }
         case let arrayValue as [any TupleElement]:
             return arrayValue

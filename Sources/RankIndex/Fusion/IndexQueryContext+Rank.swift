@@ -1,12 +1,7 @@
 // IndexQueryContext+Rank.swift
 // RankIndex - Factory method for Rank query
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 
 extension IndexQueryContext {
@@ -20,34 +15,17 @@ extension IndexQueryContext {
     /// }
     /// .execute()
     /// ```
-    public func rank<T: Persistable>(
+    public func rank<T: Persistable, Value: RankNumericValue>(
         _ type: T.Type,
-        _ keyPath: KeyPath<T, Int>
+        _ field: Field<T, Value>
     ) -> Rank<T> {
-        Rank(keyPath, context: self)
+        Rank(field, context: self)
     }
 
-    /// Create a Rank query for Int64 field
-    public func rank<T: Persistable>(
+    public func rank<T: Persistable, Value: RankNumericValue>(
         _ type: T.Type,
-        _ keyPath: KeyPath<T, Int64>
+        _ field: Field<T, Value?>
     ) -> Rank<T> {
-        Rank(keyPath, context: self)
-    }
-
-    /// Create a Rank query for Double field
-    public func rank<T: Persistable>(
-        _ type: T.Type,
-        _ keyPath: KeyPath<T, Double>
-    ) -> Rank<T> {
-        Rank(keyPath, context: self)
-    }
-
-    /// Create a Rank query for Float field
-    public func rank<T: Persistable>(
-        _ type: T.Type,
-        _ keyPath: KeyPath<T, Float>
-    ) -> Rank<T> {
-        Rank(keyPath, context: self)
+        Rank(field, context: self)
     }
 }

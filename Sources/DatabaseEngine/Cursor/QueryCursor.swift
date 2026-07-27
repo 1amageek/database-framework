@@ -31,8 +31,8 @@ public enum QueryCursorError: Error, Sendable, Equatable {
 /// ```swift
 /// // First page
 /// let cursor = try context.cursor(User.self)
-///     .where(\.isActive == true)
-///     .orderBy(\.createdAt, .descending)
+///     .where(User.fields.isActive == true)
+///     .orderBy(User.fields.createdAt, .descending)
 ///     .limit(20)
 ///     .build()
 ///

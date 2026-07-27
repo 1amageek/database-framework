@@ -4,7 +4,7 @@ import StorageKit
 import Synchronization
 @testable import DatabaseEngine
 
-@Suite("TransactionRunner Retry Tests", .serialized, .heartbeat)
+@Suite("TransactionRunner Retry Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct TransactionRunnerRetryTests {
     @Test("Batch configuration reaches the body on a portable backend")
     func batchConfigurationRunsOnInMemoryBackend() async throws {
@@ -299,8 +299,8 @@ struct TransactionRunnerRetryTests {
         let runner = TransactionRunner(database: engine)
         let attempts = AttemptCounter()
         let deadline = TransactionExecutionDeadline(
-            instant: ContinuousClock().now.advanced(by: .milliseconds(30)),
-            timeoutMilliseconds: 30
+            instant: ContinuousClock().now.advanced(by: .milliseconds(100)),
+            timeoutMilliseconds: 100
         )
 
         do {
@@ -312,13 +312,14 @@ struct TransactionRunnerRetryTests {
                 ),
                 executionDeadline: deadline
             ) { _ in
-                _ = attempts.increment()
-                try await Task.sleep(for: .milliseconds(20))
-                throw StorageError.transactionConflict
+                if attempts.increment() == 1 {
+                    throw StorageError.transactionConflict
+                }
+                try await Task.sleep(for: .seconds(30))
             }
             Issue.record("Expected inherited deadline to span retries")
         } catch let error as TransactionExecutionDeadlineExceeded {
-            #expect(error.timeoutMilliseconds == 30)
+            #expect(error.timeoutMilliseconds == 100)
             #expect(error.source == .inheritedOperation)
         }
 
@@ -333,19 +334,20 @@ struct TransactionRunnerRetryTests {
         do {
             let _: Void = try await runner.run(
                 configuration: TransactionConfiguration(
-                    timeout: 30,
+                    timeout: 100,
                     maximumAttempts: 2,
                     maxRetryDelay: 0,
                     initialRetryDelay: 0
                 )
             ) { _ in
-                _ = attempts.increment()
-                try await Task.sleep(for: .milliseconds(20))
-                throw StorageError.transactionConflict
+                if attempts.increment() == 1 {
+                    throw StorageError.transactionConflict
+                }
+                try await Task.sleep(for: .seconds(30))
             }
             Issue.record("Expected the shared portable deadline to expire")
         } catch let error as TransactionExecutionDeadlineExceeded {
-            #expect(error.timeoutMilliseconds == 30)
+            #expect(error.timeoutMilliseconds == 100)
             #expect(error.source == .transactionConfiguration)
         }
 

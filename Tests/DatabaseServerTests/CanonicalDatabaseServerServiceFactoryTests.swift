@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
@@ -51,7 +51,7 @@ struct CanonicalDatabaseServerServiceFactoryTests {
         DatabaseMaintenanceService,
         DatabaseJobServiceFactory,
         DatabaseJobService {
-        var jobOperations: [DatabaseJobOperationIdentifier] { [] }
+        var jobOperations: [JobOperationIdentifier] { [] }
 
         func makeMaintenanceService(
             context: DatabaseServerServiceContext

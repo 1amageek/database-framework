@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -134,7 +134,11 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "count_region",
-            kind: CountIndexKind<AggregationBenchmarkSale>(groupBy: [\.region]),
+            kind: countIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ]
+            ),
             rootExpression: FieldKeyExpression(fieldName: "region"),
             subspaceKey: "count_region",
             itemTypes: Set(["AggregationBenchmarkSale"])
@@ -203,7 +207,11 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "count_region",
-            kind: CountIndexKind<AggregationBenchmarkSale>(groupBy: [\.region]),
+            kind: countIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ]
+            ),
             rootExpression: FieldKeyExpression(fieldName: "region"),
             subspaceKey: "count_region",
             itemTypes: Set(["AggregationBenchmarkSale"])
@@ -279,7 +287,14 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "sum_region_amount",
-            kind: SumIndexKind<AggregationBenchmarkSale, Double>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .sum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 4),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
@@ -348,7 +363,14 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "sum_region_amount",
-            kind: SumIndexKind<AggregationBenchmarkSale, Double>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .sum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 4),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
@@ -431,7 +453,14 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "min_region_amount",
-            kind: MinIndexKind<AggregationBenchmarkSale, Double>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .minimum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 4),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
@@ -514,7 +543,14 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "max_region_amount",
-            kind: MaxIndexKind<AggregationBenchmarkSale, Double>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .maximum,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 4),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
@@ -593,7 +629,14 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "avg_region_amount",
-            kind: AverageIndexKind<AggregationBenchmarkSale, Double>(groupBy: [\.region], value: \.amount),
+            kind: numericAggregationIndexMetadata(
+                .average,
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ],
+                valueField: FieldIdentity(name: "amount", number: 4),
+                valueType: .float64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "amount")
@@ -692,7 +735,12 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "count_region_category",
-            kind: CountIndexKind<AggregationBenchmarkSale>(groupBy: [\.region, \.category]),
+            kind: countIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2),
+                    FieldIdentity(name: "category", number: 3),
+                ]
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category")
@@ -783,7 +831,11 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "count_scale",
-            kind: CountIndexKind<AggregationBenchmarkSale>(groupBy: [\.region]),
+            kind: countIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ]
+            ),
             rootExpression: FieldKeyExpression(fieldName: "region"),
             subspaceKey: "count_scale",
             itemTypes: Set(["AggregationBenchmarkSale"])
@@ -857,7 +909,11 @@ struct AggregationIndexPerformanceTests {
 
         let index = Index(
             name: "count_delete",
-            kind: CountIndexKind<AggregationBenchmarkSale>(groupBy: [\.region]),
+            kind: countIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "region", number: 2)
+                ]
+            ),
             rootExpression: FieldKeyExpression(fieldName: "region"),
             subspaceKey: "count_delete",
             itemTypes: Set(["AggregationBenchmarkSale"])

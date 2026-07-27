@@ -11,7 +11,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -77,7 +78,7 @@ public enum AggregationNumericValue: Sendable, Equatable {
         case .unsignedInteger(let value):
             return .uint64(value)
         case .floatingPoint(let value):
-            return .double(value)
+            return .float64(value)
         }
     }
 }
@@ -271,13 +272,10 @@ public enum NumericValueExtractor {
         as valueType: Value.Type
     ) throws -> AggregationNumericValue {
         switch valueType {
-        case is Int64.Type, is Int.Type, is Int32.Type, is Int16.Type, is Int8.Type:
+        case is Int64.Type, is Int32.Type, is Int16.Type, is Int8.Type:
             let value = try TypeConversion.int64(from: element)
             return .signedInteger(value)
 
-        case is UInt.Type:
-            let value = try TupleDecoder.decode(element, as: UInt.self)
-            return .unsignedInteger(UInt64(value))
         case is UInt8.Type:
             let value = try TupleDecoder.decode(element, as: UInt8.self)
             return .unsignedInteger(UInt64(value))
@@ -299,7 +297,7 @@ public enum NumericValueExtractor {
             return .floatingPoint(value)
 
         default:
-            throw IndexError.invalidConfiguration(
+            throw AggregationIndexError.invalidConfiguration(
                 "Unsupported numeric type for aggregation: \(valueType)"
             )
         }
@@ -309,14 +307,14 @@ public enum NumericValueExtractor {
         _ type: Value.Type
     ) throws -> AggregationNumericStorageKind {
         switch type.indexScalarType {
-        case .uint, .uint8, .uint16, .uint32, .uint64:
+        case .uint8, .uint16, .uint32, .uint64:
             return .unsignedInteger
-        case .float, .double:
+        case .float32, .float64:
             return .floatingPoint
-        case .int, .int8, .int16, .int32, .int64:
+        case .int8, .int16, .int32, .int64:
             return .signedInteger
-        case .string, .date:
-            throw IndexError.invalidConfiguration(
+        case .string, .date, .timestamp:
+            throw AggregationIndexError.invalidConfiguration(
                 "Numeric index value declared a non-numeric scalar type"
             )
         }
@@ -371,7 +369,7 @@ func decodeAggregationStorageKey(
     }
 
     guard let markerStart, let marker else {
-        throw IndexError.invalidStructure(
+        throw AggregationIndexError.invalidStructure(
             "Aggregation index key is missing its string value marker"
         )
     }
@@ -424,7 +422,7 @@ extension NumericAggregationMutationSupport {
         let currentBytes = try await transaction.getValue(for: sumKey)
         let countBytes = try await transaction.getValue(for: countKey)
         guard (currentBytes == nil) == (countBytes == nil) else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Numeric aggregate requires both sum and count entries"
             )
         }
@@ -627,13 +625,18 @@ extension AggregationQuerySupport {
                 )
             }
             return result
-        case .double(let result):
+        case .float32(let result):
+            guard result.isFinite else {
+                throw AggregationStorageError.nonFiniteFloatingPoint
+            }
+            return Double(result)
+        case .float64(let result):
             guard result.isFinite else {
                 throw AggregationStorageError.nonFiniteFloatingPoint
             }
             return result
         default:
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Aggregation result contains a non-numeric value"
             )
         }
@@ -801,7 +804,7 @@ extension CountAggregationMaintainer {
         transaction: any TransactionAccess
     ) async throws -> Int64 {
         guard groupingValues.count == groupingFieldCount else {
-            throw IndexError.invalidArgument(
+            throw AggregationIndexError.invalidArgument(
                 "Grouping value count does not match count index '\(index.name)'"
             )
         }
@@ -862,7 +865,7 @@ extension CountAggregationMaintainer {
                 elements.append(try cursor.requireNext())
             }
             guard elements.count == groupingFieldCount else {
-                throw IndexError.invalidStructure(
+                throw AggregationIndexError.invalidStructure(
                     "Count index key has an invalid grouping field count"
                 )
             }

@@ -1,5 +1,5 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 extension CanonicalDatabaseGraphAlgorithmService {
     func paginationKind(
@@ -23,7 +23,7 @@ extension CanonicalDatabaseGraphAlgorithmService {
 
     func requestFingerprint(
         for request: GraphAlgorithmOperation.Request
-    ) throws -> DatabaseBytes {
+    ) throws -> ByteString {
         let normalized = GraphAlgorithmOperation.Request(
             source: request.source,
             invocation: request.invocation,
@@ -33,9 +33,11 @@ extension CanonicalDatabaseGraphAlgorithmService {
             ),
             budget: request.budget
         )
-        let payload = try DatabaseEnvelopeCodec.encode(
-            normalized,
+        let payload = try DatabaseWireEncoder(
             limits: wireLimits
+        ).encodeRequestPayload(
+            DatabaseOperations.graphAlgorithm,
+            request: normalized
         )
         return DatabaseRequestDigest.compute(
             operation: .graphAlgorithm,
@@ -44,7 +46,7 @@ extension CanonicalDatabaseGraphAlgorithmService {
         )
     }
 
-    func deterministicSeed(from fingerprint: DatabaseBytes) -> UInt64 {
+    func deterministicSeed(from fingerprint: ByteString) -> UInt64 {
         fingerprint.prefix(8).reduce(UInt64(0)) { partial, byte in
             (partial << 8) | UInt64(byte)
         }

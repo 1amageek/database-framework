@@ -1,8 +1,8 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct MaintenanceExecuteHandler: DatabaseOperationEndpointHandler {
-    public let identifier = DatabaseOperationIdentifier.maintenanceExecute
+    public typealias Operation = MaintenanceExecuteOperation
 
     private let service: AnyDatabaseMaintenanceService
     private let runtimeLimits: DatabaseRuntimeLimits
@@ -16,15 +16,10 @@ public struct MaintenanceExecuteHandler: DatabaseOperationEndpointHandler {
     }
 
     public func invoke(
-        payload: DatabaseBytes,
+        request: MaintenanceExecuteOperation.Request,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
     ) async throws -> DatabaseOperationResult {
-        let request = try DatabaseEnvelopeCodec.decode(
-            MaintenanceExecuteOperation.Request.self,
-            from: payload,
-            limits: limits
-        )
         try runtimeLimits.validate(request.budget)
         return try await DatabaseExecutionTimeout.run(
             milliseconds: request.budget.timeoutMilliseconds,

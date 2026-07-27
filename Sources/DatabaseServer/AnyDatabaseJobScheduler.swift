@@ -1,9 +1,9 @@
-import DatabaseValue
+import DatabaseTypes
 
 /// Type-erased scheduler boundary used by long-lived database runtimes.
 public final class AnyDatabaseJobScheduler: DatabaseJobScheduler, Sendable {
     private let ensureWakeUpNoLaterThan:
-        @Sendable (DatabaseTimestamp) async throws -> Void
+        @Sendable (Timestamp) async throws -> Void
 
     public init<Scheduler: DatabaseJobScheduler>(_ scheduler: Scheduler) {
         self.ensureWakeUpNoLaterThan = { timestamp in
@@ -12,7 +12,7 @@ public final class AnyDatabaseJobScheduler: DatabaseJobScheduler, Sendable {
     }
 
     public func ensureWakeUp(
-        noLaterThan timestamp: DatabaseTimestamp
+        noLaterThan timestamp: Timestamp
     ) async throws {
         try await ensureWakeUpNoLaterThan(timestamp)
     }

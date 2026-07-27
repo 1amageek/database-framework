@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import DatabaseRuntime
 import StorageKit
@@ -15,11 +15,15 @@ struct CanonicalAggregationReducerTests {
         let results = try await context
             .aggregate(EmptyGlobalAggregationEntity.self)
             .count(as: "entityCount")
-            .sum(\.value, as: "sum")
-            .avg(\.value, as: "average")
-            .min(\.value, as: "minimum")
-            .max(\.value, as: "maximum")
-            .percentile(\.value, p: 0.5, as: "median")
+            .sum(EmptyGlobalAggregationEntity.fields.value, as: "sum")
+            .avg(EmptyGlobalAggregationEntity.fields.value, as: "average")
+            .min(EmptyGlobalAggregationEntity.fields.value, as: "minimum")
+            .max(EmptyGlobalAggregationEntity.fields.value, as: "maximum")
+            .percentile(
+                EmptyGlobalAggregationEntity.fields.value,
+                p: 0.5,
+                as: "median"
+            )
             .execute()
 
         assertCanonicalEmptyGlobalResult(results)
@@ -32,10 +36,10 @@ struct CanonicalAggregationReducerTests {
         let query = context
             .aggregate(EmptyGlobalAggregationEntity.self)
             .count(as: "entityCount")
-            .sum(\.value, as: "sum")
-            .avg(\.value, as: "average")
-            .min(\.value, as: "minimum")
-            .max(\.value, as: "maximum")
+            .sum(EmptyGlobalAggregationEntity.fields.value, as: "sum")
+            .avg(EmptyGlobalAggregationEntity.fields.value, as: "average")
+            .min(EmptyGlobalAggregationEntity.fields.value, as: "minimum")
+            .max(EmptyGlobalAggregationEntity.fields.value, as: "maximum")
         Self.assertAllIndexBacked(
             try query.determineExecutionStrategies(),
             names: ["entityCount", "sum", "average", "minimum", "maximum"]
@@ -48,7 +52,11 @@ struct CanonicalAggregationReducerTests {
 
     @Test("non-empty global aggregate indexes accept zero grouping fields")
     func nonEmptyGlobalIndexesAcceptZeroGroupingFields() async throws {
-        let schema = Schema([EmptyGlobalAggregationEntity.self])
+        let schema = try Schema(
+            entities: [
+                try EmptyGlobalAggregationEntity.schemaEntity
+            ]
+        )
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
@@ -62,10 +70,10 @@ struct CanonicalAggregationReducerTests {
         let query = context
             .aggregate(EmptyGlobalAggregationEntity.self)
             .count(as: "count")
-            .sum(\.value, as: "sum")
-            .avg(\.value, as: "average")
-            .min(\.value, as: "minimum")
-            .max(\.value, as: "maximum")
+            .sum(EmptyGlobalAggregationEntity.fields.value, as: "sum")
+            .avg(EmptyGlobalAggregationEntity.fields.value, as: "average")
+            .min(EmptyGlobalAggregationEntity.fields.value, as: "minimum")
+            .max(EmptyGlobalAggregationEntity.fields.value, as: "maximum")
         Self.assertAllIndexBacked(
             try query.determineExecutionStrategies(),
             names: ["count", "sum", "average", "minimum", "maximum"]
@@ -88,8 +96,12 @@ struct CanonicalAggregationReducerTests {
         let context = try await makeGlobalSketchQueryContext()
         let query = context
             .aggregate(IndexedGlobalSketchEntity.self)
-            .distinct(\.value, as: "distinct")
-            .percentile(\.value, p: 0.5, as: "median")
+            .distinct(IndexedGlobalSketchEntity.fields.value, as: "distinct")
+            .percentile(
+                IndexedGlobalSketchEntity.fields.value,
+                p: 0.5,
+                as: "median"
+            )
         Self.assertAllIndexBacked(
             try query.determineExecutionStrategies(),
             names: ["distinct", "median"]
@@ -113,8 +125,12 @@ struct CanonicalAggregationReducerTests {
 
         let query = context
             .aggregate(IndexedGlobalSketchEntity.self)
-            .distinct(\.value, as: "distinct")
-            .percentile(\.value, p: 0.5, as: "median")
+            .distinct(IndexedGlobalSketchEntity.fields.value, as: "distinct")
+            .percentile(
+                IndexedGlobalSketchEntity.fields.value,
+                p: 0.5,
+                as: "median"
+            )
         Self.assertAllIndexBacked(
             try query.determineExecutionStrategies(),
             names: ["distinct", "median"]
@@ -138,7 +154,7 @@ struct CanonicalAggregationReducerTests {
             try await context
                 .aggregate(EmptyGlobalAggregationEntity.self)
                 .count(as: "value")
-                .sum(\.value, as: "value")
+                .sum(EmptyGlobalAggregationEntity.fields.value, as: "value")
                 .execute()
         }
     }
@@ -409,9 +425,13 @@ struct CanonicalAggregationReducerTests {
         let subspace = Subspace(prefix: Tuple("malformed-minimum").pack())
         let index = Index(
             name: "minimum_by_group",
-            kind: MinIndexKind<AggregationTupleEntity, Int64>(
-                groupBy: [\.group],
-                value: \.number
+            kind: numericAggregationIndexMetadata(
+                .minimum,
+                groupingFields: [
+                    FieldIdentity(name: "group", number: 2)
+                ],
+                valueField: FieldIdentity(name: "number", number: 3),
+                valueType: .int64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
@@ -431,7 +451,7 @@ struct CanonicalAggregationReducerTests {
             .pack(Tuple("group"))
         try transaction.setValue(Tuple(Int64(42)).pack(), for: malformedKey)
 
-        await #expect(throws: IndexError.self) {
+        await #expect(throws: AggregationIndexError.self) {
             try await maintainer.getAllMins(transaction: transaction)
         }
     }
@@ -440,9 +460,13 @@ struct CanonicalAggregationReducerTests {
     func integerIndexReadRejectsLossyDoubleConversion() {
         let index = Index(
             name: "sum_by_group",
-            kind: SumIndexKind<AggregationTupleEntity, Int64>(
-                groupBy: [\.group],
-                value: \.number
+            kind: numericAggregationIndexMetadata(
+                .sum,
+                groupingFields: [
+                    FieldIdentity(name: "group", number: 2)
+                ],
+                valueField: FieldIdentity(name: "number", number: 3),
+                valueType: .int64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
@@ -857,7 +881,7 @@ struct CanonicalAggregationReducerTests {
             )
         }
 
-        await #expect(throws: IndexError.self) {
+        await #expect(throws: AggregationIndexError.self) {
             try await engine.withTransaction { transaction in
                 try await maintainer.updateIndex(
                     oldItem: nil,
@@ -866,7 +890,7 @@ struct CanonicalAggregationReducerTests {
                 )
             }
         }
-        await #expect(throws: IndexError.self) {
+        await #expect(throws: AggregationIndexError.self) {
             try await engine.withTransaction { transaction in
                 try await maintainer.getSum(
                     groupingValues: ["group"],
@@ -965,9 +989,13 @@ struct CanonicalAggregationReducerTests {
     ) -> SumIndexMaintainer<AggregationValueEntity<Value>, Value> {
         let index = Index(
             name: name,
-            kind: SumIndexKind<AggregationValueEntity<Value>, Value>(
-                groupBy: [\.group],
-                value: \.value
+            kind: numericAggregationIndexMetadata(
+                .sum,
+                groupingFields: [
+                    FieldIdentity(name: "group", number: 2)
+                ],
+                valueField: FieldIdentity(name: "value", number: 3),
+                valueType: Value.indexScalarType
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
@@ -984,7 +1012,11 @@ struct CanonicalAggregationReducerTests {
     }
 
     private func makeEmptyQueryContext() async throws -> DatabaseContext {
-        let schema = Schema([EmptyGlobalAggregationEntity.self])
+        let schema = try Schema(
+            entities: [
+                try EmptyGlobalAggregationEntity.schemaEntity
+            ]
+        )
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
@@ -995,7 +1027,11 @@ struct CanonicalAggregationReducerTests {
     }
 
     private func makeGlobalSketchQueryContext() async throws -> DatabaseContext {
-        let schema = Schema([IndexedGlobalSketchEntity.self])
+        let schema = try Schema(
+            entities: [
+                try IndexedGlobalSketchEntity.schemaEntity
+            ]
+        )
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(InMemoryEngine())),
@@ -1068,7 +1104,11 @@ struct CanonicalAggregationReducerTests {
     ) -> CountIndexMaintainer<AggregationTupleEntity> {
         let index = Index(
             name: name,
-            kind: CountIndexKind<AggregationTupleEntity>(groupBy: [\.group]),
+            kind: countIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "group", number: 2)
+                ]
+            ),
             rootExpression: FieldKeyExpression(fieldName: "group"),
             subspaceKey: name,
             itemTypes: [AggregationTupleEntity.persistableType]
@@ -1086,9 +1126,13 @@ struct CanonicalAggregationReducerTests {
     ) -> AverageIndexMaintainer<AggregationValueEntity<Value>, Value> {
         let index = Index(
             name: name,
-            kind: AverageIndexKind<AggregationValueEntity<Value>, Value>(
-                groupBy: [\.group],
-                value: \.value
+            kind: numericAggregationIndexMetadata(
+                .average,
+                groupingFields: [
+                    FieldIdentity(name: "group", number: 2)
+                ],
+                valueField: FieldIdentity(name: "value", number: 3),
+                valueType: Value.indexScalarType
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
@@ -1112,9 +1156,13 @@ struct CanonicalAggregationReducerTests {
     ) -> MinIndexMaintainer<AggregationValueEntity<Value>, Value> {
         let index = Index(
             name: name,
-            kind: MinIndexKind<AggregationValueEntity<Value>, Value>(
-                groupBy: [\.group],
-                value: \.value
+            kind: numericAggregationIndexMetadata(
+                .minimum,
+                groupingFields: [
+                    FieldIdentity(name: "group", number: 2)
+                ],
+                valueField: FieldIdentity(name: "value", number: 3),
+                valueType: Value.indexScalarType
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
@@ -1138,9 +1186,13 @@ struct CanonicalAggregationReducerTests {
     ) -> MaxIndexMaintainer<AggregationValueEntity<Value>, Value> {
         let index = Index(
             name: name,
-            kind: MaxIndexKind<AggregationValueEntity<Value>, Value>(
-                groupBy: [\.group],
-                value: \.value
+            kind: numericAggregationIndexMetadata(
+                .maximum,
+                groupingFields: [
+                    FieldIdentity(name: "group", number: 2)
+                ],
+                valueField: FieldIdentity(name: "value", number: 3),
+                valueType: Value.indexScalarType
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
@@ -1236,19 +1288,17 @@ private struct AggregationValueEntity<Value: IndexNumericValue>: Persistable {
 
     private static var valueFieldSchemaType: FieldSchemaType {
         switch Value.indexScalarType {
-        case .int: return .int
         case .int8: return .int8
         case .int16: return .int16
         case .int32: return .int32
         case .int64: return .int64
-        case .uint: return .uint
         case .uint8: return .uint8
         case .uint16: return .uint16
         case .uint32: return .uint32
         case .uint64: return .uint64
-        case .float: return .float
-        case .double: return .double
-        case .string, .date:
+        case .float32: return .float32
+        case .float64: return .float64
+        case .string, .date, .timestamp:
             preconditionFailure("Aggregation test value must be numeric")
         }
     }
@@ -1263,39 +1313,46 @@ private struct EmptyGlobalAggregationEntity {
     var id: String = ""
     var value: Int64 = 0
 
-    #Index(CountIndexKind<EmptyGlobalAggregationEntity>(groupBy: []))
-    #Index(SumIndexKind<EmptyGlobalAggregationEntity, Int64>(
+    #Index(.count, groupBy: [])
+    #Index(
+        .sum,
         groupBy: [],
-        value: \.value
-    ))
-    #Index(AverageIndexKind<EmptyGlobalAggregationEntity, Int64>(
+        value: \EmptyGlobalAggregationEntity.value
+    )
+    #Index(
+        .average,
         groupBy: [],
-        value: \.value
-    ))
-    #Index(MinIndexKind<EmptyGlobalAggregationEntity, Int64>(
+        value: \EmptyGlobalAggregationEntity.value
+    )
+    #Index(
+        .minimum,
         groupBy: [],
-        value: \.value
-    ))
-    #Index(MaxIndexKind<EmptyGlobalAggregationEntity, Int64>(
+        value: \EmptyGlobalAggregationEntity.value
+    )
+    #Index(
+        .maximum,
         groupBy: [],
-        value: \.value
-    ))
+        value: \EmptyGlobalAggregationEntity.value
+    )
 }
 
 @Persistable
 private struct IndexedGlobalSketchEntity {
     #Directory<IndexedGlobalSketchEntity>("tests", "indexed-global-sketch")
 
+    var id: String = ""
     var value: Int64 = 0
 
-    #Index(DistinctIndexKind<IndexedGlobalSketchEntity>(
+    #Index(
+        .distinct(),
         groupBy: [],
-        value: \.value
-    ))
-    #Index(PercentileIndexKind<IndexedGlobalSketchEntity, Int64>(
+        value: \IndexedGlobalSketchEntity.value
+    )
+    #Index(
+        .percentile(),
         groupBy: [],
-        value: \.value
-    ))
+        value: \IndexedGlobalSketchEntity.value
+    )
 }
 
 private struct AggregationReducerEntity: Persistable {

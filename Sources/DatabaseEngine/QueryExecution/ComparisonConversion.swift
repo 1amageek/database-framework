@@ -1,15 +1,10 @@
 // ComparisonConversion.swift
-// DatabaseEngine - Conversion between ComparisonOperator and QueryIR.Expression
+// DatabaseEngine - Conversion between ComparisonOperator and Expression
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Core
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 
-// MARK: - ComparisonOperator → QueryIR.Expression
+// MARK: - ComparisonOperator → Expression
 
 extension ComparisonOperator {
     /// Build a QueryIR Expression from this comparison operator, a column name, and a FieldValue.
@@ -19,9 +14,12 @@ extension ComparisonOperator {
     /// - String operations (contains, hasPrefix, hasSuffix) → function calls
     /// - Set membership (in, notIn) → inList / notInList
     /// - Null checks (isNil, isNotNil) → isNull / isNotNull
-    public func toExpression(column: String, value: FieldValue) -> QueryIR.Expression {
-        let col = QueryIR.Expression.column(QueryIR.ColumnRef(column: column))
-        let lit = QueryIR.Expression.literal(value.toLiteral())
+    public func toExpression(
+        column: String,
+        value: FieldValue
+    ) throws(LiteralConversionError) -> DatabaseKit.Expression {
+        let col = DatabaseKit.Expression.column(ColumnRef(column: column))
+        let lit = DatabaseKit.Expression.literal(try value.toLiteral())
 
         switch self {
         case .equal:
@@ -37,30 +35,40 @@ extension ComparisonOperator {
         case .greaterThanOrEqual:
             return .greaterThanOrEqual(col, lit)
         case .contains:
-            return .function(QueryIR.FunctionCall(
+            return .function(FunctionCall(
                 name: "CONTAINS",
                 arguments: [col, lit]
             ))
         case .hasPrefix:
-            return .function(QueryIR.FunctionCall(
+            return .function(FunctionCall(
                 name: "STRSTARTS",
                 arguments: [col, lit]
             ))
         case .hasSuffix:
-            return .function(QueryIR.FunctionCall(
+            return .function(FunctionCall(
                 name: "STRENDS",
                 arguments: [col, lit]
             ))
         case .in:
             if case .array(let elements) = value {
-                return .inList(col, values: elements.map { .literal($0.toLiteral()) })
+                var values: [DatabaseKit.Expression] = []
+                values.reserveCapacity(elements.count)
+                for element in elements {
+                    values.append(.literal(try element.toLiteral()))
+                }
+                return .inList(col, values: values)
             }
             return .inList(col, values: [lit])
         case .notIn:
             if case .array(let elements) = value {
+                var values: [DatabaseKit.Expression] = []
+                values.reserveCapacity(elements.count)
+                for element in elements {
+                    values.append(.literal(try element.toLiteral()))
+                }
                 return .notInList(
                     col,
-                    values: elements.map { .literal($0.toLiteral()) }
+                    values: values
                 )
             }
             return .notInList(col, values: [lit])

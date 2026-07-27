@@ -1,9 +1,9 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 
 /// Transaction-scoped context used to validate and provision a resumable job.
 public struct DatabaseResumableOperationStartContext: Sendable {
-    public let jobID: DatabaseUUID
+    public let jobID: DatabaseTypes.UUID
     public let maximumSliceWorkUnits: UInt64
     public let request: DatabaseCommandRequestContext
     public let transaction: any DatabaseTransactionWriting
@@ -12,7 +12,7 @@ public struct DatabaseResumableOperationStartContext: Sendable {
     package let operationContext: DatabaseOperationContext
 
     package init(
-        jobID: DatabaseUUID,
+        jobID: DatabaseTypes.UUID,
         maximumSliceWorkUnits: UInt64,
         transaction: DatabaseTransaction,
         operationContext: DatabaseOperationContext

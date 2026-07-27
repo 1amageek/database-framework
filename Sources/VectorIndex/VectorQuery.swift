@@ -1,16 +1,10 @@
 // VectorQuery.swift
 // VectorIndex - Query extension for vector similarity search
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 @_spi(PolymorphicRuntime) import DatabaseEngine
-import Core
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
-import Vector
 
 // MARK: - Vector Query Builder
 
@@ -22,7 +16,7 @@ import Vector
 ///
 /// // Basic search
 /// let similar = try await context.findSimilar(Product.self)
-///     .vector(\.embedding, dimensions: 128)
+///     .vector(Product.fields.embedding, dimensions: 128)
 ///     .query(queryVector, k: 10)
 ///     .metric(.cosine)
 ///     .execute()
@@ -30,7 +24,7 @@ import Vector
 ///
 /// // Filtered search (ACORN algorithm)
 /// let filtered = try await context.findSimilar(Product.self)
-///     .vector(\.embedding, dimensions: 128)
+///     .vector(Product.fields.embedding, dimensions: 128)
 ///     .query(queryVector, k: 10)
 ///     .filter { product in product.category == "electronics" }
 ///     .acorn(expansionFactor: 3)
@@ -58,7 +52,13 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     ///   - vector: The query vector to search with
     ///   - k: Number of nearest neighbors to return
     /// - Returns: Updated query builder
-    public func query(_ vector: [Float], k: Int) -> Self {
+    public func query(
+        _ vector: [Float],
+        k: Int
+    ) throws(VectorQueryError) -> Self {
+        guard k > 0 else {
+            throw .invalidResultCount(k)
+        }
         var copy = self
         copy.queryVector = vector
         copy.k = k
@@ -88,7 +88,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     /// **Usage**:
     /// ```swift
     /// let results = try await context.findSimilar(Product.self)
-    ///     .vector(\.embedding, dimensions: 128)
+    ///     .vector(Product.fields.embedding, dimensions: 128)
     ///     .query(queryVector, k: 10)
     ///     .filter { product in
     ///         product.category == "electronics" && product.price < 1000
@@ -121,7 +121,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     /// **Usage**:
     /// ```swift
     /// let results = try await context.findSimilar(Product.self)
-    ///     .vector(\.embedding, dimensions: 128)
+    ///     .vector(Product.fields.embedding, dimensions: 128)
     ///     .query(queryVector, k: 10)
     ///     .filter(\.category, equals: "electronics")
     ///     .execute()
@@ -180,7 +180,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
         return try response.rows.map { row in
             let item = try QueryRowCodec.decode(row, as: T.self)
-            guard let distance = row.annotations["distance"]?.doubleValue else {
+            guard let distance = row.annotations["distance"]?.float64Value else {
                 throw CanonicalReadError.missingAnnotation("distance")
             }
             return (item: item, distance: distance)
@@ -236,13 +236,16 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         configuration: TransactionConfiguration,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, distance: Double)] {
-        let (indexDescriptor, kind) = try resolveVectorIndex(named: indexName)
+        let (indexDescriptor, specification) = try resolveVectorIndex(
+            named: indexName
+        )
 
         // Check for VectorIndexConfiguration
         let configs = queryContext.context.container.indexConfigurations[indexName] ?? []
         let vectorConfig = configs.first { config in
-            type(of: config).kindIdentifier == VectorIndexKind<T>.identifier
-        } as? _VectorIndexConfiguration
+            type(of: config).kindIdentifier
+                == VectorIndexSpecification.identifier
+        } as? VectorIndexRuntimeConfiguration
 
         // Get index subspace
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
@@ -298,8 +301,8 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 )
                 let maintainer = HNSWIndexMaintainer<T>(
                     index: index,
-                    dimensions: self.dimensions,
-                    metric: kind.metric,
+                    dimensions: specification.dimensions,
+                    metric: specification.metric,
                     subspace: indexSubspace,
                     idExpression: FieldKeyExpression(fieldName: "id"),
                     parameters: params
@@ -317,8 +320,8 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 // Use flat search
                 let maintainer = FlatVectorIndexMaintainer<T>(
                     index: index,
-                    dimensions: self.dimensions,
-                    metric: kind.metric,
+                    dimensions: specification.dimensions,
+                    metric: specification.metric,
                     subspace: indexSubspace,
                     idExpression: FieldKeyExpression(fieldName: "id")
                 )
@@ -337,8 +340,8 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 )
                 let maintainer = IVFIndexMaintainer<T>(
                     index: index,
-                    dimensions: self.dimensions,
-                    metric: kind.metric,
+                    dimensions: specification.dimensions,
+                    metric: specification.metric,
                     subspace: indexSubspace,
                     idExpression: FieldKeyExpression(fieldName: "id"),
                     parameters: params
@@ -358,8 +361,8 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 )
                 let maintainer = PQIndexMaintainer<T>(
                     index: index,
-                    dimensions: self.dimensions,
-                    metric: kind.metric,
+                    dimensions: specification.dimensions,
+                    metric: specification.metric,
                     subspace: indexSubspace,
                     idExpression: FieldKeyExpression(fieldName: "id"),
                     parameters: params
@@ -404,10 +407,12 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             throw VectorQueryError.dimensionMismatch(expected: dimensions, actual: vector.count)
         }
 
-        let parameters: [String: QueryParameterValue] = [
+        let parameters: [String: FieldValue] = [
             VectorReadParameter.fieldName: .string(fieldName),
             VectorReadParameter.dimensions: .int64(Int64(dimensions)),
-            VectorReadParameter.queryVector: .array(vector.map { .double(Double($0)) }),
+            VectorReadParameter.queryVector: .vector(
+                try Vector(float32: vector)
+            ),
             VectorReadParameter.k: .int64(Int64(k)),
             VectorReadParameter.metric: .string(distanceMetric.rawValue)
         ]
@@ -418,11 +423,11 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             accessPath: .index(
                 IndexScanSource(
                     indexName: try buildIndexName(),
-                    kindIdentifier: VectorIndexKind<T>.identifier,
+                    kindIdentifier: VectorIndexSpecification.identifier,
                     parameters: parameters
                 )
             ),
-            limit: k
+            limit: UInt64(k)
         )
     }
 
@@ -458,14 +463,17 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         configuration: TransactionConfiguration,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, distance: Double)] {
-        let (indexDescriptor, kind) = try resolveVectorIndex(named: indexName)
+        let (indexDescriptor, specification) = try resolveVectorIndex(
+            named: indexName
+        )
 
         // Find the vector index configuration to check if HNSW is configured
         // Configurations are stored in the container, keyed by index name
         let configs = queryContext.context.container.indexConfigurations[indexName] ?? []
         let vectorConfig = configs.first { config in
-            type(of: config).kindIdentifier == VectorIndexKind<T>.identifier
-        } as? _VectorIndexConfiguration
+            type(of: config).kindIdentifier
+                == VectorIndexSpecification.identifier
+        } as? VectorIndexRuntimeConfiguration
 
         // Get HNSW parameters if configured
         let hnswParams: VectorHNSWParameters
@@ -510,8 +518,8 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
             let maintainer = HNSWIndexMaintainer<T>(
                 index: index,
-                dimensions: self.dimensions,
-                metric: kind.metric,
+                dimensions: specification.dimensions,
+                metric: specification.metric,
                 subspace: indexSubspace,
                 idExpression: FieldKeyExpression(fieldName: "id"),
                 parameters: HNSWParameters(
@@ -570,10 +578,11 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     /// This approach:
     /// 1. Filters by kindIdentifier ("vector") for efficiency
     /// 2. Matches by fieldName within the kind
-    private func findIndexDescriptor() -> IndexDescriptor? {
-        T.indexDescriptors.first { descriptor in
+    private func findIndexDescriptor() throws -> IndexDescriptor? {
+        try T.indexDescriptors.first { descriptor in
             // 1. Filter by kindIdentifier
-            guard descriptor.kindIdentifier == VectorIndexKind<T>.identifier else {
+            guard descriptor.kindIdentifier
+                    == VectorIndexSpecification.identifier else {
                 return false
             }
             // 2. Match by fieldName
@@ -583,32 +592,32 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
     private func resolveVectorIndex(
         named indexName: String
-    ) throws -> (IndexDescriptor, VectorIndexKind<T>) {
+    ) throws -> (IndexDescriptor, VectorIndexSpecification) {
         guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
             throw VectorQueryError.indexNotFound(indexName)
         }
-        let kind = try VectorIndexKind<T>(canonical: descriptor.kind)
-        guard kind.fieldNames == [fieldName] else {
+        let specification = try VectorIndexSpecification(descriptor.kind)
+        guard specification.metadata.fieldNames == [fieldName] else {
             throw VectorQueryError.indexFieldMismatch(indexName)
         }
-        guard kind.dimensions == dimensions else {
+        guard specification.dimensions == dimensions else {
             throw VectorQueryError.dimensionMismatch(
-                expected: kind.dimensions,
+                expected: specification.dimensions,
                 actual: dimensions
             )
         }
-        guard kind.metric.rawValue == distanceMetric.rawValue else {
+        guard specification.metric.rawValue == distanceMetric.rawValue else {
             throw VectorQueryError.metricMismatch(
-                expected: kind.metric.rawValue,
+                expected: specification.metric.rawValue,
                 actual: distanceMetric.rawValue
             )
         }
-        return (descriptor, kind)
+        return (descriptor, specification)
     }
 
     /// Resolve the declared vector index for the selected field.
     private func buildIndexName() throws -> String {
-        guard let descriptor = findIndexDescriptor() else {
+        guard let descriptor = try findIndexDescriptor() else {
             throw VectorQueryError.indexNotFound("\(T.persistableType).\(fieldName)")
         }
         return descriptor.name
@@ -625,7 +634,7 @@ public enum PolymorphicVectorQueryError: Error, Sendable, CustomStringConvertibl
         case .indexNotFound(let groupIdentifier, let fieldName):
             return """
                 No polymorphic vector index was found for group '\(groupIdentifier)' and field '\(fieldName)'.
-                Declare the shared vector index on the polymorphic group metadata with a KeyPath-based descriptor.
+                Declare the shared vector index on the polymorphic group metadata with its compiled field descriptor.
                 """
         }
     }
@@ -654,11 +663,17 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
     }
 
     /// Set the query vector and number of nearest neighbors.
-    public func query(_ vector: [Float], k: Int) -> Self {
+    public func query(
+        _ vector: [Float],
+        k: Int
+    ) throws(VectorQueryError) -> Self {
+        guard k > 0 else {
+            throw .invalidResultCount(k)
+        }
         var copy = self
         copy.queryVector = vector
         copy.k = k
-        copy.base = copy.base.limit(k)
+        copy.base = copy.base.limit(UInt64(k))
         return copy
     }
 
@@ -714,24 +729,26 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
             throw VectorQueryError.dimensionMismatch(expected: dimensions, actual: vector.count)
         }
 
-        let parameters: [String: QueryParameterValue] = [
+        let parameters: [String: FieldValue] = [
             VectorReadParameter.fieldName: .string(fieldName),
             VectorReadParameter.dimensions: .int64(Int64(dimensions)),
-            VectorReadParameter.queryVector: .array(vector.map { .double(Double($0)) }),
+            VectorReadParameter.queryVector: .vector(
+                try Vector(float32: vector)
+            ),
             VectorReadParameter.k: .int64(Int64(k)),
             VectorReadParameter.metric: .string(distanceMetric.rawValue)
         ]
 
         return IndexScanSource(
             indexName: try buildIndexName(),
-            kindIdentifier: VectorIndexKind<Member>.identifier,
+            kindIdentifier: VectorIndexSpecification.identifier,
             parameters: parameters
         )
     }
 
     private func buildIndexName() throws -> String {
         if let resolvedIndexName = try base.resolveIndexName(
-            kindIdentifier: VectorIndexKind<Member>.identifier,
+            kindIdentifier: VectorIndexSpecification.identifier,
             fieldName: fieldName
         ) {
             return resolvedIndexName
@@ -747,24 +764,24 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
 public extension PolymorphicQuery where Member: Persistable & Polymorphable {
     /// Search a shared vector field across all members of the polymorphic group.
     func vector(
-        _ keyPath: KeyPath<Member, [Float]>,
+        _ field: Field<Member, Vector>,
         dimensions: Int
     ) -> PolymorphicVectorQueryBuilder<Member> {
         PolymorphicVectorQueryBuilder(
             base: self,
-            fieldName: Member.fieldName(for: keyPath),
+            fieldName: field.name,
             dimensions: dimensions
         )
     }
 
     /// Search a shared optional vector field across all members of the polymorphic group.
     func vector(
-        _ keyPath: KeyPath<Member, [Float]?>,
+        _ field: Field<Member, Vector?>,
         dimensions: Int
     ) -> PolymorphicVectorQueryBuilder<Member> {
         PolymorphicVectorQueryBuilder(
             base: self,
-            fieldName: Member.fieldName(for: keyPath),
+            fieldName: field.name,
             dimensions: dimensions
         )
     }
@@ -783,13 +800,16 @@ public struct VectorEntryPoint<T: Persistable>: Sendable {
     /// Specify the vector field to search
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the [Float] field
+    ///   - field: Compiled vector field metadata
     ///   - dimensions: Number of dimensions in the vectors
     /// - Returns: Vector query builder
-    public func vector(_ keyPath: KeyPath<T, [Float]>, dimensions: Int) -> VectorQueryBuilder<T> {
+    public func vector(
+        _ field: Field<T, Vector>,
+        dimensions: Int
+    ) -> VectorQueryBuilder<T> {
         VectorQueryBuilder(
             queryContext: queryContext,
-            fieldName: T.fieldName(for: keyPath),
+            fieldName: field.name,
             dimensions: dimensions
         )
     }
@@ -797,13 +817,16 @@ public struct VectorEntryPoint<T: Persistable>: Sendable {
     /// Specify the optional vector field to search
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the optional [Float] field
+    ///   - field: Compiled optional vector field metadata
     ///   - dimensions: Number of dimensions in the vectors
     /// - Returns: Vector query builder
-    public func vector(_ keyPath: KeyPath<T, [Float]?>, dimensions: Int) -> VectorQueryBuilder<T> {
+    public func vector(
+        _ field: Field<T, Vector?>,
+        dimensions: Int
+    ) -> VectorQueryBuilder<T> {
         VectorQueryBuilder(
             queryContext: queryContext,
-            fieldName: T.fieldName(for: keyPath),
+            fieldName: field.name,
             dimensions: dimensions
         )
     }
@@ -822,7 +845,7 @@ extension DatabaseContext {
     /// import VectorIndex
     ///
     /// let similar = try await context.findSimilar(Product.self)
-    ///     .vector(\.embedding, dimensions: 128)
+    ///     .vector(Product.fields.embedding, dimensions: 128)
     ///     .query(queryVector, k: 10)
     ///     .metric(.cosine)
     ///     .execute()
@@ -843,6 +866,9 @@ public enum VectorQueryError: Error, CustomStringConvertible {
     /// No query vector provided
     case noQueryVector
 
+    /// The nearest-neighbor result count must be positive.
+    case invalidResultCount(Int)
+
     /// Query vector dimension mismatch
     case dimensionMismatch(expected: Int, actual: Int)
 
@@ -858,7 +884,7 @@ public enum VectorQueryError: Error, CustomStringConvertible {
     /// Filter not supported for this index type
     case filterNotSupported(String)
 
-    /// Closure-based filters cannot be lowered into QueryIR.
+    /// Closure-based filters cannot be lowered into
     case closureFilterUnsupported
 
     /// Automatic algorithm selection must be resolved before execution.
@@ -868,6 +894,8 @@ public enum VectorQueryError: Error, CustomStringConvertible {
         switch self {
         case .noQueryVector:
             return "No query vector provided for vector similarity search"
+        case .invalidResultCount(let count):
+            return "Vector result count must be positive, got \(count)"
         case .dimensionMismatch(let expected, let actual):
             return "Vector dimension mismatch: expected \(expected), got \(actual)"
         case .indexNotFound(let name):

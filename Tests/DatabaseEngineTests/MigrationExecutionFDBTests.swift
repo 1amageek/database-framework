@@ -4,8 +4,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -67,6 +67,7 @@ private func value(
 struct FDBStageBoundaryUserV1 {
     #Directory<FDBStageBoundaryUserV1>("test", "migration", "stage-boundary")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -75,34 +76,42 @@ struct FDBStageBoundaryUserV1 {
 struct FDBStageBoundaryUserV2 {
     #Directory<FDBStageBoundaryUserV2>("test", "migration", "stage-boundary")
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 @Persistable(type: "FDBStageBoundaryUser")
 struct FDBStageBoundaryUserV3 {
     #Directory<FDBStageBoundaryUserV3>("test", "migration", "stage-boundary")
-    #Index(ScalarIndexKind<FDBStageBoundaryUserV3>(fields: [\.fullName]), name: "FDBStageBoundaryUser_fullName")
+    #Index(.scalar, fields: [\FDBStageBoundaryUserV3.fullName], name: "FDBStageBoundaryUser_fullName")
 
+    var id: String = ""
     var fullName: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 enum FDBStageBoundarySchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [FDBStageBoundaryUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try FDBStageBoundaryUserV1.schemaEntity] }
+    }
 }
 
 enum FDBStageBoundarySchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [FDBStageBoundaryUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try FDBStageBoundaryUserV2.schemaEntity] }
+    }
 }
 
 enum FDBStageBoundarySchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [FDBStageBoundaryUserV3.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try FDBStageBoundaryUserV3.schemaEntity] }
+    }
 }
 
 enum FDBStageBoundaryMigrationPlan: SchemaMigrationPlan {
@@ -156,34 +165,40 @@ enum FDBStageBoundaryMigrationPlan: SchemaMigrationPlan {
 @Persistable(type: "FDBIndexLifecycleUser")
 struct FDBIndexLifecycleUserV2 {
     #Directory<FDBIndexLifecycleUserV2>("test", "migration", "index-lifecycle")
-    #Index(ScalarIndexKind<FDBIndexLifecycleUserV2>(fields: [\.email]), name: "FDBIndexLifecycleUser_email")
-    #Index(ScalarIndexKind<FDBIndexLifecycleUserV2>(fields: [\.age]), name: "FDBIndexLifecycleUser_age")
+    #Index(.scalar, fields: [\FDBIndexLifecycleUserV2.email], name: "FDBIndexLifecycleUser_email")
+    #Index(.scalar, fields: [\FDBIndexLifecycleUserV2.age], name: "FDBIndexLifecycleUser_age")
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int
+    var age: Int64
 }
 
 @Persistable(type: "FDBIndexLifecycleUser")
 struct FDBIndexLifecycleUserV3 {
     #Directory<FDBIndexLifecycleUserV3>("test", "migration", "index-lifecycle")
-    #Index(ScalarIndexKind<FDBIndexLifecycleUserV3>(fields: [\.email]), name: "FDBIndexLifecycleUser_email")
-    #Index(ScalarIndexKind<FDBIndexLifecycleUserV3>(fields: [\.createdAt]), name: "FDBIndexLifecycleUser_createdAt")
+    #Index(.scalar, fields: [\FDBIndexLifecycleUserV3.email], name: "FDBIndexLifecycleUser_email")
+    #Index(.scalar, fields: [\FDBIndexLifecycleUserV3.createdAt], name: "FDBIndexLifecycleUser_createdAt")
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int
+    var age: Int64
     var createdAt: Double = 0
 }
 
 enum FDBIndexLifecycleSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [FDBIndexLifecycleUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try FDBIndexLifecycleUserV2.schemaEntity] }
+    }
 }
 
 enum FDBIndexLifecycleSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [FDBIndexLifecycleUserV3.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try FDBIndexLifecycleUserV3.schemaEntity] }
+    }
 }
 
 enum FDBIndexLifecycleMigrationPlan: SchemaMigrationPlan {
@@ -205,6 +220,7 @@ enum FDBIndexLifecycleMigrationPlan: SchemaMigrationPlan {
 struct FDBStageFailureUserV1 {
     #Directory<FDBStageFailureUserV1>("test", "migration", "stage-failure")
 
+    var id: String = ""
     var name: String
     var email: String
 }
@@ -213,33 +229,41 @@ struct FDBStageFailureUserV1 {
 struct FDBStageFailureUserV2 {
     #Directory<FDBStageFailureUserV2>("test", "migration", "stage-failure")
 
+    var id: String = ""
     var name: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 @Persistable(type: "FDBStageFailureUser")
 struct FDBStageFailureUserV3 {
     #Directory<FDBStageFailureUserV3>("test", "migration", "stage-failure")
 
+    var id: String = ""
     var fullName: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 enum FDBStageFailureSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [FDBStageFailureUserV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try FDBStageFailureUserV1.schemaEntity] }
+    }
 }
 
 enum FDBStageFailureSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [FDBStageFailureUserV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try FDBStageFailureUserV2.schemaEntity] }
+    }
 }
 
 enum FDBStageFailureSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [FDBStageFailureUserV3.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) { [try FDBStageFailureUserV3.schemaEntity] }
+    }
 }
 
 enum FDBStageFailureMigrationPlan: SchemaMigrationPlan {
@@ -269,7 +293,7 @@ enum FDBStageFailureMigrationPlan: SchemaMigrationPlan {
     }
 }
 
-@Suite("Migration Execution FDB Tests", .serialized, .heartbeat)
+@Suite("Migration Execution FDB Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct MigrationExecutionFDBTests {
     private func makeSystemPriorityEngine() async throws -> any StorageEngine {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()

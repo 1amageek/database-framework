@@ -1,4 +1,4 @@
-import QueryIR
+import DatabaseKit
 
 public enum SPARQLSelectPlanCompiler {
     public static func compile(
@@ -80,16 +80,16 @@ public enum SPARQLSelectPlanCompiler {
         if isSubquery, query.dataset != .implicit {
             throw SPARQLSelectPlanCompilationError.explicitDatasetInSubquery
         }
-        try SPARQLQueryLevelPlanCompiler.validateSolutionModifiers(
-            limit: query.limit,
-            offset: query.offset
+        let slice = try SPARQLSlice(
+            offset: query.offset ?? 0,
+            limit: query.limit
         )
         var aggregateRewriter = SPARQLAggregateRewriter()
         var rewrittenProjection = try rewriteProjection(
             query.projection,
             using: &aggregateRewriter
         )
-        let having: [QueryIR.Expression]
+        let having: [Expression]
         if let condition = query.having {
             having = [condition]
         } else {
@@ -161,10 +161,7 @@ public enum SPARQLSelectPlanCompiler {
                     || distinctFromProjection
                 ? .distinct
                 : .preserve,
-            slice: SPARQLSlice(
-                offset: includesSolutionSlice ? query.offset ?? 0 : 0,
-                limit: includesSolutionSlice ? query.limit : nil
-            )
+            slice: includesSolutionSlice ? slice : try SPARQLSlice()
         )
     }
 

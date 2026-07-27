@@ -3,95 +3,65 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Vector
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKitFoundation
 import TestHeartbeat
 import TestSupport
 @testable import DatabaseEngine
 @testable import VectorIndex
 import DatabaseRuntime
 
-protocol FDBPolymorphicVectorEntityV1: Polymorphable {
+@Polymorphable(identifier: "Entity")
+@PolymorphicDirectory("fdb_polymorphic_vector_migration", "entities")
+protocol FDBPolymorphicVectorEntityV1:
+    Polymorphable<FDBPolymorphicVectorEntityV1PolymorphicGroup>
+{
     var id: String { get }
     var label: String { get }
     var entityType: String { get }
-    var embedding: [Float] { get }
+    var embedding: Vector { get }
 }
 
-protocol FDBPolymorphicVectorEntityV2: Polymorphable {
+@Polymorphable(identifier: "Entity")
+@PolymorphicDirectory("fdb_polymorphic_vector_migration", "entities")
+@PolymorphicIndex(
+    .vector(dimensions: 3, metric: .cosine),
+    embedding: "embedding",
+    name: "Entity_vector_embedding"
+)
+protocol FDBPolymorphicVectorEntityV2:
+    Polymorphable<FDBPolymorphicVectorEntityV2PolymorphicGroup>
+{
     var id: String { get }
     var label: String { get }
     var entityType: String { get }
-    var embedding: [Float] { get }
+    var embedding: Vector { get }
 }
 
-protocol FDBPolymorphicVectorEntityV3: Polymorphable {
+@Polymorphable(identifier: "Entity")
+@PolymorphicDirectory("fdb_polymorphic_vector_migration", "entities")
+@PolymorphicIndex(
+    .vector(dimensions: 3, metric: .cosine),
+    embedding: "embedding",
+    name: "Entity_vector_embedding"
+)
+protocol FDBPolymorphicVectorEntityV3:
+    Polymorphable<FDBPolymorphicVectorEntityV3PolymorphicGroup>
+{
     var id: String { get }
     var label: String { get }
     var entityType: String { get }
-    var embedding: [Float] { get }
-}
-
-extension FDBPolymorphicVectorEntityV1 {
-    public static var polymorphableType: String { "Entity" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("fdb_polymorphic_vector_migration"), .staticPath("entities")]
-    }
-}
-
-extension FDBPolymorphicVectorEntityV2 {
-    public static var polymorphableType: String { "Entity" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("fdb_polymorphic_vector_migration"), .staticPath("entities")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "Entity_vector_embedding",
-                keyPaths: [\Self.embedding],
-                kind: VectorIndexKind<Self>(
-                    embedding: \Self.embedding,
-                    dimensions: 3,
-                    metric: .cosine
-                )
-            )
-        ]
-    }
-}
-
-extension FDBPolymorphicVectorEntityV3 {
-    public static var polymorphableType: String { "Entity" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("fdb_polymorphic_vector_migration"), .staticPath("entities")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "Entity_vector_embedding",
-                keyPaths: [\Self.embedding],
-                kind: VectorIndexKind<Self>(
-                    embedding: \Self.embedding,
-                    dimensions: 3,
-                    metric: .cosine
-                )
-            )
-        ]
-    }
+    var embedding: Vector { get }
 }
 
 @Persistable(type: "FDBPolymorphicVectorPerson")
 struct FDBPolymorphicVectorPersonV1: FDBPolymorphicVectorEntityV1 {
     #Directory<FDBPolymorphicVectorPersonV1>("fdb_polymorphic_vector_migration", "persons")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -100,9 +70,9 @@ struct FDBPolymorphicVectorPersonV1: FDBPolymorphicVectorEntityV1 {
 struct FDBPolymorphicVectorPersonV2: FDBPolymorphicVectorEntityV2 {
     #Directory<FDBPolymorphicVectorPersonV2>("fdb_polymorphic_vector_migration", "persons")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -111,9 +81,9 @@ struct FDBPolymorphicVectorPersonV2: FDBPolymorphicVectorEntityV2 {
 struct FDBPolymorphicVectorPersonV3: FDBPolymorphicVectorEntityV3 {
     #Directory<FDBPolymorphicVectorPersonV3>("fdb_polymorphic_vector_migration", "persons")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -122,10 +92,10 @@ struct FDBPolymorphicVectorPersonV3: FDBPolymorphicVectorEntityV3 {
 struct FDBPolymorphicVectorOrganizationV1: FDBPolymorphicVectorEntityV1 {
     #Directory<FDBPolymorphicVectorOrganizationV1>("fdb_polymorphic_vector_migration", "organizations")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
     var domain: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -134,10 +104,10 @@ struct FDBPolymorphicVectorOrganizationV1: FDBPolymorphicVectorEntityV1 {
 struct FDBPolymorphicVectorOrganizationV2: FDBPolymorphicVectorEntityV2 {
     #Directory<FDBPolymorphicVectorOrganizationV2>("fdb_polymorphic_vector_migration", "organizations")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
     var domain: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -146,10 +116,10 @@ struct FDBPolymorphicVectorOrganizationV2: FDBPolymorphicVectorEntityV2 {
 struct FDBPolymorphicVectorOrganizationV3: FDBPolymorphicVectorEntityV3 {
     #Directory<FDBPolymorphicVectorOrganizationV3>("fdb_polymorphic_vector_migration", "organizations")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var name: String
     var domain: String
-    var embedding: [Float]
+    var embedding: Vector
     var created: Date = Date(timeIntervalSince1970: 0)
     var updated: Date = Date(timeIntervalSince1970: 0)
 }
@@ -186,26 +156,38 @@ extension FDBPolymorphicVectorOrganizationV3 {
 
 enum FDBPolymorphicVectorSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [
-        FDBPolymorphicVectorPersonV1.self,
-        FDBPolymorphicVectorOrganizationV1.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try FDBPolymorphicVectorPersonV1.schemaEntity,
+                try FDBPolymorphicVectorOrganizationV1.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum FDBPolymorphicVectorSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [
-        FDBPolymorphicVectorPersonV2.self,
-        FDBPolymorphicVectorOrganizationV2.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try FDBPolymorphicVectorPersonV2.schemaEntity,
+                try FDBPolymorphicVectorOrganizationV2.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum FDBPolymorphicVectorSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static let models: [any Persistable.Type] = [
-        FDBPolymorphicVectorPersonV3.self,
-        FDBPolymorphicVectorOrganizationV3.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try FDBPolymorphicVectorPersonV3.schemaEntity,
+                try FDBPolymorphicVectorOrganizationV3.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum FDBPolymorphicVectorAddMigrationPlan: SchemaMigrationPlan {
@@ -248,7 +230,7 @@ enum FDBPolymorphicVectorRebuildMigrationPlan: SchemaMigrationPlan {
 struct PolymorphicVectorMigrationFDBTests {
     @Test("FDB Memory Entity vector descriptors decode canonically for each member")
     func fdbMemoryEntityVectorDescriptorsStayConcretePerMemberType() throws {
-        let schema = FDBPolymorphicVectorSchemaV2.makeSchema()
+        let schema = try FDBPolymorphicVectorSchemaV2.makeSchema()
         let personDescriptor = try #require(
             schema.polymorphicIndexDescriptors(
                 identifier: FDBPolymorphicVectorPersonV2.polymorphableType,
@@ -262,16 +244,16 @@ struct PolymorphicVectorMigrationFDBTests {
             ).first { $0.name == "Entity_vector_embedding" }
         )
 
-        let personKind = try VectorIndexKind<FDBPolymorphicVectorPersonV2>(
-            canonical: personDescriptor.kind
+        let personSpecification = try VectorIndexSpecification(
+            personDescriptor.kind
         )
-        let organizationKind = try VectorIndexKind<FDBPolymorphicVectorOrganizationV2>(
-            canonical: organizationDescriptor.kind
+        let organizationSpecification = try VectorIndexSpecification(
+            organizationDescriptor.kind
         )
-        #expect(personKind.fieldNames == ["embedding"])
-        #expect(organizationKind.fieldNames == ["embedding"])
-        #expect(personKind.dimensions == 3)
-        #expect(organizationKind.dimensions == 3)
+        #expect(personSpecification.metadata.fieldNames == ["embedding"])
+        #expect(organizationSpecification.metadata.fieldNames == ["embedding"])
+        #expect(personSpecification.dimensions == 3)
+        #expect(organizationSpecification.dimensions == 3)
     }
 
     @Test("FDB migration backfills polymorphic entity vector index across batch boundaries")
@@ -288,14 +270,17 @@ struct PolymorphicVectorMigrationFDBTests {
             )
             let initialContext = initialContainer.newContext()
 
-            var anchor = FDBPolymorphicVectorPersonV1(name: "Alice", embedding: [1, 0, 0])
+            var anchor = FDBPolymorphicVectorPersonV1(
+                name: "Alice",
+                embedding: try Vector(float32: [1, 0, 0])
+            )
             anchor.id = "fdb-polymorphic-vector-person-anchor"
             try initialContext.insert(anchor)
 
             for offset in 0..<105 {
                 var person = FDBPolymorphicVectorPersonV1(
                     name: "Other \(offset)",
-                    embedding: [0, 1, 0]
+                    embedding: try Vector(float32: [0, 1, 0])
                 )
                 person.id = "fdb-polymorphic-vector-person-\(offset)"
                 try initialContext.insert(person)
@@ -304,7 +289,7 @@ struct PolymorphicVectorMigrationFDBTests {
             var organization = FDBPolymorphicVectorOrganizationV1(
                 name: "Creww",
                 domain: "creww.example",
-                embedding: [0.95, 0.05, 0]
+                embedding: try Vector(float32: [0.95, 0.05, 0])
             )
             organization.id = "fdb-polymorphic-vector-organization"
             try initialContext.insert(organization)
@@ -325,7 +310,7 @@ struct PolymorphicVectorMigrationFDBTests {
 
             let page = try await migratedContainer.newContext()
                 .findPolymorphic(FDBPolymorphicVectorPersonV2.self)
-                .vector(\.embedding, dimensions: 3)
+                .vector(FDBPolymorphicVectorPersonV2.fields.embedding, dimensions: 3)
                 .query([1, 0, 0], k: 2)
                 .metric(.cosine)
                 .executePage()
@@ -335,7 +320,10 @@ struct PolymorphicVectorMigrationFDBTests {
 
             let organizationStartedPage = try await migratedContainer.newContext()
                 .findPolymorphic(FDBPolymorphicVectorOrganizationV2.self)
-                .vector(\.embedding, dimensions: 3)
+                .vector(
+                    FDBPolymorphicVectorOrganizationV2.fields.embedding,
+                    dimensions: 3
+                )
                 .query([1, 0, 0], k: 2)
                 .metric(.cosine)
                 .executePage()
@@ -359,12 +347,15 @@ struct PolymorphicVectorMigrationFDBTests {
             )
             let context = initialContainer.newContext()
 
-            var person = FDBPolymorphicVectorPersonV2(name: "Alice", embedding: [1, 0, 0])
+            var person = FDBPolymorphicVectorPersonV2(
+                name: "Alice",
+                embedding: try Vector(float32: [1, 0, 0])
+            )
             person.id = "fdb-polymorphic-vector-rebuild-person"
             var organization = FDBPolymorphicVectorOrganizationV2(
                 name: "Creww",
                 domain: "creww.example",
-                embedding: [0.95, 0.05, 0]
+                embedding: try Vector(float32: [0.95, 0.05, 0])
             )
             organization.id = "fdb-polymorphic-vector-rebuild-organization"
 
@@ -386,7 +377,7 @@ struct PolymorphicVectorMigrationFDBTests {
 
             let page = try await migratedContainer.newContext()
                 .findPolymorphic(FDBPolymorphicVectorPersonV3.self)
-                .vector(\.embedding, dimensions: 3)
+                .vector(FDBPolymorphicVectorPersonV3.fields.embedding, dimensions: 3)
                 .query([1, 0, 0], k: 2)
                 .metric(.cosine)
                 .executePage()
@@ -396,7 +387,10 @@ struct PolymorphicVectorMigrationFDBTests {
 
             let organizationStartedPage = try await migratedContainer.newContext()
                 .findPolymorphic(FDBPolymorphicVectorOrganizationV3.self)
-                .vector(\.embedding, dimensions: 3)
+                .vector(
+                    FDBPolymorphicVectorOrganizationV3.fields.embedding,
+                    dimensions: 3
+                )
                 .query([1, 0, 0], k: 2)
                 .metric(.cosine)
                 .executePage()

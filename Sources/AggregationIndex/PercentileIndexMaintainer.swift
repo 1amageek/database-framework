@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -485,7 +485,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
             throw PercentileIndexError.invalidCompression(compression)
         }
         guard index.rootExpression.columnCount >= 1 else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Percentile index '\(index.name)' requires one value field"
             )
         }
@@ -551,7 +551,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
     where Grouping.Element == any TupleElement {
         let expectedCount = index.rootExpression.columnCount - 1
         guard groupingValues.count == expectedCount else {
-            throw IndexError.invalidArgument(
+            throw AggregationIndexError.invalidArgument(
                 "Grouping value count does not match percentile index '\(index.name)'"
             )
         }
@@ -660,7 +660,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
             valueCount += 1
         }
         guard valueCount > 0 else {
-            throw IndexError.invalidArgument(
+            throw AggregationIndexError.invalidArgument(
                 "PERCENTILE summary update requires at least one value"
             )
         }

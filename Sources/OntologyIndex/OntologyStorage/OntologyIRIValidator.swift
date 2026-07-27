@@ -7,8 +7,8 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Graph
-import Core
+import DatabaseKit
+import DatabaseKit
 import DatabaseEngine
 
 /// Validates that @OWLClass and @OWLObjectProperty IRIs

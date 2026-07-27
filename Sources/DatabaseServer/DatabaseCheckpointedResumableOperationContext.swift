@@ -1,13 +1,13 @@
-import DatabaseValue
+import DatabaseTypes
 
 /// Context for operations whose durable checkpoint is independent of job state.
 public struct DatabaseCheckpointedResumableOperationContext: Sendable {
-    public let jobID: DatabaseUUID
+    public let jobID: DatabaseTypes.UUID
     public let completedWorkUnitsBeforeSlice: UInt64
     public let operationContext: DatabaseOperationContext
 
     public init(
-        jobID: DatabaseUUID,
+        jobID: DatabaseTypes.UUID,
         completedWorkUnitsBeforeSlice: UInt64,
         operationContext: DatabaseOperationContext
     ) {

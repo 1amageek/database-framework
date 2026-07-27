@@ -1,6 +1,5 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-import Graph
 import StorageKit
 
 /// Declarative property-graph index selected from one entity's schema.
@@ -126,7 +125,7 @@ package enum PropertyGraphIndexResolver {
     ) throws -> [DeclaredPropertyGraphIndex] {
         try context.findIndexes(
             for: type,
-            kindIdentifier: GraphIndexKind<T>.identifier
+            kindIdentifier: "graph"
         ).map { descriptor in
             DeclaredPropertyGraphIndex(
                 entityName: T.persistableType,

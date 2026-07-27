@@ -5,7 +5,7 @@
 import Testing
 import TestHeartbeat
 import Foundation
-import DatabaseValue
+import DatabaseTypes
 @testable import QueryAST
 
 // MARK: - Helper
@@ -22,7 +22,9 @@ private func parsePattern(_ sparql: String) throws -> GraphPattern {
     return pattern
 }
 
-private func parseExpression(_ sparql: String) throws -> QueryIR.Expression {
+private func parseExpression(
+    _ sparql: String
+) throws -> DatabaseKit.Expression {
     let parser = SPARQLParser()
     let query = try parser.parseSelect(sparql)
     guard case .graphPattern(let pattern) = query.source else {
@@ -31,7 +33,9 @@ private func parseExpression(_ sparql: String) throws -> QueryIR.Expression {
         )
     }
     // Extract FILTER expression from pattern
-    func findFilter(_ p: GraphPattern) -> QueryIR.Expression? {
+    func findFilter(
+        _ p: GraphPattern
+    ) -> DatabaseKit.Expression? {
         switch p {
         case .filter(_, let expr): return expr
         case .join(let l, let r): return findFilter(l) ?? findFilter(r)

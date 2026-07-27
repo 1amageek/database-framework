@@ -1,9 +1,9 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 /// An explicitly injected SPARQL extension function. Implementations must
 /// return a canonical RDF term and must not depend on global mutable state.
 public protocol SPARQLFunction: Sendable {
-    var identifier: DatabaseRDFIRI { get }
+    var identifier: RDFIRI { get }
     func evaluate(arguments: [FieldValue]) throws -> FieldValue
 }

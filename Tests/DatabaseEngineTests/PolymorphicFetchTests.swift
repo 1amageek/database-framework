@@ -6,58 +6,43 @@ import Foundation
 import StorageKit
 import FDBStorage
 import FoundationDB
-import FullText
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
-@testable import Core
+@testable import DatabaseKit
 @testable import FullTextIndex
-
-// MARK: - Test Types
-//
-// Polymorphable conformance is declared manually (not via the @Polymorphable
-// macro) because the Swift 6.3 frontend crashes when the #Directory
-// freestanding macro is expanded inside a protocol body.
 
 /// Polymorphic protocol with a shared projection directory distinct from each
 /// concrete type's primary directory.
-protocol PolymorphicFetchDocument: Polymorphable {
+@Polymorphable
+@PolymorphicDirectory("polymorphic_fetch_tests_shared")
+@PolymorphicIndex(
+    .scalar,
+    fields: ["title"],
+    name: "PolymorphicFetchDocument_title"
+)
+@PolymorphicIndex(
+    .scalar,
+    fields: ["id"],
+    name: "PolymorphicFetchDocument_id"
+)
+@PolymorphicIndex(
+    .fullText(tokenizer: .simple),
+    fields: ["title"],
+    name: "PolymorphicFetchDocument_title_fulltext"
+)
+protocol PolymorphicFetchDocument:
+    Polymorphable<PolymorphicFetchDocumentPolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
-}
-
-extension PolymorphicFetchDocument {
-    public static var polymorphableType: String { "PolymorphicFetchDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("polymorphic_fetch_tests_shared")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "PolymorphicFetchDocument_title",
-                keyPaths: [\Self.title],
-                kind: ScalarIndexKind<Self>(fields: [\Self.title])
-            ),
-            IndexDescriptor(
-                name: "PolymorphicFetchDocument_id",
-                keyPaths: [\Self.id],
-                kind: ScalarIndexKind<Self>(fields: [\Self.id])
-            ),
-            IndexDescriptor(
-                name: "PolymorphicFetchDocument_title_fulltext",
-                keyPaths: [\Self.title],
-                kind: FullTextIndexKind<Self>(fields: [\Self.title], tokenizer: .simple)
-            ),
-        ]
-    }
 }
 
 @Persistable
 struct PolymorphicFetchArticle: PolymorphicFetchDocument {
     #Directory<PolymorphicFetchArticle>("polymorphic_fetch_tests_articles")
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
     var body: String
 }
@@ -65,9 +50,9 @@ struct PolymorphicFetchArticle: PolymorphicFetchDocument {
 @Persistable
 struct PolymorphicFetchReport: PolymorphicFetchDocument {
     #Directory<PolymorphicFetchReport>("polymorphic_fetch_tests_reports")
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var pageCount: Int
+    var pageCount: Int64
 }
 
 /// Round-trip tests for polymorphic reads and canonical staged mutations.
@@ -92,7 +77,7 @@ struct PolymorphicFetchReport: PolymorphicFetchDocument {
 /// (`try context.insert(_:)` + `context.save()`) and then read back through
 /// every polymorphic API surface, so any future divergence between the
 /// write and read key layouts will fail here first.
-@Suite("Polymorphic Fetch Tests", .serialized, .heartbeat)
+@Suite("Polymorphic Fetch Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct PolymorphicFetchTests {
 
     // MARK: - Helper Methods
@@ -142,7 +127,10 @@ struct PolymorphicFetchTests {
             .subspace(indexName)
 
         if let valuePrefix {
-            indexSubspace = indexSubspace.subspace(valuePrefix)
+            let value = try FieldValue.string(valuePrefix).toTupleElement()
+            indexSubspace = Subspace(
+                prefix: indexSubspace.prefix + Tuple(value).pack()
+            )
         }
 
         return try await container.engine.withTransaction { transaction -> Int in
@@ -219,7 +207,12 @@ struct PolymorphicFetchTests {
             try context.insert(PolymorphicFetchArticle(title: "A\(i)", body: "content \(i)"))
         }
         for i in 1...2 {
-            try context.insert(PolymorphicFetchReport(title: "R\(i)", pageCount: i * 10))
+            try context.insert(
+                PolymorphicFetchReport(
+                    title: "R\(i)",
+                    pageCount: Int64(i * 10)
+                )
+            )
         }
         try await context.save()
 
@@ -247,7 +240,7 @@ struct PolymorphicFetchTests {
         try await context.save()
 
         let firstPage = try await context.findPolymorphic(PolymorphicFetchArticle.self)
-            .orderBy(\.title)
+            .orderBy(PolymorphicFetchArticle.fields.title)
             .pageSize(2)
             .executePage()
 
@@ -257,7 +250,7 @@ struct PolymorphicFetchTests {
         #expect(firstPage.continuation != nil)
 
         let secondPage = try await context.findPolymorphic(PolymorphicFetchArticle.self)
-            .orderBy(\.title)
+            .orderBy(PolymorphicFetchArticle.fields.title)
             .pageSize(2)
             .continuing(from: firstPage.continuation)
             .executePage()
@@ -373,7 +366,7 @@ struct PolymorphicFetchTests {
         try await context.save()
 
         let initial = try await context.findPolymorphic(PolymorphicFetchArticle.self)
-            .fullText(\.title)
+            .fullText(PolymorphicFetchArticle.fields.title)
             .term("needle")
             .execute()
         let initialIDs = Set(initial.compactMap { result -> String? in
@@ -393,11 +386,11 @@ struct PolymorphicFetchTests {
         try await context.save()
 
         let afterUpdateNeedle = try await context.findPolymorphic(PolymorphicFetchArticle.self)
-            .fullText(\.title)
+            .fullText(PolymorphicFetchArticle.fields.title)
             .term("needle")
             .execute()
         let afterUpdateBeacon = try await context.findPolymorphic(PolymorphicFetchArticle.self)
-            .fullText(\.title)
+            .fullText(PolymorphicFetchArticle.fields.title)
             .term("beacon")
             .execute()
 
@@ -410,7 +403,7 @@ struct PolymorphicFetchTests {
         try await context.save()
 
         let afterDeleteNeedle = try await context.findPolymorphic(PolymorphicFetchArticle.self)
-            .fullText(\.title)
+            .fullText(PolymorphicFetchArticle.fields.title)
             .term("needle")
             .execute()
 

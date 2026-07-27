@@ -5,7 +5,7 @@
 /// Enables CLI and dynamic tools to discover and decode data without compiled types.
 
 import StorageKit
-import Core
+import DatabaseKit
 
 /// Manages persistence and retrieval of Schema.Entity entries in FDB
 public struct SchemaRegistry: Sendable {

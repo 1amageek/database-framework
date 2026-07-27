@@ -1,10 +1,10 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseRDFStoredDocumentPage: Sendable, Hashable {
     public let identifier: String
     public let revision: UInt64
     public let auxiliaryIdentifiers: [String]
-    public let quads: [DatabaseRDFQuad]
+    public let quads: [RDFQuad]
     public let totalQuadCount: UInt64
     public let nextOffset: UInt64?
 
@@ -12,7 +12,7 @@ public struct DatabaseRDFStoredDocumentPage: Sendable, Hashable {
         identifier: String,
         revision: UInt64,
         auxiliaryIdentifiers: [String],
-        quads: [DatabaseRDFQuad],
+        quads: [RDFQuad],
         totalQuadCount: UInt64,
         nextOffset: UInt64?
     ) {
@@ -24,3 +24,4 @@ public struct DatabaseRDFStoredDocumentPage: Sendable, Hashable {
         self.nextOffset = nextOffset
     }
 }
+import DatabaseKit

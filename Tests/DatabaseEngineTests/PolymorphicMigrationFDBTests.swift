@@ -4,100 +4,74 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import FullText
+import DatabaseKit
 import TestHeartbeat
 import TestSupport
-@testable import Core
+@testable import DatabaseKit
 @testable import DatabaseEngine
 import DatabaseRuntime
 
-protocol FDBPolymorphicMigrationDocumentV1: Polymorphable {
+@Polymorphable(identifier: "FDBPolymorphicMigrationDocument")
+@PolymorphicDirectory("polymorphic_migration_fdb_shared")
+protocol FDBPolymorphicMigrationDocumentV1:
+    Polymorphable<FDBPolymorphicMigrationDocumentV1PolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
 }
 
-extension FDBPolymorphicMigrationDocumentV1 {
-    public static var polymorphableType: String { "FDBPolymorphicMigrationDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("polymorphic_migration_fdb_shared")]
-    }
-}
-
-protocol FDBPolymorphicMigrationDocumentV2: Polymorphable {
+@Polymorphable(identifier: "FDBPolymorphicMigrationDocument")
+@PolymorphicDirectory("polymorphic_migration_fdb_shared")
+@PolymorphicIndex(
+    .scalar,
+    fields: ["title"],
+    name: "FDBPolymorphicMigrationDocument_title"
+)
+@PolymorphicIndex(
+    .fullText(tokenizer: .simple),
+    fields: ["title"],
+    name: "FDBPolymorphicMigrationDocument_title_fulltext"
+)
+protocol FDBPolymorphicMigrationDocumentV2:
+    Polymorphable<FDBPolymorphicMigrationDocumentV2PolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
 }
 
-protocol FDBPolymorphicMigrationDocumentV3: Polymorphable {
+@Polymorphable(identifier: "FDBPolymorphicMigrationDocument")
+@PolymorphicDirectory("polymorphic_migration_fdb_shared")
+protocol FDBPolymorphicMigrationDocumentV3:
+    Polymorphable<FDBPolymorphicMigrationDocumentV3PolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
 }
 
-protocol FDBPolymorphicMigrationDocumentV4: Polymorphable {
+@Polymorphable(identifier: "FDBPolymorphicMigrationDocument")
+@PolymorphicDirectory("polymorphic_migration_fdb_shared")
+@PolymorphicIndex(
+    .scalar,
+    fields: ["title"],
+    name: "FDBPolymorphicMigrationDocument_title"
+)
+@PolymorphicIndex(
+    .fullText(tokenizer: .simple),
+    fields: ["title"],
+    name: "FDBPolymorphicMigrationDocument_title_fulltext"
+)
+protocol FDBPolymorphicMigrationDocumentV4:
+    Polymorphable<FDBPolymorphicMigrationDocumentV4PolymorphicGroup>
+{
     var id: String { get }
     var title: String { get }
-}
-
-extension FDBPolymorphicMigrationDocumentV2 {
-    public static var polymorphableType: String { "FDBPolymorphicMigrationDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("polymorphic_migration_fdb_shared")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "FDBPolymorphicMigrationDocument_title",
-                keyPaths: [\Self.title],
-                kind: ScalarIndexKind<Self>(fields: [\Self.title])
-            ),
-            IndexDescriptor(
-                name: "FDBPolymorphicMigrationDocument_title_fulltext",
-                keyPaths: [\Self.title],
-                kind: FullTextIndexKind<Self>(fields: [\Self.title], tokenizer: .simple)
-            ),
-        ]
-    }
-}
-
-extension FDBPolymorphicMigrationDocumentV3 {
-    public static var polymorphableType: String { "FDBPolymorphicMigrationDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("polymorphic_migration_fdb_shared")]
-    }
-}
-
-extension FDBPolymorphicMigrationDocumentV4 {
-    public static var polymorphableType: String { "FDBPolymorphicMigrationDocument" }
-
-    public static var polymorphicDirectoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("polymorphic_migration_fdb_shared")]
-    }
-
-    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "FDBPolymorphicMigrationDocument_title",
-                keyPaths: [\Self.title],
-                kind: ScalarIndexKind<Self>(fields: [\Self.title])
-            ),
-            IndexDescriptor(
-                name: "FDBPolymorphicMigrationDocument_title_fulltext",
-                keyPaths: [\Self.title],
-                kind: FullTextIndexKind<Self>(fields: [\Self.title], tokenizer: .simple)
-            ),
-        ]
-    }
 }
 
 @Persistable(type: "FDBPolymorphicMigrationArticle")
 struct FDBPolymorphicMigrationArticleV1: FDBPolymorphicMigrationDocumentV1 {
     #Directory<FDBPolymorphicMigrationArticleV1>("polymorphic_migration_fdb_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
     var body: String
 }
@@ -106,7 +80,7 @@ struct FDBPolymorphicMigrationArticleV1: FDBPolymorphicMigrationDocumentV1 {
 struct FDBPolymorphicMigrationArticleV2: FDBPolymorphicMigrationDocumentV2 {
     #Directory<FDBPolymorphicMigrationArticleV2>("polymorphic_migration_fdb_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
     var body: String
 }
@@ -115,7 +89,7 @@ struct FDBPolymorphicMigrationArticleV2: FDBPolymorphicMigrationDocumentV2 {
 struct FDBPolymorphicMigrationArticleV3: FDBPolymorphicMigrationDocumentV3 {
     #Directory<FDBPolymorphicMigrationArticleV3>("polymorphic_migration_fdb_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
     var body: String
 }
@@ -124,7 +98,7 @@ struct FDBPolymorphicMigrationArticleV3: FDBPolymorphicMigrationDocumentV3 {
 struct FDBPolymorphicMigrationArticleV4: FDBPolymorphicMigrationDocumentV4 {
     #Directory<FDBPolymorphicMigrationArticleV4>("polymorphic_migration_fdb_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
     var body: String
 }
@@ -133,72 +107,88 @@ struct FDBPolymorphicMigrationArticleV4: FDBPolymorphicMigrationDocumentV4 {
 struct FDBPolymorphicMigrationReportV1: FDBPolymorphicMigrationDocumentV1 {
     #Directory<FDBPolymorphicMigrationReportV1>("polymorphic_migration_fdb_reports")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var pageCount: Int
+    var pageCount: Int64
 }
 
 @Persistable(type: "FDBPolymorphicMigrationReport")
 struct FDBPolymorphicMigrationReportV2: FDBPolymorphicMigrationDocumentV2 {
     #Directory<FDBPolymorphicMigrationReportV2>("polymorphic_migration_fdb_reports")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var pageCount: Int
+    var pageCount: Int64
 }
 
 @Persistable(type: "FDBPolymorphicMigrationReport")
 struct FDBPolymorphicMigrationReportV3: FDBPolymorphicMigrationDocumentV3 {
     #Directory<FDBPolymorphicMigrationReportV3>("polymorphic_migration_fdb_reports")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var pageCount: Int
+    var pageCount: Int64
 }
 
 @Persistable(type: "FDBPolymorphicMigrationReport")
 struct FDBPolymorphicMigrationReportV4: FDBPolymorphicMigrationDocumentV4 {
     #Directory<FDBPolymorphicMigrationReportV4>("polymorphic_migration_fdb_reports")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String
-    var pageCount: Int
+    var pageCount: Int64
 }
 
 enum FDBPolymorphicMigrationSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
 
-    static let models: [any Persistable.Type] = [
-        FDBPolymorphicMigrationArticleV1.self,
-        FDBPolymorphicMigrationReportV1.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try FDBPolymorphicMigrationArticleV1.schemaEntity,
+                try FDBPolymorphicMigrationReportV1.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum FDBPolymorphicMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
 
-    static let models: [any Persistable.Type] = [
-        FDBPolymorphicMigrationArticleV2.self,
-        FDBPolymorphicMigrationReportV2.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try FDBPolymorphicMigrationArticleV2.schemaEntity,
+                try FDBPolymorphicMigrationReportV2.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum FDBPolymorphicMigrationSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
 
-    static let models: [any Persistable.Type] = [
-        FDBPolymorphicMigrationArticleV3.self,
-        FDBPolymorphicMigrationReportV3.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try FDBPolymorphicMigrationArticleV3.schemaEntity,
+                try FDBPolymorphicMigrationReportV3.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum FDBPolymorphicMigrationSchemaV4: VersionedSchema {
     static let versionIdentifier = Schema.Version(4, 0, 0)
 
-    static let models: [any Persistable.Type] = [
-        FDBPolymorphicMigrationArticleV4.self,
-        FDBPolymorphicMigrationReportV4.self,
-    ]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [
+                try FDBPolymorphicMigrationArticleV4.schemaEntity,
+                try FDBPolymorphicMigrationReportV4.schemaEntity,
+            ]
+        }
+    }
 }
 
 enum FDBPolymorphicMigrationPlan: SchemaMigrationPlan {
@@ -268,7 +258,7 @@ enum FDBPolymorphicRebuildMigrationPlan: SchemaMigrationPlan {
     }
 }
 
-@Suite("Polymorphic Migration FDB Tests", .serialized, .heartbeat)
+@Suite("Polymorphic Migration FDB Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct PolymorphicMigrationFDBTests {
     @Test("FDB migration backfills added polymorphic indexes and keeps them maintained")
     func fdbMigrationBackfillsAddedPolymorphicIndexesAndKeepsThemMaintained() async throws {
@@ -333,12 +323,12 @@ struct PolymorphicMigrationFDBTests {
 
             let afterUpdateNeedle = try await verificationContext
                 .findPolymorphic(FDBPolymorphicMigrationArticleV2.self)
-                .fullText(\.title)
+                .fullText(FDBPolymorphicMigrationArticleV2.fields.title)
                 .term("needle")
                 .execute()
             let afterUpdateBeacon = try await verificationContext
                 .findPolymorphic(FDBPolymorphicMigrationArticleV2.self)
-                .fullText(\.title)
+                .fullText(FDBPolymorphicMigrationArticleV2.fields.title)
                 .term("beacon")
                 .execute()
 
@@ -467,7 +457,7 @@ struct PolymorphicMigrationFDBTests {
             let verificationContext = migratedContainer.newContext()
             let rebuiltResults = try await verificationContext
                 .findPolymorphic(FDBPolymorphicMigrationArticleV4.self)
-                .fullText(\.title)
+                .fullText(FDBPolymorphicMigrationArticleV4.fields.title)
                 .term("needle")
                 .execute()
             let rebuiltIDs = Set(rebuiltResults.compactMap(Self.resultIDV4))

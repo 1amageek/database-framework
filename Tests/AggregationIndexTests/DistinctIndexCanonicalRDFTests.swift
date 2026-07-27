@@ -1,7 +1,7 @@
 import AggregationIndex
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 import StorageKit
 import Testing
 
@@ -13,9 +13,12 @@ struct DistinctIndexCanonicalRDFTests {
         let subspace = Subspace(prefix: Tuple("distinct-rdf").pack())
         let index = Index(
             name: "rdf_distinct",
-            kind: DistinctIndexKind<RDFDistinctEntity>(
-                groupBy: [\.group],
-                value: \.value
+            kind: distinctIndexMetadata(
+                groupingFields: [
+                    FieldIdentity(name: "group", number: 2)
+                ],
+                valueField: FieldIdentity(name: "value", number: 3),
+                precision: 14
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),

@@ -10,18 +10,24 @@ import DatabaseRuntime
 private struct DatabaseFrameworkE2EAccount {
     #Directory<DatabaseFrameworkE2EAccount>("database-framework-e2e", "accounts")
     #Index(
-        ScalarIndexKind<DatabaseFrameworkE2EAccount>(fields: [\.email]),
+        .scalar,
+        fields: [\DatabaseFrameworkE2EAccount.email],
         name: "database_framework_e2e_account_email"
     )
 
     var id: String = UUID().uuidString
     var email: String = ""
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 @Persistable
 private struct DatabaseFrameworkE2EOrder {
-    #Directory<DatabaseFrameworkE2EOrder>("database-framework-e2e", "orders")
+    #Directory<DatabaseFrameworkE2EOrder>(
+        "database-framework-e2e",
+        \DatabaseFrameworkE2EOrder.tenantID,
+        "orders",
+        layer: .partition
+    )
 
     var id: String = UUID().uuidString
     var tenantID: String = ""
@@ -33,12 +39,13 @@ private struct DatabaseFrameworkE2EOrder {
 private struct DatabaseFrameworkE2ETenantAccount {
     #Directory<DatabaseFrameworkE2ETenantAccount>(
         "database-framework-e2e",
-        Field<DatabaseFrameworkE2ETenantAccount>(\.tenantID),
+        \DatabaseFrameworkE2ETenantAccount.tenantID,
         "tenant-accounts",
         layer: .partition
     )
     #Index(
-        ScalarIndexKind<DatabaseFrameworkE2ETenantAccount>(fields: [\.email]),
+        .scalar,
+        fields: [\DatabaseFrameworkE2ETenantAccount.email],
         name: "database_framework_e2e_tenant_account_email"
     )
 
@@ -52,7 +59,8 @@ private struct DatabaseFrameworkE2ETenantAccount {
 private struct DatabaseFrameworkE2ELargeDocument {
     #Directory<DatabaseFrameworkE2ELargeDocument>("database-framework-e2e", "large-documents")
     #Index(
-        ScalarIndexKind<DatabaseFrameworkE2ELargeDocument>(fields: [\.title]),
+        .scalar,
+        fields: [\DatabaseFrameworkE2ELargeDocument.title],
         name: "database_framework_e2e_large_document_title"
     )
 
@@ -69,46 +77,41 @@ private struct DatabaseFrameworkE2ESecuredDocument: SecurityPolicy {
     var ownerID: String = ""
     var title: String = ""
 
-    static func allowGet(
-        resource: DatabaseFrameworkE2ESecuredDocument,
-        auth: (any AuthContext)?
+    static func permitsRead(
+        of resource: borrowing DatabaseFrameworkE2ESecuredDocument,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        resource.ownerID == auth?.userID
+        resource.ownerID == context.principal?.identifier
     }
 
-    static func allowList(
-        query: SecurityQuery<DatabaseFrameworkE2ESecuredDocument>,
-        auth: (any AuthContext)?
+    static func permitsQuery(
+        _ query: borrowing SecurityQuery,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        auth != nil
+        context.isAuthenticated
     }
 
-    static func allowCreate(
-        newResource: DatabaseFrameworkE2ESecuredDocument,
-        auth: (any AuthContext)?
+    static func permitsCreate(
+        _ newResource: borrowing DatabaseFrameworkE2ESecuredDocument,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        newResource.ownerID == auth?.userID
+        newResource.ownerID == context.principal?.identifier
     }
 
-    static func allowUpdate(
-        resource: DatabaseFrameworkE2ESecuredDocument,
-        newResource: DatabaseFrameworkE2ESecuredDocument,
-        auth: (any AuthContext)?
+    static func permitsUpdate(
+        from resource: borrowing DatabaseFrameworkE2ESecuredDocument,
+        to newResource: borrowing DatabaseFrameworkE2ESecuredDocument,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        resource.ownerID == auth?.userID
+        resource.ownerID == context.principal?.identifier
     }
 
-    static func allowDelete(
-        resource: DatabaseFrameworkE2ESecuredDocument,
-        auth: (any AuthContext)?
+    static func permitsDelete(
+        _ resource: borrowing DatabaseFrameworkE2ESecuredDocument,
+        in context: borrowing AuthorizationContext
     ) -> Bool {
-        resource.ownerID == auth?.userID
+        resource.ownerID == context.principal?.identifier
     }
-}
-
-private struct DatabaseFrameworkE2EAuth: AuthContext {
-    let userID: String
-    var roles: Set<String> = []
 }
 
 @Persistable(type: "DatabaseFrameworkE2EMigratedAccount")
@@ -124,24 +127,33 @@ private struct DatabaseFrameworkE2EMigratedAccountV1 {
 private struct DatabaseFrameworkE2EMigratedAccountV2 {
     #Directory<DatabaseFrameworkE2EMigratedAccountV2>("database-framework-e2e", "migrated-accounts")
     #Index(
-        ScalarIndexKind<DatabaseFrameworkE2EMigratedAccountV2>(fields: [\.fullName]),
+        .scalar,
+        fields: [\DatabaseFrameworkE2EMigratedAccountV2.fullName],
         name: "database_framework_e2e_migrated_account_full_name"
     )
 
     var id: String = UUID().uuidString
     var fullName: String
     var email: String
-    var age: Int = 0
+    var age: Int64 = 0
 }
 
 private enum DatabaseFrameworkE2EMigrationSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
-    static let models: [any Persistable.Type] = [DatabaseFrameworkE2EMigratedAccountV1.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try DatabaseFrameworkE2EMigratedAccountV1.schemaEntity]
+        }
+    }
 }
 
 private enum DatabaseFrameworkE2EMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static let models: [any Persistable.Type] = [DatabaseFrameworkE2EMigratedAccountV2.self]
+    static var entities: [Schema.Entity] {
+        get throws(SchemaEntityError) {
+            [try DatabaseFrameworkE2EMigratedAccountV2.schemaEntity]
+        }
+    }
 }
 
 private enum DatabaseFrameworkE2EMigrationPlan: SchemaMigrationPlan {
@@ -230,11 +242,14 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
 
         let writer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let writeContext = writer.newContext()
@@ -252,15 +267,18 @@ struct DatabaseFrameworkE2ETests {
         let reader = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let readContext = reader.newContext()
         let adults = try await readContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.age >= 18)
-            .orderBy(\.email)
+            .where(DatabaseFrameworkE2EAccount.fields.age >= 18)
+            .orderBy(DatabaseFrameworkE2EAccount.fields.email)
             .execute()
 
-        #expect(adults.map(\.id) == ["database-framework-e2e-alice"])
+        #expect(adults.map { $0.id } == ["database-framework-e2e-alice"])
         #expect(adults.first?.email == "alice@example.com")
 
         try readContext.delete(alice)
@@ -269,14 +287,17 @@ struct DatabaseFrameworkE2ETests {
         let verifier = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let remaining = try await verifier.newContext()
             .fetch(DatabaseFrameworkE2EAccount.self)
-            .orderBy(\.email)
+            .orderBy(DatabaseFrameworkE2EAccount.fields.email)
             .execute()
 
-        #expect(remaining.map(\.id) == ["database-framework-e2e-bob"])
+        #expect(remaining.map { $0.id } == ["database-framework-e2e-bob"])
     }
 
     @Test("SQLite scalar index removes old entries when indexed field is replaced")
@@ -293,10 +314,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let context = container.newContext()
@@ -307,9 +331,9 @@ struct DatabaseFrameworkE2ETests {
         try await context.save()
 
         let beforeReplace = try await context.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "old@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "old@example.com")
             .execute()
-        #expect(beforeReplace.map(\.id) == ["database-framework-indexed-account"])
+        #expect(beforeReplace.map { $0.id } == ["database-framework-indexed-account"])
 
         var updated = original
         updated.email = "new@example.com"
@@ -318,21 +342,21 @@ struct DatabaseFrameworkE2ETests {
         try await context.save()
 
         let oldEmailResults = try await context.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "old@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "old@example.com")
             .execute()
         let newEmailResults = try await context.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "new@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "new@example.com")
             .execute()
 
         #expect(oldEmailResults.isEmpty)
-        #expect(newEmailResults.map(\.id) == ["database-framework-indexed-account"])
+        #expect(newEmailResults.map { $0.id } == ["database-framework-indexed-account"])
         #expect(newEmailResults.first?.age == 32)
 
         try context.delete(updated)
         try await context.save()
 
         let afterDelete = try await context.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "new@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "new@example.com")
             .execute()
         #expect(afterDelete.isEmpty)
     }
@@ -351,10 +375,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
 
@@ -381,6 +408,9 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -390,20 +420,20 @@ struct DatabaseFrameworkE2ETests {
             as: DatabaseFrameworkE2EAccount.self
         )
         let originalEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "stale-original@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "stale-original@example.com")
             .execute()
         let firstEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "stale-first@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "stale-first@example.com")
             .execute()
         let secondEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "stale-second@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "stale-second@example.com")
             .execute()
 
         #expect(stored?.email == "stale-second@example.com")
         #expect(stored?.age == 33)
         #expect(originalEmailHits.isEmpty)
         #expect(firstEmailHits.isEmpty)
-        #expect(secondEmailHits.map(\.id) == [original.id])
+        #expect(secondEmailHits.map { $0.id } == [original.id])
     }
 
     @Test("SQLite stale delete clears the current scalar index entry")
@@ -420,10 +450,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
 
@@ -447,6 +480,9 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -456,10 +492,10 @@ struct DatabaseFrameworkE2ETests {
             as: DatabaseFrameworkE2EAccount.self
         )
         let originalEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "delete-original@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "delete-original@example.com")
             .execute()
         let currentEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "delete-current@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "delete-current@example.com")
             .execute()
 
         #expect(stored == nil)
@@ -481,10 +517,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
 
@@ -508,6 +547,9 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -517,10 +559,10 @@ struct DatabaseFrameworkE2ETests {
             as: DatabaseFrameworkE2EAccount.self
         )
         let originalEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "default-delete-original@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "default-delete-original@example.com")
             .execute()
         let currentEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "default-delete-current@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "default-delete-current@example.com")
             .execute()
 
         #expect(stored == nil)
@@ -542,16 +584,24 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2ESecuredDocument.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2ESecuredDocument.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2ESecuredDocument.self],
+                authorizationPolicies: [
+                    AuthorizationPolicyHandler(DatabaseFrameworkE2ESecuredDocument.self)
+                ]
+            ),
             security: .enabled()
         )
 
         var original = DatabaseFrameworkE2ESecuredDocument(ownerID: "alice", title: "Original")
         original.id = "database-framework-secure-stale-delete-document"
-        try await AuthContextKey.$current.withValue(DatabaseFrameworkE2EAuth(userID: "alice")) {
+        try await RequestAuthorization.$context.withValue(
+            .authenticated(Principal(identifier: "alice"))
+        ) {
             let createContext = container.newContext()
             try createContext.insert(original)
             try await createContext.save()
@@ -560,14 +610,18 @@ struct DatabaseFrameworkE2ETests {
         var transferred = original
         transferred.ownerID = "bob"
         transferred.title = "Transferred"
-        try await AuthContextKey.$current.withValue(DatabaseFrameworkE2EAuth(userID: "alice")) {
+        try await RequestAuthorization.$context.withValue(
+            .authenticated(Principal(identifier: "alice"))
+        ) {
             let updateContext = container.newContext()
             try updateContext.update(transferred)
             try await updateContext.save()
         }
 
         do {
-            try await AuthContextKey.$current.withValue(DatabaseFrameworkE2EAuth(userID: "alice")) {
+            try await RequestAuthorization.$context.withValue(
+                .authenticated(Principal(identifier: "alice"))
+            ) {
                 let deleteContext = container.newContext()
                 try deleteContext.delete(original)
                 try await deleteContext.save()
@@ -582,6 +636,9 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2ESecuredDocument.self]
+            ),
             security: .disabled
         )
         let stored = try await verificationContainer.newContext().model(
@@ -607,10 +664,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
 
@@ -642,6 +702,9 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -651,15 +714,15 @@ struct DatabaseFrameworkE2ETests {
             as: DatabaseFrameworkE2EAccount.self
         )
         let originalEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "create-original@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "create-original@example.com")
             .execute()
         let duplicateEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "create-duplicate@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "create-duplicate@example.com")
             .execute()
 
         #expect(stored?.email == "create-original@example.com")
         #expect(stored?.age == 31)
-        #expect(originalEmailHits.map(\.id) == [original.id])
+        #expect(originalEmailHits.map { $0.id } == [original.id])
         #expect(duplicateEmailHits.isEmpty)
     }
 
@@ -677,10 +740,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
 
@@ -707,6 +773,9 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -716,20 +785,20 @@ struct DatabaseFrameworkE2ETests {
             as: DatabaseFrameworkE2EAccount.self
         )
         let originalEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "upsert-original@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "upsert-original@example.com")
             .execute()
         let currentEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "upsert-current@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "upsert-current@example.com")
             .execute()
         let finalEmailHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "upsert-final@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "upsert-final@example.com")
             .execute()
 
         #expect(stored?.email == "upsert-final@example.com")
         #expect(stored?.age == 33)
         #expect(originalEmailHits.isEmpty)
         #expect(currentEmailHits.isEmpty)
-        #expect(finalEmailHits.map(\.id) == [original.id])
+        #expect(finalEmailHits.map { $0.id } == [original.id])
     }
 
     @Test("SQLite dynamic directory keeps tenant indexes isolated across update and delete")
@@ -746,10 +815,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2ETenantAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2ETenantAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2ETenantAccount.self]
+            ),
             security: .disabled
         )
         let context = container.newContext()
@@ -779,23 +851,23 @@ struct DatabaseFrameworkE2ETests {
 
         let tenantAAfterUpdate = try await container.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-a")
-            .where(\.email == "tenant-a-updated@example.com")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-a")
+            .where(DatabaseFrameworkE2ETenantAccount.fields.email == "tenant-a-updated@example.com")
             .execute()
         let tenantAOldEmail = try await container.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-a")
-            .where(\.email == "shared@example.com")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-a")
+            .where(DatabaseFrameworkE2ETenantAccount.fields.email == "shared@example.com")
             .execute()
         let tenantBSharedEmail = try await container.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-b")
-            .where(\.email == "shared@example.com")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-b")
+            .where(DatabaseFrameworkE2ETenantAccount.fields.email == "shared@example.com")
             .execute()
 
-        #expect(tenantAAfterUpdate.map(\.id) == ["database-framework-tenant-a-account"])
+        #expect(tenantAAfterUpdate.map { $0.id } == ["database-framework-tenant-a-account"])
         #expect(tenantAOldEmail.isEmpty)
-        #expect(tenantBSharedEmail.map(\.id) == ["database-framework-tenant-b-account"])
+        #expect(tenantBSharedEmail.map { $0.id } == ["database-framework-tenant-b-account"])
 
         let deleteContext = container.newContext()
         try deleteContext.delete(updatedTenantA)
@@ -803,17 +875,17 @@ struct DatabaseFrameworkE2ETests {
 
         let tenantAAfterDelete = try await container.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-a")
-            .where(\.email == "tenant-a-updated@example.com")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-a")
+            .where(DatabaseFrameworkE2ETenantAccount.fields.email == "tenant-a-updated@example.com")
             .execute()
         let tenantBAfterDelete = try await container.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-b")
-            .where(\.email == "shared@example.com")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-b")
+            .where(DatabaseFrameworkE2ETenantAccount.fields.email == "shared@example.com")
             .execute()
 
         #expect(tenantAAfterDelete.isEmpty)
-        #expect(tenantBAfterDelete.map(\.id) == ["database-framework-tenant-b-account"])
+        #expect(tenantBAfterDelete.map { $0.id } == ["database-framework-tenant-b-account"])
     }
 
     @Test("SQLite partition move transfers rows and indexes atomically")
@@ -830,10 +902,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2ETenantAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2ETenantAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2ETenantAccount.self]
+            ),
             security: .disabled
         )
 
@@ -859,32 +934,35 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2ETenantAccount.self]
+            ),
             security: .disabled
         )
         let oldPartitionAll = try await verificationContainer.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-move-a")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-move-a")
             .execute()
         let oldPartitionOldEmail = try await verificationContainer.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-move-a")
-            .where(\.email == "move-original@example.com")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-move-a")
+            .where(DatabaseFrameworkE2ETenantAccount.fields.email == "move-original@example.com")
             .execute()
         let oldPartitionNewEmail = try await verificationContainer.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-move-a")
-            .where(\.email == "move-current@example.com")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-move-a")
+            .where(DatabaseFrameworkE2ETenantAccount.fields.email == "move-current@example.com")
             .execute()
         let newPartitionNewEmail = try await verificationContainer.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-move-b")
-            .where(\.email == "move-current@example.com")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-move-b")
+            .where(DatabaseFrameworkE2ETenantAccount.fields.email == "move-current@example.com")
             .execute()
 
         #expect(oldPartitionAll.isEmpty)
         #expect(oldPartitionOldEmail.isEmpty)
         #expect(oldPartitionNewEmail.isEmpty)
-        #expect(newPartitionNewEmail.map(\.id) == [original.id])
+        #expect(newPartitionNewEmail.map { $0.id } == [original.id])
         #expect(newPartitionNewEmail.first?.tenantID == "tenant-move-b")
         #expect(newPartitionNewEmail.first?.status == "moved")
     }
@@ -892,7 +970,7 @@ struct DatabaseFrameworkE2ETests {
     @Test("SQLite large blob indexed update delete and rollback keep blobs and indexes consistent")
     func sqliteLargeBlobIndexedUpdateDeleteAndRollbackKeepBlobsAndIndexesConsistent() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
-        let schema = Schema([DatabaseFrameworkE2ELargeDocument.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2ELargeDocument.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
@@ -919,11 +997,11 @@ struct DatabaseFrameworkE2ETests {
         )
         let originalTitleHits = try await container.newContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
-            .where(\.title == "large-original")
+            .where(DatabaseFrameworkE2ELargeDocument.fields.title == "large-original")
             .execute()
 
         #expect(blobCountAfterInsert > 0)
-        #expect(originalTitleHits.map(\.id) == [original.id])
+        #expect(originalTitleHits.map { $0.id } == [original.id])
 
         var compact = original
         compact.title = "large-compact"
@@ -938,16 +1016,16 @@ struct DatabaseFrameworkE2ETests {
         )
         let oldTitleHits = try await container.newContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
-            .where(\.title == "large-original")
+            .where(DatabaseFrameworkE2ELargeDocument.fields.title == "large-original")
             .execute()
         let compactTitleHits = try await container.newContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
-            .where(\.title == "large-compact")
+            .where(DatabaseFrameworkE2ELargeDocument.fields.title == "large-compact")
             .execute()
 
         #expect(blobCountAfterCompact == 0)
         #expect(oldTitleHits.isEmpty)
-        #expect(compactTitleHits.map(\.id) == [original.id])
+        #expect(compactTitleHits.map { $0.id } == [original.id])
 
         let compactForRollback = compact
         do {
@@ -972,16 +1050,16 @@ struct DatabaseFrameworkE2ETests {
         )
         let rolledBackTitleHits = try await container.newContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
-            .where(\.title == "large-rolled-back")
+            .where(DatabaseFrameworkE2ELargeDocument.fields.title == "large-rolled-back")
             .execute()
         let compactAfterRollbackHits = try await container.newContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
-            .where(\.title == "large-compact")
+            .where(DatabaseFrameworkE2ELargeDocument.fields.title == "large-compact")
             .execute()
 
         #expect(blobCountAfterRollback == 0)
         #expect(rolledBackTitleHits.isEmpty)
-        #expect(compactAfterRollbackHits.map(\.id) == [original.id])
+        #expect(compactAfterRollbackHits.map { $0.id } == [original.id])
 
         let deleteContext = container.newContext()
         try deleteContext.delete(compact)
@@ -993,7 +1071,7 @@ struct DatabaseFrameworkE2ETests {
         )
         let compactAfterDeleteHits = try await container.newContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
-            .where(\.title == "large-compact")
+            .where(DatabaseFrameworkE2ELargeDocument.fields.title == "large-compact")
             .execute()
 
         #expect(blobCountAfterDelete == 0)
@@ -1014,10 +1092,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
 
@@ -1045,6 +1126,9 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let stored = try await verificationContainer.newContext().model(
@@ -1053,11 +1137,11 @@ struct DatabaseFrameworkE2ETests {
         )
         let originalEmailHits = try await verificationContainer.newContext()
             .fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "transaction-delete-original@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "transaction-delete-original@example.com")
             .execute()
         let currentEmailHits = try await verificationContainer.newContext()
             .fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "transaction-delete-current@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "transaction-delete-current@example.com")
             .execute()
 
         #expect(stored == nil)
@@ -1079,10 +1163,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let retryingContext = container.newContext()
@@ -1111,6 +1198,9 @@ struct DatabaseFrameworkE2ETests {
         let afterFailureContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let afterFailureContext = afterFailureContainer.newContext()
@@ -1124,7 +1214,7 @@ struct DatabaseFrameworkE2ETests {
             as: DatabaseFrameworkE2EAccount.self
         )
         let leakedNewEmail = try await afterFailureContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "after@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "after@example.com")
             .execute()
 
         #expect(pendingView?.email == "after@example.com")
@@ -1140,6 +1230,9 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -1148,16 +1241,16 @@ struct DatabaseFrameworkE2ETests {
             as: DatabaseFrameworkE2EAccount.self
         )
         let oldEmailResults = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "before@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "before@example.com")
             .execute()
         let newEmailResults = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "after@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "after@example.com")
             .execute()
 
         #expect(stored?.email == "after@example.com")
         #expect(stored?.age == 30)
         #expect(oldEmailResults.isEmpty)
-        #expect(newEmailResults.map(\.id) == ["database-framework-retry-account"])
+        #expect(newEmailResults.map { $0.id } == ["database-framework-retry-account"])
     }
 
     @Test("SQLite failed multi-change save restores all pending mutations for retry")
@@ -1174,10 +1267,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let retryingContext = container.newContext()
@@ -1209,6 +1305,9 @@ struct DatabaseFrameworkE2ETests {
         let afterFailureContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let afterFailureContext = afterFailureContainer.newContext()
@@ -1244,6 +1343,9 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -1256,17 +1358,17 @@ struct DatabaseFrameworkE2ETests {
             as: DatabaseFrameworkE2EAccount.self
         )
         let oldUpdatedEmailResults = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "legacy-before@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "legacy-before@example.com")
             .execute()
         let newUpdatedEmailResults = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "legacy-after@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "legacy-after@example.com")
             .execute()
 
         #expect(storedCreated?.email == "created@example.com")
         #expect(storedUpdated?.email == "legacy-after@example.com")
         #expect(storedUpdated?.age == 45)
         #expect(oldUpdatedEmailResults.isEmpty)
-        #expect(newUpdatedEmailResults.map(\.id) == ["database-framework-missing-account"])
+        #expect(newUpdatedEmailResults.map { $0.id } == ["database-framework-missing-account"])
     }
 
     @Test("SQLite failed cross-store save rolls back static and dynamic directory writes")
@@ -1283,16 +1385,22 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema(
-            [
-                DatabaseFrameworkE2EAccount.self,
-                DatabaseFrameworkE2ETenantAccount.self,
+        let schema = try Schema(
+            entities: [
+                try DatabaseFrameworkE2EAccount.schemaEntity,
+                try DatabaseFrameworkE2ETenantAccount.schemaEntity,
             ],
             version: .init(1, 0, 0)
         )
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    DatabaseFrameworkE2EAccount.self,
+                    DatabaseFrameworkE2ETenantAccount.self,
+                ]
+            ),
             security: .disabled
         )
         let retryingContext = container.newContext()
@@ -1331,19 +1439,25 @@ struct DatabaseFrameworkE2ETests {
         let afterFailureContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    DatabaseFrameworkE2EAccount.self,
+                    DatabaseFrameworkE2ETenantAccount.self,
+                ]
+            ),
             security: .disabled
         )
         let afterFailureContext = afterFailureContainer.newContext()
         let leakedStatic = try await afterFailureContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "cross-store-created@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "cross-store-created@example.com")
             .execute()
         let leakedTenant = try await afterFailureContainer.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-cross")
-            .where(\.email == "cross-store-tenant-created@example.com")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-cross")
+            .where(DatabaseFrameworkE2ETenantAccount.fields.email == "cross-store-tenant-created@example.com")
             .execute()
         let leakedReplacement = try await afterFailureContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "cross-store-missing-after@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "cross-store-missing-after@example.com")
             .execute()
 
         #expect(leakedStatic.isEmpty)
@@ -1359,28 +1473,34 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    DatabaseFrameworkE2EAccount.self,
+                    DatabaseFrameworkE2ETenantAccount.self,
+                ]
+            ),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
         let storedStatic = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "cross-store-created@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "cross-store-created@example.com")
             .execute()
         let storedTenant = try await verificationContainer.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
-            .partition(\.tenantID, equals: "tenant-cross")
-            .where(\.email == "cross-store-tenant-created@example.com")
+            .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-cross")
+            .where(DatabaseFrameworkE2ETenantAccount.fields.email == "cross-store-tenant-created@example.com")
             .execute()
         let oldReplacementHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "cross-store-missing-before@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "cross-store-missing-before@example.com")
             .execute()
         let newReplacementHits = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "cross-store-missing-after@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "cross-store-missing-after@example.com")
             .execute()
 
-        #expect(storedStatic.map(\.id) == [staticCreated.id])
-        #expect(storedTenant.map(\.id) == [tenantCreated.id])
+        #expect(storedStatic.map { $0.id } == [staticCreated.id])
+        #expect(storedTenant.map { $0.id } == [tenantCreated.id])
         #expect(oldReplacementHits.isEmpty)
-        #expect(newReplacementHits.map(\.id) == [missingUpdated.id])
+        #expect(newReplacementHits.map { $0.id } == [missingUpdated.id])
     }
 
     @Test("SQLite transaction rollback discards staged writes and index entries")
@@ -1397,10 +1517,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EAccount.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EAccount.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            ),
             security: .disabled
         )
         let context = container.newContext()
@@ -1423,13 +1546,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let storedAccounts = try await context.fetch(DatabaseFrameworkE2EAccount.self)
-            .orderBy(\.email)
+            .orderBy(DatabaseFrameworkE2EAccount.fields.email)
             .execute()
         let aliceIndexHits = try await context.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "rollback-alice@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "rollback-alice@example.com")
             .execute()
         let bobIndexHits = try await context.fetch(DatabaseFrameworkE2EAccount.self)
-            .where(\.email == "rollback-bob@example.com")
+            .where(DatabaseFrameworkE2EAccount.fields.email == "rollback-bob@example.com")
             .execute()
 
         #expect(storedAccounts.isEmpty)
@@ -1451,10 +1574,13 @@ struct DatabaseFrameworkE2ETests {
         }
 
         let databasePath = directory.appendingPathComponent("database-framework.sqlite").path
-        let schema = Schema([DatabaseFrameworkE2EOrder.self], version: .init(1, 0, 0))
+        let schema = try Schema(entities: [try DatabaseFrameworkE2EOrder.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: databasePath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [DatabaseFrameworkE2EOrder.self]
+            ),
             security: .disabled
         )
         let context = container.newContext()
@@ -1474,49 +1600,49 @@ struct DatabaseFrameworkE2ETests {
         try await context.save()
 
         let topOpenOrders = try await context.fetch(DatabaseFrameworkE2EOrder.self)
-            .partition(\.tenantID, equals: tenantA)
-            .where(\.status == "open")
-            .orderBy(\.total, .descending)
+            .partition(DatabaseFrameworkE2EOrder.fields.tenantID, equals: tenantA)
+            .where(DatabaseFrameworkE2EOrder.fields.status == "open")
+            .orderBy(DatabaseFrameworkE2EOrder.fields.total, .descending)
             .limit(2)
             .execute()
 
-        #expect(topOpenOrders.map(\.id) == ["order-a-2", "order-a-4"])
+        #expect(topOpenOrders.map { $0.id } == ["order-a-2", "order-a-4"])
         #expect(topOpenOrders.allSatisfy { $0.tenantID == tenantA && $0.status == "open" })
 
         let skippedOrder = try await context.fetch(DatabaseFrameworkE2EOrder.self)
-            .partition(\.tenantID, equals: tenantA)
-            .where(\.status == "open")
-            .orderBy(\.total, .descending)
+            .partition(DatabaseFrameworkE2EOrder.fields.tenantID, equals: tenantA)
+            .where(DatabaseFrameworkE2EOrder.fields.status == "open")
+            .orderBy(DatabaseFrameworkE2EOrder.fields.total, .descending)
             .offset(2)
             .limit(1)
             .execute()
 
-        #expect(skippedOrder.map(\.id) == ["order-a-1"])
+        #expect(skippedOrder.map { $0.id } == ["order-a-1"])
 
         let updated = order(id: "order-a-1", tenantID: tenantA, status: "closed", total: 150)
-        try context.insert(updated)
+        try context.update(updated)
         try await context.save()
 
         let openCountAfterUpdate = try await context.fetch(DatabaseFrameworkE2EOrder.self)
-            .partition(\.tenantID, equals: tenantA)
-            .where(\.status == "open")
+            .partition(DatabaseFrameworkE2EOrder.fields.tenantID, equals: tenantA)
+            .where(DatabaseFrameworkE2EOrder.fields.status == "open")
             .count()
         #expect(openCountAfterUpdate == 2)
 
         let tenantBOpen = try await context.fetch(DatabaseFrameworkE2EOrder.self)
-            .partition(\.tenantID, equals: tenantB)
-            .where(\.status == "open")
+            .partition(DatabaseFrameworkE2EOrder.fields.tenantID, equals: tenantB)
+            .where(DatabaseFrameworkE2EOrder.fields.status == "open")
             .execute()
-        #expect(tenantBOpen.map(\.id) == ["order-b-1"])
+        #expect(tenantBOpen.map { $0.id } == ["order-b-1"])
 
         try context.delete(updated)
         try await context.save()
 
         let tenantAAfterDelete = try await context.fetch(DatabaseFrameworkE2EOrder.self)
-            .partition(\.tenantID, equals: tenantA)
-            .orderBy(\.id)
+            .partition(DatabaseFrameworkE2EOrder.fields.tenantID, equals: tenantA)
+            .orderBy(DatabaseFrameworkE2EOrder.fields.id)
             .execute()
-        #expect(tenantAAfterDelete.map(\.id) == ["order-a-2", "order-a-3", "order-a-4"])
+        #expect(tenantAAfterDelete.map { $0.id } == ["order-a-2", "order-a-3", "order-a-4"])
     }
 
     @Test("SQLite migration rewrites legacy entities and serves them through the new indexed schema")
@@ -1565,17 +1691,17 @@ struct DatabaseFrameworkE2ETests {
         let verificationContext = verificationContainer.newContext()
 
         let migratedAlice = try await verificationContext.fetch(DatabaseFrameworkE2EMigratedAccountV2.self)
-            .where(\.fullName == "Alice Jones")
+            .where(DatabaseFrameworkE2EMigratedAccountV2.fields.fullName == "Alice Jones")
             .execute()
         let allMigrated = try await verificationContext.fetch(DatabaseFrameworkE2EMigratedAccountV2.self)
-            .orderBy(\.fullName)
+            .orderBy(DatabaseFrameworkE2EMigratedAccountV2.fields.fullName)
             .execute()
 
         #expect(migratedVersion == Schema.Version(2, 0, 0))
-        #expect(migratedAlice.map(\.id) == ["database-framework-migrated-alice"])
+        #expect(migratedAlice.map { $0.id } == ["database-framework-migrated-alice"])
         #expect(migratedAlice.first?.email == "alice@example.com")
         #expect(migratedAlice.first?.age == 0)
-        #expect(allMigrated.map(\.fullName) == ["Alice Jones", "Bob Stone"])
+        #expect(allMigrated.map { $0.fullName } == ["Alice Jones", "Bob Stone"])
     }
 }
 #endif

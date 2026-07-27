@@ -1,14 +1,14 @@
-import DatabaseValue
+import DatabaseTypes
 import DatabaseEngine
-import Graph
+import DatabaseKit
 import StorageKit
 
 /// Reads canonical RDF quads without exposing their physical index layout.
 public protocol RDFDatasetScanner: Sendable {
     func scan(
-        subject: DatabaseRDFTerm?,
-        predicate: DatabaseRDFTerm?,
-        object: DatabaseRDFTerm?,
+        subject: RDFTerm?,
+        predicate: RDFTerm?,
+        object: RDFTerm?,
         graphScope: RDFGraphScanScope,
         limit: Int?,
         readMode: RDFDatasetReadMode,

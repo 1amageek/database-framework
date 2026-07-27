@@ -4,7 +4,7 @@ public enum SPARQLSelectPlanCompilationError: Error, Sendable, Equatable {
     case unsupportedSource
     case allFromProjectionUnsupported
     case explicitDatasetInSubquery
-    case negativeSolutionModifier(name: String, value: Int)
+    case solutionModifierExceedsExecutionRange(name: String, value: UInt64)
     case duplicateProjectionVariable(String)
 }
 
@@ -21,8 +21,8 @@ extension SPARQLSelectPlanCompilationError: CustomStringConvertible {
             return "SPARQL Select does not support table-qualified wildcard projection"
         case .explicitDatasetInSubquery:
             return "A SPARQL SubSelect inherits its outer dataset"
-        case .negativeSolutionModifier(let name, let value):
-            return "SPARQL \(name) must be non-negative, received \(value)"
+        case .solutionModifierExceedsExecutionRange(let name, let value):
+            return "SPARQL \(name) exceeds the executable range: \(value)"
         case .duplicateProjectionVariable(let variable):
             return "SPARQL projection contains duplicate variable '\(variable)'"
         }

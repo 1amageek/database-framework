@@ -46,9 +46,10 @@ try await AuthContextKey.$current.withValue(requestAuth) {
 DBContainer installs the security delegate when security is enabled:
 
 ~~~swift
-let container = try await DBContainer(
+let container = try await DBContainer.open(
     for: schema,
     configuration: configuration,
+    runtimeConfiguration: runtime,
     security: .enabled()
 )
 ~~~

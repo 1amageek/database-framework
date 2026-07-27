@@ -6,9 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -29,10 +28,10 @@ private struct BenchmarkContext {
         self.indexSubspace = subspace.subspace("I").subspace("edges")
         self.strategy = strategy
 
-        let kind = GraphIndexKind<BenchmarkEdge>(
-            from: \.source,
-            edge: \.label,
-            to: \.target,
+        let kind = propertyGraphIndexMetadata(
+            sourceFieldName: "source",
+            labelFieldName: "label",
+            targetFieldName: "target",
             strategy: strategy
         )
 
@@ -48,14 +47,11 @@ private struct BenchmarkContext {
             itemTypes: Set(["BenchmarkEdge"])
         )
 
-        self.maintainer = GraphIndexMaintainer<BenchmarkEdge>(
+        self.maintainer = try GraphIndexMaintainer<BenchmarkEdge>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            fromField: kind.fromField,
-            edgeField: kind.edgeField,
-            toField: kind.toField,
-            strategy: strategy
+            metadata: try PropertyGraphIndexMetadata(canonical: index.kind)
         )
     }
 
@@ -76,12 +72,6 @@ private struct BenchmarkEdge {
     var target: String
     var label: String
 
-    init(id: String = UUID().uuidString, source: String, target: String, label: String = "follows") {
-        self.id = id
-        self.source = source
-        self.target = target
-        self.label = label
-    }
 }
 
 // MARK: - Test Data
@@ -125,7 +115,7 @@ private func measure<T>(_ operation: () async throws -> T) async throws -> (resu
 
 // MARK: - Performance Tests
 
-@Suite("GraphIndex Performance Tests", .tags(.fdb, .performance), .serialized, .heartbeat)
+@Suite("GraphIndex Performance Tests", .tags(.fdb, .performance), .serialized, .foundationDBScenario, .heartbeat)
 struct GraphIndexPerformanceTests {
 
     // MARK: - Bulk Insert Tests

@@ -1,7 +1,7 @@
 #if !os(WASI)
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import Testing
 @testable import DatabaseEngine
 
@@ -18,63 +18,84 @@ struct LiteralConversionTests {
 
     @Test("Canonical projection preserves every exact scalar kind")
     func canonicalProjectionPreservesExactScalars() throws {
-        let date = DatabaseDate(year: 2026, month: 7, day: 21)
-        let timestamp = DatabaseTimestamp(
+        let date = try CivilDate(year: 2026, month: 7, day: 21)
+        let timestamp = try Timestamp(
             secondsSinceUnixEpoch: 1_774_310_400,
             nanoseconds: 123_456_789
         )
-        let uuid = DatabaseUUID(
+        let uuid = DatabaseTypes.UUID(
             high: 0x0011_2233_4455_6677,
             low: 0x8899_AABB_CCDD_EEFF
         )
 
         #expect(
-            try QueryIR.Literal.decimal(coefficient: 12_345, scale: 2)
-                .toDatabaseValue()
-                == .decimal(coefficient: 12_345, scale: 2)
+            try Literal.decimal(coefficient: 12_345, scale: 2)
+                .toFieldValue()
+                == .decimal(
+                    ExactDecimal(coefficient: 12_345, scale: 2)
+                )
         )
-        #expect(try QueryIR.Literal.date(date).toDatabaseValue() == .date(date))
+        #expect(try Literal.date(date).toFieldValue() == .date(date))
         #expect(
-            try QueryIR.Literal.timestamp(timestamp).toDatabaseValue()
+            try Literal.timestamp(timestamp).toFieldValue()
                 == .timestamp(timestamp)
         )
-        #expect(try QueryIR.Literal.uuid(uuid).toDatabaseValue() == .uuid(uuid))
+        #expect(try Literal.uuid(uuid).toFieldValue() == .uuid(uuid))
     }
 
-    @Test("Narrow projection preserves supported values without numeric loss")
-    func narrowProjectionPreservesSupportedValues() throws {
-        let bytes = DatabaseBytes([0x00, 0x7F, 0xFF])
+    @Test("Literal projection preserves values without numeric loss")
+    func literalProjectionPreservesValues() throws {
+        let bytes = ByteString([0x00, 0x7F, 0xFF])
         let maximumUnsigned = UInt64.max
 
         #expect(
-            try QueryIR.Literal.uint(maximumUnsigned).toFieldValue()
+            try Literal.uint(maximumUnsigned).toFieldValue()
                 == .uint64(maximumUnsigned)
         )
-        #expect(try QueryIR.Literal.binary(bytes).toFieldValue() == .data(bytes))
+        #expect(try Literal.binary(bytes).toFieldValue() == .bytes(bytes))
         #expect(
-            try QueryIR.Literal.array([.int(-1), .uint(maximumUnsigned)])
+            try Literal.array([.int(-1), .uint(maximumUnsigned)])
                 .toFieldValue()
                 == .array([.int64(-1), .uint64(maximumUnsigned)])
         )
     }
 
-    @Test("Every FieldValue kind round-trips through QueryIR")
-    func everyFieldValueKindRoundTrips() throws {
-        let rdfTerm = DatabaseRDFTerm.tripleTerm(
-            subject: .iri("urn:subject"),
-            predicate: .iri("urn:predicate"),
-            object: .blankNode("object")
+    @Test("Every QueryIR-representable FieldValue kind round-trips")
+    func queryRepresentableFieldValuesRoundTrip() throws {
+        let rdfTerm = RDFTerm.tripleTerm(
+            subject: .iri(try RDFIRI("urn:subject")),
+            predicate: try RDFPredicateIRI("urn:predicate"),
+            object: .blankNode(try RDFBlankNodeIdentifier("object"))
         )
         let values: [FieldValue] = [
             .null,
             .bool(true),
             .int64(.min),
             .uint64(.max),
-            .double(1.25),
+            .float64(1.25),
+            .decimal(ExactDecimal(coefficient: 12_345, scale: 2)),
             .string("value"),
-            .data(DatabaseBytes([0x00, 0x7F, 0xFF])),
+            .bytes(ByteString([0x00, 0x7F, 0xFF])),
+            .date(try CivilDate(year: 2026, month: 7, day: 21)),
+            .timestamp(
+                try Timestamp(
+                    secondsSinceUnixEpoch: 1_774_310_400,
+                    nanoseconds: 123_456_789
+                )
+            ),
+            .uuid(
+                DatabaseTypes.UUID(
+                    high: 0x0011_2233_4455_6677,
+                    low: 0x8899_AABB_CCDD_EEFF
+                )
+            ),
             .rdfTerm(rdfTerm),
-            .array([.int64(-1), .uint64(.max), .rdfTerm(rdfTerm)]),
+            .array([
+                .int64(-1),
+                .uint64(.max),
+                .decimal(ExactDecimal(coefficient: 25, scale: 1)),
+                .rdfTerm(rdfTerm),
+            ]),
         ]
 
         for value in values {
@@ -85,16 +106,16 @@ struct LiteralConversionTests {
     @Test("Canonical RDF projection preserves term annotations")
     func canonicalRDFProjectionPreservesAnnotations() throws {
         let datatype = "http://www.w3.org/2001/XMLSchema#integer"
-        let language = try DatabaseRDFLanguageTag("en-US")
+        let language = try RDFLanguageTag("en-US")
 
         #expect(
-            try QueryIR.Literal.typedLiteral(
+            try Literal.typedLiteral(
                 value: "42",
                 datatype: datatype
-            ).toDatabaseValue()
+            ).toFieldValue()
                 == .rdfTerm(
                     .literal(
-                        try DatabaseRDFLiteral(
+                        try RDFLiteral(
                             lexicalForm: "42",
                             datatype: datatype
                         )
@@ -102,13 +123,13 @@ struct LiteralConversionTests {
                 )
         )
         #expect(
-            try QueryIR.Literal.langLiteral(
+            try Literal.langLiteral(
                 value: "colour",
                 language: "en-US"
-            ).toDatabaseValue()
+            ).toFieldValue()
                 == .rdfTerm(
                     .literal(
-                        DatabaseRDFLiteral(
+                        RDFLiteral(
                             lexicalForm: "colour",
                             language: language
                         )
@@ -116,14 +137,14 @@ struct LiteralConversionTests {
                 )
         )
         #expect(
-            try QueryIR.Literal.dirLangLiteral(
+            try Literal.dirLangLiteral(
                 value: "text",
                 language: "en-US",
                 direction: "rtl"
-            ).toDatabaseValue()
+            ).toFieldValue()
                 == .rdfTerm(
                     .literal(
-                        DatabaseRDFLiteral(
+                        RDFLiteral(
                             lexicalForm: "text",
                             language: language,
                             direction: .rightToLeft
@@ -135,77 +156,55 @@ struct LiteralConversionTests {
 
     @Test("Binary projections retain the original byte storage")
     func binaryProjectionRetainsOriginalStorage() throws {
-        let source = DatabaseBytes.copying(count: 4_096) { buffer in
+        let source = ByteString.copying(count: 4_096) { buffer in
             buffer.initializeMemory(as: UInt8.self, repeating: 0xA5)
         }
-        guard case .bytes(let canonical) = try QueryIR.Literal.binary(source)
-            .toDatabaseValue() else {
+        guard case .bytes(let canonical) = try Literal.binary(source)
+            .toFieldValue() else {
             Issue.record("Expected canonical bytes")
             return
         }
-        guard case .data(let narrow) = try QueryIR.Literal.binary(source)
-            .toFieldValue() else {
-            Issue.record("Expected narrow binary data")
-            return
-        }
-
         source.withUnsafeBytes { sourceBuffer in
             canonical.withUnsafeBytes { canonicalBuffer in
-                narrow.withUnsafeBytes { narrowBuffer in
-                    #expect(sourceBuffer.baseAddress == canonicalBuffer.baseAddress)
-                    #expect(sourceBuffer.baseAddress == narrowBuffer.baseAddress)
-                    #expect(sourceBuffer.count == canonicalBuffer.count)
-                    #expect(sourceBuffer.count == narrowBuffer.count)
-                }
+                #expect(sourceBuffer.baseAddress == canonicalBuffer.baseAddress)
+                #expect(sourceBuffer.count == canonicalBuffer.count)
             }
         }
     }
 
-    @Test("Narrow projection rejects canonical-only scalar kinds")
-    func narrowProjectionRejectsCanonicalOnlyScalars() {
-        let date = DatabaseDate(year: 2026, month: 7, day: 21)
-        let timestamp = DatabaseTimestamp(secondsSinceUnixEpoch: 1)
-        let uuid = DatabaseUUID(high: 1, low: 2)
+    @Test("Query literals reject values without a literal representation")
+    func queryLiteralProjectionRejectsObjectAndReferenceValues() throws {
+        #expect(
+            throws: LiteralConversionError.fieldValueUnsupported(kind: .object)
+        ) {
+            _ = try FieldValue.object(FieldObject()).toLiteral()
+        }
 
+        let identity = try EntityReference(
+            entity: "Event",
+            id: .string("event-1")
+        )
         #expect(
-            throws: LiteralConversionError.fieldValueUnsupported(kind: .decimal)
+            throws: LiteralConversionError.fieldValueUnsupported(
+                kind: .reference
+            )
         ) {
-            _ = try QueryIR.Literal.decimal(coefficient: 1, scale: 1)
-                .toFieldValue()
-        }
-        #expect(throws: LiteralConversionError.fieldValueUnsupported(kind: .date)) {
-            _ = try QueryIR.Literal.date(date).toFieldValue()
-        }
-        #expect(
-            throws: LiteralConversionError.fieldValueUnsupported(kind: .timestamp)
-        ) {
-            _ = try QueryIR.Literal.timestamp(timestamp).toFieldValue()
-        }
-        #expect(throws: LiteralConversionError.fieldValueUnsupported(kind: .uuid)) {
-            _ = try QueryIR.Literal.uuid(uuid).toFieldValue()
-        }
-        #expect(
-            throws: LiteralConversionError.fieldValueUnsupported(kind: .decimal)
-        ) {
-            _ = try QueryIR.Literal.array([
-                .int(1),
-                .decimal(coefficient: 2, scale: 1),
-            ]).toFieldValue()
+            _ = try FieldValue.reference(identity).toLiteral()
         }
     }
 
     @Test("Malformed RDF literals report stable typed failures")
     func malformedRDFReportsTypedFailures() {
         #expect(throws: LiteralConversionError.invalidRDFLiteral(datatype: "")) {
-            _ = try QueryIR.Literal.typedLiteral(value: "value", datatype: "")
+            _ = try Literal.typedLiteral(value: "value", datatype: "")
                 .toFieldValue()
         }
         #expect(throws: LiteralConversionError.invalidLanguageTag("")) {
-            _ = try QueryIR.Literal.langLiteral(value: "value", language: "")
+            _ = try Literal.langLiteral(value: "value", language: "")
                 .toFieldValue()
         }
         #expect(throws: LiteralConversionError.invalidBaseDirection("sideways")) {
-            _ = try QueryIR.Literal.dirLangLiteral(
+            _ = try Literal.dirLangLiteral(
                 value: "value",
                 language: "en",
                 direction: "sideways"
@@ -213,23 +212,31 @@ struct LiteralConversionTests {
         }
     }
 
-    @Test("Reverse predicate bridges propagate literal representation failures")
-    func predicateConversionsPropagateRepresentationFailures() {
-        let expression = QueryIR.Expression.equal(
-            .column(QueryIR.ColumnRef(column: "value")),
+    @Test("Reverse predicate bridges preserve exact decimal values")
+    func predicateConversionsPreserveDecimalValues() throws {
+        let expression = Expression.equal(
+            .column(ColumnRef(column: "value")),
             .literal(.decimal(coefficient: 1, scale: 1))
         )
-        let expected = LiteralConversionError.fieldValueUnsupported(kind: .decimal)
-
-        #expect(throws: expected) {
-            let _: Predicate<Entity>? = try expression.toPredicate(for: Entity.self)
+        let predicate: Predicate<Entity>? = try expression.toPredicate(
+            for: Entity.self
+        )
+        guard case .comparison(let comparison) = predicate else {
+            Issue.record("Expected a field comparison")
+            return
         }
+        #expect(
+            comparison.value == .decimal(
+                ExactDecimal(coefficient: 1, scale: 1)
+            )
+        )
+        #expect(try comparison.toExpression() == expression)
     }
 
     @Test("Reverse predicates retain canonical field identity and behavior")
     func reversePredicatesRetainFieldIdentityAndBehavior() throws {
-        let expression = QueryIR.Expression.equal(
-            .column(QueryIR.ColumnRef(column: "value")),
+        let expression = Expression.equal(
+            .column(ColumnRef(column: "value")),
             .literal(.int(42))
         )
         let predicate: Predicate<Entity>? = try expression.toPredicate(
@@ -241,15 +248,15 @@ struct LiteralConversionTests {
         }
 
         #expect(comparison.fieldName == "value")
-        #expect(comparison.evaluate(on: Entity(value: 42)))
-        #expect(!comparison.evaluate(on: Entity(value: 7)))
-        #expect(comparison.toExpression() == expression)
+        #expect(try comparison.evaluate(on: Entity(value: 42)))
+        #expect(try !comparison.evaluate(on: Entity(value: 7)))
+        #expect(try comparison.toExpression() == expression)
     }
 
     @Test("NOT IN remains distinct through predicate conversion")
     func notInRetainsSemantics() throws {
-        let expression = QueryIR.Expression.notInList(
-            .column(QueryIR.ColumnRef(column: "value")),
+        let expression = Expression.notInList(
+            .column(ColumnRef(column: "value")),
             values: [.literal(.int(1)), .literal(.int(2))]
         )
         let predicate: Predicate<Entity>? = try expression.toPredicate(
@@ -261,19 +268,19 @@ struct LiteralConversionTests {
         }
 
         #expect(comparison.op == .notIn)
-        #expect(!comparison.evaluate(on: Entity(value: 1)))
-        #expect(comparison.evaluate(on: Entity(value: 3)))
-        #expect(comparison.toExpression() == expression)
+        #expect(try !comparison.evaluate(on: Entity(value: 1)))
+        #expect(try comparison.evaluate(on: Entity(value: 3)))
+        #expect(try comparison.toExpression() == expression)
     }
 
     @Test("Empty logical groups retain their boolean identities")
-    func emptyLogicalGroupsRetainBooleanIdentities() {
+    func emptyLogicalGroupsRetainBooleanIdentities() throws {
         #expect(
-            Predicate<Entity>.and([]).toExpression()
+            try Predicate<Entity>.and([]).toExpression()
                 == .literal(.bool(true))
         )
         #expect(
-            Predicate<Entity>.or([]).toExpression()
+            try Predicate<Entity>.or([]).toExpression()
                 == .literal(.bool(false))
         )
     }

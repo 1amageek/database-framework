@@ -7,159 +7,44 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
 
 // MARK: - Test Models
 
-/// Person model with graph and scalar indexes
-struct GraphFusionPerson: Persistable {
-    typealias ID = String
+/// Person model with graph and scalar indexes.
+@Persistable
+struct GraphFusionPerson {
+    #Index(
+        .scalar,
+        fields: [\GraphFusionPerson.userId],
+        name: "GraphTestPerson_userId"
+    )
 
-    var id: String
+    var id: String = UUID().uuidString
     var userId: String
     var name: String
-    var bio: String
-
-    init(id: String = UUID().uuidString, userId: String, name: String, bio: String = "") {
-        self.id = id
-        self.userId = userId
-        self.name = name
-        self.bio = bio
-    }
-
-    static var persistableType: String { "GraphFusionPerson" }
-    static var allFields: [String] { ["id", "userId", "name", "bio"] }
-
-    static var indexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "GraphTestPerson_userId",
-                keyPaths: [\GraphFusionPerson.userId],
-                kind: ScalarIndexKind<GraphFusionPerson>(fields: [\GraphFusionPerson.userId])
-            )
-        ]
-    }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "userId": return userId
-        case "name": return name
-        case "bio": return bio
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<GraphFusionPerson, Value>) -> String {
-        switch keyPath {
-        case \GraphFusionPerson.id: return "id"
-        case \GraphFusionPerson.userId: return "userId"
-        case \GraphFusionPerson.name: return "name"
-        case \GraphFusionPerson.bio: return "bio"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<GraphFusionPerson>) -> String {
-        switch keyPath {
-        case \GraphFusionPerson.id: return "id"
-        case \GraphFusionPerson.userId: return "userId"
-        case \GraphFusionPerson.name: return "name"
-        case \GraphFusionPerson.bio: return "bio"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<GraphFusionPerson> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var bio: String = ""
 }
 
 /// Follow relationship for graph index testing
-struct GraphFusionFollow: Persistable {
-    typealias ID = String
+@Persistable
+struct GraphFusionFollow {
+    #Index(
+        .propertyGraph(strategy: .adjacency),
+        from: \GraphFusionFollow.follower,
+        edge: \GraphFusionFollow.edgeType,
+        to: \GraphFusionFollow.followee,
+        name: "GraphTestFollow_graph"
+    )
 
-    var id: String
+    var id: String = UUID().uuidString
     var follower: String
     var followee: String
-    var edgeType: String
-
-    init(id: String = UUID().uuidString, follower: String, followee: String, edgeType: String = "follows") {
-        self.id = id
-        self.follower = follower
-        self.followee = followee
-        self.edgeType = edgeType
-    }
-
-    static var persistableType: String { "GraphFusionFollow" }
-    static var allFields: [String] { ["id", "follower", "followee", "edgeType"] }
-
-    static var indexDescriptors: [IndexDescriptor] {
-        let kind = GraphIndexKind<GraphFusionFollow>(
-            from: \.follower,
-            edge: \.edgeType,
-            to: \.followee,
-            strategy: .adjacency
-        )
-        return [
-            IndexDescriptor(
-                name: "GraphTestFollow_graph",
-                keyPaths: [\GraphFusionFollow.follower, \GraphFusionFollow.edgeType, \GraphFusionFollow.followee],
-                kind: kind
-            )
-        ]
-    }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "follower": return follower
-        case "followee": return followee
-        case "edgeType": return edgeType
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<GraphFusionFollow, Value>) -> String {
-        switch keyPath {
-        case \GraphFusionFollow.id: return "id"
-        case \GraphFusionFollow.follower: return "follower"
-        case \GraphFusionFollow.followee: return "followee"
-        case \GraphFusionFollow.edgeType: return "edgeType"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<GraphFusionFollow>) -> String {
-        switch keyPath {
-        case \GraphFusionFollow.id: return "id"
-        case \GraphFusionFollow.follower: return "follower"
-        case \GraphFusionFollow.followee: return "followee"
-        case \GraphFusionFollow.edgeType: return "edgeType"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<GraphFusionFollow> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var edgeType: String = "follows"
 }
 
 // MARK: - Test Context
@@ -185,16 +70,22 @@ private struct GraphFusionContext {
         self.itemsSubspace = subspace.subspace("R")
         self.blobsSubspace = subspace.subspace("B")
 
-        let kind = GraphIndexKind<GraphFusionFollow>(
-            from: \.follower,
-            edge: \.edgeType,
-            to: \.followee,
-            strategy: strategy
+        let descriptor = try IndexDescriptor(
+            name: indexName,
+            definition: .propertyGraph(strategy: strategy),
+            fields: [
+                GraphFusionFollow.fields.follower.ascending,
+                GraphFusionFollow.fields.edgeType.ascending,
+                GraphFusionFollow.fields.followee.ascending,
+            ]
+        )
+        let metadata = try PropertyGraphIndexMetadata(
+            canonical: descriptor.kind
         )
 
         let index = Index(
             name: indexName,
-            kind: kind,
+            kind: descriptor.kind,
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "follower"),
                 FieldKeyExpression(fieldName: "edgeType"),
@@ -204,14 +95,11 @@ private struct GraphFusionContext {
             itemTypes: Set(["GraphFusionFollow"])
         )
 
-        self.maintainer = GraphIndexMaintainer<GraphFusionFollow>(
+        self.maintainer = try GraphIndexMaintainer<GraphFusionFollow>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            fromField: kind.fromField,
-            edgeField: kind.edgeField,
-            toField: kind.toField,
-            strategy: strategy
+            metadata: metadata
         )
     }
 
@@ -225,16 +113,11 @@ private struct GraphFusionContext {
     func insertFollow(_ follow: GraphFusionFollow) async throws {
         try await database.withTransaction { transaction in
             let itemKey = itemsSubspace.pack(Tuple(follow.id))
-            let encoder = JSONEncoder()
-            let data = try encoder.encode([
-                "id": follow.id,
-                "follower": follow.follower,
-                "followee": follow.followee,
-                "edgeType": follow.edgeType
-            ])
-
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
-            try await storage.write(Bytes(data), for: itemKey)
+            try await storage.write(
+                try PersistableStorageCodec.encode(follow),
+                for: itemKey
+            )
 
             try await maintainer.updateIndex(
                 oldItem: nil,
@@ -250,9 +133,9 @@ private struct GraphFusionContext {
 @Suite("Graph Fusion - Unit Tests", .heartbeat)
 struct GraphFusionUnitTests {
 
-    @Test("GraphIndexKind identifier is 'graph'")
-    func testGraphIndexKindIdentifier() {
-        #expect(GraphIndexKind<GraphFusionFollow>.identifier == "graph")
+    @Test("Property graph definition identifier is 'graph'")
+    func testPropertyGraphDefinitionIdentifier() {
+        #expect(IndexDefinition.propertyGraph().identifier == "graph")
     }
 
     @Test("Connected.Direction enum values")
@@ -270,8 +153,8 @@ struct GraphFusionUnitTests {
     }
 
     @Test("Index descriptor configuration")
-    func testIndexDescriptorConfiguration() {
-        let descriptors = GraphFusionFollow.indexDescriptors
+    func testIndexDescriptorConfiguration() throws {
+        let descriptors = try GraphFusionFollow.indexDescriptors
         #expect(descriptors.count == 1)
 
         let graphIndex = descriptors[0]
@@ -284,8 +167,8 @@ struct GraphFusionUnitTests {
     }
 
     @Test("Scalar index for userId lookup")
-    func testScalarIndexForUserIdLookup() {
-        let descriptors = GraphFusionPerson.indexDescriptors
+    func testScalarIndexForUserIdLookup() throws {
+        let descriptors = try GraphFusionPerson.indexDescriptors
         let scalarIndex = descriptors.first { $0.kindIdentifier == "scalar" }
 
         #expect(scalarIndex != nil)
@@ -540,7 +423,7 @@ struct GraphFusionBFSTests {
 
 // MARK: - Integration Tests
 
-@Suite("Graph Fusion - Integration Tests", .serialized, .heartbeat)
+@Suite("Graph Fusion - Integration Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct GraphFusionIntegrationTests {
 
     private func uniqueID(_ prefix: String) -> String {
@@ -733,11 +616,12 @@ struct GraphFusionEdgeCaseTests {
 struct GraphFusionIndexDiscoveryTests {
 
     @Test("findIndexDescriptor matches by kindIdentifier")
-    func testFindIndexDescriptorByKindIdentifier() {
-        let descriptors = GraphFusionFollow.indexDescriptors
+    func testFindIndexDescriptorByKindIdentifier() throws {
+        let descriptors = try GraphFusionFollow.indexDescriptors
 
         let graphDescriptor = descriptors.first { descriptor in
-            descriptor.kindIdentifier == GraphIndexKind<GraphFusionFollow>.identifier
+            descriptor.kindIdentifier
+                == IndexDefinition.propertyGraph().identifier
         }
 
         #expect(graphDescriptor != nil)
@@ -745,12 +629,13 @@ struct GraphFusionIndexDiscoveryTests {
     }
 
     @Test("findIndexDescriptor matches by fieldName")
-    func testFindIndexDescriptorByFieldName() {
-        let descriptors = GraphFusionFollow.indexDescriptors
+    func testFindIndexDescriptorByFieldName() throws {
+        let descriptors = try GraphFusionFollow.indexDescriptors
         let fieldName = "follower"
 
         let matchingDescriptor = descriptors.first { descriptor in
-            descriptor.kindIdentifier == GraphIndexKind<GraphFusionFollow>.identifier
+            descriptor.kindIdentifier
+                == IndexDefinition.propertyGraph().identifier
                 && descriptor.kind.fieldNames.contains(fieldName)
         }
 
@@ -758,8 +643,8 @@ struct GraphFusionIndexDiscoveryTests {
     }
 
     @Test("Scalar index for efficient node lookup")
-    func testScalarIndexForNodeLookup() {
-        let descriptors = GraphFusionPerson.indexDescriptors
+    func testScalarIndexForNodeLookup() throws {
+        let descriptors = try GraphFusionPerson.indexDescriptors
 
         let scalarDescriptor = descriptors.first { descriptor in
             descriptor.kindIdentifier == "scalar"

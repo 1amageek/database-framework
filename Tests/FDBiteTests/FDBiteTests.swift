@@ -2,6 +2,7 @@
 import Testing
 import Foundation
 import Database
+import DatabaseRuntime
 import TestHeartbeat
 
 @Persistable
@@ -10,9 +11,9 @@ struct FDBiteItem {
 
     var id: String = UUID().uuidString
     var name: String = ""
-    var age: Int = 0
+    var age: Int64 = 0
 
-    #Index(ScalarIndexKind<FDBiteItem>(fields: [\.age]))
+    #Index(.scalar, fields: [\FDBiteItem.age])
 }
 
 @Persistable
@@ -28,9 +29,12 @@ struct FDBiteNote {
 struct FDBiteTests {
 
     private func makeItemContainer() async throws -> DBContainer {
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
     }
@@ -39,9 +43,12 @@ struct FDBiteTests {
 
     @Test("Container creation with in-memory SQLite")
     func containerCreation() async throws {
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
         #expect(container.schema.entities.count == 1)
@@ -52,10 +59,13 @@ struct FDBiteTests {
         let tmpDir = FileManager.default.temporaryDirectory
         let dbPath = tmpDir.appendingPathComponent("fdbite-test-\(UUID().uuidString).sqlite").path
 
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.sqlite(
             for: schema,
             path: dbPath,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
 
@@ -83,12 +93,18 @@ struct FDBiteTests {
 
     @Test("Container creation with multiple entity types")
     func multipleEntities() async throws {
-        let schema = Schema(
-            [FDBiteItem.self, FDBiteNote.self],
+        let schema = try Schema(
+            entities: [
+                try FDBiteItem.schemaEntity,
+                try FDBiteNote.schemaEntity,
+            ],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self, FDBiteNote.self]
+            ),
             security: .disabled
         )
         #expect(container.schema.entities.count == 2)
@@ -121,9 +137,12 @@ struct FDBiteTests {
 
     @Test("Insert and fetch round-trip")
     func insertAndFetch() async throws {
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
 
@@ -147,11 +166,14 @@ struct FDBiteTests {
         #expect(fetched?.age == 30)
     }
 
-    @Test("Update via re-insert (upsert)")
-    func updateViaReInsert() async throws {
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+    @Test("Explicit upsert replaces an existing model")
+    func explicitUpsertReplacesExistingModel() async throws {
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
 
@@ -166,12 +188,12 @@ struct FDBiteTests {
         try context.insert(item)
         try await context.save()
 
-        // Update via re-insert with same ID
+        // Replace the existing model through the explicit upsert contract.
         var updated = FDBiteItem()
         updated.id = itemId
         updated.name = "After"
         updated.age = 30
-        try context.insert(updated)
+        try context.upsert(updated)
         try await context.save()
 
         // Verify: should have 1 item with updated values
@@ -183,9 +205,12 @@ struct FDBiteTests {
 
     @Test("Multiple inserts in single transaction")
     func batchInsert() async throws {
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
 
@@ -195,7 +220,7 @@ struct FDBiteTests {
             var item = FDBiteItem()
             item.id = "batch-\(i)-\(UUID().uuidString.prefix(8))"
             item.name = "User\(i)"
-            item.age = 20 + i
+            item.age = Int64(20 + i)
             try context.insert(item)
         }
         try await context.save()
@@ -206,9 +231,12 @@ struct FDBiteTests {
 
     @Test("Delete item")
     func deleteItem() async throws {
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
 
@@ -382,9 +410,12 @@ struct FDBiteTests {
 
     @Test("Fetch with where clause")
     func fetchWithWhere() async throws {
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
 
@@ -394,7 +425,7 @@ struct FDBiteTests {
             var item = FDBiteItem()
             item.id = "where-\(i)-\(UUID().uuidString.prefix(8))"
             item.name = name
-            item.age = 20 + i * 10  // 20, 30, 40
+            item.age = Int64(20 + i * 10)  // 20, 30, 40
             try context.insert(item)
         }
         try await context.save()
@@ -405,16 +436,19 @@ struct FDBiteTests {
 
         // Test where clause with predicate evaluation
         let results = try await context.fetch(FDBiteItem.self)
-            .where(\.age > 25)
+            .where(FDBiteItem.fields.age > 25)
             .execute()
         #expect(results.count == 2)
     }
 
     @Test("Fetch with orderBy")
     func fetchWithOrderBy() async throws {
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
 
@@ -424,13 +458,13 @@ struct FDBiteTests {
             var item = FDBiteItem()
             item.id = "order-\(i)-\(UUID().uuidString.prefix(8))"
             item.name = name
-            item.age = [30, 10, 20][i]
+            item.age = [Int64(30), 10, 20][i]
             try context.insert(item)
         }
         try await context.save()
 
         let results = try await context.fetch(FDBiteItem.self)
-            .orderBy(\.age)
+            .orderBy(FDBiteItem.fields.age)
             .execute()
         #expect(results.count == 3)
         #expect(results[0].name == "Alice")
@@ -440,9 +474,12 @@ struct FDBiteTests {
 
     @Test("Fetch with limit")
     func fetchWithLimit() async throws {
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
 
@@ -452,7 +489,7 @@ struct FDBiteTests {
             var item = FDBiteItem()
             item.id = "limit-\(i)-\(UUID().uuidString.prefix(8))"
             item.name = "User\(i)"
-            item.age = 20 + i
+            item.age = Int64(20 + i)
             try context.insert(item)
         }
         try await context.save()
@@ -467,9 +504,12 @@ struct FDBiteTests {
 
     @Test("Fetch from empty store returns empty array")
     func emptyFetch() async throws {
-        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [try FDBiteItem.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.inMemory(
             for: schema,
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [FDBiteItem.self]
+            ),
             security: .disabled
         )
 

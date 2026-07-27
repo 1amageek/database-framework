@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 
 /// One primary persisted-model intent applied by `DatabaseTransaction`.
 package enum PersistableMutation: Sendable {

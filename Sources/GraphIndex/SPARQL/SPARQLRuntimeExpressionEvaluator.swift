@@ -1,6 +1,6 @@
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseEngine
+import DatabaseTypes
 
 /// Dataset-dependent expression resolution supplied by the query executor.
 /// The resolver must use the caller's transaction and active graph.
@@ -148,7 +148,7 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
             )
 
         case .function(let call)
-            where DatabaseText.isEqualIgnoringASCIICase(call.name, "IF"):
+            where TextSearch.isEqualIgnoringASCIICase(call.name, "IF"):
             guard call.arguments.count == 3 else {
                 throw SPARQLExpressionEvaluationError.invalidFunctionArguments(
                     call.name
@@ -169,7 +169,7 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
             )
 
         case .function(let call)
-            where DatabaseText.isEqualIgnoringASCIICase(call.name, "COALESCE"):
+            where TextSearch.isEqualIgnoringASCIICase(call.name, "COALESCE"):
             return try await evaluateCoalesce(
                 call.arguments,
                 binding: binding,
@@ -395,7 +395,7 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
 
     /// Lowers only the immediate operands after each operand has been evaluated.
     /// This preserves lazy control-flow at the outer node and keeps RDF terms
-    /// intact through QueryIR.Literal.rdfTerm.
+    /// intact through Literal.rdfTerm.
     private static func lowerImmediateOperands(
         _ expression: Expression,
         binding: VariableBinding,
@@ -504,16 +504,38 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
             return .null
         case .string(let value):
             return .string(value)
+        case .int8(let value):
+            return .int(Int64(value))
+        case .int16(let value):
+            return .int(Int64(value))
+        case .int32(let value):
+            return .int(Int64(value))
         case .int64(let value):
             return .int(value)
+        case .uint8(let value):
+            return .uint(UInt64(value))
+        case .uint16(let value):
+            return .uint(UInt64(value))
+        case .uint32(let value):
+            return .uint(UInt64(value))
         case .uint64(let value):
             return .uint(value)
-        case .double(let value):
+        case .float32(let value):
+            return .double(Double(value))
+        case .float64(let value):
             return .double(value)
+        case .decimal(let value):
+            return .decimal(value)
         case .bool(let value):
             return .bool(value)
-        case .data(let value):
+        case .bytes(let value):
             return .binary(value)
+        case .date(let value):
+            return .date(value)
+        case .timestamp(let value):
+            return .timestamp(value)
+        case .uuid(let value):
+            return .uuid(value)
         case .array(let values):
             var literals: [Literal] = []
             literals.reserveCapacity(values.count)
@@ -521,6 +543,42 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
                 literals.append(try literal(element))
             }
             return .array(literals)
+        case .object:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "object field value cannot be represented as a query literal"
+            )
+        case .reference:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "reference field value cannot be represented as a query literal"
+            )
+        case .time:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "time field value cannot be represented as a query literal"
+            )
+        case .dateTime:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "civil date-time field value cannot be represented as a query literal"
+            )
+        case .timeSpan:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "time-span field value cannot be represented as a query literal"
+            )
+        case .calendarPeriod:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "calendar-period field value cannot be represented as a query literal"
+            )
+        case .geographicPoint:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "geographic point cannot be represented as a query literal"
+            )
+        case .geographicPosition:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "geographic position cannot be represented as a query literal"
+            )
+        case .vector:
+            throw SPARQLExpressionEvaluationError.unsupportedExpression(
+                "vector field value cannot be represented as a query literal"
+            )
         case .rdfTerm(let term):
             return .rdfTerm(term)
         }

@@ -1,9 +1,8 @@
 #if FOUNDATION_DB
 import Testing
 import Foundation
-import Core
-import DatabaseValue
-import Rank
+import DatabaseKit
+import DatabaseTypes
 import DatabaseEngine
 import DatabaseRuntime
 import RankIndex
@@ -19,8 +18,11 @@ struct BenchmarkPlayer {
     var name: String = ""
     var score: Int64 = 0
 
-    // Rank index on score
-    #Index(RankIndexKind<BenchmarkPlayer, Int64>(field: \.score), name: "score_rank")
+    #Index(
+        .rank(),
+        field: \BenchmarkPlayer.score,
+        name: "score_rank"
+    )
 }
 
 @Suite("RankIndex: Range Tree Benchmark", .serialized, .heartbeat)
@@ -36,11 +38,16 @@ struct RangeTreeBenchmark {
             try await database.removeDirectory(path: ["benchmarks", "rank_players"])
         }
 
-        let schema = Schema([BenchmarkPlayer.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try BenchmarkPlayer.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [BenchmarkPlayer.self]
+            ),
             security: .disabled
         )
         try await container.ensureIndexesReady()
@@ -84,7 +91,7 @@ struct RangeTreeBenchmark {
                 ctx.clearReadVersionCache()
                 // Current TopKHeap implementation
                 let results = try await ctx.rank(BenchmarkPlayer.self)
-                    .by(\.score)
+                    .by(BenchmarkPlayer.fields.score)
                     .top(100)
                     .execute()
                 return results.count
@@ -93,7 +100,7 @@ struct RangeTreeBenchmark {
                 ctx.clearReadVersionCache()
                 // Same implementation (Range Tree not yet implemented)
                 let results = try await ctx.rank(BenchmarkPlayer.self)
-                    .by(\.score)
+                    .by(BenchmarkPlayer.fields.score)
                     .top(100)
                     .execute()
                 return results.count
@@ -145,7 +152,7 @@ struct RangeTreeBenchmark {
             ctx.clearReadVersionCache()
             // Query top K items
             let topPlayers = try await ctx.rank(BenchmarkPlayer.self)
-                .by(\.score)
+                .by(BenchmarkPlayer.fields.score)
                 .top(k)
                 .execute()
 
@@ -199,7 +206,7 @@ struct RangeTreeBenchmark {
         ) { @Sendable (k: Int) async throws -> Int in
             ctx.clearReadVersionCache()
             let topPlayers = try await ctx.rank(BenchmarkPlayer.self)
-                .by(\.score)
+                .by(BenchmarkPlayer.fields.score)
                 .top(k)
                 .execute()
             return topPlayers.count

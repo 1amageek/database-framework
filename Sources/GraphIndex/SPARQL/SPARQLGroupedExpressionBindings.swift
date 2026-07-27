@@ -1,16 +1,16 @@
-import QueryIR
+import DatabaseKit
 
 /// Associates each compiled GROUP BY expression with its internal variable.
 struct SPARQLGroupedExpressionBindings {
-    private var storage: [QueryIR.Expression: String] = [:]
+    private var storage: [Expression: String] = [:]
 
-    subscript(expression: QueryIR.Expression) -> String? {
+    subscript(expression: Expression) -> String? {
         storage[expression]
     }
 
     mutating func insert(
         variable: String,
-        for expression: QueryIR.Expression
+        for expression: Expression
     ) {
         storage[expression] = variable
     }

@@ -4,7 +4,7 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -16,7 +16,7 @@ import DatabaseRuntime
 /// - resolveDirectory(for type: any Persistable.Type) - Type-erased resolution
 /// - Directory caching behavior
 /// - Multiple types with independent directories
-@Suite("Resolve Directory Tests", .serialized, .heartbeat)
+@Suite("Resolve Directory Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct ResolveDirectoryTests {
 
     // MARK: - Helper Types
@@ -25,7 +25,7 @@ struct ResolveDirectoryTests {
     struct DirectoryUser {
         #Directory<DirectoryUser>("test", "resolve", "users")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var name: String
         var email: String
     }
@@ -34,7 +34,7 @@ struct ResolveDirectoryTests {
     struct DirectoryProduct {
         #Directory<DirectoryProduct>("test", "resolve", "products")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var name: String
         var price: Double
     }
@@ -43,7 +43,7 @@ struct ResolveDirectoryTests {
     struct NestedDirectoryItem {
         #Directory<NestedDirectoryItem>("test", "resolve", "nested", "deep", "items")
 
-        var id: String = ULID().ulidString
+        var id: String = UUID().uuidString
         var value: String
     }
 
@@ -255,10 +255,12 @@ struct ResolveDirectoryTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
+            let expectedSubspace = try await container.resolveDirectory(
+                for: DirectoryUser.self
+            )
             let store = try await container.store(for: DirectoryUser.self)
 
-            // Store should be functional
-            #expect(store is DatabaseDataStore)
+            #expect(store.subspace.prefix == expectedSubspace.prefix)
         }
     }
 }

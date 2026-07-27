@@ -8,7 +8,7 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine
 
@@ -239,7 +239,7 @@ struct BatchFetchStatisticsTests {
 
 // MARK: - BatchFetcher Integration Tests
 
-@Suite("BatchFetcher Integration Tests", .serialized, .heartbeat)
+@Suite("BatchFetcher Integration Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct BatchFetcherIntegrationTests {
 
     @Persistable

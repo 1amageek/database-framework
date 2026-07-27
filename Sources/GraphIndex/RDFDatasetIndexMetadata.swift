@@ -1,6 +1,5 @@
-import Core
-import DatabaseValue
-import Graph
+import DatabaseKit
+import DatabaseTypes
 
 package struct RDFDatasetIndexMetadata: Sendable {
     package let subjectFieldName: String
@@ -89,7 +88,7 @@ package struct RDFDatasetIndexSelection: Sendable {
             if kind.metadata["graph"] != nil {
                 let graph = try kind.requireRDFTerm("graph")
                 do {
-                    try DatabaseRDFTermCodec.validate(
+                    try RDFTermValidation.validate(
                         graph,
                         role: .graphName
                     )

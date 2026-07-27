@@ -9,19 +9,25 @@
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
+private typealias PlatformData = FoundationEssentials.Data
+private typealias PlatformDate = FoundationEssentials.Date
+private typealias PlatformUUID = FoundationEssentials.UUID
 #else
 import Foundation
+private typealias PlatformData = Foundation.Data
+private typealias PlatformDate = Foundation.Date
+private typealias PlatformUUID = Foundation.UUID
 #endif
 import StorageKit
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
-/// 統一型変換ユーティリティ
+/// Canonical value conversion utilities.
 ///
-/// **必須使用**: 全モジュールはこのユーティリティを使用すること。
-/// 独自の型変換実装は禁止。
+/// All framework modules use this implementation so conversion semantics stay
+/// consistent across query, index, and statistics paths.
 ///
-/// ## 型マッピング仕様
+/// ## Type Mapping
 ///
 /// | Swift Type       | Int64 | Double | String | FieldValue      |
 /// |------------------|-------|--------|--------|-----------------|
@@ -34,7 +40,7 @@ import DatabaseValue
 /// | Date             | -     | ✓***   | -      | .double***      |
 /// | UUID             | -     | -      | ✓****  | .string****     |
 ///
-/// * UInt64 > Int64.max はオーバーフロー（nil を返す）
+/// * A UInt64 greater than Int64.max overflows and returns nil.
 /// ** Bool → Int64: true=1, false=0
 /// *** Date → Double: timeIntervalSince1970
 /// **** UUID → String: uuidString
@@ -43,12 +49,11 @@ public struct TypeConversion: Sendable {
 
     private init() {}
 
-    // MARK: - 値抽出 (比較・計算用)
+    // MARK: - Comparison and Calculation Values
 
-    /// Int64 として値を抽出（比較・計算用）
+    /// Extracts an Int64 for comparison or calculation.
     ///
-    /// - 用途: 範囲比較、ソート、集計
-    /// - 戻り値: nil = 変換不可（比較スキップ）
+    /// - Returns: Nil when the value has no exact supported conversion.
     public static func asInt64(_ value: Any) -> Int64? {
         switch value {
         case let v as Int64: return v
@@ -66,10 +71,9 @@ public struct TypeConversion: Sendable {
         }
     }
 
-    /// Double として値を抽出（比較・計算用）
+    /// Extracts a Double for comparison or calculation.
     ///
-    /// - 用途: 範囲比較、集計 (SUM, AVG)、数値演算
-    /// - 戻り値: nil = 変換不可
+    /// - Returns: Nil when the value has no supported conversion.
     public static func asDouble(_ value: Any) -> Double? {
         switch value {
         case let v as Double: return v
@@ -84,15 +88,14 @@ public struct TypeConversion: Sendable {
         case let v as UInt32: return Double(v)
         case let v as UInt16: return Double(v)
         case let v as UInt8: return Double(v)
-        case let v as Date: return v.timeIntervalSince1970
+        case let v as PlatformDate: return v.timeIntervalSince1970
         default: return nil
         }
     }
 
-    /// Float として値を抽出（ベクトル変換用）
+    /// Extracts a Float for vector calculations.
     ///
-    /// - 用途: ベクトルインデックス、TupleElement→Float 変換
-    /// - 戻り値: nil = 変換不可
+    /// - Returns: Nil when the value has no supported conversion.
     public static func asFloat(_ value: Any) -> Float? {
         switch value {
         case let v as Float: return v
@@ -111,23 +114,22 @@ public struct TypeConversion: Sendable {
         }
     }
 
-    /// String として値を抽出（比較用）
+    /// Extracts a String for comparison.
     ///
-    /// - 用途: 文字列比較、辞書順ソート
-    /// - 戻り値: nil = 変換不可
+    /// - Returns: Nil when the value has no supported conversion.
     public static func asString(_ value: Any) -> String? {
         switch value {
         case let v as String: return v
-        case let v as UUID: return v.uuidString
+        case let v as PlatformUUID: return v.uuidString
         default: return nil
         }
     }
 
-    // MARK: - 型変換 (ストレージ用)
+    // MARK: - Storage Conversion
 
-    /// FieldValue への変換
+    /// Converts a tuple element to FieldValue.
     ///
-    /// - 用途: クエリ実行、統計、HyperLogLog
+    /// Used by query execution, statistics, and HyperLogLog.
     /// - Throws: `TypeConversionError` when the value has no exact representation.
     public static func toFieldValue(
         _ value: Any
@@ -143,17 +145,27 @@ public struct TypeConversion: Sendable {
         if let fieldValue = value as? FieldValue {
             return fieldValue
         }
-        if let bytes = value as? DatabaseBytes {
-            return .data(bytes)
+        if let bytes = value as? ByteString {
+            return .bytes(bytes)
         }
-        if let data = value as? Data {
-            return .data(DatabaseBytes(retaining: data))
+        if let data = value as? PlatformData {
+            return .bytes(
+                ByteString.copying(count: data.count) { output in
+                    data.withUnsafeBytes { source in
+                        output.copyMemory(from: source)
+                    }
+                }
+            )
         }
         if let bytes = value as? [UInt8] {
-            return .data(DatabaseBytes(bytes))
+            return .bytes(ByteString(bytes))
         }
-        if let convertible = value as? any FieldValueConvertible {
-            return convertible.toFieldValue()
+        if let encodable = value as? any FieldValueEncodable {
+            do {
+                return try encodable.encodeFieldValue()
+            } catch let error {
+                throw .invalidFieldValue(error)
+            }
         }
         if mirror.displayStyle == .collection {
             var elements: [FieldValue] = []
@@ -173,32 +185,32 @@ public struct TypeConversion: Sendable {
         throw .unsupportedType(String(reflecting: type(of: value)))
     }
 
-    /// TupleElement への変換
+    /// Converts FieldValue to TupleElement.
     ///
-    /// - 用途: FDBインデックスキー構築
-    /// - エラー: 変換不可の型は TupleEncodingError をスロー
+    /// Used to construct physical index keys.
+    /// Throws TupleEncodingError for unsupported values.
     public static func toTupleElement(_ value: Any) throws -> any TupleElement {
         return try TupleEncoder.encode(value)
     }
 
-    // MARK: - TupleElement からの抽出
+    // MARK: - Tuple Element Extraction
 
-    /// TupleElement から Int64 を抽出
+    /// Extracts Int64 from a tuple element.
     public static func int64(from element: any TupleElement) throws -> Int64 {
         return try TupleDecoder.decodeInt64(element)
     }
 
-    /// TupleElement から Double を抽出
+    /// Extracts Double from a tuple element.
     public static func double(from element: any TupleElement) throws -> Double {
         return try TupleDecoder.decodeDouble(element)
     }
 
-    /// TupleElement から String を抽出
+    /// Extracts String from a tuple element.
     public static func string(from element: any TupleElement) throws -> String {
         return try TupleDecoder.decodeString(element)
     }
 
-    /// TupleElement から指定型を抽出
+    /// Extracts a requested scalar type from a tuple element.
     public static func value<T>(from element: any TupleElement, as type: T.Type) throws -> T {
         return try TupleDecoder.decode(element, as: type)
     }

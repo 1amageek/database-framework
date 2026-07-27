@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 
 public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
@@ -170,7 +170,7 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
                 return revision
             } makeResponse: { revision, commitVersion in
                 .mutation(
-                    DatabaseRevisionMutationResult(
+                    RevisionMutationResult(
                         commitVersion: commitVersion,
                         revision: revision
                     )
@@ -204,7 +204,7 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
                 return revision
             } makeResponse: { revision, commitVersion in
                 .mutation(
-                    DatabaseRevisionMutationResult(
+                    RevisionMutationResult(
                         commitVersion: commitVersion,
                         revision: revision
                     )

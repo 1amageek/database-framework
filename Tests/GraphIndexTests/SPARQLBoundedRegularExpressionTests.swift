@@ -1,6 +1,6 @@
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 import TestHeartbeat
 import Testing
 @testable import GraphIndex
@@ -299,7 +299,7 @@ struct SPARQLBoundedRegularExpressionTests {
 
     @Test("ExpressionEvaluator uses the bounded REPLACE engine")
     func expressionEvaluatorReplacementPath() throws {
-        let expression = QueryIR.Expression.function(
+        let expression = Expression.function(
             FunctionCall(
                 name: "REPLACE",
                 arguments: [
@@ -320,11 +320,11 @@ struct SPARQLBoundedRegularExpressionTests {
 
     @Test("LIKE escapes metacharacters through the bounded regex engine")
     func likeExpressionPath() throws {
-        let wildcard = QueryIR.Expression.like(
+        let wildcard = Expression.like(
             .literal(.string("雪だるま")),
             pattern: "雪%"
         )
-        let literalMetacharacters = QueryIR.Expression.like(
+        let literalMetacharacters = Expression.like(
             .literal(.string("a.[b]")),
             pattern: "a.[b]"
         )
@@ -416,7 +416,7 @@ struct SPARQLBoundedRegularExpressionTests {
     private func rdfString(_ lexicalForm: String) throws -> FieldValue {
         .rdfTerm(
             .literal(
-                try DatabaseRDFLiteral(
+                try RDFLiteral(
                     lexicalForm: lexicalForm,
                     datatype: "http://www.w3.org/2001/XMLSchema#string"
                 )
@@ -427,7 +427,7 @@ struct SPARQLBoundedRegularExpressionTests {
     private func rdfBoolean(_ value: Bool) throws -> FieldValue {
         .rdfTerm(
             .literal(
-                try DatabaseRDFLiteral(
+                try RDFLiteral(
                     lexicalForm: value ? "true" : "false",
                     datatype: "http://www.w3.org/2001/XMLSchema#boolean"
                 )

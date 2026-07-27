@@ -8,7 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -175,7 +176,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     ) async throws -> Value {
         let expectedGroupingCount = index.rootExpression.columnCount - 1
         guard groupingValues.count == expectedGroupingCount else {
-            throw IndexError.invalidArgument(
+            throw AggregationIndexError.invalidArgument(
                 "Grouping values count (\(groupingValues.count)) does not match " +
                 "expected count (\(expectedGroupingCount)) for index '\(index.name)'"
             )
@@ -185,7 +186,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
         let aggregateKey = layers.aggregated.pack(elements: groupingValues)
         try validateKeySize(aggregateKey)
         guard let valueData = try await transaction.getValue(for: aggregateKey, snapshot: true) else {
-            throw IndexError.noData("No MIN value found for group")
+            throw AggregationIndexError.noData("No MIN value found for group")
         }
         return try decodeAggregateValue(valueData).value
     }
@@ -203,7 +204,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     ) async throws -> [(grouping: [any TupleElement], min: Value, itemId: Tuple)] {
         var results: [(grouping: [any TupleElement], min: Value, itemId: Tuple)] = []
         guard index.rootExpression.columnCount >= 1 else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "MIN index must contain a value field"
             )
         }
@@ -251,7 +252,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
             let groupingTuple = try layers.aggregated.unpack(key)
             let groupingElements = try groupingTuple.elements()
             guard groupingElements.count == groupingFieldCount else {
-                throw IndexError.invalidStructure(
+                throw AggregationIndexError.invalidStructure(
                     "MIN aggregate key has an invalid grouping field count"
                 )
             }
@@ -285,12 +286,16 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
         let minimum = try cursor.requireNext()
         let idStart = cursor.consumedByteCount
         guard !cursor.isAtEnd else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Invalid minimum aggregate value: expected [value, id]"
             )
         }
         return (
-            value: try TupleDecoder.decode(minimum, as: Value.self),
+            value: try decodeStoredAggregationValue(
+                minimum,
+                as: Value.self,
+                index: index
+            ),
             itemId: try Tuple(packed: bytes[idStart..<bytes.count])
         )
     }
@@ -369,9 +374,13 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
         ]
         var cursor = TupleCursor(bytes: aggregateValue)
         let minimum = try cursor.requireNext()
-        _ = try TupleDecoder.decode(minimum, as: Value.self)
+        _ = try decodeStoredAggregationValue(
+            minimum,
+            as: Value.self,
+            index: index
+        )
         guard !cursor.isAtEnd else {
-            throw IndexError.invalidStructure("Invalid Layer 1 key structure: expected at least [value, id]")
+            throw AggregationIndexError.invalidStructure("Invalid Layer 1 key structure: expected at least [value, id]")
         }
         while !cursor.isAtEnd {
             _ = try cursor.requireNext()
@@ -531,7 +540,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     ) async throws -> Value {
         let expectedGroupingCount = index.rootExpression.columnCount - 1
         guard groupingValues.count == expectedGroupingCount else {
-            throw IndexError.invalidArgument(
+            throw AggregationIndexError.invalidArgument(
                 "Grouping values count (\(groupingValues.count)) does not match " +
                 "expected count (\(expectedGroupingCount)) for index '\(index.name)'"
             )
@@ -541,7 +550,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
         let aggregateKey = layers.aggregated.pack(elements: groupingValues)
         try validateKeySize(aggregateKey)
         guard let valueData = try await transaction.getValue(for: aggregateKey, snapshot: true) else {
-            throw IndexError.noData("No MAX value found for group")
+            throw AggregationIndexError.noData("No MAX value found for group")
         }
         return try decodeAggregateValue(valueData).value
     }
@@ -559,7 +568,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
     ) async throws -> [(grouping: [any TupleElement], max: Value, itemId: Tuple)] {
         var results: [(grouping: [any TupleElement], max: Value, itemId: Tuple)] = []
         guard index.rootExpression.columnCount >= 1 else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "MAX index must contain a value field"
             )
         }
@@ -607,7 +616,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
             let groupingTuple = try layers.aggregated.unpack(key)
             let groupingElements = try groupingTuple.elements()
             guard groupingElements.count == groupingFieldCount else {
-                throw IndexError.invalidStructure(
+                throw AggregationIndexError.invalidStructure(
                     "MAX aggregate key has an invalid grouping field count"
                 )
             }
@@ -641,12 +650,16 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
         let maximum = try cursor.requireNext()
         let idStart = cursor.consumedByteCount
         guard !cursor.isAtEnd else {
-            throw IndexError.invalidStructure(
+            throw AggregationIndexError.invalidStructure(
                 "Invalid maximum aggregate value: expected [value, id]"
             )
         }
         return (
-            value: try TupleDecoder.decode(maximum, as: Value.self),
+            value: try decodeStoredAggregationValue(
+                maximum,
+                as: Value.self,
+                index: index
+            ),
             itemId: try Tuple(packed: bytes[idStart..<bytes.count])
         )
     }
@@ -725,9 +738,13 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
         ]
         var cursor = TupleCursor(bytes: aggregateValue)
         let maximum = try cursor.requireNext()
-        _ = try TupleDecoder.decode(maximum, as: Value.self)
+        _ = try decodeStoredAggregationValue(
+            maximum,
+            as: Value.self,
+            index: index
+        )
         guard !cursor.isAtEnd else {
-            throw IndexError.invalidStructure("Invalid Layer 1 key structure: expected at least [value, id]")
+            throw AggregationIndexError.invalidStructure("Invalid Layer 1 key structure: expected at least [value, id]")
         }
         while !cursor.isAtEnd {
             _ = try cursor.requireNext()
@@ -742,6 +759,22 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
 }
 
 // MARK: - Helper Functions
+
+private func decodeStoredAggregationValue<Value: IndexComparableValue>(
+    _ element: any TupleElement,
+    as type: Value.Type,
+    index: Index
+) throws -> Value {
+    guard let fieldName = index.kind.fieldNames.last else {
+        throw AggregationIndexError.invalidStructure(
+            "Aggregation index '\(index.name)' has no value field"
+        )
+    }
+    return try Value.decodeFieldValue(
+        FieldValue(tupleElement: element),
+        field: fieldName
+    )
+}
 
 /// Compare two grouping arrays for equality
 ///

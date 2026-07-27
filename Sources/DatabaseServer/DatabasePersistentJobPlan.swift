@@ -1,13 +1,13 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
-struct DatabasePersistentJobPlan: DatabaseWireValue, Sendable, Hashable {
+struct DatabasePersistentJobPlan: ServerPayloadValue, Sendable, Hashable {
     private static let formatVersion: UInt8 = 1
 
-    let jobID: DatabaseUUID
-    let operation: DatabaseJobOperationIdentifier
-    let specificationDigest: DatabaseBytes
-    let payload: DatabaseBytes
+    let jobID: DatabaseTypes.UUID
+    let operation: JobOperationIdentifier
+    let specificationDigest: ByteString
+    let payload: ByteString
 
     func validate() throws {
         guard specificationDigest.count == DatabaseRequestDigest.byteCount else {
@@ -33,18 +33,18 @@ struct DatabasePersistentJobPlan: DatabaseWireValue, Sendable, Hashable {
             throw .unsupportedProtocolVersionValue(UInt16(version))
         }
         self.init(
-            jobID: try DatabaseUUID(from: &reader),
-            operation: try DatabaseJobOperationIdentifier(from: &reader),
+            jobID: try DatabaseTypes.UUID(from: &reader),
+            operation: try JobOperationIdentifier(from: &reader),
             specificationDigest: try reader.readBytes(),
             payload: try reader.readBytes()
         )
     }
 
     init(
-        jobID: DatabaseUUID,
-        operation: DatabaseJobOperationIdentifier,
-        specificationDigest: DatabaseBytes,
-        payload: DatabaseBytes
+        jobID: DatabaseTypes.UUID,
+        operation: JobOperationIdentifier,
+        specificationDigest: ByteString,
+        payload: ByteString
     ) {
         self.jobID = jobID
         self.operation = operation

@@ -6,10 +6,9 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseValue
-import Graph
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -20,20 +19,21 @@ import TestSupport
 struct SocialEdgeForGroupBy {
     #Directory<SocialEdgeForGroupBy>("sparql_group_by_tests")
     var id: String = UUID().uuidString
-    var subject: DatabaseRDFTerm = .iri("https://example.invalid/resource/default-subject")
-    var predicate: DatabaseRDFTerm = .iri("https://example.invalid/predicate/default")
-    var object: DatabaseRDFTerm = .string("")
+    var subject: RDFTerm = .iri(.xsdString)
+    var predicate: RDFTerm = .iri(.xsdString)
+    var object: RDFTerm = .string("")
 
-    #Index(RDFQuadIndexKind<SocialEdgeForGroupBy>(
-        subject: \.subject,
-        predicate: \.predicate,
-        object: \.object
-    ))
+    #Index(
+        .rdfDataset,
+        from: \SocialEdgeForGroupBy.subject,
+        edge: \SocialEdgeForGroupBy.predicate,
+        to: \SocialEdgeForGroupBy.object
+    )
 }
 
 // MARK: - Test Suite
 
-@Suite("SPARQL GROUP BY Tests", .serialized, .heartbeat)
+@Suite("SPARQL GROUP BY Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct SPARQLGroupByTests {
 
     init() async throws {
@@ -46,24 +46,31 @@ struct SPARQLGroupByTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func resource(_ identifier: String) -> DatabaseRDFTerm {
-        .iri("https://example.invalid/resource/\(identifier)")
+    private func resource(_ identifier: String) throws -> RDFTerm {
+        try .iri(
+            validating: "https://example.invalid/resource/\(identifier)"
+        )
     }
 
-    private func predicate(_ identifier: String) -> DatabaseRDFTerm {
-        .iri("https://example.invalid/predicate/\(identifier)")
+    private func predicate(_ identifier: String) throws -> RDFTerm {
+        try .iri(
+            validating: "https://example.invalid/predicate/\(identifier)"
+        )
     }
 
-    private func value(_ term: DatabaseRDFTerm) -> ExecutionTerm {
+    private func value(_ term: RDFTerm) -> ExecutionTerm {
         .value(.rdfTerm(term))
     }
 
-    private func subjectTerm(_ identifier: String) -> ExecutionTerm {
-        identifier.hasPrefix("?") ? .variable(identifier) : value(resource(identifier))
+    private func subjectTerm(_ identifier: String) throws -> ExecutionTerm {
+        if identifier.hasPrefix("?") {
+            return .variable(identifier)
+        }
+        return value(try resource(identifier))
     }
 
-    private func predicateTerm(_ identifier: String) -> ExecutionTerm {
-        value(predicate(identifier))
+    private func predicateTerm(_ identifier: String) throws -> ExecutionTerm {
+        value(try predicate(identifier))
     }
 
     private func objectTerm(_ value: String) -> ExecutionTerm {
@@ -72,7 +79,10 @@ struct SPARQLGroupByTests {
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([SocialEdgeForGroupBy.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try SocialEdgeForGroupBy.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
@@ -96,11 +106,11 @@ struct SPARQLGroupByTests {
     private func makeEdge(
         from: String,
         relationship: String,
-        to: DatabaseRDFTerm
-    ) -> SocialEdgeForGroupBy {
+        to: RDFTerm
+    ) throws -> SocialEdgeForGroupBy {
         var statement = SocialEdgeForGroupBy()
-        statement.subject = resource(from)
-        statement.predicate = predicate(relationship)
+        statement.subject = try resource(from)
+        statement.predicate = try predicate(relationship)
         statement.object = to
         return statement
     }
@@ -109,8 +119,12 @@ struct SPARQLGroupByTests {
         from: String,
         relationship: String,
         to: String
-    ) -> SocialEdgeForGroupBy {
-        makeEdge(from: from, relationship: relationship, to: .string(to))
+    ) throws -> SocialEdgeForGroupBy {
+        try makeEdge(
+            from: from,
+            relationship: relationship,
+            to: .string(to)
+        )
     }
 
     // MARK: - Basic GROUP BY Tests
@@ -129,11 +143,11 @@ struct SPARQLGroupByTests {
 
         // Create edges: P1 knows F1, F2; P2 knows F1, F2, F3
         let edges = [
-            makeEdge(from: p1, relationship: "knows", to: f1),
-            makeEdge(from: p1, relationship: "knows", to: f2),
-            makeEdge(from: p2, relationship: "knows", to: f1),
-            makeEdge(from: p2, relationship: "knows", to: f2),
-            makeEdge(from: p2, relationship: "knows", to: f3),
+            try makeEdge(from: p1, relationship: "knows", to: f1),
+            try makeEdge(from: p1, relationship: "knows", to: f2),
+            try makeEdge(from: p2, relationship: "knows", to: f1),
+            try makeEdge(from: p2, relationship: "knows", to: f2),
+            try makeEdge(from: p2, relationship: "knows", to: f3),
         ]
 
         try await insertEdges(edges, context: context)
@@ -141,7 +155,7 @@ struct SPARQLGroupByTests {
         // GROUP BY ?from and COUNT friends
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?person"), predicateTerm("knows"), objectTerm("?friend"))
+            .where(try subjectTerm("?person"), try predicateTerm("knows"), objectTerm("?friend"))
             .groupBy("?person")
             .count("?friend", as: "friendCount")
             .execute()
@@ -149,11 +163,13 @@ struct SPARQLGroupByTests {
         #expect(result.count == 2)
 
         // Find the counts for each person
+        let p1Value = FieldValue.rdfTerm(try resource(p1))
+        let p2Value = FieldValue.rdfTerm(try resource(p2))
         let p1Result = result.bindings.first {
-            $0["?person"] == .rdfTerm(resource(p1))
+            $0["?person"] == p1Value
         }
         let p2Result = result.bindings.first {
-            $0["?person"] == .rdfTerm(resource(p2))
+            $0["?person"] == p2Value
         }
 
         #expect(p1Result?.string("friendCount") == "2")
@@ -171,11 +187,11 @@ struct SPARQLGroupByTests {
 
         // Create edges with different "to" values for min/max testing
         let edges = [
-            makeEdge(from: team1, relationship: "hasScore", to: "A"),
-            makeEdge(from: team1, relationship: "hasScore", to: "B"),
-            makeEdge(from: team1, relationship: "hasScore", to: "C"),
-            makeEdge(from: team2, relationship: "hasScore", to: "D"),
-            makeEdge(from: team2, relationship: "hasScore", to: "E"),
+            try makeEdge(from: team1, relationship: "hasScore", to: "A"),
+            try makeEdge(from: team1, relationship: "hasScore", to: "B"),
+            try makeEdge(from: team1, relationship: "hasScore", to: "C"),
+            try makeEdge(from: team2, relationship: "hasScore", to: "D"),
+            try makeEdge(from: team2, relationship: "hasScore", to: "E"),
         ]
 
         try await insertEdges(edges, context: context)
@@ -183,7 +199,7 @@ struct SPARQLGroupByTests {
         // GROUP BY team with COUNT, MIN, MAX
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?team"), predicateTerm("hasScore"), objectTerm("?score"))
+            .where(try subjectTerm("?team"), try predicateTerm("hasScore"), objectTerm("?score"))
             .groupBy("?team")
             .count("?score", as: "scoreCount")
             .min("?score", as: "minScore")
@@ -192,11 +208,13 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 2)
 
+        let team1Value = FieldValue.rdfTerm(try resource(team1))
+        let team2Value = FieldValue.rdfTerm(try resource(team2))
         let t1Result = result.bindings.first {
-            $0["?team"] == .rdfTerm(resource(team1))
+            $0["?team"] == team1Value
         }
         let t2Result = result.bindings.first {
-            $0["?team"] == .rdfTerm(resource(team2))
+            $0["?team"] == team2Value
         }
 
         #expect(t1Result?.string("scoreCount") == "3")
@@ -221,12 +239,12 @@ struct SPARQLGroupByTests {
 
         // Create edges: P1 -> 1 friend, P2 -> 3 friends, P3 -> 5 friends
         var edges: [SocialEdgeForGroupBy] = []
-        edges.append(makeEdge(from: p1, relationship: predicate, to: uniqueID("F")))
+        edges.append(try makeEdge(from: p1, relationship: predicate, to: uniqueID("F")))
         for i in 0..<3 {
-            edges.append(makeEdge(from: p2, relationship: predicate, to: uniqueID("F\(i)")))
+            edges.append(try makeEdge(from: p2, relationship: predicate, to: uniqueID("F\(i)")))
         }
         for i in 0..<5 {
-            edges.append(makeEdge(from: p3, relationship: predicate, to: uniqueID("F\(i)")))
+            edges.append(try makeEdge(from: p3, relationship: predicate, to: uniqueID("F\(i)")))
         }
 
         try await insertEdges(edges, context: context)
@@ -234,7 +252,7 @@ struct SPARQLGroupByTests {
         // GROUP BY person HAVING count > 2
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?person"), predicateTerm(predicate), objectTerm("?friend"))
+            .where(try subjectTerm("?person"), try predicateTerm(predicate), objectTerm("?friend"))
             .groupBy("?person")
             .count("?friend", as: "friendCount")
             .having("friendCount", greaterThan: 2)
@@ -244,9 +262,12 @@ struct SPARQLGroupByTests {
         #expect(result.count == 2)
 
         let persons = Set(result.bindings.compactMap { $0["?person"] })
-        #expect(persons.contains(.rdfTerm(resource(p2))))
-        #expect(persons.contains(.rdfTerm(resource(p3))))
-        #expect(!persons.contains(.rdfTerm(resource(p1))))
+        let p1Value = FieldValue.rdfTerm(try resource(p1))
+        let p2Value = FieldValue.rdfTerm(try resource(p2))
+        let p3Value = FieldValue.rdfTerm(try resource(p3))
+        #expect(persons.contains(p2Value))
+        #expect(persons.contains(p3Value))
+        #expect(!persons.contains(p1Value))
     }
 
     @Test("COUNT(*) aggregate")
@@ -257,16 +278,16 @@ struct SPARQLGroupByTests {
 
         let person = uniqueID("P")
         let edges = [
-            makeEdge(from: person, relationship: "likes", to: "A"),
-            makeEdge(from: person, relationship: "likes", to: "B"),
-            makeEdge(from: person, relationship: "likes", to: "C"),
+            try makeEdge(from: person, relationship: "likes", to: "A"),
+            try makeEdge(from: person, relationship: "likes", to: "B"),
+            try makeEdge(from: person, relationship: "likes", to: "C"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?person"), predicateTerm("likes"), objectTerm("?item"))
+            .where(try subjectTerm("?person"), try predicateTerm("likes"), objectTerm("?item"))
             .groupBy("?person")
             .countAll(as: "totalCount")
             .execute()
@@ -284,16 +305,16 @@ struct SPARQLGroupByTests {
         let person = uniqueID("P")
         let predicate = uniqueID("likes")  // Use unique predicate to avoid interference
         let edges = [
-            makeEdge(from: person, relationship: predicate, to: "Apple"),
-            makeEdge(from: person, relationship: predicate, to: "Banana"),
-            makeEdge(from: person, relationship: predicate, to: "Cherry"),
+            try makeEdge(from: person, relationship: predicate, to: "Apple"),
+            try makeEdge(from: person, relationship: predicate, to: "Banana"),
+            try makeEdge(from: person, relationship: predicate, to: "Cherry"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?person"), predicateTerm(predicate), objectTerm("?fruit"))
+            .where(try subjectTerm("?person"), try predicateTerm(predicate), objectTerm("?fruit"))
             .groupBy("?person")
             .groupConcat("?fruit", separator: ", ", as: "allFruits")
             .execute()
@@ -317,16 +338,16 @@ struct SPARQLGroupByTests {
 
         let person = uniqueID("P")
         let edges = [
-            makeEdge(from: person, relationship: "visited", to: "Paris"),
-            makeEdge(from: person, relationship: "visited", to: "London"),
-            makeEdge(from: person, relationship: "visited", to: "Tokyo"),
+            try makeEdge(from: person, relationship: "visited", to: "Paris"),
+            try makeEdge(from: person, relationship: "visited", to: "London"),
+            try makeEdge(from: person, relationship: "visited", to: "Tokyo"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?person"), predicateTerm("visited"), objectTerm("?city"))
+            .where(try subjectTerm("?person"), try predicateTerm("visited"), objectTerm("?city"))
             .groupBy("?person")
             .sample("?city", as: "sampleCity")
             .execute()
@@ -357,10 +378,10 @@ struct SPARQLGroupByTests {
         // photo2 -> tagged -> nature
         // photo3 -> tagged -> nature
         let edges = [
-            makeEdge(from: photo1, relationship: predicate, to: "nature"),
-            makeEdge(from: photo1, relationship: predicate, to: "travel"),
-            makeEdge(from: photo2, relationship: predicate, to: "nature"),
-            makeEdge(from: photo3, relationship: predicate, to: "nature"),
+            try makeEdge(from: photo1, relationship: predicate, to: "nature"),
+            try makeEdge(from: photo1, relationship: predicate, to: "travel"),
+            try makeEdge(from: photo2, relationship: predicate, to: "nature"),
+            try makeEdge(from: photo3, relationship: predicate, to: "nature"),
         ]
 
         try await insertEdges(edges, context: context)
@@ -368,7 +389,7 @@ struct SPARQLGroupByTests {
         // GROUP BY tag, count photos
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?photo"), predicateTerm(predicate), objectTerm("?tag"))
+            .where(try subjectTerm("?photo"), try predicateTerm(predicate), objectTerm("?tag"))
             .groupBy("?tag")
             .count("?photo", as: "totalPhotos")
             .countDistinct("?photo", as: "uniquePhotos")
@@ -403,8 +424,8 @@ struct SPARQLGroupByTests {
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
             .where(
-                subjectTerm(uniqueID("nonexistent")),
-                predicateTerm("knows"),
+                try subjectTerm(uniqueID("nonexistent")),
+                try predicateTerm("knows"),
                 objectTerm("?friend")
             )
             .groupBy("?friend")
@@ -425,7 +446,7 @@ struct SPARQLGroupByTests {
         for i in 0..<5 {
             let person = "P\(i)-\(uniqueID(""))"
             for j in 0..<(i + 1) {
-                edges.append(makeEdge(from: person, relationship: "knows", to: "F\(j)"))
+                edges.append(try makeEdge(from: person, relationship: "knows", to: "F\(j)"))
             }
         }
 
@@ -433,7 +454,7 @@ struct SPARQLGroupByTests {
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?person"), predicateTerm("knows"), objectTerm("?friend"))
+            .where(try subjectTerm("?person"), try predicateTerm("knows"), objectTerm("?friend"))
             .groupBy("?person")
             .count("?friend", as: "friendCount")
             .limit(3)
@@ -458,29 +479,31 @@ struct SPARQLGroupByTests {
         // Team1: scores 10, 20, 30 = sum 60
         // Team2: scores 5, 15 = sum 20
         let edges = [
-            makeEdge(from: team1, relationship: predicate, to: .integer(10)),
-            makeEdge(from: team1, relationship: predicate, to: .integer(20)),
-            makeEdge(from: team1, relationship: predicate, to: .integer(30)),
-            makeEdge(from: team2, relationship: predicate, to: .integer(5)),
-            makeEdge(from: team2, relationship: predicate, to: .integer(15)),
+            try makeEdge(from: team1, relationship: predicate, to: .integer(10)),
+            try makeEdge(from: team1, relationship: predicate, to: .integer(20)),
+            try makeEdge(from: team1, relationship: predicate, to: .integer(30)),
+            try makeEdge(from: team2, relationship: predicate, to: .integer(5)),
+            try makeEdge(from: team2, relationship: predicate, to: .integer(15)),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?team"), predicateTerm(predicate), objectTerm("?score"))
+            .where(try subjectTerm("?team"), try predicateTerm(predicate), objectTerm("?score"))
             .groupBy("?team")
             .sum("?score", as: "totalScore")
             .execute()
 
         #expect(result.count == 2)
 
+        let team1Value = FieldValue.rdfTerm(try resource(team1))
+        let team2Value = FieldValue.rdfTerm(try resource(team2))
         let t1Result = result.bindings.first {
-            $0["?team"] == .rdfTerm(resource(team1))
+            $0["?team"] == team1Value
         }
         let t2Result = result.bindings.first {
-            $0["?team"] == .rdfTerm(resource(team2))
+            $0["?team"] == team2Value
         }
 
         #expect(t1Result?.string("totalScore") == "60")
@@ -498,16 +521,16 @@ struct SPARQLGroupByTests {
 
         // Create edges with decimal values: 10.5, 20.25, 30.25 = 61.0
         let edges = [
-            makeEdge(from: account, relationship: predicate, to: .decimal(10.5)),
-            makeEdge(from: account, relationship: predicate, to: .decimal(20.25)),
-            makeEdge(from: account, relationship: predicate, to: .decimal(30.25)),
+            try makeEdge(from: account, relationship: predicate, to: .decimal(10.5)),
+            try makeEdge(from: account, relationship: predicate, to: .decimal(20.25)),
+            try makeEdge(from: account, relationship: predicate, to: .decimal(30.25)),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?account"), predicateTerm(predicate), objectTerm("?amount"))
+            .where(try subjectTerm("?account"), try predicateTerm(predicate), objectTerm("?amount"))
             .groupBy("?account")
             .sum("?amount", as: "totalAmount")
             .execute()
@@ -534,27 +557,26 @@ struct SPARQLGroupByTests {
         let group = uniqueID("G")
         let predicate = uniqueID("hasValue")
 
-        // Create edges with mixed values: 10, "abc", 20
-        // Non-numeric values should be ignored, sum = 30
+        // Create edges with mixed values: 10, "abc", 20.
+        // A type error in the aggregate input leaves the projected aggregate
+        // unbound according to SPARQL expression-error semantics.
         let edges = [
-            makeEdge(from: group, relationship: predicate, to: .integer(10)),
-            makeEdge(from: group, relationship: predicate, to: "abc"),
-            makeEdge(from: group, relationship: predicate, to: .integer(20)),
+            try makeEdge(from: group, relationship: predicate, to: .integer(10)),
+            try makeEdge(from: group, relationship: predicate, to: "abc"),
+            try makeEdge(from: group, relationship: predicate, to: .integer(20)),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?group"), predicateTerm(predicate), objectTerm("?value"))
+            .where(try subjectTerm("?group"), try predicateTerm(predicate), objectTerm("?value"))
             .groupBy("?group")
             .sum("?value", as: "totalValue")
             .execute()
 
         #expect(result.count == 1)
-
-        let totalValue = result.firstAggregateString("totalValue")
-        #expect(totalValue == "30")
+        #expect(result.firstAggregate("totalValue") == nil)
     }
 
     // MARK: - AVG Aggregate Tests
@@ -573,29 +595,31 @@ struct SPARQLGroupByTests {
         // Class1: 80, 90, 100 = avg 90
         // Class2: 70, 80 = avg 75
         let edges = [
-            makeEdge(from: class1, relationship: predicate, to: .integer(80)),
-            makeEdge(from: class1, relationship: predicate, to: .integer(90)),
-            makeEdge(from: class1, relationship: predicate, to: .integer(100)),
-            makeEdge(from: class2, relationship: predicate, to: .integer(70)),
-            makeEdge(from: class2, relationship: predicate, to: .integer(80)),
+            try makeEdge(from: class1, relationship: predicate, to: .integer(80)),
+            try makeEdge(from: class1, relationship: predicate, to: .integer(90)),
+            try makeEdge(from: class1, relationship: predicate, to: .integer(100)),
+            try makeEdge(from: class2, relationship: predicate, to: .integer(70)),
+            try makeEdge(from: class2, relationship: predicate, to: .integer(80)),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?class"), predicateTerm(predicate), objectTerm("?grade"))
+            .where(try subjectTerm("?class"), try predicateTerm(predicate), objectTerm("?grade"))
             .groupBy("?class")
             .avg("?grade", as: "avgGrade")
             .execute()
 
         #expect(result.count == 2)
 
+        let class1Value = FieldValue.rdfTerm(try resource(class1))
+        let class2Value = FieldValue.rdfTerm(try resource(class2))
         let c1Result = result.bindings.first {
-            $0["?class"] == .rdfTerm(resource(class1))
+            $0["?class"] == class1Value
         }
         let c2Result = result.bindings.first {
-            $0["?class"] == .rdfTerm(resource(class2))
+            $0["?class"] == class2Value
         }
 
         // Check class1 average = 90
@@ -624,16 +648,16 @@ struct SPARQLGroupByTests {
 
         // Create edges with decimal readings: 23.5, 24.5, 25.0 = avg 24.333...
         let edges = [
-            makeEdge(from: sensor, relationship: predicate, to: .decimal(23.5)),
-            makeEdge(from: sensor, relationship: predicate, to: .decimal(24.5)),
-            makeEdge(from: sensor, relationship: predicate, to: .decimal(25.0)),
+            try makeEdge(from: sensor, relationship: predicate, to: .decimal(23.5)),
+            try makeEdge(from: sensor, relationship: predicate, to: .decimal(24.5)),
+            try makeEdge(from: sensor, relationship: predicate, to: .decimal(25.0)),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?sensor"), predicateTerm(predicate), objectTerm("?reading"))
+            .where(try subjectTerm("?sensor"), try predicateTerm(predicate), objectTerm("?reading"))
             .groupBy("?sensor")
             .avg("?reading", as: "avgReading")
             .execute()
@@ -662,14 +686,14 @@ struct SPARQLGroupByTests {
 
         // Single value: 42
         let edges = [
-            makeEdge(from: item, relationship: predicate, to: .integer(42)),
+            try makeEdge(from: item, relationship: predicate, to: .integer(42)),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?item"), predicateTerm(predicate), objectTerm("?value"))
+            .where(try subjectTerm("?item"), try predicateTerm(predicate), objectTerm("?value"))
             .groupBy("?item")
             .avg("?value", as: "avgValue")
             .execute()
@@ -698,16 +722,16 @@ struct SPARQLGroupByTests {
 
         // Create edges with non-numeric values
         let edges = [
-            makeEdge(from: group, relationship: predicate, to: "alpha"),
-            makeEdge(from: group, relationship: predicate, to: "beta"),
-            makeEdge(from: group, relationship: predicate, to: "gamma"),
+            try makeEdge(from: group, relationship: predicate, to: "alpha"),
+            try makeEdge(from: group, relationship: predicate, to: "beta"),
+            try makeEdge(from: group, relationship: predicate, to: "gamma"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?group"), predicateTerm(predicate), objectTerm("?label"))
+            .where(try subjectTerm("?group"), try predicateTerm(predicate), objectTerm("?label"))
             .groupBy("?group")
             .avg("?label", as: "avgLabel")
             .execute()
@@ -734,16 +758,16 @@ struct SPARQLGroupByTests {
         // Create employees with salaries: 50000, 60000, 70000
         // Sum = 180000, Avg = 60000
         let edges = [
-            makeEdge(from: dept, relationship: predicate, to: .integer(50_000)),
-            makeEdge(from: dept, relationship: predicate, to: .integer(60_000)),
-            makeEdge(from: dept, relationship: predicate, to: .integer(70_000)),
+            try makeEdge(from: dept, relationship: predicate, to: .integer(50_000)),
+            try makeEdge(from: dept, relationship: predicate, to: .integer(60_000)),
+            try makeEdge(from: dept, relationship: predicate, to: .integer(70_000)),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?dept"), predicateTerm(predicate), objectTerm("?salary"))
+            .where(try subjectTerm("?dept"), try predicateTerm(predicate), objectTerm("?salary"))
             .groupBy("?dept")
             .sum("?salary", as: "totalSalary")
             .avg("?salary", as: "avgSalary")
@@ -752,8 +776,9 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 1)
 
+        let departmentValue = FieldValue.rdfTerm(try resource(dept))
         let deptResult = result.bindings.first {
-            $0["?dept"] == .rdfTerm(resource(dept))
+            $0["?dept"] == departmentValue
         }
         #expect(deptResult != nil)
 
@@ -778,16 +803,16 @@ struct SPARQLGroupByTests {
 
         // Create edges with positive and negative values: 100, -30, -20 = 50
         let edges = [
-            makeEdge(from: account, relationship: predicate, to: .integer(100)),
-            makeEdge(from: account, relationship: predicate, to: .integer(-30)),
-            makeEdge(from: account, relationship: predicate, to: .integer(-20)),
+            try makeEdge(from: account, relationship: predicate, to: .integer(100)),
+            try makeEdge(from: account, relationship: predicate, to: .integer(-30)),
+            try makeEdge(from: account, relationship: predicate, to: .integer(-20)),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?account"), predicateTerm(predicate), objectTerm("?balance"))
+            .where(try subjectTerm("?account"), try predicateTerm(predicate), objectTerm("?balance"))
             .groupBy("?account")
             .sum("?balance", as: "netBalance")
             .execute()
@@ -810,16 +835,16 @@ struct SPARQLGroupByTests {
         // Create edges with zeros and positive values: 0, 5, 10 = avg 5.0
         // Note: Graph index stores unique (from, edge, to) triples, so we need unique "to" values
         let edges = [
-            makeEdge(from: group, relationship: predicate, to: .integer(0)),
-            makeEdge(from: group, relationship: predicate, to: .integer(5)),
-            makeEdge(from: group, relationship: predicate, to: .integer(10)),
+            try makeEdge(from: group, relationship: predicate, to: .integer(0)),
+            try makeEdge(from: group, relationship: predicate, to: .integer(5)),
+            try makeEdge(from: group, relationship: predicate, to: .integer(10)),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
             .defaultIndex()
-            .where(subjectTerm("?group"), predicateTerm(predicate), objectTerm("?value"))
+            .where(try subjectTerm("?group"), try predicateTerm(predicate), objectTerm("?value"))
             .groupBy("?group")
             .avg("?value", as: "avgValue")
             .execute()

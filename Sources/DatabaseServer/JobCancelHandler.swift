@@ -1,8 +1,8 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct JobCancelHandler: DatabaseOperationEndpointHandler {
-    public let identifier = DatabaseOperationIdentifier.jobCancel
+    public typealias Operation = JobCancelOperation
 
     private let service: AnyDatabaseJobService
 
@@ -11,15 +11,10 @@ public struct JobCancelHandler: DatabaseOperationEndpointHandler {
     }
 
     public func invoke(
-        payload: DatabaseBytes,
+        request: JobCancelOperation.Request,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
     ) async throws -> DatabaseOperationResult {
-        let request = try DatabaseEnvelopeCodec.decode(
-            JobCancelOperation.Request.self,
-            from: payload,
-            limits: limits
-        )
         return try await service.cancel(request, context: context)
             .operationResult
     }

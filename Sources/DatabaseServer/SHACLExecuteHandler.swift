@@ -1,8 +1,8 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct SHACLExecuteHandler: DatabaseOperationEndpointHandler {
-    public let identifier = DatabaseOperationIdentifier.shaclExecute
+    public typealias Operation = SHACLExecuteOperation
 
     private let service: AnyDatabaseSHACLService
     private let runtimeLimits: DatabaseRuntimeLimits
@@ -16,15 +16,10 @@ public struct SHACLExecuteHandler: DatabaseOperationEndpointHandler {
     }
 
     public func invoke(
-        payload: DatabaseBytes,
+        request: SHACLExecuteOperation.Request,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
     ) async throws -> DatabaseOperationResult {
-        let request = try DatabaseEnvelopeCodec.decode(
-            SHACLExecuteOperation.Request.self,
-            from: payload,
-            limits: limits
-        )
         try runtimeLimits.validate(request.budget)
         try validatePageLimit(request.page.limit, budget: request.budget)
         return try await DatabaseExecutionTimeout.run(
@@ -38,7 +33,7 @@ public struct SHACLExecuteHandler: DatabaseOperationEndpointHandler {
 
     private func validatePageLimit(
         _ limit: UInt32,
-        budget: DatabaseExecutionBudget
+        budget: ExecutionBudget
     ) throws {
         guard limit > 0, limit <= budget.maximumRows else {
             throw DatabaseRuntimeLimitError.invalidMaximumRows(

@@ -1,46 +1,45 @@
-import Core
-import DatabaseValue
-import Graph
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 import TestHeartbeat
 import Testing
+@testable import DatabaseEngine
 @testable import GraphIndex
 
 @Suite("Canonical RDF-star Terms", .heartbeat)
 struct CanonicalRDFStarTermTests {
-    private let subject = DatabaseRDFTerm.iri("https://example.com/subject")
-    private let predicate = DatabaseRDFTerm.iri("https://example.com/predicate")
-    private let object = DatabaseRDFTerm.iri("https://example.com/object")
+    private let subject = RDFSubject.iri(.xsdString)
+    private let predicate = RDFPredicateIRI(.rdfLanguageString)
+    private let object = RDFTerm.iri(.rdfDirectionalLanguageString)
 
     @Test("Canonical storage codec round-trips triple terms")
     func storageCodecRoundTripsTripleTerms() throws {
-        let term = DatabaseRDFTerm.tripleTerm(
+        let term = RDFTerm.tripleTerm(
             subject: subject,
             predicate: predicate,
             object: object
         )
 
-        let encoded = try DatabaseRDFTermCodec.encode(term)
-        let decoded = try DatabaseRDFTermCodec.decode(encoded)
+        let encoded = try RDFTermStorageFormat.encode(term)
+        let decoded = try RDFTermStorageFormat.decode(encoded)
 
         #expect(decoded == term)
     }
 
     @Test("Canonical storage codec round-trips nested triple terms")
     func storageCodecRoundTripsNestedTripleTerms() throws {
-        let inner = DatabaseRDFTerm.tripleTerm(
+        let inner = RDFTerm.tripleTerm(
             subject: subject,
             predicate: predicate,
             object: object
         )
-        let outer = DatabaseRDFTerm.tripleTerm(
-            subject: inner,
-            predicate: .iri("https://example.com/source"),
-            object: .iri("https://example.com/document")
+        let outer = RDFTerm.tripleTerm(
+            subject: subject,
+            predicate: predicate,
+            object: inner
         )
 
-        let encoded = try DatabaseRDFTermCodec.encode(outer)
-        let decoded = try DatabaseRDFTermCodec.decode(encoded)
+        let encoded = try RDFTermStorageFormat.encode(outer)
+        let decoded = try RDFTermStorageFormat.decode(encoded)
 
         #expect(decoded == outer)
     }
@@ -48,8 +47,8 @@ struct CanonicalRDFStarTermTests {
     @Test("Execution term materializes a canonical triple term")
     func executionTermMaterializesCanonicalTripleTerm() {
         let term = ExecutionTerm.tripleTerm(
-            subject: .value(.rdfTerm(subject)),
-            predicate: .value(.rdfTerm(predicate)),
+            subject: .value(.rdfTerm(subject.term)),
+            predicate: .value(.rdfTerm(predicate.term)),
             object: .value(.rdfTerm(object))
         )
 
@@ -69,11 +68,11 @@ struct CanonicalRDFStarTermTests {
     @Test("Execution term rejects an invalid predicate role")
     func executionTermRejectsInvalidPredicateRole() {
         let term = ExecutionTerm.tripleTerm(
-            subject: .value(.rdfTerm(subject)),
+            subject: .value(.rdfTerm(subject.term)),
             predicate: .value(
                 .rdfTerm(
                     .literal(
-                        DatabaseRDFLiteral(
+                        RDFLiteral(
                             lexicalForm: "predicate",
                             datatype: .xsdString
                         )
@@ -90,11 +89,11 @@ struct CanonicalRDFStarTermTests {
     func substitutionPreservesCanonicalRDFTerms() {
         let term = ExecutionTerm.tripleTerm(
             subject: .variable("?subject"),
-            predicate: .value(.rdfTerm(predicate)),
+            predicate: .value(.rdfTerm(predicate.term)),
             object: .variable("?object")
         )
         let binding = VariableBinding()
-            .binding("?subject", to: .rdfTerm(subject))
+            .binding("?subject", to: .rdfTerm(subject.term))
             .binding("?object", to: .rdfTerm(object))
 
         let substituted = term.substitute(binding)
@@ -115,16 +114,27 @@ struct CanonicalRDFStarTermTests {
 @Suite("RDF-star Triple Variables", .heartbeat)
 struct RDFStarTripleVariableTests {
     @Test("Variables include nested triple positions")
-    func variablesIncludeNestedTriplePositions() {
+    func variablesIncludeNestedTriplePositions() throws {
         let triple = ExecutionTriple(
             subject: .tripleTerm(
                 subject: .variable("?innerSubject"),
                 predicate: .value(
-                    .rdfTerm(.iri("https://example.com/predicate"))
+                    .rdfTerm(
+                        try .iri(
+                            validating:
+                                "https://example.com/predicate"
+                        )
+                    )
                 ),
                 object: .variable("?innerObject")
             ),
-            predicate: .value(.rdfTerm(.iri("https://example.com/source"))),
+            predicate: .value(
+                .rdfTerm(
+                    try .iri(
+                        validating: "https://example.com/source"
+                    )
+                )
+            ),
             object: .variable("?source")
         )
 
@@ -135,14 +145,25 @@ struct RDFStarTripleVariableTests {
     }
 
     @Test("Repeated nested variables are deduplicated")
-    func repeatedNestedVariablesAreDeduplicated() {
+    func repeatedNestedVariablesAreDeduplicated() throws {
         let triple = ExecutionTriple(
             subject: .variable("?subject"),
-            predicate: .value(.rdfTerm(.iri("https://example.com/about"))),
+            predicate: .value(
+                .rdfTerm(
+                    try .iri(
+                        validating: "https://example.com/about"
+                    )
+                )
+            ),
             object: .tripleTerm(
                 subject: .variable("?subject"),
                 predicate: .value(
-                    .rdfTerm(.iri("https://example.com/predicate"))
+                    .rdfTerm(
+                        try .iri(
+                            validating:
+                                "https://example.com/predicate"
+                        )
+                    )
                 ),
                 object: .variable("?object")
             )
@@ -154,15 +175,15 @@ struct RDFStarTripleVariableTests {
 
 @Suite("RDF-star Expression Evaluation", .heartbeat)
 struct RDFStarExpressionEvaluationTests {
-    private let subject = DatabaseRDFTerm.iri("https://example.com/subject")
-    private let predicate = DatabaseRDFTerm.iri("https://example.com/predicate")
-    private let object = DatabaseRDFTerm.iri("https://example.com/object")
+    private let subject = RDFSubject.iri(.xsdString)
+    private let predicate = RDFPredicateIRI(.rdfLanguageString)
+    private let object = RDFTerm.iri(.rdfDirectionalLanguageString)
 
     @Test("TRIPLE constructs a canonical RDF term")
     func tripleConstructsCanonicalRDFTerm() throws {
-        let expression = QueryIR.Expression.triple(
-            subject: .literal(.rdfTerm(subject)),
-            predicate: .literal(.rdfTerm(predicate)),
+        let expression = Expression.triple(
+            subject: .literal(.rdfTerm(subject.term)),
+            predicate: .literal(.rdfTerm(predicate.term)),
             object: .literal(.rdfTerm(object))
         )
 
@@ -185,14 +206,14 @@ struct RDFStarExpressionEvaluationTests {
 
     @Test("TRIPLE rejects a literal predicate")
     func tripleRejectsLiteralPredicate() {
-        let literalPredicate = DatabaseRDFTerm.literal(
-            DatabaseRDFLiteral(
+        let literalPredicate = RDFTerm.literal(
+            RDFLiteral(
                 lexicalForm: "predicate",
                 datatype: .xsdString
             )
         )
-        let expression = QueryIR.Expression.triple(
-            subject: .literal(.rdfTerm(subject)),
+        let expression = Expression.triple(
+            subject: .literal(.rdfTerm(subject.term)),
             predicate: .literal(.rdfTerm(literalPredicate)),
             object: .literal(.rdfTerm(object))
         )
@@ -207,19 +228,19 @@ struct RDFStarExpressionEvaluationTests {
 
     @Test("RDF-star accessors preserve term roles")
     func accessorsPreserveTermRoles() throws {
-        let triple = DatabaseRDFTerm.tripleTerm(
+        let triple = RDFTerm.tripleTerm(
             subject: subject,
             predicate: predicate,
             object: object
         )
         let binding = VariableBinding(["?triple": .rdfTerm(triple)])
-        let variable = QueryIR.Expression.variable(Variable("triple"))
+        let variable = Expression.variable(Variable("triple"))
 
         #expect(
             try ExpressionEvaluator.evaluate(.isTriple(variable), binding: binding)
                 == .rdfTerm(
                     .literal(
-                        try DatabaseRDFLiteral(
+                        try RDFLiteral(
                             lexicalForm: "true",
                             datatype: "http://www.w3.org/2001/XMLSchema#boolean"
                         )
@@ -228,11 +249,11 @@ struct RDFStarExpressionEvaluationTests {
         )
         #expect(
             try ExpressionEvaluator.evaluate(.subject(variable), binding: binding)
-                == .rdfTerm(subject)
+                == .rdfTerm(subject.term)
         )
         #expect(
             try ExpressionEvaluator.evaluate(.predicate(variable), binding: binding)
-                == .rdfTerm(predicate)
+                == .rdfTerm(predicate.term)
         )
         #expect(
             try ExpressionEvaluator.evaluate(.object(variable), binding: binding)
@@ -242,8 +263,10 @@ struct RDFStarExpressionEvaluationTests {
 
     @Test("IS TRIPLE rejects ordinary RDF terms")
     func isTripleRejectsOrdinaryRDFTerms() throws {
-        let binding = VariableBinding(["?value": .rdfTerm(subject)])
-        let expression = QueryIR.Expression.isTriple(
+        let binding = VariableBinding([
+            "?value": .rdfTerm(subject.term)
+        ])
+        let expression = Expression.isTriple(
             .variable(Variable("value"))
         )
 
@@ -251,7 +274,7 @@ struct RDFStarExpressionEvaluationTests {
             try ExpressionEvaluator.evaluate(expression, binding: binding)
                 == .rdfTerm(
                     .literal(
-                        try DatabaseRDFLiteral(
+                        try RDFLiteral(
                             lexicalForm: "false",
                             datatype: "http://www.w3.org/2001/XMLSchema#boolean"
                         )

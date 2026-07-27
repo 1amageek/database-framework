@@ -1,7 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
-import Vector
 
 /// Container-scoped vector maintenance provider.
 ///
@@ -26,10 +25,10 @@ public struct VectorIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
-        let vectorKind = try VectorIndexKind<Item>(canonical: index.kind)
-        return vectorKind.makeIndexMaintainer(
+        let specification = try VectorIndexSpecification(index.kind)
+        return specification.makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,

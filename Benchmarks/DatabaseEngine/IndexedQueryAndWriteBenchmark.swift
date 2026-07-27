@@ -1,8 +1,8 @@
 #if FOUNDATION_DB
 import Testing
 import Foundation
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 import TestSupport
 import DatabaseEngine
@@ -10,256 +10,82 @@ import DatabaseRuntime
 import ScalarIndex
 import AggregationIndex
 
-struct PlainBenchmarkEntity: Persistable {
-    typealias ID = String
+@Persistable
+struct PlainBenchmarkEntity {
+    #Directory<PlainBenchmarkEntity>(
+        "test",
+        "performance",
+        "plain-entities"
+    )
 
-    var id: String
-    var runID: String
-    var category: String
-    var age: Int
-    var score: Double
-
-    init(
-        id: String = UUID().uuidString,
-        runID: String = "",
-        category: String = "",
-        age: Int = 0,
-        score: Double = 0
-    ) {
-        self.id = id
-        self.runID = runID
-        self.category = category
-        self.age = age
-        self.score = score
-    }
-
-    static var persistableType: String { "PlainBenchmarkEntity" }
-
-    static var allFields: [String] {
-        ["id", "runID", "category", "age", "score"]
-    }
-
-    static var directoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("test"), .staticPath("performance"), .staticPath("plain-entities")]
-    }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "runID": return runID
-        case "category": return category
-        case "age": return age
-        case "score": return score
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<PlainBenchmarkEntity, Value>) -> String {
-        switch keyPath {
-        case \PlainBenchmarkEntity.id: return "id"
-        case \PlainBenchmarkEntity.runID: return "runID"
-        case \PlainBenchmarkEntity.category: return "category"
-        case \PlainBenchmarkEntity.age: return "age"
-        case \PlainBenchmarkEntity.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<PlainBenchmarkEntity>) -> String {
-        switch keyPath {
-        case \PlainBenchmarkEntity.id: return "id"
-        case \PlainBenchmarkEntity.runID: return "runID"
-        case \PlainBenchmarkEntity.category: return "category"
-        case \PlainBenchmarkEntity.age: return "age"
-        case \PlainBenchmarkEntity.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PlainBenchmarkEntity> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var id: String = UUID().uuidString
+    var runID: String = ""
+    var category: String = ""
+    var age: Int64 = 0
+    var score: Double = 0
 }
 
-struct SingleIndexBenchmarkEntity: Persistable {
-    typealias ID = String
+@Persistable
+struct SingleIndexBenchmarkEntity {
+    #Directory<SingleIndexBenchmarkEntity>(
+        "test",
+        "performance",
+        "single-index-entities"
+    )
+    #Index(
+        .scalar,
+        fields: [
+            \SingleIndexBenchmarkEntity.runID,
+            \SingleIndexBenchmarkEntity.category,
+        ],
+        name: "single_category"
+    )
 
-    var id: String
-    var runID: String
-    var category: String
-    var age: Int
-    var score: Double
-
-    init(
-        id: String = UUID().uuidString,
-        runID: String = "",
-        category: String = "",
-        age: Int = 0,
-        score: Double = 0
-    ) {
-        self.id = id
-        self.runID = runID
-        self.category = category
-        self.age = age
-        self.score = score
-    }
-
-    static var persistableType: String { "SingleIndexBenchmarkEntity" }
-
-    static var allFields: [String] {
-        ["id", "runID", "category", "age", "score"]
-    }
-
-    static var directoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("test"), .staticPath("performance"), .staticPath("single-index-entities")]
-    }
-
-    static var _persistableDescriptors: [any Descriptor] {
-        [
-            IndexDescriptor(
-                name: "single_category",
-                keyPaths: [\SingleIndexBenchmarkEntity.runID, \SingleIndexBenchmarkEntity.category],
-                kind: ScalarIndexKind<SingleIndexBenchmarkEntity>(fields: [\.runID, \.category])
-            )
-        ]
-    }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "runID": return runID
-        case "category": return category
-        case "age": return age
-        case "score": return score
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<SingleIndexBenchmarkEntity, Value>) -> String {
-        switch keyPath {
-        case \SingleIndexBenchmarkEntity.id: return "id"
-        case \SingleIndexBenchmarkEntity.runID: return "runID"
-        case \SingleIndexBenchmarkEntity.category: return "category"
-        case \SingleIndexBenchmarkEntity.age: return "age"
-        case \SingleIndexBenchmarkEntity.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<SingleIndexBenchmarkEntity>) -> String {
-        switch keyPath {
-        case \SingleIndexBenchmarkEntity.id: return "id"
-        case \SingleIndexBenchmarkEntity.runID: return "runID"
-        case \SingleIndexBenchmarkEntity.category: return "category"
-        case \SingleIndexBenchmarkEntity.age: return "age"
-        case \SingleIndexBenchmarkEntity.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<SingleIndexBenchmarkEntity> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var id: String = UUID().uuidString
+    var runID: String = ""
+    var category: String = ""
+    var age: Int64 = 0
+    var score: Double = 0
 }
 
-struct TripleIndexBenchmarkEntity: Persistable {
-    typealias ID = String
+@Persistable
+struct TripleIndexBenchmarkEntity {
+    #Directory<TripleIndexBenchmarkEntity>(
+        "test",
+        "performance",
+        "triple-index-entities"
+    )
+    #Index(
+        .scalar,
+        fields: [
+            \TripleIndexBenchmarkEntity.runID,
+            \TripleIndexBenchmarkEntity.category,
+        ],
+        name: "triple_category"
+    )
+    #Index(
+        .scalar,
+        fields: [
+            \TripleIndexBenchmarkEntity.runID,
+            \TripleIndexBenchmarkEntity.age,
+        ],
+        name: "triple_age"
+    )
+    #Index(
+        .sum,
+        groupBy: [
+            \TripleIndexBenchmarkEntity.runID,
+            \TripleIndexBenchmarkEntity.category,
+        ],
+        value: \TripleIndexBenchmarkEntity.score,
+        name: "triple_score_by_category"
+    )
 
-    var id: String
-    var runID: String
-    var category: String
-    var age: Int
-    var score: Double
-
-    init(
-        id: String = UUID().uuidString,
-        runID: String = "",
-        category: String = "",
-        age: Int = 0,
-        score: Double = 0
-    ) {
-        self.id = id
-        self.runID = runID
-        self.category = category
-        self.age = age
-        self.score = score
-    }
-
-    static var persistableType: String { "TripleIndexBenchmarkEntity" }
-
-    static var allFields: [String] {
-        ["id", "runID", "category", "age", "score"]
-    }
-
-    static var directoryPathComponents: [DirectoryPathComponent] {
-        [.staticPath("test"), .staticPath("performance"), .staticPath("triple-index-entities")]
-    }
-
-    static var _persistableDescriptors: [any Descriptor] {
-        [
-            IndexDescriptor(
-                name: "triple_category",
-                keyPaths: [\TripleIndexBenchmarkEntity.runID, \TripleIndexBenchmarkEntity.category],
-                kind: ScalarIndexKind<TripleIndexBenchmarkEntity>(fields: [\.runID, \.category])
-            ),
-            IndexDescriptor(
-                name: "triple_age",
-                keyPaths: [\TripleIndexBenchmarkEntity.runID, \TripleIndexBenchmarkEntity.age],
-                kind: ScalarIndexKind<TripleIndexBenchmarkEntity>(fields: [\.runID, \.age])
-            ),
-            IndexDescriptor(
-                name: "triple_score_by_category",
-                keyPaths: [\TripleIndexBenchmarkEntity.runID, \TripleIndexBenchmarkEntity.category],
-                kind: SumIndexKind<TripleIndexBenchmarkEntity, Double>(groupBy: [\.runID, \.category], value: \.score)
-            )
-        ]
-    }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "runID": return runID
-        case "category": return category
-        case "age": return age
-        case "score": return score
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<TripleIndexBenchmarkEntity, Value>) -> String {
-        switch keyPath {
-        case \TripleIndexBenchmarkEntity.id: return "id"
-        case \TripleIndexBenchmarkEntity.runID: return "runID"
-        case \TripleIndexBenchmarkEntity.category: return "category"
-        case \TripleIndexBenchmarkEntity.age: return "age"
-        case \TripleIndexBenchmarkEntity.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<TripleIndexBenchmarkEntity>) -> String {
-        switch keyPath {
-        case \TripleIndexBenchmarkEntity.id: return "id"
-        case \TripleIndexBenchmarkEntity.runID: return "runID"
-        case \TripleIndexBenchmarkEntity.category: return "category"
-        case \TripleIndexBenchmarkEntity.age: return "age"
-        case \TripleIndexBenchmarkEntity.score: return "score"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<TripleIndexBenchmarkEntity> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var id: String = UUID().uuidString
+    var runID: String = ""
+    var category: String = ""
+    var age: Int64 = 0
+    var score: Double = 0
 }
 
 private struct IndexedBenchmarkContext: Sendable {
@@ -276,14 +102,24 @@ private struct IndexedBenchmarkContext: Sendable {
         self.singleRunID = "single-\(UUID().uuidString.prefix(8))"
         self.tripleRunID = "triple-\(UUID().uuidString.prefix(8))"
 
-        let schema = Schema(
-            [PlainBenchmarkEntity.self, SingleIndexBenchmarkEntity.self, TripleIndexBenchmarkEntity.self],
+        let schema = try Schema(
+            entities: [
+                try PlainBenchmarkEntity.schemaEntity,
+                try SingleIndexBenchmarkEntity.schemaEntity,
+                try TripleIndexBenchmarkEntity.schemaEntity,
+            ],
             version: .init(1, 0, 0)
         )
         self.container = try await DBContainer.open(
             for: schema,
             configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                persistableTypes: [
+                    PlainBenchmarkEntity.self,
+                    SingleIndexBenchmarkEntity.self,
+                    TripleIndexBenchmarkEntity.self,
+                ]
+            ),
             security: .disabled
         )
         try await cleanup()
@@ -311,7 +147,7 @@ private struct IndexedBenchmarkContext: Sendable {
             id: id,
             runID: plainRunID,
             category: category,
-            age: 18 + (seed % 50),
+            age: Int64(18 + (seed % 50)),
             score: Double(100 + (seed % 200))
         )
     }
@@ -324,7 +160,7 @@ private struct IndexedBenchmarkContext: Sendable {
             id: id,
             runID: singleRunID,
             category: category,
-            age: 18 + (seed % 50),
+            age: Int64(18 + (seed % 50)),
             score: Double(100 + (seed % 200))
         )
     }
@@ -337,7 +173,7 @@ private struct IndexedBenchmarkContext: Sendable {
             id: id,
             runID: tripleRunID,
             category: category,
-            age: 18 + (seed % 50),
+            age: Int64(18 + (seed % 50)),
             score: Double(100 + (seed % 200))
         )
     }
@@ -360,8 +196,8 @@ private struct IndexedBenchmarkContext: Sendable {
     func indexedLookup(category: String) async throws -> [SingleIndexBenchmarkEntity] {
         try await DatabaseContext(container: container)
             .fetch(SingleIndexBenchmarkEntity.self)
-            .where(\.runID == singleRunID)
-            .where(\.category == category)
+            .where(SingleIndexBenchmarkEntity.fields.runID == singleRunID)
+            .where(SingleIndexBenchmarkEntity.fields.category == category)
             .execute()
     }
 

@@ -1,5 +1,5 @@
 import Testing
-import FullText
+import DatabaseKit
 @testable import FullTextIndex
 
 @Suite("Full-text term normalizer")

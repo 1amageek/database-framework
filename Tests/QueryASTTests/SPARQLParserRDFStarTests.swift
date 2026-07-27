@@ -345,7 +345,9 @@ struct SPARQLParserRDFStarTests {
     // MARK: - Helpers
 
     /// Recursively search for a FILTER expression in a GraphPattern tree
-    private func findFilterExpression(_ pattern: GraphPattern) -> Expression? {
+    private func findFilterExpression(
+        _ pattern: GraphPattern
+    ) -> DatabaseKit.Expression? {
         switch pattern {
         case .filter(_, let expr):
             return expr
@@ -363,7 +365,9 @@ struct SPARQLParserRDFStarTests {
     }
 
     /// Recursively search for a BIND expression in a GraphPattern tree
-    private func findBindExpression(_ pattern: GraphPattern) -> Expression? {
+    private func findBindExpression(
+        _ pattern: GraphPattern
+    ) -> DatabaseKit.Expression? {
         switch pattern {
         case .bind(_, _, let expr):
             return expr

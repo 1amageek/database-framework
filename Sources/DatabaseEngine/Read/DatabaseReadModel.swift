@@ -1,14 +1,13 @@
-import Core
-import DatabaseValue
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseWire
-import QueryIR
+import DatabaseKit
 
 /// Opaque continuation produced and consumed by the engine read pipeline.
 public struct QueryContinuation: Sendable, Hashable {
-    public let bytes: DatabaseBytes
+    public let bytes: ByteString
 
-    public init(_ bytes: DatabaseBytes) {
+    public init(_ bytes: ByteString) {
         self.bytes = bytes
     }
 }
@@ -24,15 +23,15 @@ public struct ReadExecutionOptions: Sendable, Hashable {
     public let consistency: ReadConsistency?
     public let pageSize: Int?
     public let continuation: QueryContinuation?
-    public let budget: DatabaseExecutionBudget
-    public let continuationScope: DatabaseBytes
+    public let budget: ExecutionBudget
+    public let continuationScope: ByteString
 
     public init(
         consistency: ReadConsistency? = nil,
         pageSize: Int? = nil,
         continuation: QueryContinuation? = nil,
-        budget: DatabaseExecutionBudget = DatabaseExecutionBudget(),
-        continuationScope: DatabaseBytes = []
+        budget: ExecutionBudget = ExecutionBudget(),
+        continuationScope: ByteString = []
     ) {
         self.consistency = consistency
         self.pageSize = pageSize
@@ -89,13 +88,13 @@ public struct PersistableVersionToken: Sendable, Hashable {
 
 /// Canonical row produced by the engine before transport projection.
 public struct QueryRow: Sendable, Hashable {
-    public let fields: [String: DatabaseValue]
-    public let annotations: [String: DatabaseValue]
+    public let fields: [String: FieldValue]
+    public let annotations: [String: FieldValue]
     public let version: PersistableVersionToken?
 
     public init(
-        fields: [String: DatabaseValue],
-        annotations: [String: DatabaseValue] = [:],
+        fields: [String: FieldValue],
+        annotations: [String: FieldValue] = [:],
         version: PersistableVersionToken? = nil
     ) {
         self.fields = fields
@@ -108,13 +107,13 @@ public struct QueryRow: Sendable, Hashable {
 public struct QueryResponse: Sendable {
     public let rows: [QueryRow]
     public let continuation: QueryContinuation?
-    public let metadata: [String: DatabaseValue]
+    public let metadata: [String: FieldValue]
     public let affectedRows: Int?
 
     public init(
         rows: [QueryRow] = [],
         continuation: QueryContinuation? = nil,
-        metadata: [String: DatabaseValue] = [:],
+        metadata: [String: FieldValue] = [:],
         affectedRows: Int? = nil
     ) {
         self.rows = rows

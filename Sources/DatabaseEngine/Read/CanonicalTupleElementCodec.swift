@@ -3,9 +3,17 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import DatabaseValue
-import QueryIR
+import DatabaseTypes
+import DatabaseKit
 import StorageKit
+
+#if canImport(FoundationEssentials)
+private typealias PlatformUUID = FoundationEssentials.UUID
+private typealias PlatformDate = FoundationEssentials.Date
+#else
+private typealias PlatformUUID = Foundation.UUID
+private typealias PlatformDate = Foundation.Date
+#endif
 
 public enum CanonicalTupleElementCodec {
     private enum Key {
@@ -16,7 +24,7 @@ public enum CanonicalTupleElementCodec {
         static let float = "float"
     }
 
-    public static func encode(_ element: any TupleElement & Sendable) throws -> QueryParameterValue {
+    public static func encode(_ element: any TupleElement & Sendable) throws -> FieldValue {
         switch element {
         case let value as String:
             return .string(value)
@@ -31,19 +39,22 @@ public enum CanonicalTupleElementCodec {
         case let value as UInt64:
             return .uint64(value)
         case let value as Float:
-            return typedObject(type: Key.float, value: .double(Double(value)))
+            return try typedObject(type: Key.float, value: .float64(Double(value)))
         case let value as Double:
-            return .double(value)
-        case let value as UUID:
-            return typedObject(type: Key.uuid, value: .string(value.uuidString))
-        case let value as Date:
-            return typedObject(type: Key.date, value: .double(value.timeIntervalSince1970))
+            return .float64(value)
+        case let value as PlatformUUID:
+            return try typedObject(type: Key.uuid, value: .string(value.uuidString))
+        case let value as PlatformDate:
+            return try typedObject(
+                type: Key.date,
+                value: .float64(value.timeIntervalSince1970)
+            )
         default:
             throw CanonicalTupleElementCodecError.unsupportedType(String(describing: type(of: element)))
         }
     }
 
-    public static func decode(_ value: QueryParameterValue) throws -> (any TupleElement & Sendable) {
+    public static func decode(_ value: FieldValue) throws -> (any TupleElement & Sendable) {
         switch value {
         case .string(let string):
             return string
@@ -53,7 +64,7 @@ public enum CanonicalTupleElementCodec {
             return int
         case .uint64(let unsigned):
             return unsigned
-        case .double(let double):
+        case .float64(let double):
             return double
         case .object(let object):
             guard let typeValue = objectValue(named: Key.type, in: object),
@@ -64,19 +75,19 @@ public enum CanonicalTupleElementCodec {
             case Key.uuid:
                 guard let rawValue = objectValue(named: Key.value, in: object),
                       case .string(let raw) = rawValue,
-                      let uuid = UUID(uuidString: raw) else {
+                      let uuid = PlatformUUID(uuidString: raw) else {
                     throw CanonicalTupleElementCodecError.invalidValue
                 }
                 return uuid
             case Key.date:
                 guard let intervalValue = objectValue(named: Key.value, in: object),
-                      case .double(let interval) = intervalValue else {
+                      case .float64(let interval) = intervalValue else {
                     throw CanonicalTupleElementCodecError.invalidValue
                 }
-                return Date(timeIntervalSince1970: interval)
+                return PlatformDate(timeIntervalSince1970: interval)
             case Key.float:
                 guard let scalarValue = objectValue(named: Key.value, in: object),
-                      case .double(let scalar) = scalarValue else {
+                      case .float64(let scalar) = scalarValue else {
                     throw CanonicalTupleElementCodecError.invalidValue
                 }
                 return Float(scalar)
@@ -88,18 +99,27 @@ public enum CanonicalTupleElementCodec {
         }
     }
 
-    private static func typedObject(type: String, value: DatabaseValue) -> DatabaseValue {
-        .object([
-            DatabaseObjectField(number: 1, name: Key.type, value: .string(type)),
-            DatabaseObjectField(number: 2, name: Key.value, value: value),
-        ])
+    private static func typedObject(
+        type: String,
+        value: FieldValue
+    ) throws -> FieldValue {
+        do {
+            return .object(
+                try FieldObject([
+                (key: Key.type, value: .string(type)),
+                (key: Key.value, value: value),
+                ])
+            )
+        } catch {
+            throw CanonicalTupleElementCodecError.invalidValue
+        }
     }
 
     private static func objectValue(
         named name: String,
-        in fields: [DatabaseObjectField]
-    ) -> DatabaseValue? {
-        fields.first { $0.name == name }?.value
+        in object: FieldObject
+    ) -> FieldValue? {
+        object[name]
     }
 }
 

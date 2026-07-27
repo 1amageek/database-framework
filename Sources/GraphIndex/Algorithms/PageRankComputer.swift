@@ -8,8 +8,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
-import Graph
+import DatabaseKit
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 

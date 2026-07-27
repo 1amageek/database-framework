@@ -1,10 +1,10 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import GraphIndex
 import StorageKit
 import Testing
@@ -28,7 +28,7 @@ struct SchemaDatabaseGraphSourceResolverTests {
             return
         }
         #expect(source.entityName == DatabaseGraphSourceEdge.persistableType)
-        #expect(layout.strategy == .tripleStore)
+        #expect(layout.strategy == .adjacency)
         #expect(layout.scope == .named("calendar"))
         #expect(layout.edgeLabel == "contains")
         #expect(source.storedFieldNames == ["weight"])
@@ -41,8 +41,11 @@ struct SchemaDatabaseGraphSourceResolverTests {
     func resolvesRDFGraph() async throws {
         let container = try await makeContainer()
         let resolver = SchemaDatabaseGraphSourceResolver(container: container)
-        guard let descriptor = DatabaseSHACLStatement.indexDescriptors.first(
-            where: { $0.kindIdentifier == RDFQuadIndexKind<DatabaseSHACLStatement>.identifier }
+        guard let descriptor = try DatabaseSHACLStatement.indexDescriptors.first(
+            where: {
+                $0.kindIdentifier
+                    == IndexDefinition.rdfDataset.identifier
+            }
         ) else {
             Issue.record("Expected the RDF quad index descriptor")
             return
@@ -51,7 +54,7 @@ struct SchemaDatabaseGraphSourceResolverTests {
             GraphAlgorithmOperation.Source(
                 index: descriptor.name,
                 graph: .defaultGraph,
-                edgeLabel: .rdf(.iri("urn:predicate"))
+                edgeLabel: .rdf(try RDFTerm.iri(validating: "urn:predicate"))
             )
         )
 
@@ -59,10 +62,17 @@ struct SchemaDatabaseGraphSourceResolverTests {
             Issue.record("Expected an RDF source")
             return
         }
-        #expect(layout.scope == .defaultGraph)
-        #expect(layout.predicate == .iri("urn:predicate"))
-        let encoded = try source.encodeVertex(.rdf(.blankNode("event")))
-        #expect(try source.decodeVertex(encoded) == .rdf(.blankNode("event")))
+        #expect(
+            layout.scope
+                == ResolvedDatabaseGraphSource.RDFScope.defaultGraph
+        )
+        #expect(
+            layout.predicate
+                == (try RDFTerm.iri(validating: "urn:predicate"))
+        )
+        let blankNode = try RDFTerm.blankNode(identifier: "event")
+        let encoded = try source.encodeVertex(.rdf(blankNode))
+        #expect(try source.decodeVertex(encoded) == .rdf(blankNode))
     }
 
     @Test("graph representations reject terms from the other model")
@@ -74,7 +84,9 @@ struct SchemaDatabaseGraphSourceResolverTests {
             try await resolver.resolve(
                 GraphAlgorithmOperation.Source(
                     index: "source_graph",
-                    edgeLabel: .rdf(.iri("urn:predicate"))
+                    edgeLabel: .rdf(
+                        try RDFTerm.iri(validating: "urn:predicate")
+                    )
                 )
             )
         }
@@ -89,7 +101,9 @@ struct SchemaDatabaseGraphSourceResolverTests {
             try await resolver.resolve(
                 GraphAlgorithmOperation.Source(
                     index: "default_rdf",
-                    graph: .named(.rdf(.iri("urn:calendar")))
+                    graph: .named(
+                        .rdf(try RDFTerm.iri(validating: "urn:calendar"))
+                    )
                 )
             )
         }

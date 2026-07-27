@@ -9,10 +9,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
+import DatabaseTypes
 import StorageKit
-import Geospatial
 
 /// True K-Nearest Neighbors search using Priority Queue + Cell Pruning
 ///
@@ -227,7 +227,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
         let items = try await queryContext.fetchItems(ids: keys, type: T.self)
 
         for item in items {
-            if let location = extractGeoPoint(from: item) {
+            if let location = try extractGeoPoint(from: item) {
                 let pkTuple = try SpatialPrimaryKey.tuple(for: item)
                 points.append(PointInfo(primaryKey: pkTuple, location: location))
             }
@@ -314,10 +314,34 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
         }
     }
 
-    /// Extract GeoPoint from item using dynamicMember subscript
-    private func extractGeoPoint(from item: T) -> GeoPoint? {
-        guard let value = item[dynamicMember: fieldName] else { return nil }
-        return value as? GeoPoint
+    private func extractGeoPoint(from item: T) throws -> GeoPoint? {
+        guard let fieldNumber = T.fieldNumber(for: fieldName) else {
+            throw SpatialIndexMaintenanceError.invalidFieldExpression(
+                indexName: fieldName
+            )
+        }
+        guard let value = try item.persistedFieldValue(
+            for: FieldIdentity(name: fieldName, number: fieldNumber)
+        ) else {
+            throw SpatialIndexMaintenanceError.missingCoordinate(
+                fieldName: fieldName
+            )
+        }
+        switch value {
+        case .null:
+            return nil
+        case .geographicPoint(let point):
+            return GeoPoint(point.latitude, point.longitude)
+        case .geographicPosition(let position):
+            return GeoPoint(
+                position.point.latitude,
+                position.point.longitude
+            )
+        default:
+            throw SpatialIndexMaintenanceError.unsupportedCoordinateValue(
+                fieldName: fieldName
+            )
+        }
     }
 }
 

@@ -6,7 +6,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 
 // MARK: - FusionBuilder
 

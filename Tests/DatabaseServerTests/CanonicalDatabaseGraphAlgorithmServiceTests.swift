@@ -1,10 +1,10 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import GraphIndex
 import StorageKit
 import Synchronization
@@ -12,73 +12,6 @@ import Testing
 
 @Suite("Canonical graph algorithm service")
 struct CanonicalDatabaseGraphAlgorithmServiceTests {
-    private struct WeightedGraphEdge: Persistable {
-        typealias ID = String
-
-        var id: String
-        var source: String
-        var label: String
-        var target: String
-        var weight: Double
-
-        static var persistableType: String { "WeightedGraphEdge" }
-        static var allFields: [String] {
-            ["id", "source", "label", "target", "weight"]
-        }
-        static var fieldSchemas: [FieldSchema] {
-            [
-                FieldSchema(name: "id", fieldNumber: 1, type: .string),
-                FieldSchema(name: "source", fieldNumber: 2, type: .string),
-                FieldSchema(name: "label", fieldNumber: 3, type: .string),
-                FieldSchema(name: "target", fieldNumber: 4, type: .string),
-                FieldSchema(name: "weight", fieldNumber: 5, type: .double),
-            ]
-        }
-        static var indexDescriptors: [IndexDescriptor] { [] }
-
-        static func fieldNumber(for fieldName: String) -> Int? {
-            fieldSchemas.first { $0.name == fieldName }?.fieldNumber
-        }
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "source": return source
-            case "label": return label
-            case "target": return target
-            case "weight": return weight
-            default: return nil
-            }
-        }
-
-        static func fieldName<Value>(
-            for keyPath: KeyPath<WeightedGraphEdge, Value>
-        ) -> String {
-            fieldName(for: keyPath as PartialKeyPath<WeightedGraphEdge>)
-        }
-
-        static func fieldName(
-            for keyPath: PartialKeyPath<WeightedGraphEdge>
-        ) -> String {
-            switch keyPath {
-            case \WeightedGraphEdge.id: return "id"
-            case \WeightedGraphEdge.source: return "source"
-            case \WeightedGraphEdge.label: return "label"
-            case \WeightedGraphEdge.target: return "target"
-            case \WeightedGraphEdge.weight: return "weight"
-            default: return String(describing: keyPath)
-            }
-        }
-
-        static func fieldName(for keyPath: AnyKeyPath) -> String {
-            guard let keyPath = keyPath as? PartialKeyPath<WeightedGraphEdge> else {
-                return String(describing: keyPath)
-            }
-            return fieldName(for: keyPath)
-        }
-    }
-
     private struct FixedSourceResolver: DatabaseGraphSourceResolving {
         let source: ResolvedDatabaseGraphSource
 
@@ -93,7 +26,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
         let engine: CountingEngine
         let container: DBContainer
         let service: CanonicalDatabaseGraphAlgorithmService
-        let maintainer: GraphIndexMaintainer<WeightedGraphEdge>
+        let maintainer: GraphIndexMaintainer<CanonicalPropertyGraphEdge>
     }
 
     private final class CountingEngine: StorageEngine, Sendable {
@@ -147,7 +80,10 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             Issue.record("Expected a first path page with continuation")
             return
         }
-        #expect(firstPage.nodes == [.identifier("A"), .identifier("B")])
+        #expect(
+            try firstPage.materializedNodes(maximumCount: 2)
+                == [.identifier("A"), .identifier("B")]
+        )
         #expect(firstPage.progress.algorithmComplete)
         #expect(!firstPage.progress.resultPageComplete)
 
@@ -159,8 +95,14 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             Issue.record("Expected a second path page")
             return
         }
-        #expect(secondPage.nodes == [.identifier("B"), .identifier("C")])
-        #expect(secondPage.edgeLabels == [.identifier("link")])
+        #expect(
+            try secondPage.materializedNodes(maximumCount: 2)
+                == [.identifier("B"), .identifier("C")]
+        )
+        #expect(
+            try secondPage.materializedEdgeLabels(maximumCount: 1)
+                == [.identifier("link")]
+        )
     }
 
     @Test("continuation detects a changed graph snapshot")
@@ -177,7 +119,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
         }
 
         try await insert(
-            WeightedGraphEdge(
+            CanonicalPropertyGraphEdge(
                 id: "direct",
                 source: "A",
                 label: "link",
@@ -199,7 +141,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
     func weightedPathReadsStoredWeight() async throws {
         let graphContext = try await makePropertyGraphAlgorithmContext()
         try await insert(
-            WeightedGraphEdge(
+            CanonicalPropertyGraphEdge(
                 id: "direct",
                 source: "A",
                 label: "link",
@@ -219,7 +161,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
                     maximumNodes: 100
                 ),
                 page: GraphAlgorithmOperation.Page(limit: 10),
-                budget: DatabaseExecutionBudget(maximumWorkUnits: 1_000)
+                budget: ExecutionBudget(maximumWorkUnits: 1_000)
             ),
             graphContext: graphContext
         )
@@ -227,13 +169,13 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             Issue.record("Expected a weighted path")
             return
         }
-        #expect(path.nodes == [
-            DatabaseGraphTerm.identifier("A"),
-            DatabaseGraphTerm.identifier("B"),
-            DatabaseGraphTerm.identifier("C"),
-            DatabaseGraphTerm.identifier("D"),
+        #expect(try path.materializedNodes(maximumCount: 4) == [
+            GraphAlgorithmOperation.Term.identifier("A"),
+            GraphAlgorithmOperation.Term.identifier("B"),
+            GraphAlgorithmOperation.Term.identifier("C"),
+            GraphAlgorithmOperation.Term.identifier("D"),
         ])
-        #expect(path.weights == [2, 1, 1])
+        #expect(try path.materializedWeights(maximumCount: 3) == [2, 1, 1])
         #expect(path.totalWeight == 4)
         #expect(path.progress == GraphAlgorithmOperation.Progress.complete)
     }
@@ -279,7 +221,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
                     maximumNodes: 100
                 ),
                 page: GraphAlgorithmOperation.Page(limit: 10),
-                budget: DatabaseExecutionBudget(maximumWorkUnits: 1_000)
+                budget: ExecutionBudget(maximumWorkUnits: 1_000)
             ),
             graphContext: graphContext
         )
@@ -289,7 +231,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
     @Test("ranking, community, cycle, component, and topological families execute")
     func remainingAlgorithmFamiliesExecute() async throws {
         let graphContext = try await makePropertyGraphAlgorithmContext()
-        let budget = DatabaseExecutionBudget(maximumWorkUnits: 10_000)
+        let budget = ExecutionBudget(maximumWorkUnits: 10_000)
         let page = GraphAlgorithmOperation.Page(limit: 100)
 
         let ranking = try await execute(
@@ -310,7 +252,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             Issue.record("Expected a ranking response")
             return
         }
-        #expect(rankingPage.scores.count == 4)
+        #expect(rankingPage.scoreCount == 4)
         #expect(rankingPage.progress.algorithmComplete)
 
         let communities = try await execute(
@@ -331,7 +273,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             Issue.record("Expected a community response")
             return
         }
-        #expect(communityPage.assignments.count == 4)
+        #expect(communityPage.assignmentCount == 4)
         #expect(communityPage.modularity != nil)
 
         let cycles = try await execute(
@@ -347,7 +289,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             Issue.record("Expected a cycle response")
             return
         }
-        #expect(cyclePage.cycles.isEmpty)
+        #expect(cyclePage.cycleCount == 0)
         #expect(cyclePage.progress.algorithmComplete)
 
         let components = try await execute(
@@ -366,8 +308,11 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             Issue.record("Expected a component response")
             return
         }
-        #expect(componentPage.components.count == 4)
-        #expect(componentPage.components.allSatisfy { $0.count == 1 })
+        let materializedComponents = try componentPage.materializedComponents(
+            maximumCount: 4
+        )
+        #expect(materializedComponents.count == 4)
+        #expect(materializedComponents.allSatisfy { $0.termCount == 1 })
 
         let topological = try await execute(
             GraphAlgorithmOperation.Request(
@@ -382,11 +327,11 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             Issue.record("Expected a topological response")
             return
         }
-        #expect(topologicalPage.order == [
-            DatabaseGraphTerm.identifier("A"),
-            DatabaseGraphTerm.identifier("B"),
-            DatabaseGraphTerm.identifier("C"),
-            DatabaseGraphTerm.identifier("D"),
+        #expect(try topologicalPage.materializedOrder(maximumCount: 4) == [
+            GraphAlgorithmOperation.Term.identifier("A"),
+            GraphAlgorithmOperation.Term.identifier("B"),
+            GraphAlgorithmOperation.Term.identifier("C"),
+            GraphAlgorithmOperation.Term.identifier("D"),
         ])
         #expect(topologicalPage.progress.algorithmComplete)
     }
@@ -398,7 +343,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
 
     private func shortestPathRequest(
         pageLimit: UInt32,
-        continuation: DatabaseBytes? = nil,
+        continuation: ByteString? = nil,
         maximumWorkUnits: UInt64 = 1_000
     ) -> GraphAlgorithmOperation.Request {
         GraphAlgorithmOperation.Request(
@@ -414,7 +359,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
                 limit: pageLimit,
                 continuation: continuation
             ),
-            budget: DatabaseExecutionBudget(
+            budget: ExecutionBudget(
                 maximumWorkUnits: maximumWorkUnits
             )
         )
@@ -502,9 +447,27 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             maintainer: maintainer
         )
         for edge in [
-            WeightedGraphEdge(id: "ab", source: "A", label: "link", target: "B", weight: 2),
-            WeightedGraphEdge(id: "bc", source: "B", label: "link", target: "C", weight: 1),
-            WeightedGraphEdge(id: "cd", source: "C", label: "link", target: "D", weight: 1),
+            CanonicalPropertyGraphEdge(
+                id: "ab",
+                source: "A",
+                label: "link",
+                target: "B",
+                weight: 2
+            ),
+            CanonicalPropertyGraphEdge(
+                id: "bc",
+                source: "B",
+                label: "link",
+                target: "C",
+                weight: 1
+            ),
+            CanonicalPropertyGraphEdge(
+                id: "cd",
+                source: "C",
+                label: "link",
+                target: "D",
+                weight: 1
+            ),
         ] {
             try await insert(edge, graphContext: graphContext)
         }
@@ -512,7 +475,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
     }
 
     private func insert(
-        _ edge: WeightedGraphEdge,
+        _ edge: CanonicalPropertyGraphEdge,
         graphContext: PropertyGraphAlgorithmContext
     ) async throws {
         try await graphContext.container.engine.withTransaction(
@@ -535,8 +498,11 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             context: DatabaseOperationContext(
                 container: graphContext.container,
                 requestID: 1,
-                metadata: DatabaseRequestMetadata(),
-                requestPayload: try DatabaseEnvelopeCodec.encode(request)
+                metadata: OperationRequestMetadata(),
+                requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
+                    DatabaseOperations.graphAlgorithm,
+                    request: request
+                )
             )
         )
     }

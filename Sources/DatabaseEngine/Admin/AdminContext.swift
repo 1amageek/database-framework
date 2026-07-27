@@ -13,11 +13,13 @@ import StorageKit
 /// ```swift
 /// let admin = container.newAdminContext()
 ///
-/// // 統計情報
+/// // Collection statistics
 /// let stats = try await admin.collectionStatistics(User.self)
 ///
-/// // クエリ分析
-/// let plan = try await admin.explain(Query<User>().where(\.age > 18))
+/// // Query analysis
+/// let plan = try await admin.explain(
+///     Query<User>().where(User.fields.age > 18)
+/// )
 /// ```
 public final class AdminContext: AdminContextProtocol, Sendable {
     // MARK: - Properties

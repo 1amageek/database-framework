@@ -1,4 +1,4 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 /// Type-erased database request middleware.
 public final class AnyDatabaseRequestMiddleware:

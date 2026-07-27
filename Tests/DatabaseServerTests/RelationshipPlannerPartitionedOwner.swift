@@ -1,13 +1,13 @@
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 
 @Persistable
 struct RelationshipPlannerPartitionedOwner {
     #Directory<RelationshipPlannerPartitionedOwner>(
         "tests",
         "relationship-planner",
-        Field<RelationshipPlannerPartitionedOwner>(\.runID),
+        \RelationshipPlannerPartitionedOwner.runID,
         "owners"
     )
 
@@ -15,5 +15,5 @@ struct RelationshipPlannerPartitionedOwner {
     var runID: String
 
     @Relationship(deleteRule: .cascade)
-    var target: DatabaseReference<RelationshipPlannerPartitionedTarget>? = nil
+    var target: PersistableReference<RelationshipPlannerPartitionedTarget>? = nil
 }

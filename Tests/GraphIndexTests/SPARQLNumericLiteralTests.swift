@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import Testing
 @testable import GraphIndex
 
@@ -67,7 +67,7 @@ struct SPARQLNumericLiteralTests {
     ) throws -> FieldValue {
         .rdfTerm(
             .literal(
-                try DatabaseRDFLiteral(
+                try RDFLiteral(
                     lexicalForm: lexicalForm,
                     datatype: datatype
                 )

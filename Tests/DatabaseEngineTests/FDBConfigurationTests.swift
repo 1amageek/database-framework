@@ -1,7 +1,7 @@
 #if !os(WASI)
 #if FOUNDATION_DB
 // DBConfigurationTests.swift
-// Tests for DBConfiguration and IndexConfiguration API
+// Tests for DBConfiguration and runtime index configuration.
 
 import Testing
 import TestHeartbeat
@@ -11,12 +11,13 @@ import FDBStorage
 import Logging
 import Synchronization
 import TestSupport
-@testable import Core
+import DatabaseTypes
+@testable import DatabaseKit
 @testable import DatabaseEngine
 import DatabaseRuntime
 
-/// Tests for DBConfiguration and IndexConfiguration API
-@Suite("DBConfiguration Tests", .serialized, .heartbeat)
+/// Tests for DBConfiguration and runtime index configuration.
+@Suite("DBConfiguration Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct DBConfigurationTests {
 
     // MARK: - Test Models
@@ -24,11 +25,20 @@ struct DBConfigurationTests {
     @Persistable
     struct IndexConfigurationUser {
         #Directory<IndexConfigurationUser>("config_tests", "users")
-        #Index(ScalarIndexKind<IndexConfigurationUser>(fields: [\.name]))
-        #Index(ScalarIndexKind<IndexConfigurationUser>(fields: [\.embedding]))
+        #Index(
+            .fullText(),
+            fields: [\IndexConfigurationUser.name],
+            name: "IndexConfigurationUser_name"
+        )
+        #Index(
+            .vector(dimensions: 3),
+            embedding: \IndexConfigurationUser.embedding,
+            name: "IndexConfigurationUser_embedding"
+        )
 
+        var id: String = ""
         var name: String = ""
-        var embedding: [Float] = []
+        var embedding: Vector = Vector(int8: [])
     }
 
     // MARK: - Single Configuration API Tests
@@ -38,7 +48,7 @@ struct DBConfigurationTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([IndexConfigurationUser.self])
+        let schema = try Schema(entities: [try IndexConfigurationUser.schemaEntity])
 
         let container = try await DBContainer.open(
             testing: schema,
@@ -168,7 +178,7 @@ struct DBConfigurationTests {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([IndexConfigurationUser.self])
+        let schema = try Schema(entities: [try IndexConfigurationUser.schemaEntity])
 
         let container = try await DBContainer.open(
             testing: schema,
@@ -235,14 +245,15 @@ struct DBConfigurationPropertiesTests {
     @Persistable
     struct IndexConfigurationUser {
         #Directory<IndexConfigurationUser>("config_tests", "users")
+        var id: String = ""
         var name: String = ""
-        var embedding: [Float] = []
+        var embedding: Vector = Vector(int8: [])
     }
 
     @Test("DBConfiguration stores all properties correctly")
     func allPropertiesStored() {
-        let configs: [any IndexConfiguration] = [
-            ContainerEmbeddingConfiguration(fieldName: "embedding", modelTypeName: "IndexConfigurationUser", dimensions: 128, profileIdentifier: "test")
+        let configs: [any IndexRuntimeConfiguration] = [
+            ContainerEmbeddingConfiguration(fieldName: "embedding", entityName: "IndexConfigurationUser", profileIdentifier: "test")
         ]
 
         let config = DBConfiguration(
@@ -269,7 +280,7 @@ struct DBConfigurationPropertiesTests {
             name: "debug-test",
             backend: .fdb(),
             indexConfigurations: [
-                ContainerEmbeddingConfiguration(fieldName: "embedding", modelTypeName: "IndexConfigurationUser", dimensions: 64, profileIdentifier: "test")
+                ContainerEmbeddingConfiguration(fieldName: "embedding", entityName: "IndexConfigurationUser", profileIdentifier: "test")
             ]
         )
 
@@ -279,40 +290,34 @@ struct DBConfigurationPropertiesTests {
     }
 }
 
-// MARK: - Test IndexConfiguration Implementations
+// MARK: - Test Runtime Configurations
 
-struct ContainerEmbeddingConfiguration: IndexConfiguration, Sendable {
-    static var kindIdentifier: String { "scalar" }
+struct ContainerEmbeddingConfiguration: IndexRuntimeConfiguration, Sendable {
+    static var kindIdentifier: String { IndexDefinition.vector(dimensions: 1).identifier }
 
     let fieldName: String
-    let _modelTypeName: String
-    var modelTypeName: String { _modelTypeName }
-    var indexName: String { "\(_modelTypeName)_\(fieldName)" }
+    let entityName: String
 
-    let dimensions: Int
     let profileIdentifier: String
 
-    init(fieldName: String, modelTypeName: String, dimensions: Int, profileIdentifier: String) {
+    init(fieldName: String, entityName: String, profileIdentifier: String) {
         self.fieldName = fieldName
-        self._modelTypeName = modelTypeName
-        self.dimensions = dimensions
+        self.entityName = entityName
         self.profileIdentifier = profileIdentifier
     }
 }
 
-struct ContainerLocalizedTextConfiguration: IndexConfiguration, Sendable {
-    static var kindIdentifier: String { "scalar" }
+struct ContainerLocalizedTextConfiguration: IndexRuntimeConfiguration, Sendable {
+    static var kindIdentifier: String { IndexDefinition.fullText().identifier }
 
     let fieldName: String
-    let _modelTypeName: String
-    var modelTypeName: String { _modelTypeName }
-    var indexName: String { "\(_modelTypeName)_\(fieldName)" }
+    let entityName: String
 
     let language: String
 
-    init(fieldName: String, modelTypeName: String, language: String) {
+    init(fieldName: String, entityName: String, language: String) {
         self.fieldName = fieldName
-        self._modelTypeName = modelTypeName
+        self.entityName = entityName
         self.language = language
     }
 }

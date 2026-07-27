@@ -1,11 +1,11 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 struct DatabaseIdempotencyEntry: Sendable, Hashable {
     let operation: DatabaseOperationIdentifier
-    let requestDigest: DatabaseBytes
-    let responseDigest: DatabaseBytes
-    let responsePayload: DatabaseBytes
+    let requestDigest: ByteString
+    let responseDigest: ByteString
+    let responsePayload: ByteString
 
     func manifest(limits: DatabaseWireLimits) throws -> DatabaseIdempotencyManifest {
         guard responsePayload.count <= limits.maximumFrameBytes,
@@ -28,7 +28,7 @@ struct DatabaseIdempotencyEntry: Sendable, Hashable {
 
     static func reconstruct(
         manifest: DatabaseIdempotencyManifest,
-        responsePayload: DatabaseBytes,
+        responsePayload: ByteString,
         limits: DatabaseWireLimits
     ) throws -> Self {
         try manifest.validate(limits: limits)

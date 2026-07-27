@@ -2,7 +2,7 @@
 
 import Foundation
 import DatabaseEngine
-import Core
+import DatabaseKit
 
 public struct SchemaInfoCommands {
 
@@ -50,7 +50,7 @@ public struct SchemaInfoCommands {
 
     private func show(name: String) throws {
         guard let entity = entities.first(where: { $0.name == name }) else {
-            throw CLIError.entityNotFound(name)
+            throw CLIError.entityTypeNotFound(name)
         }
 
         output.header(entity.name)

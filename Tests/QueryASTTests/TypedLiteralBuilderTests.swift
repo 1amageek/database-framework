@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 import Testing
 @testable import QueryAST
 
@@ -53,10 +53,10 @@ struct TypedLiteralBuilderTests {
     }
 
     @Test("unsupported database values fail before query construction")
-    func unsupportedDatabaseValueFails() {
-        #expect(throws: DatabaseLiteralConversionError.unsupportedDatabaseValue) {
+    func unsupportedFieldValueFails() {
+        #expect(throws: QueryLiteralConversionError.unsupportedFieldValue) {
             try SQLQueryBuilder(from: "events")
-                .where("payload", equals: DatabaseValue.object([]))
+                .where("payload", equals: FieldValue.object(FieldObject()))
         }
     }
 }

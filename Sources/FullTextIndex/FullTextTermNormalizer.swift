@@ -1,7 +1,7 @@
 // FullTextTermNormalizer.swift
 // FullTextIndex - Shared full-text query and indexing token normalization
 
-import FullText
+import DatabaseKit
 
 internal struct FullTextTermNormalizer: Sendable {
     let tokenizer: TokenizationStrategy

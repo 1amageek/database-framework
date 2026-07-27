@@ -13,7 +13,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import StorageKit
-import Graph
+import DatabaseKit
 import DatabaseEngine
 
 /// SHACL Validation Engine
@@ -139,7 +139,9 @@ public struct SHACLValidator: Sendable {
         var results: [SHACLValidationResult] = []
 
         // Collect declared property IRIs for sh:closed augmentation (§4.8.1)
-        let declaredPropertyIRIs = nodeShape.propertyShapes.compactMap { $0.path.predicateIRI }
+        let declaredPropertyIRIs = nodeShape.propertyShapes.compactMap {
+            $0.path.predicateIRI?.rawValue
+        }
 
         // Evaluate node-level constraints (focus node is the value node)
         let focusAsValue: [RDFTerm] = [focusNode]

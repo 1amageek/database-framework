@@ -11,13 +11,13 @@ public final class DatabaseWorkMeter: Sendable {
         var peakIntermediateBytes: UInt64 = 0
     }
 
-    public let budget: DatabaseExecutionBudget
+    public let budget: ExecutionBudget
 
     private let now: @Sendable () -> ContinuousClock.Instant
     private let deadline: ContinuousClock.Instant
     private let state = Mutex(State())
 
-    public init(budget: DatabaseExecutionBudget) {
+    public init(budget: ExecutionBudget) {
         let clock = ContinuousClock()
         let start = clock.now
         self.budget = budget
@@ -28,7 +28,7 @@ public final class DatabaseWorkMeter: Sendable {
     }
 
     package init(
-        budget: DatabaseExecutionBudget,
+        budget: ExecutionBudget,
         now: @escaping @Sendable () -> ContinuousClock.Instant
     ) {
         self.budget = budget

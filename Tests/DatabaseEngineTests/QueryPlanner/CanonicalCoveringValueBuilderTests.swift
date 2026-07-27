@@ -1,9 +1,8 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
+import DatabaseKit
 import DatabaseEngine
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
 import StorageKit
 import Testing
 
@@ -12,7 +11,7 @@ struct CanonicalCoveringValueBuilderTests {
     @Test("Stored fields retain null, arrays, and typed references")
     func storedFieldsRoundTrip() throws {
         let entity = try IndexProjectionEntityFactory.entity()
-        let descriptor = IndexProjectionEntityFactory.descriptor()
+        let descriptor = try IndexProjectionEntityFactory.descriptor()
         let bytes = try CoveringValueBuilder.build(
             for: entity,
             index: IndexProjectionEntityFactory.runtimeIndex(from: descriptor)
@@ -40,7 +39,9 @@ struct CanonicalCoveringValueBuilderTests {
         let bytes = try CoveringValueBuilder.build(
             for: IndexProjectionEntityFactory.entity(),
             index: IndexProjectionEntityFactory.runtimeIndex(
-                from: IndexProjectionEntityFactory.descriptor(storedFields: [])
+                from: try IndexProjectionEntityFactory.descriptor(
+                    includesStoredFields: false
+                )
             )
         )
 
@@ -51,10 +52,10 @@ struct CanonicalCoveringValueBuilderTests {
     func keyOnlyIndexWritesProjection() throws {
         var entity = IndexProjectionKeyOnlyEntity(email: "key@example.com")
         entity.id = "key-1"
-        let descriptor = IndexDescriptor(
+        let descriptor = try IndexDescriptor(
             name: "IndexProjectionKeyOnlyEntity_email",
-            keyPaths: [\IndexProjectionKeyOnlyEntity.email],
-            kind: ScalarIndexKind<IndexProjectionKeyOnlyEntity>(fields: [\.email])
+            definition: .scalar,
+            fields: [IndexProjectionKeyOnlyEntity.fields.email.ascending]
         )
         let bytes = try CoveringValueBuilder.build(
             for: entity,
@@ -67,13 +68,16 @@ struct CanonicalCoveringValueBuilderTests {
 
     @Test("Unknown stored fields fail before an index write")
     func unknownFieldFails() throws {
-        let descriptor = IndexProjectionEntityFactory.descriptor(
-            storedFields: ["unknown"]
+        let descriptor = try IndexProjectionEntityFactory.descriptor(
+            includesStoredFields: false
         )
         #expect(throws: CanonicalIndexProjectionError.self) {
             _ = try CoveringValueBuilder.build(
                 for: IndexProjectionEntityFactory.entity(),
-                index: IndexProjectionEntityFactory.runtimeIndex(from: descriptor)
+                index: IndexProjectionEntityFactory.runtimeIndex(
+                    from: descriptor,
+                    storedFieldNames: ["unknown"]
+                )
             )
         }
     }
@@ -81,12 +85,12 @@ struct CanonicalCoveringValueBuilderTests {
     @Test("Truncated projections are rejected deterministically")
     func truncatedProjectionFails() throws {
         let entity = try IndexProjectionEntityFactory.entity()
-        let descriptor = IndexProjectionEntityFactory.descriptor()
+        let descriptor = try IndexProjectionEntityFactory.descriptor()
         let bytes = try CoveringValueBuilder.build(
             for: entity,
             index: IndexProjectionEntityFactory.runtimeIndex(from: descriptor)
         )
-        #expect(throws: DatabaseWireError.self) {
+        #expect(throws: StorageFrameError.self) {
             _ = try CoveringValueBuilder.decode(
                 bytes.dropLast(),
                 storedFieldNames: descriptor.storedFieldNames
@@ -97,7 +101,7 @@ struct CanonicalCoveringValueBuilderTests {
     @Test("Selected byte fields retain the frame allocation")
     func selectedBytesRetainFrameAllocation() throws {
         let limits = try testLimits(maximumFrameBytes: 131_072)
-        let payload = DatabaseBytes.copying(count: 4_096) { buffer in
+        let payload = ByteString.copying(count: 4_096) { buffer in
             buffer.initializeMemory(as: UInt8.self, repeating: 0xA5)
         }
         let frame = try PersistableFieldFrameCodec.encode(
@@ -125,28 +129,27 @@ struct CanonicalCoveringValueBuilderTests {
             return
         }
 
-        frame.withUnsafeBytes { frameBuffer in
+        let selectedRetainsFrameAllocation = frame.withUnsafeBytes { frameBuffer in
             selected.withUnsafeBytes { selectedBuffer in
-                let frameStart = frameBuffer.baseAddress.map(UInt.init(bitPattern:))
-                let selectedStart = selectedBuffer.baseAddress.map(UInt.init(bitPattern:))
-                #expect(frameStart != nil)
-                #expect(selectedStart != nil)
-                if let frameStart, let selectedStart {
-                    #expect(selectedStart >= frameStart)
-                    #expect(
-                        selectedStart + UInt(selectedBuffer.count)
-                            <= frameStart + UInt(frameBuffer.count)
-                    )
+                guard let frameBaseAddress = frameBuffer.baseAddress,
+                      let selectedBaseAddress = selectedBuffer.baseAddress else {
+                    return false
                 }
+                let frameStart = UInt(bitPattern: frameBaseAddress)
+                let selectedStart = UInt(bitPattern: selectedBaseAddress)
+                return selectedStart >= frameStart
+                    && selectedStart + UInt(selectedBuffer.count)
+                        <= frameStart + UInt(frameBuffer.count)
             }
         }
+        #expect(selectedRetainsFrameAllocation)
         #expect(selected == payload)
     }
 
     @Test("Unselected value payloads are skipped without decoding")
     func unselectedPayloadIsNotDecoded() throws {
         let limits = try testLimits(maximumFrameBytes: 131_072)
-        let ignoredPayload = DatabaseBytes.copying(count: 65_536) { buffer in
+        let ignoredPayload = ByteString.copying(count: 65_536) { buffer in
             buffer.initializeMemory(as: UInt8.self, repeating: 0xA5)
         }
         var frame = try PersistableFieldFrameCodec.encode(
@@ -168,7 +171,7 @@ struct CanonicalCoveringValueBuilderTests {
             limits: limits
         )
         let ignoredValueSignature: [UInt8] = [
-            7,
+            14,
             0x00, 0x00, 0x01, 0x00,
             0xA5, 0xA5, 0xA5, 0xA5,
         ]
@@ -184,8 +187,11 @@ struct CanonicalCoveringValueBuilderTests {
             selectedFieldNames: ["selected"],
             limits: limits
         )
-        #expect(selected.fieldsByName == ["selected": .string("calendar")])
-        #expect(throws: DatabaseWireError.self) {
+        let expectedFields: [String: FieldValue] = [
+            "selected": .string("calendar"),
+        ]
+        #expect(selected.fieldsByName == expectedFields)
+        #expect(throws: StorageFrameError.self) {
             _ = try PersistableFieldFrameCodec.decode(
                 frame,
                 magic: [0x54, 0x45, 0x53, 0x54],
@@ -197,14 +203,13 @@ struct CanonicalCoveringValueBuilderTests {
 
     private func testLimits(
         maximumFrameBytes: Int
-    ) throws -> DatabaseWireLimits {
-        try DatabaseWireLimits(
+    ) throws -> StorageFrameLimits {
+        try StorageFrameLimits(
             maximumFrameBytes: maximumFrameBytes,
             maximumStringBytes: maximumFrameBytes,
             maximumByteStringBytes: maximumFrameBytes,
             maximumCollectionCount: 1_000,
-            maximumNestingDepth: 16,
-            maximumObjectCount: 10_000
+            maximumNestingDepth: 16
         )
     }
 

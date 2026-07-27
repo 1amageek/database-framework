@@ -163,9 +163,9 @@ struct TupleEncoderTests {
 
     @Test("encodes UUID directly")
     func testUUIDEncoding() throws {
-        let uuid = UUID()
+        let uuid = Foundation.UUID()
         let result = try TupleEncoder.encode(uuid)
-        #expect((result as? UUID) == uuid)
+        #expect((result as? Foundation.UUID) == uuid)
     }
 
     // MARK: - Data/Bytes Encoding
@@ -309,7 +309,7 @@ struct TupleEncoderTests {
         let intResult = try TupleEncoder.encode(42)
         let doubleResult = try TupleEncoder.encode(3.14)
         let boolResult = try TupleEncoder.encode(true)
-        let uuidValue = UUID()
+        let uuidValue = Foundation.UUID()
         let uuidResult = try TupleEncoder.encode(uuidValue)
 
         let tuple = Tuple([stringResult, intResult, doubleResult, boolResult, uuidResult])
@@ -322,7 +322,7 @@ struct TupleEncoderTests {
         #expect((unpackedElements[1] as? Int64) == 42)
         #expect((unpackedElements[2] as? Double) == 3.14)
         #expect((unpackedElements[3] as? Bool) == true)
-        #expect((unpackedElements[4] as? UUID) == uuidValue)
+        #expect((unpackedElements[4] as? Foundation.UUID) == uuidValue)
     }
 
     // MARK: - Edge Cases

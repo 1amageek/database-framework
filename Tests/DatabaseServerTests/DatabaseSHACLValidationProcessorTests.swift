@@ -1,10 +1,10 @@
-import Core
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseEngine
 import DatabaseServer
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
-import Graph
+import DatabaseKit
 import GraphIndex
 import StorageKit
 import Testing
@@ -24,15 +24,23 @@ struct DatabaseSHACLValidationProcessorTests {
 
         #expect(response.conforms == false)
         #expect(response.issues.count == 2)
-        #expect(Set(response.issues.compactMap(\.focusNode)) == [
-            .iri("urn:Dave"),
-            .iri("urn:Eve")
-        ])
+        #expect(
+            Set(response.issues.compactMap(\.focusNode)) == Set([
+                try RDFTerm.iri(validating: "urn:Dave"),
+                try RDFTerm.iri(validating: "urn:Eve"),
+            ])
+        )
         for issue in response.issues {
-            #expect(issue.severity == .violation)
+            #expect(issue.severity == ValidationReport.Severity.violation)
             #expect(issue.code == "sh:MinCountConstraintComponent")
-            #expect(issue.path == .predicate("urn:name"))
-            #expect(issue.sourceShape == .blankNode("name-property"))
+            #expect(
+                issue.path
+                    == .predicate(try RDFPredicateIRI("urn:name"))
+            )
+            #expect(
+                issue.sourceShape
+                    == (try RDFTerm.blankNode(identifier: "name-property"))
+            )
         }
     }
 
@@ -99,9 +107,9 @@ struct DatabaseSHACLValidationProcessorTests {
         let validationContext = try await makeSHACLValidationContext()
         let unsupported = try shapes() + [
             try quad(
-                .iri("urn:PersonShape"),
+                try RDFTerm.iri(validating: "urn:PersonShape"),
                 Self.shNamespace + "sparql",
-                .blankNode("constraint")
+                try RDFTerm.blankNode(identifier: "constraint")
             )
         ]
 
@@ -136,8 +144,8 @@ struct DatabaseSHACLValidationProcessorTests {
         )
         guard let descriptor = try DatabaseSHACLStatement.indexDescriptors.first(
             where: {
-                $0.kindIdentifier ==
-                    RDFQuadIndexKind<DatabaseSHACLStatement>.identifier
+                $0.kindIdentifier
+                    == IndexDefinition.rdfDataset.identifier
             }
         ) else {
             throw SHACLValidationSetupError.missingRDFDatasetIndex
@@ -149,8 +157,8 @@ struct DatabaseSHACLValidationProcessorTests {
         let data = SHACLExecuteOperation.DataSource(
             entity: DatabaseSHACLStatement.persistableType,
             index: descriptor.name,
-            partitions: [],
-            graph: .named(.iri(Self.dataGraph))
+            partitions: FieldObject(),
+            graph: .named(try RDFTerm.iri(validating: Self.dataGraph))
         )
         let source = RDFDatasetSource(
             entityName: DatabaseSHACLStatement.persistableType,
@@ -196,19 +204,20 @@ struct DatabaseSHACLValidationProcessorTests {
     private func insertMissingNamePeople(validationContext: SHACLValidationContext) async throws {
         let context = validationContext.container.newContext()
         for (index, person) in ["urn:Dave", "urn:Eve"].enumerated() {
-            var statement = DatabaseSHACLStatement()
-            statement.id = "person-\(index)"
-            statement.subject = .iri(person)
-            statement.predicate = .iri(Self.rdfType)
-            statement.object = .iri("urn:Person")
-            statement.graph = .iri(Self.dataGraph)
+            let statement = DatabaseSHACLStatement(
+                id: "person-\(index)",
+                subject: try .iri(validating: person),
+                predicate: try .iri(validating: Self.rdfType),
+                object: try .iri(validating: "urn:Person"),
+                graph: try .iri(validating: Self.dataGraph)
+            )
             try context.insert(statement)
         }
         try await context.save()
     }
 
     private func upsertShapes(
-        _ shapes: [DatabaseRDFQuad],
+        _ shapes: [RDFQuad],
         key: String,
         validationContext: SHACLValidationContext
     ) async throws {
@@ -224,8 +233,12 @@ struct DatabaseSHACLValidationProcessorTests {
             context: DatabaseOperationContext(
                 container: validationContext.container,
                 requestID: 1,
-                metadata: DatabaseRequestMetadata(idempotencyKey: key),
-                requestPayload: try DatabaseEnvelopeCodec.encode(request)
+                metadata: OperationRequestMetadata(idempotencyKey: key),
+                requestPayload: try DatabaseWireEncoder()
+                    .encodeRequestPayload(
+                        DatabaseOperations.shaclExecute,
+                        request: request
+                    )
             )
         )
     }
@@ -234,7 +247,7 @@ struct DatabaseSHACLValidationProcessorTests {
         page: QueryExecuteOperation.Page,
         focus: SHACLExecuteOperation.Focus = .targets,
         validationContext: SHACLValidationContext
-    ) async throws -> DatabaseValidationReport {
+    ) async throws -> MaterializedValidationReport {
         let response = try await validationContext.service.execute(
             SHACLExecuteOperation.Request(
                 invocation: .validate(
@@ -250,23 +263,45 @@ struct DatabaseSHACLValidationProcessorTests {
         guard case .validation(let report) = response else {
             throw SHACLValidationSetupError.unexpectedResponse
         }
-        return report
+        return MaterializedValidationReport(
+            conforms: report.conforms,
+            issues: try report.materializedIssues(
+                maximumCount: report.issueCount
+            ),
+            continuation: report.continuation
+        )
     }
 
-    private func shapes() throws -> [DatabaseRDFQuad] {
-        let shape = DatabaseRDFTerm.iri("urn:PersonShape")
-        let property = DatabaseRDFTerm.blankNode("name-property")
+    private func shapes() throws -> [RDFQuad] {
+        let shape = try RDFTerm.iri(validating: "urn:PersonShape")
+        let property = try RDFTerm.blankNode(identifier: "name-property")
         return [
-            try quad(shape, Self.rdfType, .iri(Self.shNodeShape)),
-            try quad(shape, Self.shTargetClass, .iri("urn:Person")),
+            try quad(
+                shape,
+                Self.rdfType,
+                try RDFTerm.iri(validating: Self.shNodeShape)
+            ),
+            try quad(
+                shape,
+                Self.shTargetClass,
+                try RDFTerm.iri(validating: "urn:Person")
+            ),
             try quad(shape, Self.shProperty, property),
-            try quad(property, Self.rdfType, .iri(Self.shPropertyShape)),
-            try quad(property, Self.shPath, .iri("urn:name")),
+            try quad(
+                property,
+                Self.rdfType,
+                try RDFTerm.iri(validating: Self.shPropertyShape)
+            ),
+            try quad(
+                property,
+                Self.shPath,
+                try RDFTerm.iri(validating: "urn:name")
+            ),
             try quad(
                 property,
                 Self.shMinCount,
                 .literal(
-                    try DatabaseRDFLiteral(
+                    try RDFLiteral(
                         lexicalForm: "1",
                         datatype: Self.xsdInteger
                     )
@@ -276,13 +311,13 @@ struct DatabaseSHACLValidationProcessorTests {
     }
 
     private func quad(
-        _ subject: DatabaseRDFTerm,
+        _ subject: RDFTerm,
         _ predicate: String,
-        _ object: DatabaseRDFTerm
-    ) throws -> DatabaseRDFQuad {
-        try DatabaseRDFQuad(
-            subject: subject,
-            predicate: .iri(predicate),
+        _ object: RDFTerm
+    ) throws -> RDFQuad {
+        try RDFQuad(
+            validatingSubject: subject,
+            predicate: try RDFTerm.iri(validating: predicate),
             object: object
         )
     }
@@ -291,7 +326,7 @@ struct DatabaseSHACLValidationProcessorTests {
         DatabaseOperationContext(
             container: container,
             requestID: 2,
-            metadata: DatabaseRequestMetadata(),
+            metadata: OperationRequestMetadata(),
             requestPayload: []
         )
     }
@@ -301,6 +336,12 @@ struct DatabaseSHACLValidationProcessorTests {
         let resolver: MutableSnapshotSHACLDataSourceResolver
         let service: CanonicalDatabaseSHACLService
         let data: SHACLExecuteOperation.DataSource
+    }
+
+    private struct MaterializedValidationReport {
+        let conforms: Bool
+        let issues: [ValidationReport.Issue]
+        let continuation: ByteString?
     }
 
     private enum SHACLValidationSetupError: Error {

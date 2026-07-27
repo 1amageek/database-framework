@@ -9,7 +9,7 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseTypes
-import Core
+import DatabaseKit
 
 // MARK: - ModelDiffBuilder
 
@@ -188,20 +188,38 @@ public struct ModelDiffBuilder: Sendable {
 
     // MARK: - Private Implementation
 
-    /// Extract field value as FieldValue using dynamicMember
+    /// Extract one field through the macro-generated typed persistence path.
     private static func extractFieldValue<T: Persistable>(
         from item: T,
         fieldPath: String
     ) throws -> FieldValue {
-        guard let value = item[dynamicMember: fieldPath] else {
-            return .null
+        guard let schema = T.fieldSchemas.first(where: {
+            $0.name == fieldPath && $0.fieldNumber > 0
+        }) else {
+            throw DiffError.fieldNotFound(
+                fieldPath: fieldPath,
+                typeName: T.persistableType
+            )
         }
         do {
-            return try TypeConversion.toFieldValue(value)
+            guard let value = try item.persistedFieldValue(
+                for: FieldIdentity(
+                    name: schema.name,
+                    number: schema.fieldNumber
+                )
+            ) else {
+                throw DiffError.fieldNotFound(
+                    fieldPath: fieldPath,
+                    typeName: T.persistableType
+                )
+            }
+            return value
+        } catch let error as DiffError {
+            throw error
         } catch {
             throw DiffError.conversionFailed(
                 fieldPath: fieldPath,
-                valueType: String(reflecting: type(of: value))
+                valueType: String(reflecting: T.self)
             )
         }
     }

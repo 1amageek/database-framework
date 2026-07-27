@@ -6,12 +6,11 @@ import Testing
 import Foundation
 @testable import Database
 @testable import DatabaseEngine
-import Core
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseValue
-import DatabaseValueCodable
+import DatabaseTypes
+import DatabaseKitFoundation
 import DatabaseWire
-import Graph
 import StorageKit
 import FDBStorage
 import TestSupport
@@ -31,7 +30,7 @@ struct SPARQLFunctionIntegrationTests {
 
         var id: String = UUID().uuidString
         var name: String = ""
-        var age: Int = 0
+        var age: Int64 = 0
     }
 
     @Persistable
@@ -39,24 +38,33 @@ struct SPARQLFunctionIntegrationTests {
         #Directory<SPARQLFunctionTriple>("sparql_function_test_rdf")
 
         var id: String = UUID().uuidString
-        var subject: DatabaseRDFTerm = .iri("urn:subject")
-        var predicate: DatabaseRDFTerm = .iri("urn:predicate")
-        var object: DatabaseRDFTerm = .iri("urn:object")
+        var subject: RDFTerm
+        var predicate: RDFTerm
+        var object: RDFTerm
 
-        #Index(RDFQuadIndexKind<SPARQLFunctionTriple>(
-            subject: \.subject,
-            predicate: \.predicate,
-            object: \.object
-        ))
+        #Index(
+            .rdfDataset,
+            from: \SPARQLFunctionTriple.subject,
+            edge: \SPARQLFunctionTriple.predicate,
+            to: \SPARQLFunctionTriple.object
+        )
 
-        init(subject: String, predicate: String, object: String) {
-            self.subject = .iri(subject)
-            self.predicate = .iri("urn:predicate:\(predicate)")
-            if DatabaseRDFIRIValidator.isAbsolute(object) {
-                self.object = .iri(object)
-            } else {
+        init(
+            subject: String,
+            predicate: String,
+            object: String
+        ) throws {
+            self.subject = try .iri(validating: subject)
+            self.predicate = try .iri(
+                validating: "urn:predicate:\(predicate)"
+            )
+            do {
+                self.object = .iri(try RDFIRI(object))
+            } catch {
+                // This test model interprets non-IRI object input as a string
+                // literal; RDFIRI validation remains the classification rule.
                 self.object = .literal(
-                    DatabaseRDFLiteral(
+                    RDFLiteral(
                         lexicalForm: object,
                         datatype: .xsdString
                     )
@@ -69,7 +77,13 @@ struct SPARQLFunctionIntegrationTests {
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([SPARQLFunctionUser.self, SPARQLFunctionTriple.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [
+                try SPARQLFunctionUser.schemaEntity,
+                try SPARQLFunctionTriple.schemaEntity,
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
@@ -90,7 +104,7 @@ struct SPARQLFunctionIntegrationTests {
         let subspace = try await container.resolveDirectory(for: SPARQLFunctionTriple.self)
         let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
 
-        for descriptor in SPARQLFunctionTriple.indexDescriptors {
+        for descriptor in try SPARQLFunctionTriple.indexDescriptors {
             let currentState = try await indexLifecycleStore.state(of: descriptor.name)
             if currentState == .disabled {
                 try await indexLifecycleStore.enable(descriptor.name)
@@ -367,7 +381,10 @@ struct SPARQLFunctionIntegrationTests {
         // Setup: Create 100 users and triples
         var users: [SPARQLFunctionUser] = []
         for i in 0..<100 {
-            var user = SPARQLFunctionUser(name: "User\(i)", age: 20 + (i % 50))
+            var user = SPARQLFunctionUser(
+                name: "User\(i)",
+                age: Int64(20 + (i % 50))
+            )
             user.id = uniqueID("user-\(i)")
             users.append(user)
             try context.insert(user)
@@ -403,10 +420,10 @@ struct SPARQLFunctionIntegrationTests {
         let container = try await setupContainer()
         let context = container.newContext()
 
-        let query = QueryIR.SelectQuery(
+        let query = SelectQuery(
             projection: .all,
-            source: .table(QueryIR.TableRef("SPARQLFunctionUser")),
-            filter: .greaterThan(.column(QueryIR.ColumnRef(column: "age")), .literal(.int(25))),
+            source: .table(TableRef("SPARQLFunctionUser")),
+            filter: .greaterThan(.column(ColumnRef(column: "age")), .literal(.int(25))),
             dataset: .explicit(
                 defaultGraphs: ["http://example.org/graph1"],
                 namedGraphs: [
@@ -420,7 +437,7 @@ struct SPARQLFunctionIntegrationTests {
         let rewriter = SPARQLFunctionRewriter(
             context: context,
             workMeter: DatabaseWorkMeter(
-                budget: DatabaseExecutionBudget()
+                budget: ExecutionBudget()
             )
         )
         let rewritten = try await rewriter.rewrite(query)

@@ -8,10 +8,9 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import DatabaseRuntime
-import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -23,22 +22,24 @@ import TestSupport
 struct SetOperationEdge {
     #Directory<SetOperationEdge>("sparql_set_operation_tests")
     var id: String = UUID().uuidString
-    var from: String = ""
-    var relationship: String = ""
-    var to: String = ""
+    var from: RDFTerm = .iri(.xsdString)
+    var relationship: RDFTerm = .iri(.xsdString)
+    var to: RDFTerm = .string("")
 
-    #Index(GraphIndexKind<SetOperationEdge>(
-        from: \.from,
-        edge: \.relationship,
-        to: \.to,
-        strategy: .tripleStore
-    ))
+    #Index(
+        .rdfDataset,
+        from: \SetOperationEdge.from,
+        edge: \SetOperationEdge.relationship,
+        to: \SetOperationEdge.to
+    )
 }
 
 // MARK: - Test Suite
 
-@Suite("SPARQL Set Operation Tests", .serialized, .heartbeat)
+@Suite("SPARQL Set Operation Tests", .serialized, .foundationDBScenario, .heartbeat)
 struct SPARQLSetOperationTests {
+    private static let resourcePrefix =
+        "did:database-framework:test-resource:"
 
     init() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
@@ -52,7 +53,10 @@ struct SPARQLSetOperationTests {
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let schema = Schema([SetOperationEdge.self], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(
+            entities: [try SetOperationEdge.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
         return try await DBContainer.open(
             testing: schema,
             configuration: .init(backend: .custom(database)),
@@ -68,12 +72,95 @@ struct SPARQLSetOperationTests {
         try await context.save()
     }
 
-    private func makeEdge(from: String, relationship: String, to: String) -> SetOperationEdge {
+    private func makeEdge(
+        from: String,
+        relationship: String,
+        to: String
+    ) throws -> SetOperationEdge {
         var edge = SetOperationEdge()
-        edge.from = from
-        edge.relationship = relationship
-        edge.to = to
+        edge.from = try Self.resource(from)
+        edge.relationship = try Self.predicate(relationship)
+        edge.to = try Self.resource(to)
         return edge
+    }
+
+    private func makeLiteralEdge(
+        from: String,
+        relationship: String,
+        to: String
+    ) throws -> SetOperationEdge {
+        var edge = SetOperationEdge()
+        edge.from = try Self.resource(from)
+        edge.relationship = try Self.predicate(relationship)
+        edge.to = .string(to)
+        return edge
+    }
+
+    private func makeEdge(
+        from: String,
+        relationship: String,
+        to: Int
+    ) throws -> SetOperationEdge {
+        var edge = SetOperationEdge()
+        edge.from = try Self.resource(from)
+        edge.relationship = try Self.predicate(relationship)
+        edge.to = .integer(to)
+        return edge
+    }
+
+    private func makeEdge(
+        from: String,
+        relationship: String,
+        to: Double
+    ) throws -> SetOperationEdge {
+        var edge = SetOperationEdge()
+        edge.from = try Self.resource(from)
+        edge.relationship = try Self.predicate(relationship)
+        edge.to = .decimal(to)
+        return edge
+    }
+
+    private static func resource(_ identifier: String) throws -> RDFTerm {
+        try .iri(validating: resourcePrefix + identifier)
+    }
+
+    private static func predicate(_ identifier: String) throws -> RDFTerm {
+        try .iri(validating: "did:database-framework:test-predicate:\(identifier)")
+    }
+
+    private static func subjectTerm(_ value: String) throws -> ExecutionTerm {
+        value.hasPrefix("?")
+            ? .variable(value)
+            : .value(.rdfTerm(try resource(value)))
+    }
+
+    private static func predicateTerm(_ value: String) throws -> ExecutionTerm {
+        value.hasPrefix("?")
+            ? .variable(value)
+            : .value(.rdfTerm(try predicate(value)))
+    }
+
+    private static func objectTerm(_ value: String) throws -> ExecutionTerm {
+        value.hasPrefix("?")
+            ? .variable(value)
+            : .value(.rdfTerm(try resource(value)))
+    }
+
+    private static func resourceIdentifier(
+        _ value: FieldValue?
+    ) -> String? {
+        guard case .rdfTerm(.iri(let iri)) = value,
+              iri.rawValue.hasPrefix(resourcePrefix) else {
+            return nil
+        }
+        return String(iri.rawValue.dropFirst(resourcePrefix.count))
+    }
+
+    private static func resourceIdentifier(
+        in binding: VariableBinding,
+        variable: String
+    ) -> String? {
+        resourceIdentifier(binding[variable])
     }
 
     // MARK: - Basic UNION Tests
@@ -94,9 +181,9 @@ struct SPARQLSetOperationTests {
         let followsPred = uniqueID("follows")
 
         let edges = [
-            makeEdge(from: alice, relationship: knowsPred, to: bob),
-            makeEdge(from: alice, relationship: followsPred, to: carol),
-            makeEdge(from: alice, relationship: followsPred, to: dave),
+            try makeEdge(from: alice, relationship: knowsPred, to: bob),
+            try makeEdge(from: alice, relationship: followsPred, to: carol),
+            try makeEdge(from: alice, relationship: followsPred, to: dave),
         ]
 
         try await insertEdges(edges, context: context)
@@ -104,24 +191,24 @@ struct SPARQLSetOperationTests {
         // Query via knows
         let knowsResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where(alice, knowsPred, "?target")
+            .where(try Self.subjectTerm(alice), try Self.predicateTerm(knowsPred), try Self.objectTerm("?target"))
             .execute()
 
         // Query via follows
         let followsResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where(alice, followsPred, "?target")
+            .where(try Self.subjectTerm(alice), try Self.predicateTerm(followsPred), try Self.objectTerm("?target"))
             .execute()
 
         // Simulate UNION: combine results
         var allTargets = Set<String>()
         for binding in knowsResult.bindings {
-            if let target = binding.string("?target") {
+            if let target = Self.resourceIdentifier(in: binding, variable: "?target") {
                 allTargets.insert(target)
             }
         }
         for binding in followsResult.bindings {
-            if let target = binding.string("?target") {
+            if let target = Self.resourceIdentifier(in: binding, variable: "?target") {
                 allTargets.insert(target)
             }
         }
@@ -150,10 +237,10 @@ struct SPARQLSetOperationTests {
         let likesPred = uniqueID("likes")
 
         let edges = [
-            makeEdge(from: alice, relationship: knowsPred, to: bob),
-            makeEdge(from: alice, relationship: followsPred, to: carol),
-            makeEdge(from: alice, relationship: likesPred, to: dave),
-            makeEdge(from: alice, relationship: likesPred, to: eve),
+            try makeEdge(from: alice, relationship: knowsPred, to: bob),
+            try makeEdge(from: alice, relationship: followsPred, to: carol),
+            try makeEdge(from: alice, relationship: likesPred, to: dave),
+            try makeEdge(from: alice, relationship: likesPred, to: eve),
         ]
 
         try await insertEdges(edges, context: context)
@@ -161,24 +248,24 @@ struct SPARQLSetOperationTests {
         // Query each separately and combine
         let knowsResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where(alice, knowsPred, "?target")
+            .where(try Self.subjectTerm(alice), try Self.predicateTerm(knowsPred), try Self.objectTerm("?target"))
             .execute()
 
         let followsResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where(alice, followsPred, "?target")
+            .where(try Self.subjectTerm(alice), try Self.predicateTerm(followsPred), try Self.objectTerm("?target"))
             .execute()
 
         let likesResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where(alice, likesPred, "?target")
+            .where(try Self.subjectTerm(alice), try Self.predicateTerm(likesPred), try Self.objectTerm("?target"))
             .execute()
 
         // Combine all results
         var allTargets = Set<String>()
         for result in [knowsResult, followsResult, likesResult] {
             for binding in result.bindings {
-                if let target = binding.string("?target") {
+                if let target = Self.resourceIdentifier(in: binding, variable: "?target") {
                     allTargets.insert(target)
                 }
             }
@@ -207,9 +294,9 @@ struct SPARQLSetOperationTests {
         let nicknamePred = uniqueID("nickname")
 
         let edges = [
-            makeEdge(from: person, relationship: namePred, to: "Robert"),
-            makeEdge(from: person, relationship: nicknamePred, to: "Bob"),
-            makeEdge(from: person, relationship: nicknamePred, to: "Bobby"),
+            try makeLiteralEdge(from: person, relationship: namePred, to: "Robert"),
+            try makeLiteralEdge(from: person, relationship: nicknamePred, to: "Bob"),
+            try makeLiteralEdge(from: person, relationship: nicknamePred, to: "Bobby"),
         ]
 
         try await insertEdges(edges, context: context)
@@ -217,13 +304,13 @@ struct SPARQLSetOperationTests {
         // Get formal name
         let nameResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where(person, namePred, "?displayName")
+            .where(try Self.subjectTerm(person), try Self.predicateTerm(namePred), try Self.objectTerm("?displayName"))
             .execute()
 
         // Get nicknames
         let nicknameResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where(person, nicknamePred, "?displayName")
+            .where(try Self.subjectTerm(person), try Self.predicateTerm(nicknamePred), try Self.objectTerm("?displayName"))
             .execute()
 
         // Combined
@@ -263,10 +350,10 @@ struct SPARQLSetOperationTests {
         let statusPred = uniqueID("status")
 
         let edges = [
-            makeEdge(from: "User1", relationship: typePred, to: "User"),
-            makeEdge(from: "User2", relationship: typePred, to: "User"),
-            makeEdge(from: "User3", relationship: typePred, to: "User"),
-            makeEdge(from: "User2", relationship: statusPred, to: "banned"),
+            try makeEdge(from: "User1", relationship: typePred, to: "User"),
+            try makeEdge(from: "User2", relationship: typePred, to: "User"),
+            try makeEdge(from: "User3", relationship: typePred, to: "User"),
+            try makeEdge(from: "User2", relationship: statusPred, to: "banned"),
         ]
 
         try await insertEdges(edges, context: context)
@@ -274,18 +361,22 @@ struct SPARQLSetOperationTests {
         // Get all users
         let allUsers = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?person", typePred, "User")
+            .where(try Self.subjectTerm("?person"), try Self.predicateTerm(typePred), try Self.objectTerm("User"))
             .execute()
 
         // Get banned users
         let bannedUsers = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?person", statusPred, "banned")
+            .where(try Self.subjectTerm("?person"), try Self.predicateTerm(statusPred), try Self.objectTerm("banned"))
             .execute()
 
         // Compute difference
-        let allUserSet = Set(allUsers.bindings.compactMap { $0.string("?person") })
-        let bannedSet = Set(bannedUsers.bindings.compactMap { $0.string("?person") })
+        let allUserSet = Set(allUsers.bindings.compactMap {
+            Self.resourceIdentifier(in: $0, variable: "?person")
+        })
+        let bannedSet = Set(bannedUsers.bindings.compactMap {
+            Self.resourceIdentifier(in: $0, variable: "?person")
+        })
         let activeUsers = allUserSet.subtracting(bannedSet)
 
         #expect(activeUsers.count == 2)
@@ -304,9 +395,9 @@ struct SPARQLSetOperationTests {
         let predB = uniqueID("hasB")
 
         let edges = [
-            makeEdge(from: "E1", relationship: predA, to: "V1"),
-            makeEdge(from: "E2", relationship: predA, to: "V2"),
-            makeEdge(from: "E3", relationship: predB, to: "V3"),
+            try makeEdge(from: "E1", relationship: predA, to: "V1"),
+            try makeEdge(from: "E2", relationship: predA, to: "V2"),
+            try makeEdge(from: "E3", relationship: predB, to: "V3"),
         ]
 
         try await insertEdges(edges, context: context)
@@ -314,17 +405,21 @@ struct SPARQLSetOperationTests {
         // Get entities with A
         let withA = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?entity", predA, "?val")
+            .where(try Self.subjectTerm("?entity"), try Self.predicateTerm(predA), try Self.objectTerm("?val"))
             .execute()
 
         // Get entities with B
         let withB = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?entity", predB, "?val")
+            .where(try Self.subjectTerm("?entity"), try Self.predicateTerm(predB), try Self.objectTerm("?val"))
             .execute()
 
-        let setA = Set(withA.bindings.compactMap { $0.string("?entity") })
-        let setB = Set(withB.bindings.compactMap { $0.string("?entity") })
+        let setA = Set(withA.bindings.compactMap {
+            Self.resourceIdentifier(in: $0, variable: "?entity")
+        })
+        let setB = Set(withB.bindings.compactMap {
+            Self.resourceIdentifier(in: $0, variable: "?entity")
+        })
         let diff = setA.subtracting(setB)
 
         // E1, E2 have A but not B
@@ -341,26 +436,30 @@ struct SPARQLSetOperationTests {
         let predFlag = uniqueID("flagged")
 
         let edges = [
-            makeEdge(from: "Item1", relationship: predType, to: "Widget"),
-            makeEdge(from: "Item2", relationship: predType, to: "Widget"),
-            makeEdge(from: "Item1", relationship: predFlag, to: "true"),
-            makeEdge(from: "Item2", relationship: predFlag, to: "true"),
+            try makeEdge(from: "Item1", relationship: predType, to: "Widget"),
+            try makeEdge(from: "Item2", relationship: predType, to: "Widget"),
+            try makeEdge(from: "Item1", relationship: predFlag, to: "true"),
+            try makeEdge(from: "Item2", relationship: predFlag, to: "true"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let widgets = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?item", predType, "Widget")
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(predType), try Self.objectTerm("Widget"))
             .execute()
 
         let flagged = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?item", predFlag, "true")
+            .where(try Self.subjectTerm("?item"), try Self.predicateTerm(predFlag), try Self.objectTerm("true"))
             .execute()
 
-        let widgetSet = Set(widgets.bindings.compactMap { $0.string("?item") })
-        let flaggedSet = Set(flagged.bindings.compactMap { $0.string("?item") })
+        let widgetSet = Set(widgets.bindings.compactMap {
+            Self.resourceIdentifier(in: $0, variable: "?item")
+        })
+        let flaggedSet = Set(flagged.bindings.compactMap {
+            Self.resourceIdentifier(in: $0, variable: "?item")
+        })
         let unflagged = widgetSet.subtracting(flaggedSet)
 
         // All widgets are flagged, so difference is empty
@@ -383,10 +482,10 @@ struct SPARQLSetOperationTests {
         let discountPred = uniqueID("discount")
 
         let edges = [
-            makeEdge(from: "Product1", relationship: pricePred, to: "50"),
-            makeEdge(from: "Product2", relationship: pricePred, to: "150"),
-            makeEdge(from: "Product3", relationship: discountPred, to: "0.7"),
-            makeEdge(from: "Product4", relationship: discountPred, to: "0.3"),
+            try makeEdge(from: "Product1", relationship: pricePred, to: 50),
+            try makeEdge(from: "Product2", relationship: pricePred, to: 150),
+            try makeEdge(from: "Product3", relationship: discountPred, to: 0.7),
+            try makeEdge(from: "Product4", relationship: discountPred, to: 0.3),
         ]
 
         try await insertEdges(edges, context: context)
@@ -394,26 +493,26 @@ struct SPARQLSetOperationTests {
         // Branch 1: price < 100
         let cheapProducts = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?product", pricePred, "?price")
-            .filter(.lessThan("?price", 100))
+            .where(try Self.subjectTerm("?product"), try Self.predicateTerm(pricePred), try Self.objectTerm("?price"))
+            .filter(.lessThan("?price", .rdfTerm(.integer(100))))
             .execute()
 
         // Branch 2: discount > 0.5
         let highDiscountProducts = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?product", discountPred, "?discount")
-            .filter(.greaterThan("?discount", 0.5))
+            .where(try Self.subjectTerm("?product"), try Self.predicateTerm(discountPred), try Self.objectTerm("?discount"))
+            .filter(.greaterThan("?discount", .rdfTerm(.decimal(0.5))))
             .execute()
 
         // Combine
         var qualifyingProducts = Set<String>()
         for binding in cheapProducts.bindings {
-            if let product = binding.string("?product") {
+            if let product = Self.resourceIdentifier(in: binding, variable: "?product") {
                 qualifyingProducts.insert(product)
             }
         }
         for binding in highDiscountProducts.bindings {
-            if let product = binding.string("?product") {
+            if let product = Self.resourceIdentifier(in: binding, variable: "?product") {
                 qualifyingProducts.insert(product)
             }
         }
@@ -433,10 +532,10 @@ struct SPARQLSetOperationTests {
         let predB = uniqueID("valueB")
 
         let edges = [
-            makeEdge(from: "E1", relationship: predA, to: "10"),
-            makeEdge(from: "E2", relationship: predA, to: "30"),
-            makeEdge(from: "E3", relationship: predB, to: "20"),
-            makeEdge(from: "E4", relationship: predB, to: "40"),
+            try makeEdge(from: "E1", relationship: predA, to: 10),
+            try makeEdge(from: "E2", relationship: predA, to: 30),
+            try makeEdge(from: "E3", relationship: predB, to: 20),
+            try makeEdge(from: "E4", relationship: predB, to: 40),
         ]
 
         try await insertEdges(edges, context: context)
@@ -444,27 +543,27 @@ struct SPARQLSetOperationTests {
         // Get values from A
         let fromA = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?entity", predA, "?val")
+            .where(try Self.subjectTerm("?entity"), try Self.predicateTerm(predA), try Self.objectTerm("?val"))
             .execute()
 
         // Get values from B
         let fromB = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?entity", predB, "?val")
+            .where(try Self.subjectTerm("?entity"), try Self.predicateTerm(predB), try Self.objectTerm("?val"))
             .execute()
 
         // Combine and filter for val > 15
-        var results = [(String, String)]()
+        var results = [(String, Int)]()
         for binding in fromA.bindings {
-            if let entity = binding.string("?entity"), let val = binding.string("?val"),
-               let numVal = binding.int("?val"), numVal > 15 {
-                results.append((entity, val))
+            if let entity = Self.resourceIdentifier(in: binding, variable: "?entity"),
+               let value = binding.int("?val"), value > 15 {
+                results.append((entity, value))
             }
         }
         for binding in fromB.bindings {
-            if let entity = binding.string("?entity"), let val = binding.string("?val"),
-               let numVal = binding.int("?val"), numVal > 15 {
-                results.append((entity, val))
+            if let entity = Self.resourceIdentifier(in: binding, variable: "?entity"),
+               let value = binding.int("?val"), value > 15 {
+                results.append((entity, value))
             }
         }
 
@@ -485,29 +584,33 @@ struct SPARQLSetOperationTests {
 
         // Same entity appears via both predicates
         let edges = [
-            makeEdge(from: "Source", relationship: pred1, to: "Target"),
-            makeEdge(from: "Source", relationship: pred2, to: "Target"),
+            try makeEdge(from: "Source", relationship: pred1, to: "Target"),
+            try makeEdge(from: "Source", relationship: pred2, to: "Target"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let result1 = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("Source", pred1, "?target")
+            .where(try Self.subjectTerm("Source"), try Self.predicateTerm(pred1), try Self.objectTerm("?target"))
             .execute()
 
         let result2 = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("Source", pred2, "?target")
+            .where(try Self.subjectTerm("Source"), try Self.predicateTerm(pred2), try Self.objectTerm("?target"))
             .execute()
 
         // Using Set automatically deduplicates
         var targets = Set<String>()
         for binding in result1.bindings {
-            if let t = binding.string("?target") { targets.insert(t) }
+            if let target = Self.resourceIdentifier(in: binding, variable: "?target") {
+                targets.insert(target)
+            }
         }
         for binding in result2.bindings {
-            if let t = binding.string("?target") { targets.insert(t) }
+            if let target = Self.resourceIdentifier(in: binding, variable: "?target") {
+                targets.insert(target)
+            }
         }
 
         #expect(targets.count == 1)
@@ -526,27 +629,31 @@ struct SPARQLSetOperationTests {
         let pred2 = uniqueID("hasSomething")
 
         let edges = [
-            makeEdge(from: "Entity", relationship: pred2, to: "Value"),
+            try makeEdge(from: "Entity", relationship: pred2, to: "Value"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let emptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?e", pred1, "?v")
+            .where(try Self.subjectTerm("?e"), try Self.predicateTerm(pred1), try Self.objectTerm("?v"))
             .execute()
 
         let nonEmptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?e", pred2, "?v")
+            .where(try Self.subjectTerm("?e"), try Self.predicateTerm(pred2), try Self.objectTerm("?v"))
             .execute()
 
         var combined = Set<String>()
         for binding in emptyResult.bindings {
-            if let v = binding.string("?v") { combined.insert(v) }
+            if let value = Self.resourceIdentifier(in: binding, variable: "?v") {
+                combined.insert(value)
+            }
         }
         for binding in nonEmptyResult.bindings {
-            if let v = binding.string("?v") { combined.insert(v) }
+            if let value = Self.resourceIdentifier(in: binding, variable: "?v") {
+                combined.insert(value)
+            }
         }
 
         #expect(combined.count == 1)
@@ -563,27 +670,31 @@ struct SPARQLSetOperationTests {
         let pred2 = uniqueID("emptyPred")
 
         let edges = [
-            makeEdge(from: "Entity", relationship: pred1, to: "Value"),
+            try makeEdge(from: "Entity", relationship: pred1, to: "Value"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let nonEmptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?e", pred1, "?v")
+            .where(try Self.subjectTerm("?e"), try Self.predicateTerm(pred1), try Self.objectTerm("?v"))
             .execute()
 
         let emptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?e", pred2, "?v")
+            .where(try Self.subjectTerm("?e"), try Self.predicateTerm(pred2), try Self.objectTerm("?v"))
             .execute()
 
         var combined = Set<String>()
         for binding in nonEmptyResult.bindings {
-            if let v = binding.string("?v") { combined.insert(v) }
+            if let value = Self.resourceIdentifier(in: binding, variable: "?v") {
+                combined.insert(value)
+            }
         }
         for binding in emptyResult.bindings {
-            if let v = binding.string("?v") { combined.insert(v) }
+            if let value = Self.resourceIdentifier(in: binding, variable: "?v") {
+                combined.insert(value)
+            }
         }
 
         #expect(combined.count == 1)
@@ -602,12 +713,12 @@ struct SPARQLSetOperationTests {
 
         let result1 = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?e", pred1, "?v")
+            .where(try Self.subjectTerm("?e"), try Self.predicateTerm(pred1), try Self.objectTerm("?v"))
             .execute()
 
         let result2 = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?e", pred2, "?v")
+            .where(try Self.subjectTerm("?e"), try Self.predicateTerm(pred2), try Self.objectTerm("?v"))
             .execute()
 
         #expect(result1.isEmpty)
@@ -624,23 +735,27 @@ struct SPARQLSetOperationTests {
         let pred2 = uniqueID("something")
 
         let edges = [
-            makeEdge(from: "E1", relationship: pred2, to: "V1"),
+            try makeEdge(from: "E1", relationship: pred2, to: "V1"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let emptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?e", pred1, "?v")
+            .where(try Self.subjectTerm("?e"), try Self.predicateTerm(pred1), try Self.objectTerm("?v"))
             .execute()
 
         let nonEmptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?e", pred2, "?v")
+            .where(try Self.subjectTerm("?e"), try Self.predicateTerm(pred2), try Self.objectTerm("?v"))
             .execute()
 
-        let emptySet = Set(emptyResult.bindings.compactMap { $0.string("?e") })
-        let nonEmptySet = Set(nonEmptyResult.bindings.compactMap { $0.string("?e") })
+        let emptySet = Set(emptyResult.bindings.compactMap {
+            Self.resourceIdentifier(in: $0, variable: "?e")
+        })
+        let nonEmptySet = Set(nonEmptyResult.bindings.compactMap {
+            Self.resourceIdentifier(in: $0, variable: "?e")
+        })
 
         // Empty MINUS nonEmpty = Empty
         let diff = emptySet.subtracting(nonEmptySet)
@@ -657,24 +772,28 @@ struct SPARQLSetOperationTests {
         let pred2 = uniqueID("empty")
 
         let edges = [
-            makeEdge(from: "E1", relationship: pred1, to: "V1"),
-            makeEdge(from: "E2", relationship: pred1, to: "V2"),
+            try makeEdge(from: "E1", relationship: pred1, to: "V1"),
+            try makeEdge(from: "E2", relationship: pred1, to: "V2"),
         ]
 
         try await insertEdges(edges, context: context)
 
         let nonEmptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?e", pred1, "?v")
+            .where(try Self.subjectTerm("?e"), try Self.predicateTerm(pred1), try Self.objectTerm("?v"))
             .execute()
 
         let emptyResult = try await context.sparql(SetOperationEdge.self)
             .defaultIndex()
-            .where("?e", pred2, "?v")
+            .where(try Self.subjectTerm("?e"), try Self.predicateTerm(pred2), try Self.objectTerm("?v"))
             .execute()
 
-        let nonEmptySet = Set(nonEmptyResult.bindings.compactMap { $0.string("?e") })
-        let emptySet = Set(emptyResult.bindings.compactMap { $0.string("?e") })
+        let nonEmptySet = Set(nonEmptyResult.bindings.compactMap {
+            Self.resourceIdentifier(in: $0, variable: "?e")
+        })
+        let emptySet = Set(emptyResult.bindings.compactMap {
+            Self.resourceIdentifier(in: $0, variable: "?e")
+        })
 
         // NonEmpty MINUS Empty = NonEmpty
         let diff = nonEmptySet.subtracting(emptySet)

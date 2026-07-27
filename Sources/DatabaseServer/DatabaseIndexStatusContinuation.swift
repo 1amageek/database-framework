@@ -1,23 +1,23 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
-struct DatabaseIndexStatusContinuation: DatabaseWireValue, Hashable {
+struct DatabaseIndexStatusContinuation: ServerPayloadValue, Hashable {
     private static let version: UInt8 = 1
 
     let entityFilter: String?
     let indexFilter: String?
-    let partitionFilter: [DatabaseObjectField]
+    let partitionFilter: FieldObject
     let entityPosition: UInt32
     let indexPosition: UInt32
-    let partitionCatalogContinuation: DatabaseBytes?
+    let partitionCatalogContinuation: ByteString?
 
     init(
         entityFilter: String?,
         indexFilter: String?,
-        partitionFilter: [DatabaseObjectField],
+        partitionFilter: FieldObject,
         entityPosition: UInt32,
         indexPosition: UInt32,
-        partitionCatalogContinuation: DatabaseBytes?
+        partitionCatalogContinuation: ByteString?
     ) {
         self.entityFilter = entityFilter
         self.indexFilter = indexFilter
@@ -33,10 +33,7 @@ struct DatabaseIndexStatusContinuation: DatabaseWireValue, Hashable {
         writer.writeUInt8(Self.version)
         try writer.writeOptionalString(entityFilter)
         try writer.writeOptionalString(indexFilter)
-        try writer.writeCount(partitionFilter.count)
-        for partition in partitionFilter {
-            try partition.encode(into: &writer)
-        }
+        try partitionFilter.encode(into: &writer)
         writer.writeUInt32(entityPosition)
         writer.writeUInt32(indexPosition)
         try writer.writeOptionalBytes(partitionCatalogContinuation)
@@ -51,16 +48,10 @@ struct DatabaseIndexStatusContinuation: DatabaseWireValue, Hashable {
         }
         let entityFilter = try reader.readOptionalString()
         let indexFilter = try reader.readOptionalString()
-        let partitionCount = try reader.readCount()
-        var partitionFilter: [DatabaseObjectField] = []
-        partitionFilter.reserveCapacity(partitionCount)
-        for _ in 0..<partitionCount {
-            partitionFilter.append(try DatabaseObjectField(from: &reader))
-        }
         self.init(
             entityFilter: entityFilter,
             indexFilter: indexFilter,
-            partitionFilter: partitionFilter,
+            partitionFilter: try FieldObject(from: &reader),
             entityPosition: try reader.readUInt32(),
             indexPosition: try reader.readUInt32(),
             partitionCatalogContinuation: try reader.readOptionalBytes()

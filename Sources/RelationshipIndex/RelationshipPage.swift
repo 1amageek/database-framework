@@ -1,4 +1,4 @@
-import Core
+import DatabaseKit
 import StorageKit
 
 public struct RelationshipPage<Owner: Persistable>: Sendable {

@@ -6,9 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import Rank
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import RankIndex
@@ -27,10 +26,9 @@ private struct BenchmarkContext {
         self.subspace = Subspace(prefix: Tuple("bench", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace("score_rank")
 
-        let kind = RankIndexKind<BenchmarkPlayer, Int64>(field: \.score)
         let index = Index(
             name: "score_rank",
-            kind: kind,
+            kind: rankIndexMetadata(scoreType: .int64),
             rootExpression: FieldKeyExpression(fieldName: "score"),
             subspaceKey: "score_rank",
             itemTypes: Set(["BenchmarkPlayer"])
@@ -38,7 +36,7 @@ private struct BenchmarkContext {
 
         self.maintainer = RankIndexMaintainer<BenchmarkPlayer, Int64>(
             index: index,
-            bucketSize: kind.bucketSize,
+            bucketSize: 100,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

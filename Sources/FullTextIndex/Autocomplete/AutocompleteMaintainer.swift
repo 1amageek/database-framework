@@ -4,7 +4,7 @@
 // Reference: Trie data structure for prefix matching
 // Knuth, "The Art of Computer Programming", Vol. 3
 
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -50,10 +50,12 @@ import StorageKit
 /// )
 /// // ["laptop", "laptop bag", "lap desk"]
 /// ```
-public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
-    private let subspace: Subspace
-    private let idExpression: KeyExpression
-    private let autocompleteFields: [String]
+public struct AutocompleteMaintainer<Item: Persistable>: IndexMaintainer {
+    public let index: Index
+    public let subspace: Subspace
+    public let idExpression: KeyExpression
+
+    private let fields: [FieldIdentity]
     private let minPrefixLength: Int
     private let maxPrefixLength: Int
 
@@ -70,15 +72,17 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
     ///   - minPrefixLength: Minimum prefix length to store (default: 1)
     ///   - maxPrefixLength: Maximum prefix length to store (default: 10)
     public init(
+        index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        autocompleteFields: [String],
-        minPrefixLength: Int = 1,
-        maxPrefixLength: Int = 10
+        fields: [FieldIdentity],
+        minPrefixLength: Int,
+        maxPrefixLength: Int
     ) {
+        self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
-        self.autocompleteFields = autocompleteFields
+        self.fields = fields
         self.minPrefixLength = minPrefixLength
         self.maxPrefixLength = maxPrefixLength
         self.suggestionsSubspace = subspace.subspace("suggestions")
@@ -91,7 +95,7 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
     ///   - oldItem: Previous item state (nil for new items)
     ///   - newItem: New item state (nil for deletions)
     ///   - transaction: FDB transaction
-    public func updateAutocomplete(
+    public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
         transaction: any TransactionAccess
@@ -107,96 +111,15 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
         }
     }
 
-    /// Get autocomplete suggestions for a prefix
-    ///
-    /// - Parameters:
-    ///   - field: Field to get suggestions for
-    ///   - prefix: The prefix to match
-    ///   - limit: Maximum number of suggestions (default: 10)
-    ///   - transaction: FDB transaction
-    /// - Returns: Array of suggestions sorted by frequency descending
-    public func getSuggestions(
-        field: String,
-        prefix: String,
-        limit: Int = 10,
+    public func scanItem(
+        _ item: Item,
+        id: Tuple,
         transaction: any TransactionAccess
-    ) async throws -> [AutocompleteSuggestion] {
-        let normalizedPrefix = normalizeText(prefix)
-        guard normalizedPrefix.count >= minPrefixLength else {
-            return []
-        }
-
-        // Scan suggestions for this prefix
-        let fieldSubspace = suggestionsSubspace.subspace(field)
-        let prefixSubspace = fieldSubspace.subspace(normalizedPrefix)
-        let (begin, end) = prefixSubspace.range()
-
-        var suggestions: [(term: String, score: Int64)] = []
-
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
-
-        for (key, value) in sequence {
-            guard prefixSubspace.contains(key) else { break }
-
-            let term = try FullTextStorageDecoder.autocompleteSuggestionTerm(
-                from: key,
-                in: prefixSubspace,
-                field: field,
-                prefix: normalizedPrefix
-            )
-
-            let score = try ByteConversion.bytesToInt64(value)
-            if score > 0 {
-                suggestions.append((term: term, score: score))
-            }
-        }
-
-        // Sort by score descending and limit
-        suggestions.sort { $0.score > $1.score }
-        return Array(suggestions.prefix(limit)).map {
-            AutocompleteSuggestion(term: $0.term, score: $0.score)
-        }
-    }
-
-    /// Get all terms with their frequencies for a field
-    ///
-    /// - Parameters:
-    ///   - field: Field to get terms for
-    ///   - limit: Maximum number of terms
-    ///   - transaction: FDB transaction
-    /// - Returns: Array of (term, frequency) sorted by frequency descending
-    public func getPopularTerms(
-        field: String,
-        limit: Int = 100,
-        transaction: any TransactionAccess
-    ) async throws -> [AutocompleteSuggestion] {
-        let fieldSubspace = termsSubspace.subspace(field)
-        let (begin, end) = fieldSubspace.range()
-
-        var terms: [(term: String, score: Int64)] = []
-
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
-
-        for (key, value) in sequence {
-            guard fieldSubspace.contains(key) else { break }
-
-            let term = try FullTextStorageDecoder.autocompleteTerm(
-                from: key,
-                in: fieldSubspace,
-                field: field
-            )
-
-            let score = try ByteConversion.bytesToInt64(value)
-            if score > 0 {
-                terms.append((term: term, score: score))
-            }
-        }
-
-        // Sort by score descending and limit
-        terms.sort { $0.score > $1.score }
-        return Array(terms.prefix(limit)).map {
-            AutocompleteSuggestion(term: $0.term, score: $0.score)
-        }
+    ) async throws {
+        try await addAutocomplete(
+            item: item,
+            transaction: transaction
+        )
     }
 
     // MARK: - Private Methods
@@ -206,18 +129,18 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
         item: Item,
         transaction: any TransactionAccess
     ) async throws {
-        for field in autocompleteFields {
-            let terms = extractTerms(from: item, field: field)
+        for field in fields {
+            let terms = try extractTerms(from: item, field: field)
 
             for term in terms {
                 // Increment term count
-                let termKey = termsSubspace.subspace(field).pack(Tuple(term))
+                let termKey = termsSubspace.subspace(field.name).pack(Tuple(term))
                 try transaction.atomicOp(key: termKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
 
                 // Add all prefixes
                 let prefixes = generatePrefixes(for: term)
                 for prefix in prefixes {
-                    let suggestionKey = suggestionsSubspace.subspace(field).subspace(prefix).pack(Tuple(term))
+                    let suggestionKey = suggestionsSubspace.subspace(field.name).subspace(prefix).pack(Tuple(term))
                     try transaction.atomicOp(key: suggestionKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
                 }
             }
@@ -229,18 +152,18 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
         item: Item,
         transaction: any TransactionAccess
     ) async throws {
-        for field in autocompleteFields {
-            let terms = extractTerms(from: item, field: field)
+        for field in fields {
+            let terms = try extractTerms(from: item, field: field)
 
             for term in terms {
                 // Decrement term count
-                let termKey = termsSubspace.subspace(field).pack(Tuple(term))
+                let termKey = termsSubspace.subspace(field.name).pack(Tuple(term))
                 try transaction.atomicOp(key: termKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
 
                 // Remove all prefixes
                 let prefixes = generatePrefixes(for: term)
                 for prefix in prefixes {
-                    let suggestionKey = suggestionsSubspace.subspace(field).subspace(prefix).pack(Tuple(term))
+                    let suggestionKey = suggestionsSubspace.subspace(field.name).subspace(prefix).pack(Tuple(term))
                     try transaction.atomicOp(key: suggestionKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
                 }
             }
@@ -248,22 +171,17 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
     }
 
     /// Extract terms from an item's field for autocomplete
-    private func extractTerms(from item: Item, field: String) -> [String] {
-        guard let value = item[dynamicMember: field] else {
-            return []
-        }
-
+    private func extractTerms(
+        from item: Item,
+        field: FieldIdentity
+    ) throws -> [String] {
         var terms: [String] = []
-
-        // Handle arrays
-        if let array = value as? [String] {
-            for str in array {
-                terms.append(contentsOf: tokenize(str))
-            }
-        } else if let string = value as? String {
+        for string in try FullTextFieldValueExtractor.strings(
+            from: item,
+            field: field
+        ) {
             terms.append(contentsOf: tokenize(string))
         }
-
         return terms
     }
 
@@ -305,21 +223,5 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
         }
 
         return prefixes
-    }
-}
-
-// MARK: - Autocomplete Suggestion
-
-/// A single autocomplete suggestion with its score
-public struct AutocompleteSuggestion: Sendable, Hashable {
-    /// The suggested term
-    public let term: String
-
-    /// Score/frequency of this suggestion
-    public let score: Int64
-
-    public init(term: String, score: Int64) {
-        self.term = term
-        self.score = score
     }
 }

@@ -13,10 +13,8 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
-import FullText
-import Graph
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -32,15 +30,12 @@ import DatabaseRuntime
 struct E2EFullTextArticle {
     #Directory<E2EFullTextArticle>("index_maintenance_e2e_fulltext_articles")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var title: String = ""
     var content: String = ""
 
     // Full-text index on content field
-    #Index(FullTextIndexKind<E2EFullTextArticle>(
-        fields: [\.content],
-        tokenizer: .simple
-    ))
+    #Index(.fullText(tokenizer: .simple), fields: [\E2EFullTextArticle.content])
 }
 
 /// Edge with GraphIndex for testing CRUD path
@@ -48,18 +43,18 @@ struct E2EFullTextArticle {
 struct E2EGraphEdge {
     #Directory<E2EGraphEdge>("index_maintenance_e2e_graph_edges")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var source: String = ""
     var target: String = ""
     var relation: String = ""
 
     // Graph index with adjacency strategy
-    #Index(GraphIndexKind<E2EGraphEdge>(
-        from: \.source,
-        edge: \.relation,
-        to: \.target,
-        strategy: .adjacency
-    ))
+    #Index(
+        .propertyGraph(strategy: .adjacency),
+        from: \E2EGraphEdge.source,
+        edge: \E2EGraphEdge.relation,
+        to: \E2EGraphEdge.target
+    )
 }
 
 /// Simple model with ScalarIndex for baseline comparison
@@ -67,12 +62,12 @@ struct E2EGraphEdge {
 struct E2EScalarUser {
     #Directory<E2EScalarUser>("index_maintenance_e2e_scalar_users")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var email: String = ""
     var city: String = ""
 
     // Scalar index on email (works correctly via default case)
-    #Index(ScalarIndexKind<E2EScalarUser>(fields: [\.email]))
+    #Index(.scalar, fields: [\E2EScalarUser.email])
 }
 
 /// Model with CountIndex for testing aggregation path
@@ -80,17 +75,17 @@ struct E2EScalarUser {
 struct E2ECountItem {
     #Directory<E2ECountItem>("index_maintenance_e2e_count_items")
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var category: String = ""
-    var value: Int = 0
+    var value: Int64 = 0
 
     // Count index grouped by category (works correctly via explicit case)
-    #Index(CountIndexKind<E2ECountItem>(groupBy: [\.category]))
+    #Index(.count, groupBy: [\E2ECountItem.category])
 }
 
 // MARK: - Test Suite
 
-@Suite("Index Maintenance E2E Tests", .serialized, .heartbeat)
+@Suite("Index Maintenance E2E Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct IndexMaintenanceE2ETests {
 
     // MARK: - Setup
@@ -178,7 +173,7 @@ struct IndexMaintenanceE2ETests {
         let typeSubspace = try await container.resolveDirectory(for: E2EScalarUser.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
-        let scalarIndexName = E2EScalarUser.indexDescriptors.first { descriptor in
+        let scalarIndexName = try E2EScalarUser.indexDescriptors.first { descriptor in
             descriptor.kindIdentifier == "scalar"
         }?.name
 
@@ -229,7 +224,7 @@ struct IndexMaintenanceE2ETests {
         let typeSubspace = try await container.resolveDirectory(for: E2ECountItem.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
-        let countIndexName = E2ECountItem.indexDescriptors.first { descriptor in
+        let countIndexName = try E2ECountItem.indexDescriptors.first { descriptor in
             descriptor.kindIdentifier == "count"
         }?.name
 
@@ -276,7 +271,7 @@ struct IndexMaintenanceE2ETests {
         let typeSubspace = try await container.resolveDirectory(for: E2EFullTextArticle.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
-        let fullTextIndexName = E2EFullTextArticle.indexDescriptors.first { descriptor in
+        let fullTextIndexName = try E2EFullTextArticle.indexDescriptors.first { descriptor in
             descriptor.kindIdentifier == "fulltext"
         }?.name
 
@@ -336,7 +331,7 @@ struct IndexMaintenanceE2ETests {
         let typeSubspace = try await container.resolveDirectory(for: E2EGraphEdge.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
-        let graphIndexName = E2EGraphEdge.indexDescriptors.first { descriptor in
+        let graphIndexName = try E2EGraphEdge.indexDescriptors.first { descriptor in
             descriptor.kindIdentifier == "graph"
         }?.name
 
@@ -389,7 +384,7 @@ struct IndexMaintenanceE2ETests {
         // Get index count before delete
         let typeSubspace = try await container.resolveDirectory(for: E2EGraphEdge.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
-        let graphIndexName = E2EGraphEdge.indexDescriptors.first { descriptor in
+        let graphIndexName = try E2EGraphEdge.indexDescriptors.first { descriptor in
             descriptor.kindIdentifier == "graph"
         }?.name
 
@@ -438,7 +433,7 @@ struct IndexMaintenanceE2ETests {
         let typeSubspace = try await container.resolveDirectory(for: E2EGraphEdge.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
-        guard let graphIndexDescriptor = E2EGraphEdge.indexDescriptors.first(where: { descriptor in
+        guard let graphIndexDescriptor = try E2EGraphEdge.indexDescriptors.first(where: { descriptor in
             descriptor.kindIdentifier == "graph"
         }) else {
             Issue.record("Expected graph index descriptor")

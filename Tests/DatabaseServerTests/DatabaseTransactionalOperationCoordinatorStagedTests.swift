@@ -1,7 +1,7 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
-import DatabaseValue
+import DatabaseTypes
 import DatabaseWire
 import StorageKit
 import Synchronization
@@ -338,7 +338,7 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
         }
 
         func execute<Preparation: Sendable>(
-            payload: DatabaseBytes,
+            payload: ByteString,
             requestID: UInt64,
             timeoutMilliseconds: UInt32 = 5_000,
             prepare: @Sendable @escaping () async throws -> Preparation,
@@ -353,7 +353,7 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
                 context: DatabaseOperationContext(
                     container: container,
                     requestID: requestID,
-                    metadata: DatabaseRequestMetadata(
+                    metadata: OperationRequestMetadata(
                         idempotencyKey: Self.idempotencyKey
                     ),
                     requestPayload: payload
@@ -363,6 +363,8 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
                 body: body,
                 makeResponse: { value, commitVersion in
                     DatabaseOperationResponseEncoder(
+                        MutationExecuteOperation.self,
+                        response:
                         MutationExecuteOperation.Response(
                             commitVersion: commitVersion,
                             result: .rdf(

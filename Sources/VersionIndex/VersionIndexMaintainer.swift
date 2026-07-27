@@ -8,7 +8,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
@@ -240,7 +240,9 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
         // Validate position fits in UInt32 range
         guard versionPosition <= Int(UInt32.max) - 10 else {
-            throw IndexError.invalidConfiguration("Version key too long")
+            throw VersionIndexError.versionKeyTooLong(
+                byteCount: versionPosition
+            )
         }
 
         // Append 10-byte versionstamp placeholder (0xFF)
@@ -273,7 +275,9 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         let versionPosition = key.count
 
         guard versionPosition <= Int(UInt32.max) - 10 else {
-            throw IndexError.invalidConfiguration("Version key too long")
+            throw VersionIndexError.versionKeyTooLong(
+                byteCount: versionPosition
+            )
         }
 
         // Append 10-byte versionstamp placeholder

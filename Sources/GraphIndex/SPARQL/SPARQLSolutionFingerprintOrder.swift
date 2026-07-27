@@ -1,11 +1,11 @@
 import DatabaseEngine
-import DatabaseValue
+import DatabaseTypes
 
 /// Canonical solution occurrence order without copying binding rows.
 struct SPARQLSolutionFingerprintOrder: ~Copyable {
     private struct Entry: Sendable {
         let sourceIndex: Int
-        let fingerprint: DatabaseBytes
+        let fingerprint: ByteString
         var occurrence: UInt64
     }
 
@@ -79,7 +79,7 @@ struct SPARQLSolutionFingerprintOrder: ~Copyable {
             return lhs.sourceIndex < rhs.sourceIndex
         }
 
-        var previousFingerprint: DatabaseBytes?
+        var previousFingerprint: ByteString?
         var nextOccurrence: UInt64 = 0
         for index in entries.indices {
             if entries[index].fingerprint == previousFingerprint {
@@ -105,7 +105,7 @@ struct SPARQLSolutionFingerprintOrder: ~Copyable {
     borrowing func forEach<Failure: Error>(
         _ body: (
             _ sourceIndex: Int,
-            _ fingerprint: borrowing DatabaseBytes,
+            _ fingerprint: borrowing ByteString,
             _ occurrence: UInt64
         ) throws(Failure) -> Void
     ) throws(Failure) {

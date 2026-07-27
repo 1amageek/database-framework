@@ -1,21 +1,8 @@
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseEngine
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 enum ScalarRangeValueMatcher {
-    static func fieldValue(
-        from rawValue: Any,
-        fieldName: String
-    ) throws -> FieldValue {
-        let value = try TypeConversion.toFieldValue(rawValue)
-        try validateOrdered(value, fieldName: fieldName)
-        return value
-    }
-
     static func matches(
         _ value: FieldValue,
         minimum: FieldValue?,
@@ -33,9 +20,9 @@ enum ScalarRangeValueMatcher {
                 fieldName: fieldName
             )
             if minimumInclusive {
-                guard comparison != .orderedAscending else { return false }
+                guard comparison != .lessThan else { return false }
             } else {
-                guard comparison == .orderedDescending else { return false }
+                guard comparison == .greaterThan else { return false }
             }
         }
 
@@ -46,9 +33,9 @@ enum ScalarRangeValueMatcher {
                 fieldName: fieldName
             )
             if maximumInclusive {
-                guard comparison != .orderedDescending else { return false }
+                guard comparison != .greaterThan else { return false }
             } else {
-                guard comparison == .orderedAscending else { return false }
+                guard comparison == .lessThan else { return false }
             }
         }
 
@@ -59,7 +46,7 @@ enum ScalarRangeValueMatcher {
         _ value: FieldValue,
         with bound: FieldValue,
         fieldName: String
-    ) throws -> ComparisonResult {
+    ) throws -> QueryComparison {
         try validateOrdered(bound, fieldName: fieldName)
         guard let result = value.compare(to: bound) else {
             throw FilterError.incomparableValues(
@@ -75,19 +62,42 @@ enum ScalarRangeValueMatcher {
         _ value: FieldValue,
         fieldName: String
     ) throws {
-        if case .double(let number) = value, number.isNaN {
+        if case .float32(let number) = value, number.isNaN {
+            throw FilterError.unorderedFloatingPoint(fieldName: fieldName)
+        }
+        if case .float64(let number) = value, number.isNaN {
             throw FilterError.unorderedFloatingPoint(fieldName: fieldName)
         }
     }
 
     private static func kind(of value: FieldValue) -> String {
         switch value {
+        case .int8: return "int8"
+        case .int16: return "int16"
+        case .int32: return "int32"
         case .int64: return "int64"
+        case .uint8: return "uint8"
+        case .uint16: return "uint16"
+        case .uint32: return "uint32"
         case .uint64: return "uint64"
-        case .double: return "double"
+        case .float32: return "float32"
+        case .float64: return "float64"
+        case .decimal: return "decimal"
         case .string: return "string"
         case .bool: return "bool"
-        case .data: return "data"
+        case .bytes: return "bytes"
+        case .date: return "date"
+        case .time: return "time"
+        case .dateTime: return "dateTime"
+        case .timestamp: return "timestamp"
+        case .timeSpan: return "timeSpan"
+        case .calendarPeriod: return "calendarPeriod"
+        case .geographicPoint: return "geographicPoint"
+        case .geographicPosition: return "geographicPosition"
+        case .vector: return "vector"
+        case .uuid: return "uuid"
+        case .object: return "object"
+        case .reference: return "reference"
         case .rdfTerm: return "rdfTerm"
         case .null: return "null"
         case .array: return "array"

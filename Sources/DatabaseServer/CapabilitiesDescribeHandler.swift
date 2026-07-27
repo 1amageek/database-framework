@@ -1,21 +1,21 @@
-import DatabaseWire
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct CapabilitiesDescribeHandler: DatabaseOperationHandler {
     public typealias Operation = CapabilitiesDescribeOperation
 
     private let identity: DatabaseRuntimeIdentity
-    private let jobOperations: [DatabaseJobOperationIdentifier]
+    private let jobOperations: [JobOperationIdentifier]
 
     public init(
         identity: DatabaseRuntimeIdentity,
-        jobOperations: [DatabaseJobOperationIdentifier]
+        jobOperations: [JobOperationIdentifier]
     ) {
         self.identity = identity
         self.jobOperations = jobOperations
     }
 
     public func handle(
-        _ request: DatabaseEmpty,
+        _ request: EmptyOperationPayload,
         context: DatabaseOperationContext
     ) async throws -> CapabilitiesDescribeOperation.Response {
         CapabilitiesDescribeOperation.Response(

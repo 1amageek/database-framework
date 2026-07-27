@@ -6,8 +6,8 @@ import Testing
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
@@ -20,13 +20,6 @@ struct CatalogProduct {
     var category: String
     var brand: String
     var price: Int64
-
-    init(id: String = UUID().uuidString, category: String, brand: String, price: Int64) {
-        self.id = id
-        self.category = category
-        self.brand = brand
-        self.price = price
-    }
 }
 
 // MARK: - Minimum Index Context
@@ -46,7 +39,14 @@ private struct MinimumIndexContext {
         // Expression: category + price (grouping + min value)
         let index = Index(
             name: indexName,
-            kind: MinIndexKind<CatalogProduct, Int64>(groupBy: [\.category], value: \.price),
+            kind: numericAggregationIndexMetadata(
+                .minimum,
+                groupingFields: [
+                    FieldIdentity(name: "category", number: 2)
+                ],
+                valueField: FieldIdentity(name: "price", number: 4),
+                valueType: .int64
+            ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "category"),
                 FieldKeyExpression(fieldName: "price")
@@ -287,7 +287,7 @@ struct MinIndexBehaviorTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await MinimumIndexContext()
 
-        await #expect(throws: IndexError.self) {
+        await #expect(throws: AggregationIndexError.self) {
             _ = try await ctx.getMin(for: "NonExistent")
         }
 

@@ -1,23 +1,29 @@
-import DatabaseValue
+import DatabaseTypes
+import DatabaseKit
 
 /// A validated RDF triple used as the identity of an ontology inference.
 public struct ReasoningTriple: Sendable, Hashable, Comparable {
-    public let subject: DatabaseRDFTerm
-    public let predicate: DatabaseRDFPredicateIRI
-    public let object: DatabaseRDFTerm
+    public let subject: RDFSubject
+    public let predicate: RDFPredicateIRI
+    public let object: RDFTerm
 
     public init(
-        subject: DatabaseRDFTerm,
-        predicate: DatabaseRDFPredicateIRI,
-        object: DatabaseRDFTerm
+        subject: RDFSubject,
+        predicate: RDFPredicateIRI,
+        object: RDFTerm
     ) throws(ReasoningTripleError) {
         do {
-            try DatabaseRDFTermCodec.validate(subject, role: .subject)
+            try RDFTermValidation.validate(subject.term, role: .subject)
         } catch let error {
             throw .invalidSubject(error)
         }
         do {
-            try DatabaseRDFTermCodec.validate(object, role: .object)
+            try RDFTermValidation.validate(predicate.term, role: .predicate)
+        } catch let error {
+            throw .invalidPredicate(error)
+        }
+        do {
+            try RDFTermValidation.validate(object, role: .object)
         } catch let error {
             throw .invalidObject(error)
         }
@@ -27,15 +33,15 @@ public struct ReasoningTriple: Sendable, Hashable, Comparable {
     }
 
     public init(
-        subject: DatabaseRDFTerm,
+        subject: RDFSubject,
         predicateIRI: String,
-        object: DatabaseRDFTerm
+        object: RDFTerm
     ) throws(ReasoningTripleError) {
-        let predicate: DatabaseRDFPredicateIRI
+        let predicate: RDFPredicateIRI
         do {
-            predicate = try DatabaseRDFPredicateIRI(predicateIRI)
+            predicate = try RDFPredicateIRI(predicateIRI)
         } catch let error {
-            throw .invalidPredicate(error)
+            throw .invalidPredicateIRI(error)
         }
         try self.init(
             subject: subject,
@@ -49,10 +55,24 @@ public struct ReasoningTriple: Sendable, Hashable, Comparable {
         predicateIRI: String,
         objectIRI: String
     ) throws(ReasoningTripleError) {
+        let subject: RDFSubject
+        do {
+            subject = .iri(try RDFIRI(subjectIRI))
+        } catch let error {
+            throw .invalidSubjectIRI(error)
+        }
+
+        let object: RDFTerm
+        do {
+            object = .iri(try RDFIRI(objectIRI))
+        } catch let error {
+            throw .invalidObjectIRI(error)
+        }
+
         try self.init(
-            subject: .iri(subjectIRI),
+            subject: subject,
             predicateIRI: predicateIRI,
-            object: .iri(objectIRI)
+            object: object
         )
     }
 
@@ -83,9 +103,12 @@ public struct ReasoningTriple: Sendable, Hashable, Comparable {
 }
 
 public enum ReasoningTripleError: Error, Sendable, Equatable {
-    case invalidSubject(DatabaseRDFTermCodecError)
-    case invalidPredicate(DatabaseRDFPredicateIRIError)
-    case invalidObject(DatabaseRDFTermCodecError)
+    case invalidSubject(RDFTermValidationError)
+    case invalidPredicate(RDFTermValidationError)
+    case invalidObject(RDFTermValidationError)
+    case invalidSubjectIRI(RDFIRIError)
+    case invalidPredicateIRI(RDFIRIError)
+    case invalidObjectIRI(RDFIRIError)
 }
 
 extension ReasoningTriple: CustomStringConvertible {

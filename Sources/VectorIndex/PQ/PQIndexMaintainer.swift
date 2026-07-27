@@ -9,11 +9,10 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseKit
 import DatabaseMath
 import DatabaseEngine
 import StorageKit
-import Vector
 
 /// Maintainer for Product Quantization vector indexes
 ///

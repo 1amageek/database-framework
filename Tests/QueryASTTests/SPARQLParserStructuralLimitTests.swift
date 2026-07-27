@@ -1,5 +1,5 @@
 import QueryAST
-import QueryIR
+import DatabaseKit
 import Testing
 
 @Suite("SPARQL parser structural limits")

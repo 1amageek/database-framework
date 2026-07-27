@@ -3,7 +3,7 @@
 
 import Testing
 import Foundation
-import Core
+import DatabaseKit
 import DatabaseEngine
 @testable import GraphIndex
 

@@ -1,5 +1,5 @@
-import DatabaseWire
-import QueryIR
+@_spi(DatabaseServer) import DatabaseWire
+import DatabaseKit
 
 public struct DatabaseRuntimeLimits: Sendable, Hashable {
     public let maximumRows: UInt32
@@ -83,7 +83,7 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
         )
     }
 
-    public func validate(_ budget: DatabaseExecutionBudget) throws {
+    public func validate(_ budget: ExecutionBudget) throws {
         guard budget.maximumRows > 0, budget.maximumRows <= maximumRows else {
             throw DatabaseRuntimeLimitError.invalidMaximumRows(
                 requested: budget.maximumRows,

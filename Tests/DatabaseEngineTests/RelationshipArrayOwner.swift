@@ -1,8 +1,8 @@
 #if !os(WASI)
 #if FOUNDATION_DB
-import Core
-import DatabaseValue
-import Relationship
+import DatabaseKit
+import DatabaseTypes
+import DatabaseKit
 
 @Persistable
 struct RelationshipArrayOwner {
@@ -11,7 +11,7 @@ struct RelationshipArrayOwner {
     var id: String = ""
 
     @Relationship(deleteRule: .nullify)
-    var targets: [DatabaseReference<RelationshipTarget>] = []
+    var targets: [PersistableReference<RelationshipTarget>] = []
 }
 #endif
 #endif

@@ -12,7 +12,7 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Graph
+import DatabaseKit
 
 /// Class Hierarchy Manager
 ///

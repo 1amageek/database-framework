@@ -5,8 +5,8 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
@@ -21,16 +21,18 @@ private struct ScalarAccessPathEntity {
         "entities"
     )
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var group: String
-    var rank: Int
+    var rank: Int64
 
     #Index(
-        ScalarIndexKind<ScalarAccessPathEntity>(fields: [\.group]),
+        .scalar,
+        fields: [\ScalarAccessPathEntity.group],
         name: "scalar_access_path_group"
     )
     #Index(
-        ScalarIndexKind<ScalarAccessPathEntity>(fields: [\.group, \.rank]),
+        .scalar,
+        fields: [\ScalarAccessPathEntity.group, \ScalarAccessPathEntity.rank],
         name: "scalar_access_path_group_rank"
     )
 }
@@ -43,11 +45,12 @@ private struct AggregationOnlyAccessPathEntity {
         "aggregation_only"
     )
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var group: String
 
     #Index(
-        CountIndexKind<AggregationOnlyAccessPathEntity>(groupBy: [\.group]),
+        .count,
+        groupBy: [\AggregationOnlyAccessPathEntity.group],
         name: "scalar_access_path_count_group"
     )
 }
@@ -60,19 +63,18 @@ private struct CompoundOnlyAccessPathEntity {
         "compound_only"
     )
 
-    var id: String = ULID().ulidString
+    var id: String = UUID().uuidString
     var group: String
-    var rank: Int
+    var rank: Int64
 
     #Index(
-        ScalarIndexKind<CompoundOnlyAccessPathEntity>(
-            fields: [\.group, \.rank]
-        ),
+        .scalar,
+        fields: [\CompoundOnlyAccessPathEntity.group, \CompoundOnlyAccessPathEntity.rank],
         name: "scalar_access_path_compound_only"
     )
 }
 
-@Suite("Scalar index access paths", .serialized, .heartbeat)
+@Suite("Scalar index access paths", .foundationDBScenario, .serialized, .heartbeat)
 struct ScalarIndexAccessPathTests {
     private func setupContainer() async throws -> DBContainer {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
@@ -104,8 +106,8 @@ struct ScalarIndexAccessPathTests {
     @Test("Planning is storage-neutral and preserves descriptor identity")
     func planningPreservesDescriptorIdentity() throws {
         let predicate: DatabaseEngine.Predicate<ScalarAccessPathEntity> =
-            (\ScalarAccessPathEntity.group == "alpha")
-            && (\ScalarAccessPathEntity.rank == 2)
+            (ScalarAccessPathEntity.fields.group == "alpha")
+            && (ScalarAccessPathEntity.fields.rank == Int64(2))
         let selection = try ScalarIndexAccessPlanner.select(
             for: predicate,
             descriptors: ScalarAccessPathEntity.indexDescriptors,
@@ -122,7 +124,7 @@ struct ScalarIndexAccessPathTests {
     @Test("Planning rejects a forced non-scalar descriptor")
     func planningRejectsForcedNonScalarDescriptor() {
         let predicate: DatabaseEngine.Predicate<AggregationOnlyAccessPathEntity> =
-            \AggregationOnlyAccessPathEntity.group == "alpha"
+            AggregationOnlyAccessPathEntity.fields.group == "alpha"
 
         #expect(throws: CanonicalReadError.self) {
             _ = try ScalarIndexAccessPlanner.select(
@@ -146,14 +148,14 @@ struct ScalarIndexAccessPathTests {
         try await context.save()
 
         let results = try await context.fetch(ScalarAccessPathEntity.self)
-            .where(\.group == "alpha")
-            .where(\.rank == 2)
+            .where(ScalarAccessPathEntity.fields.group == "alpha")
+            .where(ScalarAccessPathEntity.fields.rank == Int64(2))
             .execute()
-        #expect(results.map(\.id) == [expected.id])
+        #expect(results.map { $0.id } == [expected.id])
 
         let count = try await context.fetch(ScalarAccessPathEntity.self)
-            .where(\.group == "alpha")
-            .where(\.rank == 2)
+            .where(ScalarAccessPathEntity.fields.group == "alpha")
+            .where(ScalarAccessPathEntity.fields.rank == Int64(2))
             .count()
         #expect(count == 1)
     }
@@ -165,8 +167,8 @@ struct ScalarIndexAccessPathTests {
         let context = container.newContext()
 
         let plan = try await context.fetch(ScalarAccessPathEntity.self)
-            .where(\.group == "alpha")
-            .where(\.rank == 2)
+            .where(ScalarAccessPathEntity.fields.group == "alpha")
+            .where(ScalarAccessPathEntity.fields.rank == Int64(2))
             .executionPlan()
 
         guard case .scalarIndex(
@@ -180,12 +182,12 @@ struct ScalarIndexAccessPathTests {
         #expect(name == "scalar_access_path_group_rank")
         #expect(kind == "scalar")
         #expect(indexedFields == ["group", "rank"])
-        #expect(plan.indexedConditions.map(\.fieldName) == ["group", "rank"])
+        #expect(plan.indexedConditions.map { $0.fieldName } == ["group", "rank"])
         #expect(plan.residualFilterRequired == false)
     }
 
-    @Test("Administrative plans expose only measured values")
-    func administrativePlansDoNotFabricateMeasurements() async throws {
+    @Test("Administrative analysis reports the selected path and actual rows")
+    func administrativeAnalysisReportsExecution() async throws {
         let container = try await setupContainer()
         try await resetStorage(in: container)
         let context = container.newContext()
@@ -193,21 +195,21 @@ struct ScalarIndexAccessPathTests {
         try await context.save()
 
         let query = Query<ScalarAccessPathEntity>()
-            .where(\.group == "alpha")
-            .where(\.rank == 2)
+            .where(ScalarAccessPathEntity.fields.group == "alpha")
+            .where(ScalarAccessPathEntity.fields.rank == Int64(2))
         let admin = container.newAdminContext()
         let plan = try await admin.explain(query)
 
-        #expect(plan.planType == .indexScan)
-        #expect(plan.selectedIndex == "scalar_access_path_group_rank")
-        #expect(plan.estimatedCost == nil)
-        #expect(plan.estimatedRows == nil)
+        #expect(plan.kind == .indexScan)
+        #expect(plan.selectedIndexName == "scalar_access_path_group_rank")
+        #expect(plan.indexConditions.count == 2)
         #expect(plan.filterConditions.isEmpty)
+        #expect(plan.requiresSort == false)
 
         let statistics = try await admin.explainAnalyze(query)
-        #expect(statistics.actualRows == 1)
-        #expect(statistics.bytesRead == nil)
-        #expect(statistics.transactionRetries == nil)
+        #expect(statistics.plan == plan)
+        #expect(statistics.actualRowCount == 1)
+        #expect(statistics.readVersion > 0)
     }
 
     @Test("A partial compound prefix preserves entity identity")
@@ -226,12 +228,12 @@ struct ScalarIndexAccessPathTests {
         try await context.save()
 
         let results = try await context.fetch(CompoundOnlyAccessPathEntity.self)
-            .where(\.group == "alpha")
+            .where(CompoundOnlyAccessPathEntity.fields.group == "alpha")
             .execute()
-        #expect(Set(results.map(\.id)) == Set([first.id, second.id]))
+        #expect(Set(results.map { $0.id }) == Set([first.id, second.id]))
 
         let count = try await context.fetch(CompoundOnlyAccessPathEntity.self)
-            .where(\.group == "alpha")
+            .where(CompoundOnlyAccessPathEntity.fields.group == "alpha")
             .count()
         #expect(count == 2)
     }
@@ -250,18 +252,18 @@ struct ScalarIndexAccessPathTests {
         let fallbackResults = try await context.fetch(
             AggregationOnlyAccessPathEntity.self
         )
-        .where(\.group == "alpha")
+        .where(AggregationOnlyAccessPathEntity.fields.group == "alpha")
         .execute()
-        #expect(fallbackResults.map(\.id) == [expected.id])
+        #expect(fallbackResults.map { $0.id } == [expected.id])
 
         var forcedQuery = Query<AggregationOnlyAccessPathEntity>()
-            .where(\.group == "alpha")
+            .where(AggregationOnlyAccessPathEntity.fields.group == "alpha")
         forcedQuery.forcedIndex = IndexHint(
             indexName: "scalar_access_path_count_group"
         )
 
         do {
-            _ = try await QueryExecutor(
+            _ = try await QueryExecutor<AggregationOnlyAccessPathEntity>(
                 context: context,
                 query: forcedQuery
             ).execute()

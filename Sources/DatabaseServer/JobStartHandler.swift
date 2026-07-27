@@ -1,8 +1,8 @@
-import DatabaseValue
-import DatabaseWire
+import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public struct JobStartHandler: DatabaseOperationEndpointHandler {
-    public let identifier = DatabaseOperationIdentifier.jobStart
+    public typealias Operation = JobStartOperation
 
     private let service: AnyDatabaseJobService
     private let runtimeLimits: DatabaseRuntimeLimits
@@ -16,15 +16,10 @@ public struct JobStartHandler: DatabaseOperationEndpointHandler {
     }
 
     public func invoke(
-        payload: DatabaseBytes,
+        request: JobStartOperation.Request,
         context: DatabaseOperationContext,
         limits: DatabaseWireLimits
     ) async throws -> DatabaseOperationResult {
-        let request = try DatabaseEnvelopeCodec.decode(
-            JobStartOperation.Request.self,
-            from: payload,
-            limits: limits
-        )
         guard request.maximumSliceWorkUnits > 0,
               request.maximumSliceWorkUnits <= runtimeLimits.maximumWorkUnits else {
             throw DatabaseRuntimeLimitError.invalidMaximumWorkUnits(

@@ -1,10 +1,6 @@
-import Core
+import DatabaseKit
 import DatabaseEngine
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
+import DatabaseTypes
 import StorageKit
 
 /// Canonical runtime provider for minimum indexes.
@@ -17,12 +13,11 @@ public struct MinIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexConfiguration]
+        configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
         let valueType = try validate(kind: index.kind)
         switch valueType {
-        case .int:
-            return MinIndexMaintainer<Item, Int>(index: index, subspace: subspace, idExpression: idExpression)
+
         case .int8:
             return MinIndexMaintainer<Item, Int8>(index: index, subspace: subspace, idExpression: idExpression)
         case .int16:
@@ -31,8 +26,7 @@ public struct MinIndexMaintainerProvider: IndexMaintainerProvider {
             return MinIndexMaintainer<Item, Int32>(index: index, subspace: subspace, idExpression: idExpression)
         case .int64:
             return MinIndexMaintainer<Item, Int64>(index: index, subspace: subspace, idExpression: idExpression)
-        case .uint:
-            return MinIndexMaintainer<Item, UInt>(index: index, subspace: subspace, idExpression: idExpression)
+
         case .uint8:
             return MinIndexMaintainer<Item, UInt8>(index: index, subspace: subspace, idExpression: idExpression)
         case .uint16:
@@ -41,14 +35,16 @@ public struct MinIndexMaintainerProvider: IndexMaintainerProvider {
             return MinIndexMaintainer<Item, UInt32>(index: index, subspace: subspace, idExpression: idExpression)
         case .uint64:
             return MinIndexMaintainer<Item, UInt64>(index: index, subspace: subspace, idExpression: idExpression)
-        case .float:
+        case .float32:
             return MinIndexMaintainer<Item, Float>(index: index, subspace: subspace, idExpression: idExpression)
-        case .double:
+        case .float64:
             return MinIndexMaintainer<Item, Double>(index: index, subspace: subspace, idExpression: idExpression)
         case .string:
             return MinIndexMaintainer<Item, String>(index: index, subspace: subspace, idExpression: idExpression)
         case .date:
-            return MinIndexMaintainer<Item, Date>(index: index, subspace: subspace, idExpression: idExpression)
+            return MinIndexMaintainer<Item, CivilDate>(index: index, subspace: subspace, idExpression: idExpression)
+        case .timestamp:
+            return MinIndexMaintainer<Item, Timestamp>(index: index, subspace: subspace, idExpression: idExpression)
         }
     }
 

@@ -1,7 +1,6 @@
 #if FOUNDATION_DB
-import Core
-import DatabaseValue
-import QueryIR
+import DatabaseKit
+import DatabaseTypes
 import TestHeartbeat
 import Testing
 @testable import GraphIndex
@@ -32,14 +31,16 @@ struct LiteralSPARQLTests {
     func rdfScalarsConvert() throws {
         #expect(
             try Literal.iri("https://example.invalid/resource").toSPARQLFieldValue()
-                == .rdfTerm(.iri("https://example.invalid/resource"))
+                == .rdfTerm(
+                    try .iri(validating: "https://example.invalid/resource")
+                )
         )
         #expect(
             try Literal.blankNode("b1").toSPARQLFieldValue()
-                == .rdfTerm(.blankNode("b1"))
+                == .rdfTerm(try .blankNode(identifier: "b1"))
         )
-        let language = try DatabaseRDFLanguageTag("fr")
-        let languageLiteral = DatabaseRDFLiteral(
+        let language = try RDFLanguageTag("fr")
+        let languageLiteral = RDFLiteral(
             lexicalForm: "chat",
             language: language
         )
@@ -51,8 +52,8 @@ struct LiteralSPARQLTests {
 
     @Test("date and timestamp use canonical lexical forms")
     func temporalValuesConvert() throws {
-        let date = DatabaseDate(year: 2024, month: 1, day: 15)
-        let timestamp = DatabaseTimestamp(
+        let date = try CivilDate(year: 2024, month: 1, day: 15)
+        let timestamp = try Timestamp(
             secondsSinceUnixEpoch: 0,
             nanoseconds: 0
         )
@@ -141,7 +142,7 @@ struct LiteralSPARQLTests {
     ) throws -> FieldValue {
         .rdfTerm(
             .literal(
-                try DatabaseRDFLiteral(
+                try RDFLiteral(
                     lexicalForm: lexicalForm,
                     datatype: datatype
                 )

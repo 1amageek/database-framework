@@ -6,7 +6,8 @@ import FoundationEssentials
 #else
 import Foundation
 #endif
-import Core
+import DatabaseTypes
+import DatabaseKit
 import DatabaseMath
 
 // MARK: - Geo Point
@@ -182,6 +183,12 @@ public struct AggregateResult<T: Persistable>: Sendable {
             return nil
         }
         switch value {
+        case .int8(let integer):
+            return Double(integer)
+        case .int16(let integer):
+            return Double(integer)
+        case .int32(let integer):
+            return Double(integer)
         case .int64(let integer):
             guard let result = Double(exactly: integer) else {
                 throw .notExactlyRepresentableAsDouble(
@@ -190,6 +197,12 @@ public struct AggregateResult<T: Persistable>: Sendable {
                 )
             }
             return result
+        case .uint8(let integer):
+            return Double(integer)
+        case .uint16(let integer):
+            return Double(integer)
+        case .uint32(let integer):
+            return Double(integer)
         case .uint64(let integer):
             guard let result = Double(exactly: integer) else {
                 throw .notExactlyRepresentableAsDouble(
@@ -198,15 +211,25 @@ public struct AggregateResult<T: Persistable>: Sendable {
                 )
             }
             return result
-        case .double(let floatingPoint):
+        case .float32(let floatingPoint):
+            guard floatingPoint.isFinite else {
+                throw .nonFiniteDouble(name: name)
+            }
+            return Double(floatingPoint)
+        case .float64(let floatingPoint):
             guard floatingPoint.isFinite else {
                 throw .nonFiniteDouble(name: name)
             }
             return floatingPoint
         case .null:
             return nil
-        case .string, .bool, .data, .rdfTerm, .array:
+        case .string, .bool, .bytes, .date, .time, .dateTime,
+             .timestamp, .timeSpan, .calendarPeriod, .geographicPoint,
+             .geographicPosition, .vector, .uuid, .object, .reference,
+             .rdfTerm, .array:
             throw .nonNumericValue(name: name, value: value)
+        case .decimal:
+            throw .notExactlyRepresentableAsDouble(name: name, value: value)
         }
     }
 
@@ -247,7 +270,7 @@ public struct AggregateResult<T: Persistable>: Sendable {
     /// - Parameter name: The field name
     /// - Returns: Double value, or nil if not found or not double
     public func groupKeyDouble(_ name: String) -> Double? {
-        groupKey[name]?.doubleValue
+        groupKey[name]?.float64Value
     }
 }
 

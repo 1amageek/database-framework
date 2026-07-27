@@ -1,5 +1,5 @@
-import Core
-import DatabaseValue
+import DatabaseKit
+import DatabaseTypes
 
 /// Read-only access to the final state of one logical database transaction.
 ///
@@ -24,10 +24,8 @@ public struct PersistableValidationContext: ~Copyable, Sendable {
         self.scope = scope
     }
 
-    deinit {}
-
     public func fetch(
-        _ identity: PersistableIdentity
+        _ identity: EntityReference
     ) async throws -> (any Persistable)? {
         try await scope.enter()
         do {

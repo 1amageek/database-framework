@@ -1,4 +1,4 @@
-import DatabaseValue
+import DatabaseTypes
 
 /// Resolves SPARQL IRI references while preserving their Unicode spelling.
 enum SPARQLIRIResolver {
@@ -142,11 +142,11 @@ enum SPARQLIRIResolver {
         _ reference: String,
         against base: String?
     ) throws -> String {
-        if DatabaseRDFIRIValidator.isAbsolute(reference) {
+        if RDFIRISyntax.isAbsolute(reference) {
             return reference
         }
         guard let base else { return reference }
-        guard DatabaseRDFIRIValidator.isAbsolute(base) else {
+        guard RDFIRISyntax.isAbsolute(base) else {
             throw ResolutionError.invalidBase
         }
 
@@ -199,7 +199,7 @@ enum SPARQLIRIResolver {
             query: targetQuery,
             fragment: targetFragment
         )
-        guard DatabaseRDFIRIValidator.isAbsolute(result) else {
+        guard RDFIRISyntax.isAbsolute(result) else {
             throw ResolutionError.invalidReference
         }
         return result
