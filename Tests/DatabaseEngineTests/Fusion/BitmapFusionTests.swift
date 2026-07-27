@@ -223,62 +223,80 @@ struct BitmapFusionIntegrationTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
+    private func withContext<Result>(
+        _ operation: (BitmapFusionContext) async throws -> Result
+    ) async throws -> Result {
+        let context = try await BitmapFusionContext()
+        let result: Result
+        do {
+            result = try await operation(context)
+        } catch let operationError {
+            do {
+                try await context.cleanup()
+            } catch let cleanupError {
+                Issue.record("Bitmap fusion cleanup failed: \(cleanupError)")
+            }
+            throw operationError
+        }
+        try await context.cleanup()
+        return result
+    }
+
     @Test("Bitmap index maintainer initialization")
     func testBitmapIndexMaintainerInitialization() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let context = try await BitmapFusionContext()
-            defer { Task { try? await context.cleanup() } }
-
-            // Verify maintainer is created with correct configuration
-            // (maintainer is non-optional, so we verify it's the expected type)
-            #expect(type(of: context.maintainer) == BitmapIndexMaintainer<BitmapFusionUser>.self)
+            try await withContext { context in
+                // Verify maintainer is created with correct configuration
+                // (maintainer is non-optional, so we verify it's the expected type)
+                #expect(type(of: context.maintainer) == BitmapIndexMaintainer<BitmapFusionUser>.self)
+            }
         }
     }
 
     @Test("Insert and index user")
     func testInsertAndIndexUser() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let context = try await BitmapFusionContext()
-            defer { Task { try? await context.cleanup() } }
+            try await withContext { context in
 
-            let userId = uniqueID("user")
-            let user = BitmapFusionUser(id: userId, name: "Alice", status: "active", role: "admin")
+                let userId = uniqueID("user")
+                let user = BitmapFusionUser(id: userId, name: "Alice", status: "active", role: "admin")
 
-            try await context.insertUser(user)
+                try await context.insertUser(user)
 
-            // Verify user was inserted (check items subspace)
-            let itemExists = try await context.database.withTransaction { transaction -> Bool in
-                let itemKey = context.itemsSubspace.pack(Tuple(userId))
-                let value = try await transaction.getValue(for: itemKey, snapshot: true)
-                return value != nil
+                // Verify user was inserted (check items subspace)
+                let itemExists = try await context.database.withTransaction { transaction -> Bool in
+                    let itemKey = context.itemsSubspace.pack(Tuple(userId))
+                    let value = try await transaction.getValue(for: itemKey, snapshot: true)
+                    return value != nil
+                }
+
+                #expect(itemExists)
             }
-
-            #expect(itemExists)
         }
     }
 
     @Test("Multiple users with same status value")
     func testMultipleUsersWithSameStatus() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let context = try await BitmapFusionContext()
-            defer { Task { try? await context.cleanup() } }
+            try await withContext { context in
 
-            let user1 = BitmapFusionUser(id: uniqueID("user"), name: "Alice", status: "active", role: "admin")
-            let user2 = BitmapFusionUser(id: uniqueID("user"), name: "Bob", status: "active", role: "user")
-            let user3 = BitmapFusionUser(id: uniqueID("user"), name: "Charlie", status: "inactive", role: "user")
+                let user1 = BitmapFusionUser(id: uniqueID("user"), name: "Alice", status: "active", role: "admin")
+                let user2 = BitmapFusionUser(id: uniqueID("user"), name: "Bob", status: "active", role: "user")
+                let user3 = BitmapFusionUser(id: uniqueID("user"), name: "Charlie", status: "inactive", role: "user")
 
-            try await context.insertUser(user1)
-            try await context.insertUser(user2)
-            try await context.insertUser(user3)
+                try await context.insertUser(user1)
+                try await context.insertUser(user2)
+                try await context.insertUser(user3)
 
-            // All three users should be inserted
-            for user in [user1, user2, user3] {
-                let exists = try await context.database.withTransaction { transaction -> Bool in
-                    let itemKey = context.itemsSubspace.pack(Tuple(user.id))
-                    let value = try await transaction.getValue(for: itemKey, snapshot: true)
-                    return value != nil
+                // All three users should be inserted
+                for user in [user1, user2, user3] {
+                    let exists = try await context.database.withTransaction { transaction -> Bool in
+                        let itemKey = context.itemsSubspace.pack(Tuple(user.id))
+                        let value = try await transaction.getValue(for: itemKey, snapshot: true)
+                        return value != nil
+                    }
+                    #expect(exists, "User \(user.name) should exist")
                 }
-                #expect(exists, "User \(user.name) should exist")
             }
         }
     }

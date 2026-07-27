@@ -121,7 +121,7 @@ struct SHACLValidationTests {
 
     /// Create a basic PersonShape that requires ex:name with minCount(1)
     private func makePersonShapesGraph() throws -> SHACLShapesGraph {
-        try SHACLShapesGraph(
+        SHACLShapesGraph(
             iri: "ex:PersonShapes",
             shapes: [
                 .node(NodeShape(

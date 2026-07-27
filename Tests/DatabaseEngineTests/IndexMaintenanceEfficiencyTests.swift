@@ -43,8 +43,10 @@ struct IndexMaintenanceEfficiencyTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        
-        try? await container.engine.removeDirectory(path: ["test", "efficiency"])
+        try await ensureDirectoryRemoved(
+            from: container.engine,
+            path: ["test", "efficiency"]
+        )
     }
 
     private func uniqueID(_ prefix: String) -> String {

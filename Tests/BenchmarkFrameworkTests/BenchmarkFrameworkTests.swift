@@ -54,7 +54,7 @@ struct BenchmarkFrameworkTests {
             warmupIterations: 2,
             iterations: 10
         ) {
-            try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
+            try await Task.sleep(nanoseconds: 1_000_000) // 1ms
         }
 
         #expect(metrics.samples == 10)
@@ -188,11 +188,11 @@ struct BenchmarkFrameworkTests {
         let result = try await runner.compare(
             name: "Simple Comparison",
             baseline: { () async throws -> Int in
-                try? await Task.sleep(nanoseconds: 2_000_000) // 2ms
+                try await Task.sleep(nanoseconds: 2_000_000) // 2ms
                 return 42
             },
             optimized: { () async throws -> Int in
-                try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
+                try await Task.sleep(nanoseconds: 1_000_000) // 1ms
                 return 42
             },
             verify: { (baseline: Int, optimized: Int) in
@@ -215,11 +215,11 @@ struct BenchmarkFrameworkTests {
             strategies: [
                 ("Fast", { @Sendable () async throws -> Int in return 1 }),
                 ("Medium", { @Sendable () async throws -> Int in
-                    try? await Task.sleep(nanoseconds: 1_000_000)
+                    try await Task.sleep(nanoseconds: 1_000_000)
                     return 2
                 }),
                 ("Slow", { @Sendable () async throws -> Int in
-                    try? await Task.sleep(nanoseconds: 2_000_000)
+                    try await Task.sleep(nanoseconds: 2_000_000)
                     return 3
                 }),
             ]
@@ -307,7 +307,13 @@ struct BenchmarkFrameworkTests {
         )
 
         let tempFile = NSTemporaryDirectory() + "test_comparison.json"
-        defer { try? FileManager.default.removeItem(atPath: tempFile) }
+        defer {
+            do {
+                try FileManager.default.removeItem(atPath: tempFile)
+            } catch {
+                Issue.record("Failed to remove comparison fixture: \(error)")
+            }
+        }
 
         try JSONReporter.write(original, to: tempFile)
         let loaded = try JSONReporter.readComparison(from: tempFile)
@@ -335,7 +341,13 @@ struct BenchmarkFrameworkTests {
         )
 
         let tempFile = NSTemporaryDirectory() + "test_benchmark.json"
-        defer { try? FileManager.default.removeItem(atPath: tempFile) }
+        defer {
+            do {
+                try FileManager.default.removeItem(atPath: tempFile)
+            } catch {
+                Issue.record("Failed to remove benchmark fixture: \(error)")
+            }
+        }
 
         try JSONReporter.write(original, to: tempFile)
         let loaded = try JSONReporter.read(from: tempFile)

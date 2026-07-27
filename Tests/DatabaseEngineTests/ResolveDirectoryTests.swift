@@ -71,7 +71,10 @@ struct ResolveDirectoryTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.removeDirectory(path: ["test", "resolve"])
+        try await ensureDirectoryRemoved(
+            from: container.engine,
+            path: ["test", "resolve"]
+        )
     }
 
     // MARK: - Basic Resolution Tests
@@ -228,7 +231,10 @@ struct ResolveDirectoryTests {
 
             // Clean up first
             
-            try? await database.removeDirectory(path: ["test", "resolve"])
+            try await ensureDirectoryRemoved(
+                from: database,
+                path: ["test", "resolve"]
+            )
 
             let schema = try Schema(entities: [try DirectoryUser.schemaEntity], version: Schema.Version(1, 0, 0))
 
@@ -242,7 +248,10 @@ struct ResolveDirectoryTests {
             #expect(subspace1.prefix == subspace2.prefix)
 
             // Cleanup
-            try? await database.removeDirectory(path: ["test", "resolve"])
+            try await ensureDirectoryRemoved(
+                from: database,
+                path: ["test", "resolve"]
+            )
         }
     }
 

@@ -89,7 +89,13 @@ struct DatabaseContainerConfigurationSQLiteTests {
         let dbPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("database-facade-\(UUID().uuidString).sqlite")
             .path
-        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        defer {
+            do {
+                try FileManager.default.removeItem(atPath: dbPath)
+            } catch {
+                Issue.record("Failed to remove SQLite migration fixture: \(error)")
+            }
+        }
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV1.makeSchema(),

@@ -148,7 +148,7 @@ struct RDFQuadIndexPhysicalCodecTests {
         do {
             _ = try codec.decodeQuad(key: trailing, ordering: .spo)
             Issue.record("Expected trailing tuple data to fail")
-        } catch let error as RDFQuadIndexPhysicalCodecError {
+        } catch let error {
             guard case .unexpectedTrailingTupleData = error else {
                 Issue.record("Unexpected error: \(error)")
                 return

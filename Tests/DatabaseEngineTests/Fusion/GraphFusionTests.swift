@@ -430,66 +430,84 @@ struct GraphFusionIntegrationTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
+    private func withContext<Result>(
+        _ operation: (GraphFusionContext) async throws -> Result
+    ) async throws -> Result {
+        let context = try await GraphFusionContext()
+        let result: Result
+        do {
+            result = try await operation(context)
+        } catch let operationError {
+            do {
+                try await context.cleanup()
+            } catch let cleanupError {
+                Issue.record("Graph fusion cleanup failed: \(cleanupError)")
+            }
+            throw operationError
+        }
+        try await context.cleanup()
+        return result
+    }
+
     @Test("Graph index maintainer initialization")
     func testGraphIndexMaintainerInitialization() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let context = try await GraphFusionContext()
-            defer { Task { try? await context.cleanup() } }
-
-            // Verify maintainer is properly configured with the expected strategy
-            #expect(context.strategy == .adjacency)
+            try await withContext { context in
+                // Verify maintainer is properly configured with the expected strategy
+                #expect(context.strategy == .adjacency)
+            }
         }
     }
 
     @Test("Insert and index follow relationship")
     func testInsertAndIndexFollow() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let context = try await GraphFusionContext()
-            defer { Task { try? await context.cleanup() } }
+            try await withContext { context in
 
-            let followId = uniqueID("follow")
-            let follow = GraphFusionFollow(
-                id: followId,
-                follower: "alice",
-                followee: "bob",
-                edgeType: "follows"
-            )
+                let followId = uniqueID("follow")
+                let follow = GraphFusionFollow(
+                    id: followId,
+                    follower: "alice",
+                    followee: "bob",
+                    edgeType: "follows"
+                )
 
-            try await context.insertFollow(follow)
+                try await context.insertFollow(follow)
 
-            let exists = try await context.database.withTransaction { transaction -> Bool in
-                let itemKey = context.itemsSubspace.pack(Tuple(followId))
-                let value = try await transaction.getValue(for: itemKey, snapshot: true)
-                return value != nil
+                let exists = try await context.database.withTransaction { transaction -> Bool in
+                    let itemKey = context.itemsSubspace.pack(Tuple(followId))
+                    let value = try await transaction.getValue(for: itemKey, snapshot: true)
+                    return value != nil
+                }
+
+                #expect(exists)
             }
-
-            #expect(exists)
         }
     }
 
     @Test("Multiple follow relationships")
     func testMultipleFollowRelationships() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let context = try await GraphFusionContext()
-            defer { Task { try? await context.cleanup() } }
+            try await withContext { context in
 
-            let follows = [
-                GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob"),
-                GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "charlie"),
-                GraphFusionFollow(id: uniqueID("f"), follower: "bob", followee: "charlie")
-            ]
+                let follows = [
+                    GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob"),
+                    GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "charlie"),
+                    GraphFusionFollow(id: uniqueID("f"), follower: "bob", followee: "charlie")
+                ]
 
-            for follow in follows {
-                try await context.insertFollow(follow)
-            }
-
-            for follow in follows {
-                let exists = try await context.database.withTransaction { transaction -> Bool in
-                    let itemKey = context.itemsSubspace.pack(Tuple(follow.id))
-                    let value = try await transaction.getValue(for: itemKey, snapshot: true)
-                    return value != nil
+                for follow in follows {
+                    try await context.insertFollow(follow)
                 }
-                #expect(exists, "Follow \(follow.follower) -> \(follow.followee) should exist")
+
+                for follow in follows {
+                    let exists = try await context.database.withTransaction { transaction -> Bool in
+                        let itemKey = context.itemsSubspace.pack(Tuple(follow.id))
+                        let value = try await transaction.getValue(for: itemKey, snapshot: true)
+                        return value != nil
+                    }
+                    #expect(exists, "Follow \(follow.follower) -> \(follow.followee) should exist")
+                }
             }
         }
     }
@@ -497,27 +515,27 @@ struct GraphFusionIntegrationTests {
     @Test("Different edge types")
     func testDifferentEdgeTypes() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let context = try await GraphFusionContext()
-            defer { Task { try? await context.cleanup() } }
+            try await withContext { context in
 
-            let follows = [
-                GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "follows"),
-                GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "likes"),
-                GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "blocks")
-            ]
+                let follows = [
+                    GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "follows"),
+                    GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "likes"),
+                    GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "blocks")
+                ]
 
-            for follow in follows {
-                try await context.insertFollow(follow)
-            }
-
-            // All should be inserted successfully
-            for follow in follows {
-                let exists = try await context.database.withTransaction { transaction -> Bool in
-                    let itemKey = context.itemsSubspace.pack(Tuple(follow.id))
-                    let value = try await transaction.getValue(for: itemKey, snapshot: true)
-                    return value != nil
+                for follow in follows {
+                    try await context.insertFollow(follow)
                 }
-                #expect(exists)
+
+                // All should be inserted successfully
+                for follow in follows {
+                    let exists = try await context.database.withTransaction { transaction -> Bool in
+                        let itemKey = context.itemsSubspace.pack(Tuple(follow.id))
+                        let value = try await transaction.getValue(for: itemKey, snapshot: true)
+                        return value != nil
+                    }
+                    #expect(exists)
+                }
             }
         }
     }

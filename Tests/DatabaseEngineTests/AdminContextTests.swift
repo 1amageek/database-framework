@@ -61,7 +61,10 @@ struct AdminContextTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.removeDirectory(path: ["test", "admin"])
+        try await ensureDirectoryRemoved(
+            from: container.engine,
+            path: ["test", "admin"]
+        )
     }
 
     /// Get the first index name for AdminIndexedEntity from schema
