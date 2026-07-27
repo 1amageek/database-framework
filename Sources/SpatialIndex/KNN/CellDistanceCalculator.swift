@@ -11,6 +11,7 @@ import Foundation
 import DatabaseEngine
 import DatabaseMath
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Calculator for cell-to-point distances
@@ -46,10 +47,10 @@ public struct CellDistanceCalculator: Sendable {
     public static func minDistance(
         cellId: UInt64,
         level: Int,
-        to point: GeoPoint
-    ) -> Double {
+        to point: GeographicPoint
+    ) throws(GeographicPointError) -> Double {
         let bounds = cellBounds(cellId: cellId, level: level)
-        let closestPoint = closestPointOnBounds(bounds: bounds, to: point)
+        let closestPoint = try closestPointOnBounds(bounds: bounds, to: point)
         return haversineDistance(from: point, to: closestPoint)
     }
 
@@ -66,10 +67,10 @@ public struct CellDistanceCalculator: Sendable {
     public static func maxDistance(
         cellId: UInt64,
         level: Int,
-        to point: GeoPoint
-    ) -> Double {
+        to point: GeographicPoint
+    ) throws(GeographicPointError) -> Double {
         let bounds = cellBounds(cellId: cellId, level: level)
-        let farthestPoint = farthestPointOnBounds(bounds: bounds, from: point)
+        let farthestPoint = try farthestPointOnBounds(bounds: bounds, from: point)
         return haversineDistance(from: point, to: farthestPoint)
     }
 
@@ -112,8 +113,8 @@ public struct CellDistanceCalculator: Sendable {
     /// - Returns: Closest point on or inside the bounds
     private static func closestPointOnBounds(
         bounds: (minLat: Double, minLon: Double, maxLat: Double, maxLon: Double),
-        to point: GeoPoint
-    ) -> GeoPoint {
+        to point: GeographicPoint
+    ) throws(GeographicPointError) -> GeographicPoint {
         // If point is inside bounds, distance is 0
         if point.latitude >= bounds.minLat && point.latitude <= bounds.maxLat &&
            point.longitude >= bounds.minLon && point.longitude <= bounds.maxLon {
@@ -124,7 +125,10 @@ public struct CellDistanceCalculator: Sendable {
         let closestLat = max(bounds.minLat, min(bounds.maxLat, point.latitude))
         let closestLon = max(bounds.minLon, min(bounds.maxLon, point.longitude))
 
-        return GeoPoint(closestLat, closestLon)
+        return try GeographicPoint(
+            latitude: closestLat,
+            longitude: closestLon
+        )
     }
 
     /// Find the farthest point on a bounding box from a query point
@@ -135,14 +139,14 @@ public struct CellDistanceCalculator: Sendable {
     /// - Returns: Farthest corner of the bounds
     private static func farthestPointOnBounds(
         bounds: (minLat: Double, minLon: Double, maxLat: Double, maxLon: Double),
-        from point: GeoPoint
-    ) -> GeoPoint {
+        from point: GeographicPoint
+    ) throws(GeographicPointError) -> GeographicPoint {
         // Check all 4 corners and find the farthest
         let corners = [
-            GeoPoint(bounds.minLat, bounds.minLon),
-            GeoPoint(bounds.minLat, bounds.maxLon),
-            GeoPoint(bounds.maxLat, bounds.minLon),
-            GeoPoint(bounds.maxLat, bounds.maxLon)
+            try GeographicPoint(latitude: bounds.minLat, longitude: bounds.minLon),
+            try GeographicPoint(latitude: bounds.minLat, longitude: bounds.maxLon),
+            try GeographicPoint(latitude: bounds.maxLat, longitude: bounds.minLon),
+            try GeographicPoint(latitude: bounds.maxLat, longitude: bounds.maxLon)
         ]
 
         var farthest = corners[0]
@@ -165,7 +169,7 @@ public struct CellDistanceCalculator: Sendable {
     ///   - from: Source point
     ///   - to: Destination point
     /// - Returns: Distance in meters
-    public static func haversineDistance(from: GeoPoint, to: GeoPoint) -> Double {
+    public static func haversineDistance(from: GeographicPoint, to: GeographicPoint) -> Double {
         let lat1 = from.latitude * .pi / 180.0
         let lat2 = to.latitude * .pi / 180.0
         let dLat = (to.latitude - from.latitude) * .pi / 180.0

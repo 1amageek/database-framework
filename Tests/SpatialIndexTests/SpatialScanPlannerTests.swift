@@ -33,7 +33,10 @@ struct SpatialScanPlannerTests {
         let plan = try SpatialScanPlanner.plan(
             for: SpatialConstraint(
                 type: .withinDistance(
-                    center: (latitude: 35.6812, longitude: 139.7671),
+                    center: try GeographicPoint(
+                        latitude: 35.6812,
+                        longitude: 139.7671
+                    ),
                     radiusMeters: 1000
                 )
             ),

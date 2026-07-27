@@ -127,7 +127,7 @@ public struct PolygonQueryOptions: Sendable {
     /// Interior holes for polygon-with-holes queries
     ///
     /// When set, points must be inside the exterior polygon but NOT inside any hole.
-    public let holes: [[GeoPoint]]
+    public let holes: [[GeographicPoint]]
 
     /// Create polygon query options
     ///
@@ -138,7 +138,7 @@ public struct PolygonQueryOptions: Sendable {
     public init(
         type: PolygonType = .simple,
         validateInput: Bool = true,
-        holes: [[GeoPoint]] = []
+        holes: [[GeographicPoint]] = []
     ) {
         self.type = type
         self.validateInput = validateInput
@@ -175,7 +175,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     private var spatialConstraint: SpatialConstraint?
     private var fetchLimit: Int?
     private var shouldOrderByDistance: Bool = false
-    private var referencePoint: GeoPoint?
+    private var referencePoint: GeographicPoint?
     private var polygonOptions: PolygonQueryOptions = PolygonQueryOptions()
 
     // KNN parameters
@@ -218,11 +218,11 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     ///   - radiusKm: Radius in kilometers
     ///   - center: Center point
     /// - Returns: Updated query builder
-    public func within(radiusKm: Double, of center: GeoPoint) -> Self {
+    public func within(radiusKm: Double, of center: GeographicPoint) -> Self {
         var copy = self
         copy.spatialConstraint = SpatialConstraint(
             type: .withinDistance(
-                center: (latitude: center.latitude, longitude: center.longitude),
+                center: center,
                 radiusMeters: radiusKm * 1000.0
             )
         )
@@ -247,10 +247,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     /// - Parameter options: Polygon query options (default: simple polygon with validation)
     /// - Returns: Updated query builder
     /// - Note: Invalid polygons will cause `execute()` to throw `SpatialQueryError.invalidPolygon`
-    public func within(polygon: [GeoPoint], options: PolygonQueryOptions = PolygonQueryOptions()) -> Self {
+    public func within(polygon: [GeographicPoint], options: PolygonQueryOptions = PolygonQueryOptions()) -> Self {
         var copy = self
-        let points = polygon.map { (latitude: $0.latitude, longitude: $0.longitude) }
-        copy.spatialConstraint = SpatialConstraint(type: .withinPolygon(points: points))
+        copy.spatialConstraint = SpatialConstraint(type: .withinPolygon(points: polygon))
         copy.polygonOptions = options
         return copy
     }
@@ -352,7 +351,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             var itemsWithDistances: [(item: T, distance: Double?)] = []
             itemsWithDistances.reserveCapacity(items.count)
             for item in items {
-                let distance = try extractGeoPoint(from: item).map {
+                let distance = try extractGeographicPoint(from: item).map {
                     distanceInMeters(from: ref, to: $0)
                 }
                 itemsWithDistances.append((item: item, distance: distance))
@@ -440,7 +439,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         return (encoding, level)
     }
 
-    private func extractGeoPoint(from item: T) throws -> GeoPoint? {
+    private func extractGeographicPoint(from item: T) throws -> GeographicPoint? {
         guard let value = try item.persistedFieldValue(for: field) else {
             throw SpatialIndexMaintenanceError.missingCoordinate(
                 fieldName: field.name
@@ -450,12 +449,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         case .null:
             return nil
         case .geographicPoint(let point):
-            return GeoPoint(point.latitude, point.longitude)
+            return point
         case .geographicPosition(let position):
-            return GeoPoint(
-                position.point.latitude,
-                position.point.longitude
-            )
+            return position.point
         default:
             throw SpatialIndexMaintenanceError.unsupportedCoordinateValue(
                 fieldName: field.name
@@ -470,15 +466,14 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         var matches: [T] = []
         matches.reserveCapacity(items.count)
         for item in items {
-            guard let location = try extractGeoPoint(from: item) else {
+            guard let location = try extractGeographicPoint(from: item) else {
                 continue
             }
             let isMatch: Bool
             switch constraint.type {
             case .withinDistance(let center, let radiusMeters):
-                let centerPoint = GeoPoint(center.latitude, center.longitude)
                 isMatch = distanceInMeters(
-                    from: centerPoint,
+                    from: center,
                     to: location
                 ) <= radiusMeters
 
@@ -506,16 +501,14 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     /// Calculate distance between two points in meters
     ///
     /// **Unit Convention**:
-    /// - `GeoPoint.distance(to:)` returns **kilometers** (Haversine formula)
-    /// - Internal spatial operations use **meters** (S2Geometry convention)
-    /// - This helper ensures consistent meter-based calculations
+    /// Internal spatial operations use meters, matching the index scan contract.
     ///
     /// - Parameters:
     ///   - from: Source point
     ///   - to: Destination point
     /// - Returns: Distance in meters
-    private func distanceInMeters(from: GeoPoint, to: GeoPoint) -> Double {
-        from.distance(to: to) * 1000.0
+    private func distanceInMeters(from: GeographicPoint, to: GeographicPoint) -> Double {
+        CellDistanceCalculator.haversineDistance(from: from, to: to)
     }
 
     // MARK: - Point-in-Polygon
@@ -535,13 +528,10 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     ///   - polygon: Polygon vertices as (latitude, longitude) tuples
     /// - Returns: true if point is inside polygon
     private func isPointInPolygon(
-        point: GeoPoint,
-        polygon: [(latitude: Double, longitude: Double)]
+        point: GeographicPoint,
+        polygon: [GeographicPoint]
     ) -> Bool {
         guard polygon.count >= 3 else { return false }
-
-        // Convert tuple polygon to GeoPoint array for winding number
-        let geoPolygon = polygon.map { GeoPoint($0.latitude, $0.longitude) }
 
         // Select algorithm based on polygon type
         switch polygonOptions.type {
@@ -553,11 +543,11 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             // Use Winding Number for complex/self-intersecting polygons
             // Also handles holes if specified
             if polygonOptions.holes.isEmpty {
-                return WindingNumber.isPointInPolygon(point: point, polygon: geoPolygon)
+                return WindingNumber.isPointInPolygon(point: point, polygon: polygon)
             } else {
                 return WindingNumber.isPointInPolygonWithHoles(
                     point: point,
-                    exterior: geoPolygon,
+                    exterior: polygon,
                     holes: polygonOptions.holes
                 )
             }
@@ -567,7 +557,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             // Check holes first if specified
             if !polygonOptions.holes.isEmpty {
                 for hole in polygonOptions.holes {
-                    if isPointInSimplePolygon(point: point, polygon: hole.map { ($0.latitude, $0.longitude) }) {
+                    if isPointInSimplePolygon(point: point, polygon: hole) {
                         return false  // Inside a hole
                     }
                 }
@@ -578,8 +568,8 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
     /// Ray casting point-in-polygon for simple polygons
     private func isPointInSimplePolygon(
-        point: GeoPoint,
-        polygon: [(latitude: Double, longitude: Double)]
+        point: GeographicPoint,
+        polygon: [GeographicPoint]
     ) -> Bool {
         var inside = false
         let n = polygon.count
@@ -615,8 +605,8 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     ///   - polygon: Convex polygon vertices (must be ordered consistently)
     /// - Returns: true if point is inside the convex polygon
     private func isPointInConvexPolygon(
-        point: GeoPoint,
-        polygon: [(latitude: Double, longitude: Double)]
+        point: GeographicPoint,
+        polygon: [GeographicPoint]
     ) -> Bool {
         guard polygon.count >= 3 else { return false }
 
@@ -651,27 +641,15 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     ///
     /// **Checks**:
     /// 1. Minimum 3 points required
-    /// 2. All coordinates must be in valid ranges
+    /// Coordinate bounds are already guaranteed by `GeographicPoint`.
     ///
     /// - Parameter points: Polygon vertices
     /// - Throws: SpatialQueryError.invalidPolygon if validation fails
-    private func validatePolygon(_ points: [(latitude: Double, longitude: Double)]) throws {
+    private func validatePolygon(_ points: [GeographicPoint]) throws {
         guard points.count >= 3 else {
             throw SpatialQueryError.invalidPolygon("Polygon requires at least 3 points, got \(points.count)")
         }
 
-        for (index, point) in points.enumerated() {
-            guard (-90...90).contains(point.latitude) else {
-                throw SpatialQueryError.invalidPolygon(
-                    "Point \(index): Latitude \(point.latitude) must be between -90 and 90"
-                )
-            }
-            guard (-180...180).contains(point.longitude) else {
-                throw SpatialQueryError.invalidPolygon(
-                    "Point \(index): Longitude \(point.longitude) must be between -180 and 180"
-                )
-            }
-        }
     }
 
     // MARK: - K-Nearest Neighbors
@@ -699,7 +677,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Updated query builder configured for KNN
     public func nearest(
         k: Int,
-        from center: GeoPoint,
+        from center: GeographicPoint,
         initialRadiusKm: Double = 1.0,
         maxRadiusKm: Double = 100.0,
         expansionFactor: Double = 2.0
@@ -775,7 +753,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
             let radiusConstraint = SpatialConstraint(
                 type: .withinDistance(
-                    center: (latitude: center.latitude, longitude: center.longitude),
+                    center: center,
                     radiusMeters: currentRadiusMeters
                 )
             )
@@ -820,7 +798,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
                 guard !seenIds.contains(itemId) else { continue }
                 seenIds.insert(itemId)
 
-                guard let location = try extractGeoPoint(from: item) else {
+                guard let location = try extractGeographicPoint(from: item) else {
                     continue
                 }
 
@@ -998,7 +976,7 @@ public struct SpatialEntryPoint<T: Persistable>: Sendable {
 
     /// Specify the location field to search
     ///
-    /// - Parameter keyPath: KeyPath to the GeoPoint field
+    /// - Parameter keyPath: KeyPath to the GeographicPoint field
     /// - Returns: Spatial query builder
     public func location(
         _ field: Field<T, GeographicPoint>
@@ -1011,7 +989,7 @@ public struct SpatialEntryPoint<T: Persistable>: Sendable {
 
     /// Specify the optional location field to search
     ///
-    /// - Parameter keyPath: KeyPath to the optional GeoPoint field
+    /// - Parameter keyPath: KeyPath to the optional GeographicPoint field
     /// - Returns: Spatial query builder
     public func location(
         _ field: Field<T, GeographicPoint?>

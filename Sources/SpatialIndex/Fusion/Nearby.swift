@@ -27,15 +27,15 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     private let queryContext: IndexQueryContext
     private let field: FieldIdentity
     private var constraint: SpatialConstraint?
-    private var referencePoint: (latitude: Double, longitude: Double)?
+    private var referencePoint: GeographicPoint?
 
     // MARK: - Initialization (FusionContext)
 
-    /// Create a Nearby query for a GeoPoint field
+    /// Create a Nearby query for a GeographicPoint field
     ///
     /// Uses FusionContext.current for context (automatically set by `context.fuse { }`).
     ///
-    /// - Parameter keyPath: KeyPath to the GeoPoint field
+    /// - Parameter keyPath: KeyPath to the GeographicPoint field
     ///
     /// **Usage**:
     /// ```swift
@@ -51,11 +51,11 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         self.queryContext = context
     }
 
-    /// Create a Nearby query for an optional GeoPoint field
+    /// Create a Nearby query for an optional GeographicPoint field
     ///
     /// Uses FusionContext.current for context (automatically set by `context.fuse { }`).
     ///
-    /// - Parameter keyPath: KeyPath to the optional GeoPoint field
+    /// - Parameter keyPath: KeyPath to the optional GeographicPoint field
     public init(_ field: Field<T, GeographicPoint?>) {
         guard let context = FusionContext.current else {
             fatalError("Nearby must be used within context.fuse { } block")
@@ -66,10 +66,10 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Initialization (Explicit Context)
 
-    /// Create a Nearby query for a GeoPoint field with explicit context
+    /// Create a Nearby query for a GeographicPoint field with explicit context
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the GeoPoint field
+    ///   - keyPath: KeyPath to the GeographicPoint field
     ///   - context: IndexQueryContext for database access
     public init(
         _ field: Field<T, GeographicPoint>,
@@ -79,10 +79,10 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         self.queryContext = context
     }
 
-    /// Create a Nearby query for an optional GeoPoint field with explicit context
+    /// Create a Nearby query for an optional GeographicPoint field with explicit context
     ///
     /// - Parameters:
-    ///   - keyPath: KeyPath to the optional GeoPoint field
+    ///   - keyPath: KeyPath to the optional GeographicPoint field
     ///   - context: IndexQueryContext for database access
     public init(
         _ field: Field<T, GeographicPoint?>,
@@ -104,11 +104,11 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         var copy = self
         copy.constraint = SpatialConstraint(
             type: .withinDistance(
-                center: (latitude: center.latitude, longitude: center.longitude),
+                center: center,
                 radiusMeters: radiusKm * 1000.0
             )
         )
-        copy.referencePoint = (latitude: center.latitude, longitude: center.longitude)
+        copy.referencePoint = center
         return copy
     }
 
@@ -116,7 +116,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     ///
     /// - Parameter bounds: The bounding box
     /// - Returns: Updated query
-    public func within(bounds: BoundingBox) -> Self {
+    public func within(bounds: BoundingBox) throws(BoundingBoxError) -> Self {
         var copy = self
         copy.constraint = SpatialConstraint(
             type: .withinBounds(
@@ -127,9 +127,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
             )
         )
         // Use center of bounding box as reference for distance scoring
-        let centerLat = (bounds.southwest.latitude + bounds.northeast.latitude) / 2
-        let centerLon = (bounds.southwest.longitude + bounds.northeast.longitude) / 2
-        copy.referencePoint = (latitude: centerLat, longitude: centerLon)
+        copy.referencePoint = try bounds.center()
         return copy
     }
 
@@ -199,8 +197,6 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
             return items.map { ScoredResult(item: $0, score: 1.0) }
         }
 
-        let refPoint = GeoPoint(ref.latitude, ref.longitude)
-
         // Extract locations and calculate distances
         var itemsWithDistance: [(item: T, distance: Double)] = []
         itemsWithDistance.reserveCapacity(items.count)
@@ -208,11 +204,10 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
             guard let coordinate = try coordinate(from: item) else {
                 continue
             }
-            let location = GeoPoint(
-                coordinate.latitude,
-                coordinate.longitude
+            let distance = CellDistanceCalculator.haversineDistance(
+                from: ref,
+                to: coordinate
             )
-            let distance = refPoint.distance(to: location)
             itemsWithDistance.append((item: item, distance: distance))
         }
 
@@ -253,30 +248,27 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         guard let coordinate = try coordinate(from: item) else {
             return false
         }
-        let location = GeoPoint(
-            coordinate.latitude,
-            coordinate.longitude
-        )
-
         switch constraint.type {
         case .withinDistance(let center, let radiusMeters):
-            let centerPoint = GeoPoint(center.latitude, center.longitude)
-            return centerPoint.distance(to: location) * 1000.0 <= radiusMeters
+            return CellDistanceCalculator.haversineDistance(
+                from: center,
+                to: coordinate
+            ) <= radiusMeters
 
         case .withinBounds(let minLat, let minLon, let maxLat, let maxLon):
-            return location.latitude >= minLat &&
-                location.latitude <= maxLat &&
-                location.longitude >= minLon &&
-                location.longitude <= maxLon
+            return coordinate.latitude >= minLat &&
+                coordinate.latitude <= maxLat &&
+                coordinate.longitude >= minLon &&
+                coordinate.longitude <= maxLon
 
         case .withinPolygon(let points):
-            return isPointInPolygon(point: location, polygon: points)
+            return isPointInPolygon(point: coordinate, polygon: points)
         }
     }
 
     private func isPointInPolygon(
-        point: GeoPoint,
-        polygon: [(latitude: Double, longitude: Double)]
+        point: GeographicPoint,
+        polygon: [GeographicPoint]
     ) -> Bool {
         guard polygon.count >= 3 else {
             return false

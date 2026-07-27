@@ -112,7 +112,10 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         let plan = try SpatialScanPlanner.plan(
             for: SpatialConstraint(
                 type: .withinDistance(
-                    center: (latitude: latitude, longitude: longitude),
+                    center: try GeographicPoint(
+                        latitude: latitude,
+                        longitude: longitude
+                    ),
                     radiusMeters: radiusMeters
                 )
             ),

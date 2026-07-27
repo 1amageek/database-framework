@@ -1,3 +1,5 @@
+import DatabaseTypes
+
 /// A spatial predicate executed by the spatial index.
 public struct SpatialConstraint: Sendable {
     public let type: SpatialConstraintType
@@ -9,7 +11,7 @@ public struct SpatialConstraint: Sendable {
 
 public enum SpatialConstraintType: Sendable {
     case withinDistance(
-        center: (latitude: Double, longitude: Double),
+        center: GeographicPoint,
         radiusMeters: Double
     )
     case withinBounds(
@@ -18,5 +20,5 @@ public enum SpatialConstraintType: Sendable {
         maxLat: Double,
         maxLon: Double
     )
-    case withinPolygon(points: [(latitude: Double, longitude: Double)])
+    case withinPolygon(points: [GeographicPoint])
 }

@@ -11,6 +11,7 @@ import Foundation
 #endif
 import DatabaseEngine
 import DatabaseKit
+import DatabaseTypes
 
 /// Winding Number algorithm for robust point-in-polygon testing
 ///
@@ -41,8 +42,8 @@ public struct WindingNumber: Sendable {
     ///   - polygon: Array of polygon vertices
     /// - Returns: true if point is inside the polygon
     public static func isPointInPolygon(
-        point: GeoPoint,
-        polygon: [GeoPoint]
+        point: GeographicPoint,
+        polygon: [GeographicPoint]
     ) -> Bool {
         guard polygon.count >= 3 else { return false }
         let wn = windingNumber(point: point, polygon: polygon)
@@ -56,8 +57,8 @@ public struct WindingNumber: Sendable {
     ///   - polygon: Polygon vertices
     /// - Returns: Winding number (0 = outside, non-zero = inside)
     public static func windingNumber(
-        point: GeoPoint,
-        polygon: [GeoPoint]
+        point: GeographicPoint,
+        polygon: [GeographicPoint]
     ) -> Int {
         guard polygon.count >= 3 else { return 0 }
 
@@ -99,7 +100,7 @@ public struct WindingNumber: Sendable {
     ///   - p1: Second point on the line
     ///   - p2: Point to test
     /// - Returns: > 0 for P2 left of the line, = 0 for on the line, < 0 for right
-    private static func isLeft(p0: GeoPoint, p1: GeoPoint, p2: GeoPoint) -> Double {
+    private static func isLeft(p0: GeographicPoint, p1: GeographicPoint, p2: GeographicPoint) -> Double {
         return (p1.longitude - p0.longitude) * (p2.latitude - p0.latitude) -
                (p2.longitude - p0.longitude) * (p1.latitude - p0.latitude)
     }
@@ -120,9 +121,9 @@ public struct WindingNumber: Sendable {
     ///   - holes: Array of hole polygons (clockwise)
     /// - Returns: true if point is inside exterior but not inside any hole
     public static func isPointInPolygonWithHoles(
-        point: GeoPoint,
-        exterior: [GeoPoint],
-        holes: [[GeoPoint]]
+        point: GeographicPoint,
+        exterior: [GeographicPoint],
+        holes: [[GeographicPoint]]
     ) -> Bool {
         // First check if inside exterior
         guard isPointInPolygon(point: point, polygon: exterior) else {
@@ -147,7 +148,7 @@ public struct WindingNumber: Sendable {
     ///
     /// - Parameter polygon: Polygon vertices
     /// - Returns: true if counter-clockwise
-    public static func isCounterClockwise(_ polygon: [GeoPoint]) -> Bool {
+    public static func isCounterClockwise(_ polygon: [GeographicPoint]) -> Bool {
         return signedArea(polygon) > 0
     }
 
@@ -158,7 +159,7 @@ public struct WindingNumber: Sendable {
     ///
     /// - Parameter polygon: Polygon vertices
     /// - Returns: Signed area (positive = CCW, negative = CW)
-    public static func signedArea(_ polygon: [GeoPoint]) -> Double {
+    public static func signedArea(_ polygon: [GeographicPoint]) -> Double {
         guard polygon.count >= 3 else { return 0 }
 
         var area: Double = 0
@@ -180,9 +181,9 @@ public struct WindingNumber: Sendable {
     ///   - counterClockwise: Desired winding direction (true = CCW, false = CW)
     /// - Returns: Polygon with correct winding (may be reversed)
     public static func ensureWinding(
-        _ polygon: [GeoPoint],
+        _ polygon: [GeographicPoint],
         counterClockwise: Bool
-    ) -> [GeoPoint] {
+    ) -> [GeographicPoint] {
         let isCCW = isCounterClockwise(polygon)
         if isCCW == counterClockwise {
             return polygon
@@ -204,23 +205,15 @@ public struct WindingNumber: Sendable {
 ///
 /// **Usage**:
 /// ```swift
-/// let exterior = [
-///     GeoPoint(0, 0), GeoPoint(10, 0), GeoPoint(10, 10), GeoPoint(0, 10)
-/// ]
-/// let hole = [
-///     GeoPoint(2, 2), GeoPoint(2, 8), GeoPoint(8, 8), GeoPoint(8, 2)
-/// ]
-/// let polygon = PolygonWithHoles(exterior: exterior, holes: [hole])
-///
-/// let isInside = polygon.contains(GeoPoint(5, 5))  // false (in hole)
-/// let isInside2 = polygon.contains(GeoPoint(1, 1)) // true
+/// let polygon = PolygonWithHoles(exterior: exterior, holes: holes)
+/// let isInside = polygon.contains(queryPoint)
 /// ```
 public struct PolygonWithHoles: Sendable {
     /// Exterior ring (counter-clockwise)
-    public let exterior: [GeoPoint]
+    public let exterior: [GeographicPoint]
 
     /// Interior holes (each clockwise)
-    public let holes: [[GeoPoint]]
+    public let holes: [[GeographicPoint]]
 
     /// Create a polygon with holes
     ///
@@ -228,7 +221,7 @@ public struct PolygonWithHoles: Sendable {
     ///   - exterior: Exterior ring (will be normalized to CCW)
     ///   - holes: Interior holes (will be normalized to CW)
     ///   - normalizeWinding: Whether to normalize winding direction (default: true)
-    public init(exterior: [GeoPoint], holes: [[GeoPoint]] = [], normalizeWinding: Bool = true) {
+    public init(exterior: [GeographicPoint], holes: [[GeographicPoint]] = [], normalizeWinding: Bool = true) {
         if normalizeWinding {
             self.exterior = WindingNumber.ensureWinding(exterior, counterClockwise: true)
             self.holes = holes.map { WindingNumber.ensureWinding($0, counterClockwise: false) }
@@ -242,7 +235,7 @@ public struct PolygonWithHoles: Sendable {
     ///
     /// - Parameter point: Point to test
     /// - Returns: true if point is inside exterior but not in any hole
-    public func contains(_ point: GeoPoint) -> Bool {
+    public func contains(_ point: GeographicPoint) -> Bool {
         WindingNumber.isPointInPolygonWithHoles(
             point: point,
             exterior: exterior,

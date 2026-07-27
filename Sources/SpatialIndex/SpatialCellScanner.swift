@@ -227,10 +227,10 @@ public final class SpatialCellScanner: Sendable {
     /// - Returns: Tuple of (primary keys with distances, optional limit reason)
     public func scanCellsWithDistance(
         cellIds: [UInt64],
-        center: GeoPoint,
+        center: GeographicPoint,
         radiusMeters: Double,
         limit: Int?,
-        coordinateExtractor: @escaping @Sendable (Tuple) -> GeoPoint?,
+        coordinateExtractor: @escaping @Sendable (Tuple) -> GeographicPoint?,
         transaction: any TransactionAccess
     ) async throws -> (keys: [(key: Tuple, distance: Double)], limitReason: LimitReason?) {
         var results: [(key: Tuple, distance: Double)] = []

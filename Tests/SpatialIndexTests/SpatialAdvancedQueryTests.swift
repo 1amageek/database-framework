@@ -107,26 +107,42 @@ struct DistanceCalculationTests {
     @Test("Distance is calculated correctly using Haversine formula")
     func testDistanceCalculatedUsingHaversine() async throws {
         // Tokyo Station to a nearby point (about 500m away)
-        let tokyoStation = GeoPoint(35.6812, 139.7671)
-        let nearbyPoint = GeoPoint(35.6850, 139.7700)
+        let tokyoStation = try GeographicPoint(
+            latitude: 35.6812,
+            longitude: 139.7671
+        )
+        let nearbyPoint = try GeographicPoint(
+            latitude: 35.6850,
+            longitude: 139.7700
+        )
 
         // Calculate expected distance using Haversine
-        let expectedDistanceKm = tokyoStation.distance(to: nearbyPoint)
-        let expectedDistanceMeters = expectedDistanceKm * 1000.0
+        let expectedDistanceMeters = CellDistanceCalculator.haversineDistance(
+            from: tokyoStation,
+            to: nearbyPoint
+        )
 
         // Verify distance is in valid range (approximately 400-600m)
         #expect(expectedDistanceMeters > 400 && expectedDistanceMeters < 600,
                 "Expected distance should be around 500m, got \(expectedDistanceMeters)m")
     }
 
-    @Test("GeoPoint distance calculation returns correct units")
-    func testGeoPointDistanceUnits() async throws {
+    @Test("GeographicPoint distance calculation returns correct units")
+    func testGeographicPointDistanceUnits() async throws {
         // Tokyo Station to Shibuya Station - approximately 6.5km
-        let tokyo = GeoPoint(35.6812, 139.7671)
-        let shibuya = GeoPoint(35.6580, 139.7016)
+        let tokyo = try GeographicPoint(
+            latitude: 35.6812,
+            longitude: 139.7671
+        )
+        let shibuya = try GeographicPoint(
+            latitude: 35.6580,
+            longitude: 139.7016
+        )
 
-        let distanceKm = tokyo.distance(to: shibuya)
-        let distanceMeters = distanceKm * 1000.0
+        let distanceMeters = CellDistanceCalculator.haversineDistance(
+            from: tokyo,
+            to: shibuya
+        )
 
         // Distance should be approximately 6.5km (6500m)
         // Verified using external tools: ~6.4km between these coordinates
@@ -143,8 +159,8 @@ struct PolygonValidationTests {
     @Test("Polygon validation rejects less than 3 points")
     func testPolygonValidationRejectsLessThan3Points() async throws {
         let twoPoints = [
-            GeoPoint(35.0, 139.0),
-            GeoPoint(36.0, 140.0)
+            try GeographicPoint(latitude: 35.0, longitude: 139.0),
+            try GeographicPoint(latitude: 36.0, longitude: 140.0)
         ]
 
         // Verify that 2 points is less than the required minimum of 3
@@ -163,9 +179,9 @@ struct PolygonValidationTests {
     @Test("Polygon validation accepts 3 or more points")
     func testPolygonValidationAccepts3OrMorePoints() async throws {
         let triangle = [
-            GeoPoint(35.0, 139.0),
-            GeoPoint(36.0, 139.0),
-            GeoPoint(35.5, 140.0)
+            try GeographicPoint(latitude: 35.0, longitude: 139.0),
+            try GeographicPoint(latitude: 36.0, longitude: 139.0),
+            try GeographicPoint(latitude: 35.5, longitude: 140.0)
         ]
 
         let options = PolygonQueryOptions(type: .simple, validateInput: true)
@@ -268,7 +284,7 @@ struct PointInPolygonAlgorithmTests {
             (latitude: 35.1, longitude: 138.9)
         ]
 
-        let center = GeoPoint(35.0, 139.0)
+        let center = try GeographicPoint(latitude: 35.0, longitude: 139.0)
 
         // Ray casting check
         let inside = rayCastingPointInPolygon(point: center, polygon: polygon)
@@ -284,7 +300,7 @@ struct PointInPolygonAlgorithmTests {
             (latitude: 35.1, longitude: 138.9)
         ]
 
-        let outside = GeoPoint(36.0, 140.0)
+        let outside = try GeographicPoint(latitude: 36.0, longitude: 140.0)
 
         let inside = rayCastingPointInPolygon(point: outside, polygon: polygon)
         #expect(inside == false, "Point should be outside polygon")
@@ -299,8 +315,14 @@ struct PointInPolygonAlgorithmTests {
             (latitude: 36.0, longitude: 139.5)
         ]
 
-        let inside = GeoPoint(35.3, 139.5)  // Inside triangle
-        let outside = GeoPoint(34.0, 139.0)  // Outside triangle
+        let inside = try GeographicPoint(
+            latitude: 35.3,
+            longitude: 139.5
+        )
+        let outside = try GeographicPoint(
+            latitude: 34.0,
+            longitude: 139.0
+        )
 
         let insideResult = crossProductPointInConvexPolygon(point: inside, polygon: triangle)
         let outsideResult = crossProductPointInConvexPolygon(point: outside, polygon: triangle)
@@ -312,7 +334,7 @@ struct PointInPolygonAlgorithmTests {
     // MARK: - Reference Geometry Algorithms
 
     private func rayCastingPointInPolygon(
-        point: GeoPoint,
+        point: GeographicPoint,
         polygon: [(latitude: Double, longitude: Double)]
     ) -> Bool {
         guard polygon.count >= 3 else { return false }
@@ -338,7 +360,7 @@ struct PointInPolygonAlgorithmTests {
     }
 
     private func crossProductPointInConvexPolygon(
-        point: GeoPoint,
+        point: GeographicPoint,
         polygon: [(latitude: Double, longitude: Double)]
     ) -> Bool {
         guard polygon.count >= 3 else { return false }

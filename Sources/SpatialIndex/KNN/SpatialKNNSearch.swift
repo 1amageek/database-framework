@@ -69,7 +69,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
     ///   - indexSubspace: FDB subspace for the spatial index
     ///   - encoding: Spatial encoding type
     ///   - level: S2 cell level for the index
-    ///   - fieldName: Name of the GeoPoint field
+    ///   - fieldName: Name of the GeographicPoint field
     ///   - maxCellsToScan: Maximum cells to scan (default: 1000)
     ///   - maxPointsToScan: Maximum points to scan (default: 50000)
     public init(
@@ -100,7 +100,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
     /// - Returns: Array of (item, distance) sorted by distance, up to k items
     public func findKNearest(
         k: Int,
-        from queryPoint: GeoPoint,
+        from queryPoint: GeographicPoint,
         transaction: any TransactionAccess
     ) async throws -> [(item: T, distance: Double)] {
         guard k > 0 else {
@@ -129,7 +129,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
         cellQueue.push(CellCandidate(cellId: startCellId, minDistance: 0))
 
         // Also add neighboring cells at coarser levels for broader coverage
-        addInitialNeighborCells(
+        try addInitialNeighborCells(
             queryPoint: queryPoint,
             to: &cellQueue,
             visited: &visitedCells
@@ -179,7 +179,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
 
             // Add neighbor cells to queue (only if they might contain closer points)
             if resultHeap.count < k || candidate.minDistance <= resultHeap.kthDistance * 1.5 {
-                addNeighborCells(
+                try addNeighborCells(
                     of: candidate.cellId,
                     queryPoint: queryPoint,
                     kthDistance: resultHeap.kthDistance,
@@ -227,7 +227,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
         let items = try await queryContext.fetchItems(ids: keys, type: T.self)
 
         for item in items {
-            if let location = try extractGeoPoint(from: item) {
+            if let location = try extractGeographicPoint(from: item) {
                 let pkTuple = try SpatialPrimaryKey.tuple(for: item)
                 points.append(PointInfo(primaryKey: pkTuple, location: location))
             }
@@ -238,10 +238,10 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
 
     /// Add initial neighbor cells for broader coverage
     private func addInitialNeighborCells(
-        queryPoint: GeoPoint,
+        queryPoint: GeographicPoint,
         to queue: inout CellPriorityQueue,
         visited: inout Set<UInt64>
-    ) {
+    ) throws(GeographicPointError) {
         // Add cells in a small radius around the query point
         let initialRadius = 1000.0  // 1km initial coverage
         let coveringCells = S2Geometry.getCoveringCells(
@@ -253,7 +253,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
 
         for cellId in coveringCells {
             if !visited.contains(cellId) {
-                let minDist = CellDistanceCalculator.minDistance(
+                let minDist = try CellDistanceCalculator.minDistance(
                     cellId: cellId,
                     level: level,
                     to: queryPoint
@@ -266,11 +266,11 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
     /// Add neighbor cells of a given cell to the queue
     private func addNeighborCells(
         of cellId: UInt64,
-        queryPoint: GeoPoint,
+        queryPoint: GeographicPoint,
         kthDistance: Double,
         to queue: inout CellPriorityQueue,
         visited: Set<UInt64>
-    ) {
+    ) throws(GeographicPointError) {
         // Get the cell center and find neighboring cells
         let center = S2Geometry.decode(cellId, level: level)
 
@@ -300,7 +300,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
             )
 
             if !visited.contains(neighborCellId) {
-                let minDist = CellDistanceCalculator.minDistance(
+                let minDist = try CellDistanceCalculator.minDistance(
                     cellId: neighborCellId,
                     level: level,
                     to: queryPoint
@@ -314,7 +314,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
         }
     }
 
-    private func extractGeoPoint(from item: T) throws -> GeoPoint? {
+    private func extractGeographicPoint(from item: T) throws -> GeographicPoint? {
         guard let fieldNumber = T.fieldNumber(for: fieldName) else {
             throw SpatialIndexMaintenanceError.invalidFieldExpression(
                 indexName: fieldName
@@ -331,12 +331,9 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
         case .null:
             return nil
         case .geographicPoint(let point):
-            return GeoPoint(point.latitude, point.longitude)
+            return point
         case .geographicPosition(let position):
-            return GeoPoint(
-                position.point.latitude,
-                position.point.longitude
-            )
+            return position.point
         default:
             throw SpatialIndexMaintenanceError.unsupportedCoordinateValue(
                 fieldName: fieldName
@@ -350,7 +347,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
 /// Information about a point in the index
 private struct PointInfo {
     let primaryKey: Tuple
-    let location: GeoPoint
+    let location: GeographicPoint
 }
 
 /// Candidate cell for exploration

@@ -9,6 +9,7 @@ import Foundation
 import DatabaseKit
 import DatabaseMath
 import DatabaseEngine
+import DatabaseTypes
 
 internal enum SpatialScanPlan: Sendable {
     case cells([UInt64])
@@ -89,7 +90,7 @@ internal enum SpatialScanPlanner {
     }
 
     private static func boundingBox(
-        for points: [(latitude: Double, longitude: Double)]
+        for points: [GeographicPoint]
     ) -> (minLat: Double, minLon: Double, maxLat: Double, maxLon: Double) {
         let latitudes = points.map { $0.latitude }
         let longitudes = points.map { $0.longitude }
@@ -102,7 +103,7 @@ internal enum SpatialScanPlanner {
     }
 
     private static func boundingBox(
-        center: (latitude: Double, longitude: Double),
+        center: GeographicPoint,
         radiusMeters: Double
     ) -> (minLat: Double, minLon: Double, maxLat: Double, maxLon: Double) {
         let radiusKm = radiusMeters / 1000.0
