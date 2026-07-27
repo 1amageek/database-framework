@@ -4,11 +4,18 @@ High-dimensional vector similarity search for embeddings (RAG, semantic search).
 
 ## Overview
 
-VectorIndex provides K-nearest neighbor (KNN) search for vector embeddings. It supports multiple algorithms (Flat scan, HNSW) and distance metrics (cosine, euclidean, dot product).
+VectorIndex provides K-nearest neighbor (KNN) search for vector embeddings. It supports explicit Flat, HNSW, IVF, and PQ index layouts and the cosine, Euclidean, and dot-product metrics.
 
 **Algorithms**:
 - **Flat Scan**: Exact brute-force search, O(n)
 - **HNSW**: Approximate nearest neighbor, O(log n)
+- **IVF**: Approximate search over trained inverted lists
+- **PQ**: Compressed approximate search using product-quantized codes
+
+The algorithm is fixed when the container constructs the index maintainer. A
+read always uses the same layout that the mutation path maintains. The default
+is exact Flat search; changing algorithms is an index migration, not a
+query-time heuristic.
 
 **Storage Layout (Flat)**:
 ```
@@ -42,14 +49,12 @@ See [Vector Storage and HNSW](../../docs/storage/vector-storage-and-hnsw.md) for
 struct Document {
     var id: String = ULID().ulidString
     var content: String = ""
-    var embedding: [Float] = []  // 384-dim from sentence-transformers
+    var embedding: Vector
 
-    #Index<Document>(
-        type: VectorIndexKind(
-            embedding: \.embedding,
-            dimensions: 384,
-            metric: .cosine
-        )
+    #Index(
+        .vector(dimensions: 384, metric: .cosine),
+        embedding: \Document.embedding,
+        name: "Document_embedding"
     )
 }
 
@@ -79,14 +84,12 @@ for (document, distance) in results {
 struct Product {
     var id: String = ULID().ulidString
     var name: String = ""
-    var embedding: [Float] = []  // 768-dim from BERT
+    var embedding: Vector
 
-    #Index<Product>(
-        type: VectorIndexKind(
-            embedding: \.embedding,
-            dimensions: 768,
-            metric: .cosine
-        )
+    #Index(
+        .vector(dimensions: 768, metric: .cosine),
+        embedding: \Product.embedding,
+        name: "Product_embedding"
     )
 }
 
@@ -127,14 +130,12 @@ ACORN predicate-subgraph traversal and does not claim ACORN recall semantics.
 struct Image {
     var id: String = ULID().ulidString
     var url: String = ""
-    var embedding: [Float] = []  // 512-dim from CLIP
+    var embedding: Vector
 
-    #Index<Image>(
-        type: VectorIndexKind(
-            embedding: \.embedding,
-            dimensions: 512,
-            metric: .cosine
-        )
+    #Index(
+        .vector(dimensions: 512, metric: .cosine),
+        embedding: \Image.embedding,
+        name: "Image_embedding"
     )
 }
 
@@ -154,22 +155,21 @@ let similar = try await context.findSimilar(Image.self)
 |-------------|----------------------|--------|---------|
 | < 10K | Flat Scan | 100% (exact) | O(n) |
 | 10K - 1M | HNSW | ~95-99% | O(log n) |
-| > 1M | HNSW + Sharding | ~95-99% | O(log n) |
+| > 1M | IVF or PQ after workload measurement | Approximate | Data-dependent |
 
 **Configuration via IndexRuntimeConfiguration**:
 ```swift
 // At container initialization
 let vectorConfig = VectorIndexConfiguration<Product>(
-    keyPath: \.embedding,
-    hnsw: .default
+    field: Product.fields.embedding,
+    algorithm: .hnsw(.default)
 )
 
-let container = try await DBContainer(
+let container = try await DBContainer.open(
     for: schema,
-    configuration: DBConfiguration(
-        backend: .fdb(),
-        indexConfigurations: [vectorConfig]
-    )
+    configuration: configuration,
+    runtimeConfiguration: runtime,
+    indexConfigurations: [vectorConfig]
 )
 ```
 
@@ -195,14 +195,12 @@ VectorIndex supports sparse index behavior for optional embedding fields:
 @Persistable
 struct Document {
     var id: String = ULID().ulidString
-    var embedding: [Float]? = nil  // Optional - not all docs have embeddings
+    var embedding: Vector?
 
-    #Index<Document>(
-        type: VectorIndexKind(
-            embedding: \.embedding,
-            dimensions: 384,
-            metric: .cosine
-        )
+    #Index(
+        .vector(dimensions: 384, metric: .cosine),
+        embedding: \Document.embedding,
+        name: "Document_embedding"
     )
 }
 
@@ -218,24 +216,16 @@ callers choose the shared vector field with `\.embedding`, not with a raw field
 name string.
 
 ```swift
-protocol Entity: Polymorphable {
-    var embedding: [Float] { get set }
-}
-
-extension Entity where Self: Persistable {
-    static var polymorphicIndexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "Entity_vector_embedding",
-                keyPaths: [\Self.embedding],
-                kind: VectorIndexKind<Self>(
-                    embedding: \Self.embedding,
-                    dimensions: 256,
-                    metric: .cosine
-                )
-            )
-        ]
-    }
+@Polymorphable(identifier: "Entity")
+@PolymorphicDirectory("entities")
+@PolymorphicIndex(
+    .vector(dimensions: 256, metric: .cosine),
+    embedding: "embedding",
+    name: "Entity_embedding"
+)
+protocol Entity: Polymorphable<EntityPolymorphicGroup> {
+    var id: String { get }
+    var embedding: Vector { get }
 }
 
 let page = try await context.findPolymorphic(Person.self)

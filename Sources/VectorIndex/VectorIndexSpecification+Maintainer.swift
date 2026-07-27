@@ -14,7 +14,7 @@ extension VectorIndexSpecification {
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         graphCache: HNSWGraphCache
-    ) -> any IndexMaintainer<Item> {
+    ) throws -> any IndexMaintainer<Item> {
         let matchingConfiguration = configurations.first { configuration in
             type(of: configuration).kindIdentifier == Self.identifier
                 && configuration.indexName == index.name
@@ -29,7 +29,7 @@ extension VectorIndexSpecification {
 
         if let matchingConfiguration {
             switch matchingConfiguration.algorithm {
-            case .auto, .flat:
+            case .flat:
                 break
             case .hnsw(let parameters):
                 return HNSWIndexMaintainer<Item>(
@@ -59,7 +59,7 @@ extension VectorIndexSpecification {
                     )
                 )
             case .pq(let parameters):
-                return PQIndexMaintainer<Item>(
+                return try PQIndexMaintainer<Item>(
                     index: index,
                     dimensions: dimensions,
                     metric: metric,

@@ -1,7 +1,7 @@
 // VectorIndexConfiguration.swift
 // VectorIndex - Runtime configuration for vector indexes
 //
-// Provides IndexRuntimeConfiguration implementation to select HNSW vs Flat search at runtime.
+// Provides IndexRuntimeConfiguration implementation for explicit vector index layouts.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -108,11 +108,11 @@ public struct VectorIndexConfiguration<Model: Persistable>:
     ///
     /// - Parameters:
     ///   - field: Compiled vector field identity
-    ///   - algorithm: Search algorithm to use (default: .auto)
+    ///   - algorithm: Search algorithm to use (default: .flat)
     ///   - subspaceKey: Optional key for subspace isolation (default: nil)
     public init(
         field: Field<Model, Vector>,
-        algorithm: VectorAlgorithm = .auto(.default),
+        algorithm: VectorAlgorithm = .flat,
         subspaceKey: String? = nil
     ) {
         self.fieldName = field.name
@@ -123,7 +123,7 @@ public struct VectorIndexConfiguration<Model: Persistable>:
     /// Create vector index configuration for an optional vector field.
     public init(
         field: Field<Model, Vector?>,
-        algorithm: VectorAlgorithm = .auto(.default),
+        algorithm: VectorAlgorithm = .flat,
         subspaceKey: String? = nil
     ) {
         self.fieldName = field.name
@@ -163,10 +163,6 @@ public struct VectorIndexConfiguration<Model: Persistable>:
 
 /// Vector search algorithm selection
 ///
-/// **Auto (default)**: Automatic selection based on dataset size
-/// - <1K vectors → Flat (exact, no overhead)
-/// - >=1K vectors → HNSW (fast approximate)
-///
 /// **Flat**: Brute-force linear scan
 /// - Time complexity: O(n)
 /// - Space complexity: O(1) extra
@@ -186,15 +182,6 @@ public struct VectorIndexConfiguration<Model: Persistable>:
 /// - Best for: >100K vectors, memory-constrained environments
 /// - Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search", 2011
 public enum VectorAlgorithm: Sendable {
-    /// Automatic algorithm selection
-    ///
-    /// Selects the best algorithm based on dataset characteristics:
-    /// - Small datasets (<flatThreshold): Flat for exact results
-    /// - Larger datasets (>=flatThreshold): HNSW for fast approximate search
-    ///
-    /// **This is the recommended default for most use cases.**
-    case auto(VectorAutoParameters)
-
     /// Flat scan (brute-force, exact results)
     case flat
 
@@ -216,85 +203,8 @@ public enum VectorAlgorithm: Sendable {
     /// - Best for: Memory-constrained environments, billion-scale datasets
     case pq(VectorPQParameters)
 
-    /// Default algorithm: auto with default parameters
-    public static var `default`: VectorAlgorithm { .auto(.default) }
-}
-
-// MARK: - Auto Selection Parameters
-
-/// Parameters for automatic algorithm selection
-///
-/// **Thresholds**:
-/// - `flatThreshold`: Use Flat for datasets smaller than this (default: 1000)
-/// - Above `flatThreshold`: Use HNSW
-///
-/// **Selection Logic**:
-/// ```
-/// if vectorCount < flatThreshold:
-///     return Flat (exact, fast for small data)
-/// else:
-///     return HNSW (fast approximate)
-/// ```
-public struct VectorAutoParameters: Sendable, Codable, Hashable {
-    /// Threshold below which Flat algorithm is used (default: 1000)
-    ///
-    /// For datasets smaller than this, brute-force search is fast enough
-    /// and provides exact results.
-    public let flatThreshold: Int
-
-    /// HNSW parameters to use when HNSW is selected
-    public let hnswParameters: VectorHNSWParameters
-
-    /// Create custom auto selection parameters
-    ///
-    /// - Parameters:
-    ///   - flatThreshold: Use Flat below this count (default: 1000)
-    ///   - hnswParameters: HNSW parameters (default: .default)
-    public init(
-        flatThreshold: Int = 1000,
-        hnswParameters: VectorHNSWParameters = .default
-    ) {
-        precondition(flatThreshold > 0, "flatThreshold must be positive")
-
-        self.flatThreshold = flatThreshold
-        self.hnswParameters = hnswParameters
-    }
-
-    /// Default parameters
-    ///
-    /// - flatThreshold: 1000
-    /// - hnswParameters: .default
-    public static let `default` = VectorAutoParameters()
-
-    /// High recall parameters (prefer accuracy over speed)
-    ///
-    /// - flatThreshold: 5000 (use exact search for larger datasets)
-    /// - hnswParameters: .highRecall
-    public static let highRecall = VectorAutoParameters(
-        flatThreshold: 5000,
-        hnswParameters: .highRecall
-    )
-
-    /// Fast parameters (prefer speed over accuracy)
-    ///
-    /// - flatThreshold: 500 (switch to approximate earlier)
-    /// - hnswParameters: .fast
-    public static let fast = VectorAutoParameters(
-        flatThreshold: 500,
-        hnswParameters: .fast
-    )
-
-    /// Select the appropriate algorithm based on vector count
-    ///
-    /// - Parameter vectorCount: Current number of vectors in the index
-    /// - Returns: The selected algorithm
-    public func selectAlgorithm(vectorCount: Int) -> VectorAlgorithm {
-        if vectorCount < flatThreshold {
-            return .flat
-        } else {
-            return .hnsw(hnswParameters)
-        }
-    }
+    /// Default algorithm: exact flat scan.
+    public static var `default`: VectorAlgorithm { .flat }
 }
 
 // MARK: - HNSW Parameters

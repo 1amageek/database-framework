@@ -4,12 +4,21 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseMath
+import DatabaseKit
+
+/// Query-specific lookup data for product-quantized distance evaluation.
+///
+/// The table owns one scalar contribution per centroid. Search evaluates a
+/// stored code by indexing these contributions without reconstructing a vector.
+public struct ProductQuantizedDistanceTable: Sendable {
+    fileprivate let metric: VectorMetric
+    fileprivate let contributions: [[Float]]
+    fileprivate let queryNormSquared: Float
+    fileprivate let centroidNormsSquared: [[Float]]
+    fileprivate let subquantizerCount: Int
+    fileprivate let centroidCount: Int
+}
 
 /// Product Quantizer for compressing high-dimensional vectors
 ///
@@ -55,9 +64,19 @@ public struct ProductQuantizer: Sendable {
     /// - Parameters:
     ///   - dimensions: Total vector dimensions (must be divisible by m)
     ///   - parameters: PQ parameters
-    public init(dimensions: Int, parameters: PQParameters = .default) {
-        precondition(dimensions % parameters.m == 0,
-            "Dimensions (\(dimensions)) must be divisible by m (\(parameters.m))")
+    public init(
+        dimensions: Int,
+        parameters: PQParameters = .default
+    ) throws(ProductQuantizationError) {
+        guard dimensions > 0 else {
+            throw .invalidDimensions(dimensions)
+        }
+        guard dimensions % parameters.m == 0 else {
+            throw .incompatibleSubspaceCount(
+                dimensions: dimensions,
+                subquantizers: parameters.m
+            )
+        }
 
         self.dimensions = dimensions
         self.m = parameters.m
@@ -72,11 +91,51 @@ public struct ProductQuantizer: Sendable {
     /// - Parameters:
     ///   - dimensions: Total vector dimensions
     ///   - codebooks: Pre-trained codebooks [m][ksub][dsub]
-    public init(dimensions: Int, codebooks: [[[Float]]]) {
+    public init(
+        dimensions: Int,
+        codebooks: [[[Float]]]
+    ) throws(ProductQuantizationError) {
+        guard dimensions > 0 else {
+            throw .invalidDimensions(dimensions)
+        }
+        guard !codebooks.isEmpty else {
+            throw .emptyCodebooks
+        }
+        guard dimensions % codebooks.count == 0 else {
+            throw .incompatibleSubspaceCount(
+                dimensions: dimensions,
+                subquantizers: codebooks.count
+            )
+        }
+        let centroidCount = codebooks[0].count
+        guard (1...256).contains(centroidCount) else {
+            throw .invalidCentroidCount(centroidCount)
+        }
+        let subspaceDimensions = dimensions / codebooks.count
+        for (subspaceIndex, codebook) in codebooks.enumerated() {
+            guard codebook.count == centroidCount else {
+                throw .inconsistentCentroidCount(
+                    subspace: subspaceIndex,
+                    expected: centroidCount,
+                    actual: codebook.count
+                )
+            }
+            for (centroidIndex, centroid) in codebook.enumerated() {
+                guard centroid.count == subspaceDimensions else {
+                    throw .centroidDimensionMismatch(
+                        subspace: subspaceIndex,
+                        centroid: centroidIndex,
+                        expected: subspaceDimensions,
+                        actual: centroid.count
+                    )
+                }
+            }
+        }
+
         self.dimensions = dimensions
         self.m = codebooks.count
-        self.ksub = codebooks.first?.count ?? 256
-        self.dsub = dimensions / m
+        self.ksub = centroidCount
+        self.dsub = subspaceDimensions
         self.niter = 0
         self.codebooks = codebooks
     }
@@ -87,9 +146,17 @@ public struct ProductQuantizer: Sendable {
     ///
     /// - Parameter vectors: Training vectors [n][d]
     /// - Returns: Trained ProductQuantizer
-    public func train(vectors: [[Float]]) -> ProductQuantizer {
+    public func train(
+        vectors: [[Float]]
+    ) throws(ProductQuantizationError) -> ProductQuantizer {
         guard !vectors.isEmpty else {
-            return self
+            throw .emptyTrainingSet
+        }
+        for vector in vectors where vector.count != dimensions {
+            throw .vectorDimensionMismatch(
+                expected: dimensions,
+                actual: vector.count
+            )
         }
 
         // Train each subquantizer independently
@@ -111,7 +178,10 @@ public struct ProductQuantizer: Sendable {
             trainedCodebooks.append(centroids)
         }
 
-        return ProductQuantizer(dimensions: dimensions, codebooks: trainedCodebooks)
+        return try ProductQuantizer(
+            dimensions: dimensions,
+            codebooks: trainedCodebooks
+        )
     }
 
     // MARK: - Encoding
@@ -120,17 +190,24 @@ public struct ProductQuantizer: Sendable {
     ///
     /// - Parameter vector: Vector to encode [d]
     /// - Returns: PQ codes [m] (each in 0-255)
-    public func encode(vector: [Float]) -> [UInt8] {
-        precondition(isTrained, "Quantizer must be trained before encoding")
-        precondition(vector.count == dimensions,
-            "Vector dimension mismatch: expected \(dimensions), got \(vector.count)")
+    public func encode(
+        vector: [Float]
+    ) throws(ProductQuantizationError) -> [UInt8] {
+        guard isTrained else {
+            throw .untrained
+        }
+        guard vector.count == dimensions else {
+            throw .vectorDimensionMismatch(
+                expected: dimensions,
+                actual: vector.count
+            )
+        }
 
         var codes: [UInt8] = []
         codes.reserveCapacity(m)
 
         for subIndex in 0..<m {
-            let subvector = extractSubvector(from: vector, subIndex: subIndex)
-            let nearestIdx = findNearestCentroid(subvector: subvector, subIndex: subIndex)
+            let nearestIdx = findNearestCentroid(in: vector, subIndex: subIndex)
             codes.append(UInt8(nearestIdx))
         }
 
@@ -141,10 +218,10 @@ public struct ProductQuantizer: Sendable {
     ///
     /// - Parameter codes: PQ codes [m]
     /// - Returns: Reconstructed vector [d]
-    public func decode(codes: [UInt8]) -> [Float] {
-        precondition(isTrained, "Quantizer must be trained before decoding")
-        precondition(codes.count == m,
-            "Code length mismatch: expected \(m), got \(codes.count)")
+    public func decode(
+        codes: [UInt8]
+    ) throws(ProductQuantizationError) -> [Float] {
+        try validate(codes)
 
         var vector: [Float] = []
         vector.reserveCapacity(dimensions)
@@ -159,81 +236,185 @@ public struct ProductQuantizer: Sendable {
 
     // MARK: - Distance Computation
 
-    /// Precompute distance table for a query vector (ADC)
+    /// Build a metric-specific distance table for a query vector.
     ///
-    /// The distance table contains distances from each query subvector
-    /// to all centroids in that subspace.
-    ///
-    /// - Parameter query: Query vector [d]
-    /// - Returns: Distance table [m][ksub]
-    public func computeDistanceTable(query: [Float]) -> [[Float]] {
-        precondition(isTrained, "Quantizer must be trained")
-        precondition(query.count == dimensions,
-            "Query dimension mismatch: expected \(dimensions), got \(query.count)")
-
-        var table: [[Float]] = []
-        table.reserveCapacity(m)
-
-        for subIndex in 0..<m {
-            let querySubvector = extractSubvector(from: query, subIndex: subIndex)
-            var distances: [Float] = []
-            distances.reserveCapacity(ksub)
-
-            for centroid in codebooks[subIndex] {
-                let dist = VectorConversion.euclideanDistanceSquaredFloat(querySubvector, centroid)
-                distances.append(dist)
-            }
-            table.append(distances)
-        }
-
-        return table
-    }
-
-    /// Compute distance using precomputed table (ADC)
+    /// Euclidean search stores squared-distance contributions. Dot-product and
+    /// cosine search store dot-product contributions; cosine also stores each
+    /// centroid norm so the reconstructed vector norm can be evaluated without
+    /// materializing the reconstructed vector.
     ///
     /// - Parameters:
-    ///   - codes: PQ codes for a database vector
-    ///   - table: Precomputed distance table from query
-    /// - Returns: Squared Euclidean distance (approximate)
-    public func computeDistance(codes: [UInt8], table: [[Float]]) -> Float {
-        var distance: Float = 0
-        for (subIndex, code) in codes.enumerated() {
-            distance += table[subIndex][Int(code)]
+    ///   - query: Query vector [d]
+    ///   - metric: Distance metric used by the index.
+    /// - Returns: Lookup data for evaluating compressed codes.
+    public func distanceTable(
+        for query: [Float],
+        metric: VectorMetric
+    ) throws(ProductQuantizationError) -> ProductQuantizedDistanceTable {
+        guard isTrained else {
+            throw .untrained
         }
-        return distance
+        guard query.count == dimensions else {
+            throw .vectorDimensionMismatch(
+                expected: dimensions,
+                actual: query.count
+            )
+        }
+
+        var contributions: [[Float]] = []
+        contributions.reserveCapacity(m)
+        var centroidNormsSquared: [[Float]] = []
+        if metric == .cosine {
+            centroidNormsSquared.reserveCapacity(m)
+        }
+
+        var queryNormSquared: Float = 0
+        if metric == .cosine {
+            for component in query {
+                queryNormSquared += component * component
+            }
+        }
+
+        for subIndex in 0..<m {
+            let queryOffset = subIndex * dsub
+            var subspaceContributions: [Float] = []
+            subspaceContributions.reserveCapacity(ksub)
+            var subspaceCentroidNormsSquared: [Float] = []
+            if metric == .cosine {
+                subspaceCentroidNormsSquared.reserveCapacity(ksub)
+            }
+
+            for centroid in codebooks[subIndex] {
+                var contribution: Float = 0
+                var centroidNormSquared: Float = 0
+                for componentIndex in 0..<dsub {
+                    let queryComponent = query[queryOffset + componentIndex]
+                    let centroidComponent = centroid[componentIndex]
+                    switch metric {
+                    case .euclidean:
+                        let difference = queryComponent - centroidComponent
+                        contribution += difference * difference
+                    case .cosine, .dotProduct:
+                        contribution += queryComponent * centroidComponent
+                    }
+                    if metric == .cosine {
+                        centroidNormSquared += centroidComponent * centroidComponent
+                    }
+                }
+                subspaceContributions.append(contribution)
+                if metric == .cosine {
+                    subspaceCentroidNormsSquared.append(centroidNormSquared)
+                }
+            }
+            contributions.append(subspaceContributions)
+            if metric == .cosine {
+                centroidNormsSquared.append(subspaceCentroidNormsSquared)
+            }
+        }
+
+        return ProductQuantizedDistanceTable(
+            metric: metric,
+            contributions: contributions,
+            queryNormSquared: queryNormSquared,
+            centroidNormsSquared: centroidNormsSquared,
+            subquantizerCount: m,
+            centroidCount: ksub
+        )
     }
 
-    /// Compute distance directly (slower, for verification)
+    /// Evaluate compressed codes using a query-specific distance table.
+    ///
+    /// - Parameters:
+    ///   - codes: PQ codes for a stored vector.
+    ///   - table: Lookup data returned by `distanceTable(for:metric:)`.
+    /// - Returns: Approximate distance with the same meaning as the selected metric.
+    public func distance<Codes: RandomAccessCollection>(
+        for codes: Codes,
+        using table: ProductQuantizedDistanceTable
+    ) throws(ProductQuantizationError) -> Double where Codes.Element == UInt8, Codes.Index == Int {
+        try validate(codes)
+        guard table.subquantizerCount == m,
+              table.centroidCount == ksub,
+              table.contributions.count == m,
+              table.contributions.allSatisfy({ $0.count == ksub }),
+              table.metric != .cosine || (
+                table.centroidNormsSquared.count == m
+                    && table.centroidNormsSquared.allSatisfy({ $0.count == ksub })
+              ) else {
+            throw .incompatibleDistanceTable
+        }
+
+        var contribution: Float = 0
+        var reconstructedNormSquared: Float = 0
+        for (subIndex, code) in codes.enumerated() {
+            contribution += table.contributions[subIndex][Int(code)]
+            if table.metric == .cosine {
+                reconstructedNormSquared += table.centroidNormsSquared[subIndex][Int(code)]
+            }
+        }
+
+        switch table.metric {
+        case .euclidean:
+            return DatabaseMath.squareRoot(Double(contribution))
+        case .dotProduct:
+            return -Double(contribution)
+        case .cosine:
+            let queryNorm = DatabaseMath.squareRoot(Double(table.queryNormSquared))
+            let reconstructedNorm = DatabaseMath.squareRoot(Double(reconstructedNormSquared))
+            guard queryNorm > 0 && reconstructedNorm > 0 else {
+                return 2.0
+            }
+            return 1.0 - Double(contribution) / (queryNorm * reconstructedNorm)
+        }
+    }
+
+    /// Reconstruct codes and evaluate squared Euclidean distance.
     ///
     /// - Parameters:
     ///   - query: Query vector
     ///   - codes: PQ codes for database vector
     /// - Returns: Squared Euclidean distance (approximate)
-    public func computeDistanceDirect(query: [Float], codes: [UInt8]) -> Float {
-        let reconstructed = decode(codes: codes)
+    public func squaredEuclideanDistance(
+        from query: [Float],
+        to codes: [UInt8]
+    ) throws(ProductQuantizationError) -> Float {
+        guard query.count == dimensions else {
+            throw .vectorDimensionMismatch(
+                expected: dimensions,
+                actual: query.count
+            )
+        }
+        let reconstructed = try decode(codes: codes)
         return VectorConversion.euclideanDistanceSquaredFloat(query, reconstructed)
     }
 
     // MARK: - Codebook Access
 
-    /// Get all codebooks for serialization
+    /// Return all trained codebooks for persistence.
     ///
     /// - Returns: Codebooks [m][ksub][dsub]
-    public func getCodebooks() -> [[[Float]]] {
-        return codebooks
-    }
+    public var trainedCodebooks: [[[Float]]] { codebooks }
 
-    /// Get a specific centroid
+    /// Return a centroid from a trained subspace.
     ///
     /// - Parameters:
-    ///   - subIndex: Subspace index (0 to m-1)
-    ///   - centroidIndex: Centroid index (0 to ksub-1)
+    ///   - subspace: Subspace index.
+    ///   - index: Centroid index within the subspace.
     /// - Returns: Centroid vector [dsub]
-    public func getCentroid(subIndex: Int, centroidIndex: Int) -> [Float] {
-        precondition(isTrained, "Quantizer must be trained")
-        precondition(subIndex < m, "subIndex out of range")
-        precondition(centroidIndex < ksub, "centroidIndex out of range")
-        return codebooks[subIndex][centroidIndex]
+    public func centroid(
+        in subspace: Int,
+        at index: Int
+    ) throws(ProductQuantizationError) -> [Float] {
+        guard isTrained else {
+            throw .untrained
+        }
+        guard codebooks.indices.contains(subspace) else {
+            throw .subspaceOutOfRange(subspace)
+        }
+        guard codebooks[subspace].indices.contains(index) else {
+            throw .centroidOutOfRange(subspace: subspace, centroid: index)
+        }
+        return codebooks[subspace][index]
     }
 
     // MARK: - Private Methods
@@ -245,13 +426,18 @@ public struct ProductQuantizer: Sendable {
         return Array(vector[start..<end])
     }
 
-    /// Find nearest centroid in a subspace
-    private func findNearestCentroid(subvector: [Float], subIndex: Int) -> Int {
+    /// Find the nearest centroid without materializing the source subvector.
+    private func findNearestCentroid(in vector: [Float], subIndex: Int) -> Int {
+        let vectorOffset = subIndex * dsub
         var bestIdx = 0
         var bestDist = Float.infinity
 
         for (idx, centroid) in codebooks[subIndex].enumerated() {
-            let dist = VectorConversion.euclideanDistanceSquaredFloat(subvector, centroid)
+            var dist: Float = 0
+            for componentIndex in 0..<dsub {
+                let difference = vector[vectorOffset + componentIndex] - centroid[componentIndex]
+                dist += difference * difference
+            }
             if dist < bestDist {
                 bestDist = dist
                 bestIdx = idx
@@ -259,6 +445,26 @@ public struct ProductQuantizer: Sendable {
         }
 
         return bestIdx
+    }
+
+    private func validate<Codes: RandomAccessCollection>(
+        _ codes: Codes
+    ) throws(ProductQuantizationError) where Codes.Element == UInt8, Codes.Index == Int {
+        guard isTrained else {
+            throw .untrained
+        }
+        guard codes.count == m else {
+            throw .codeCountMismatch(expected: m, actual: codes.count)
+        }
+        for (subspaceIndex, code) in codes.enumerated() {
+            guard Int(code) < codebooks[subspaceIndex].count else {
+                throw .centroidCodeOutOfRange(
+                    subspace: subspaceIndex,
+                    code: Int(code),
+                    centroidCount: codebooks[subspaceIndex].count
+                )
+            }
+        }
     }
 }
 

@@ -13,6 +13,54 @@ import DatabaseTypes
 @Suite("Vector Algorithm Maintainer Tests", .serialized, .heartbeat)
 struct VectorAlgorithmMaintainerTests {
 
+    @Test("PQ distance tables preserve each vector metric")
+    func pqDistanceTablesPreserveVectorMetrics() throws {
+        let quantizer = try ProductQuantizer(
+            dimensions: 4,
+            codebooks: [
+                [[1, 0], [-1, 0], [0, 0]],
+                [[0, 0], [0, 1], [0, 0]],
+            ]
+        )
+        let query: [Float] = [1, 0, 0, 0]
+        let sameDirectionCodes: [UInt8] = [0, 0]
+        let oppositeDirectionCodes: [UInt8] = [1, 0]
+
+        let euclideanTable = try quantizer.distanceTable(for: query, metric: .euclidean)
+        #expect(try quantizer.distance(for: sameDirectionCodes, using: euclideanTable) == 0)
+        #expect(try quantizer.distance(for: oppositeDirectionCodes, using: euclideanTable) == 2)
+
+        let cosineTable = try quantizer.distanceTable(for: query, metric: .cosine)
+        #expect(try quantizer.distance(for: sameDirectionCodes, using: cosineTable) == 0)
+        #expect(try quantizer.distance(for: oppositeDirectionCodes, using: cosineTable) == 2)
+
+        let dotProductTable = try quantizer.distanceTable(for: query, metric: .dotProduct)
+        #expect(try quantizer.distance(for: sameDirectionCodes, using: dotProductTable) == -1)
+        #expect(try quantizer.distance(for: oppositeDirectionCodes, using: dotProductTable) == 1)
+    }
+
+    @Test("PQ rejects invalid layouts and compressed codes as typed failures")
+    func pqRejectsInvalidLayoutsAndCodes() throws {
+        #expect(throws: ProductQuantizationError.self) {
+            _ = try ProductQuantizer(dimensions: 3, parameters: PQParameters(m: 2))
+        }
+        #expect(throws: ProductQuantizationError.self) {
+            _ = try ProductQuantizer(dimensions: 4, codebooks: [])
+        }
+
+        let quantizer = try ProductQuantizer(
+            dimensions: 2,
+            codebooks: [[[1, 0], [0, 1]]]
+        )
+        let table = try quantizer.distanceTable(for: [1, 0], metric: .cosine)
+        #expect(throws: ProductQuantizationError.self) {
+            _ = try quantizer.distance(for: [UInt8](), using: table)
+        }
+        #expect(throws: ProductQuantizationError.self) {
+            _ = try quantizer.distance(for: [UInt8(2)], using: table)
+        }
+    }
+
     @Test("IVF stores contiguous Float32 vector payloads and returns nearest neighbors after training")
     func ivfStoresContiguousFloat32VectorPayloadsAndSearchesAfterTraining() async throws {
         let database = InMemoryEngine()
@@ -97,7 +145,7 @@ struct VectorAlgorithmMaintainerTests {
     func pqStoresVectorPayloadsAndCompressedCodesAndSearchesAfterTraining() async throws {
         let database = InMemoryEngine()
         let context = makeContext(name: "pq")
-        let maintainer = PQIndexMaintainer<HNSWDocument>(
+        let maintainer = try PQIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
             metric: .euclidean,
@@ -138,7 +186,7 @@ struct VectorAlgorithmMaintainerTests {
     func pqRejectsMalformedCompressedCodes() async throws {
         let database = InMemoryEngine()
         let context = makeContext(name: "pq-corrupt")
-        let maintainer = PQIndexMaintainer<HNSWDocument>(
+        let maintainer = try PQIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
             metric: .euclidean,

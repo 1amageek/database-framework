@@ -10,7 +10,6 @@ import FoundationEssentials
 import Foundation
 #endif
 import DatabaseKit
-import DatabaseMath
 import DatabaseEngine
 import StorageKit
 
@@ -87,9 +86,15 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         subspace: Subspace,
         idExpression: KeyExpression,
         parameters: PQParameters
-    ) {
-        precondition(dimensions % parameters.m == 0,
-            "Dimensions (\(dimensions)) must be divisible by m (\(parameters.m))")
+    ) throws(VectorIndexError) {
+        guard dimensions > 0 else {
+            throw .invalidArgument("PQ vector dimensions must be positive")
+        }
+        guard dimensions % parameters.m == 0 else {
+            throw .invalidArgument(
+                "PQ vector dimensions \(dimensions) are not divisible by \(parameters.m) subquantizers"
+            )
+        }
 
         self.index = index
         self.dimensions = dimensions
@@ -165,15 +170,15 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let vectors = storedVectors.map(\.vector)
 
         // Create and train quantizer
-        let quantizer = ProductQuantizer(dimensions: dimensions, parameters: parameters)
-        let trainedQuantizer = quantizer.train(vectors: vectors)
+        let quantizer = try ProductQuantizer(dimensions: dimensions, parameters: parameters)
+        let trainedQuantizer = try quantizer.train(vectors: vectors)
 
         // Store codebooks
-        try await storeCodebooks(trainedQuantizer.getCodebooks(), transaction: transaction)
+        try await storeCodebooks(trainedQuantizer.trainedCodebooks, transaction: transaction)
 
         // Re-encode all vectors with new codebooks
         for storedVector in storedVectors {
-            let codes = trainedQuantizer.encode(vector: storedVector.vector)
+            let codes = try trainedQuantizer.encode(vector: storedVector.vector)
             try await storeCodes(codes, for: storedVector.primaryKey, transaction: transaction)
         }
 
@@ -228,10 +233,12 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
             throw VectorIndexError.invalidStructure("PQ index not trained")
         }
 
-        let quantizer = ProductQuantizer(dimensions: dimensions, codebooks: codebooks)
+        let quantizer = try ProductQuantizer(dimensions: dimensions, codebooks: codebooks)
 
-        // Precompute distance table
-        let distanceTable = quantizer.computeDistanceTable(query: queryVector)
+        let distanceTable = try quantizer.distanceTable(
+            for: queryVector,
+            metric: metric
+        )
 
         // Scan all codes
         var heap = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
@@ -252,15 +259,11 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 throw VectorIndexError.invalidStructure("Invalid PQ code primary key")
             }
 
-            // Decode codes
-            let codes = [UInt8](value)
-            guard codes.count == parameters.m else {
+            guard value.count == parameters.m else {
                 throw VectorIndexError.invalidStructure("Invalid PQ code length")
             }
 
-            // Compute distance using precomputed table
-            let sqDistance = quantizer.computeDistance(codes: codes, table: distanceTable)
-            let distance = adjustDistance(Double(sqDistance))
+            let distance = try quantizer.distance(for: value, using: distanceTable)
 
             // Convert Tuple to [any TupleElement]
             var primaryKey: [any TupleElement] = []
@@ -310,8 +313,8 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // If trained, also store codes
         let codebooks = try await loadCodebooks(transaction: transaction)
         if !codebooks.isEmpty {
-            let quantizer = ProductQuantizer(dimensions: dimensions, codebooks: codebooks)
-            let codes = quantizer.encode(vector: vector)
+            let quantizer = try ProductQuantizer(dimensions: dimensions, codebooks: codebooks)
+            let codes = try quantizer.encode(vector: vector)
             try await storeCodes(codes, for: id, transaction: transaction)
         }
     }
@@ -443,22 +446,6 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
 
         return floatArray
-    }
-
-    /// Adjust distance based on metric
-    private func adjustDistance(_ sqDistance: Double) -> Double {
-        switch metric {
-        case .euclidean:
-            return DatabaseMath.squareRoot(sqDistance)
-        case .cosine:
-            // PQ computes squared Euclidean; for cosine, we'd need normalized vectors
-            // This is an approximation
-            return sqDistance
-        case .dotProduct:
-            // PQ is designed for Euclidean distance
-            // For dot product, results may not be accurate
-            return -sqDistance
-        }
     }
 
     // MARK: - Serialization Helpers

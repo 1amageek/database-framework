@@ -22,7 +22,6 @@ private enum VectorReadError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
     case indexNotFound(String)
-    case unresolvedAlgorithm
 }
 
 private struct VectorReadExecutor: IndexReadExecutor {
@@ -273,28 +272,9 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                 == VectorIndexSpecification.identifier
         } as? VectorIndexRuntimeConfiguration
 
-        let resolvedAlgorithm: VectorAlgorithm
-        if let vectorConfig {
-            switch vectorConfig.algorithm {
-            case .auto(let autoParams):
-                let vectorCount = try await countVectors(
-                    indexSubspace: indexSubspace,
-                    transaction: transaction
-                )
-                resolvedAlgorithm = autoParams.selectAlgorithm(
-                    vectorCount: vectorCount
-                )
-            case .flat, .hnsw, .ivf, .pq:
-                resolvedAlgorithm = vectorConfig.algorithm
-            }
-        } else {
-            resolvedAlgorithm = .flat
-        }
+        let algorithm = vectorConfig?.algorithm ?? .flat
 
-        switch resolvedAlgorithm {
-        case .auto:
-            throw VectorReadError.unresolvedAlgorithm
-
+        switch algorithm {
         case .flat:
             let maintainer = FlatVectorIndexMaintainer<PolymorphicVectorPlaceholder>(
                 index: index,
@@ -349,7 +329,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             )
 
         case .pq(let pqParams):
-            let maintainer = PQIndexMaintainer<PolymorphicVectorPlaceholder>(
+            let maintainer = try PQIndexMaintainer<PolymorphicVectorPlaceholder>(
                 index: index,
                 dimensions: specification.dimensions,
                 metric: specification.metric,
@@ -489,27 +469,6 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             return baseIndexSubspace
         }
         return baseIndexSubspace.subspace(subspaceKey)
-    }
-
-    private func countVectors(
-        indexSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> Int {
-        let (begin, end) = indexSubspace.range()
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            snapshot: true
-        )
-
-        var count = 0
-        for _ in sequence {
-            count += 1
-            if count > 100_000 {
-                break
-            }
-        }
-        return count
     }
 
     private func stableKey(_ tuple: Tuple) -> String {

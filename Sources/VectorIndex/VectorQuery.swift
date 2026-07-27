@@ -221,13 +221,11 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         )
     }
 
-    /// Execute vector search using HNSW or Flat algorithm based on configuration
+    /// Execute vector search using the configured index layout.
     ///
-    /// **Algorithm Selection**:
-    /// 1. Look up VectorIndexConfiguration for this index
-    /// 2. If `.auto`: count vectors and select appropriate algorithm
-    /// 3. If `.hnsw`: use HNSWIndexMaintainer.search()
-    /// 4. Otherwise (`.flat` or no config): use FlatVectorIndexMaintainer.search()
+    /// The read algorithm must match the maintainer that owns the persisted
+    /// index layout. An index without runtime configuration uses exact flat
+    /// search.
     private func executeVectorSearch(
         indexName: String,
         queryVector: [Float],
@@ -266,31 +264,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 storedFieldNames: indexDescriptor.storedFieldNames
             )
 
-            // Resolve algorithm (handle .auto case)
-            let resolvedAlgorithm: VectorAlgorithm
-            if let vectorConfig = vectorConfig {
-                switch vectorConfig.algorithm {
-                case .auto(let autoParams):
-                    // Count vectors to determine algorithm
-                    let vectorCount = try await self.countVectors(
-                        indexSubspace: indexSubspace,
-                        transaction: transaction
-                    )
-                    resolvedAlgorithm = autoParams.selectAlgorithm(
-                        vectorCount: vectorCount
-                    )
-                case .flat, .hnsw, .ivf, .pq:
-                    resolvedAlgorithm = vectorConfig.algorithm
-                }
-            } else {
-                resolvedAlgorithm = .flat
-            }
+            let algorithm = vectorConfig?.algorithm ?? .flat
 
-            // Execute search with resolved algorithm
-            switch resolvedAlgorithm {
-            case .auto:
-                throw VectorQueryError.unresolvedAlgorithm
-
+            switch algorithm {
             case .hnsw(let hnswParams):
                 // Use HNSW search
                 let params = HNSWParameters(
@@ -358,7 +334,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                     ksub: 256,
                     niter: pqParams.niter
                 )
-                let maintainer = PQIndexMaintainer<T>(
+                let maintainer = try PQIndexMaintainer<T>(
                     index: index,
                     dimensions: specification.dimensions,
                     metric: specification.metric,
@@ -430,30 +406,6 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         )
     }
 
-    /// Count vectors in the index for auto algorithm selection
-    private func countVectors(
-        indexSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> Int {
-        let (begin, end) = indexSubspace.range()
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            snapshot: true
-        )
-
-        var count = 0
-        for _ in sequence {
-            count += 1
-            // Early exit if we have enough to determine algorithm
-            // (only need to know if > flatThreshold or > hnswThreshold)
-            if count > 100_000 {
-                break
-            }
-        }
-        return count
-    }
-
     /// Execute HNSW search followed by application predicate evaluation.
     private func executeWithFilter(
         indexName: String,
@@ -478,10 +430,6 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         let hnswParams: VectorHNSWParameters
         if let vectorConfig = vectorConfig {
             switch vectorConfig.algorithm {
-            case .auto(let autoParams):
-                // Auto mode uses its HNSW parameters for candidate expansion.
-                // The user must ensure dataset is large enough that auto would select HNSW
-                hnswParams = autoParams.hnswParameters
             case .hnsw(let params):
                 hnswParams = params
             case .flat:
@@ -492,8 +440,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 throw VectorQueryError.filterNotSupported("Post-filtered search requires an HNSW index. PQ does not provide HNSW candidates.")
             }
         } else {
-            // No explicit config - default is auto, but filtering requires explicit HNSW
-            throw VectorQueryError.filterNotSupported("Post-filtered search requires an HNSW index. Add VectorIndexConfiguration with .hnsw() or .auto() algorithm.")
+            throw VectorQueryError.filterNotSupported("Post-filtered search requires an explicitly configured HNSW index.")
         }
 
         // Build subspace
@@ -886,9 +833,6 @@ public enum VectorQueryError: Error, CustomStringConvertible {
     /// Closure-based filters cannot be lowered into
     case closureFilterUnsupported
 
-    /// Automatic algorithm selection must be resolved before execution.
-    case unresolvedAlgorithm
-
     public var description: String {
         switch self {
         case .noQueryVector:
@@ -907,8 +851,6 @@ public enum VectorQueryError: Error, CustomStringConvertible {
             return "Filter not supported: \(reason)"
         case .closureFilterUnsupported:
             return "Closure-based vector filters are not supported on the canonical read path"
-        case .unresolvedAlgorithm:
-            return "Automatic vector algorithm selection was not resolved before execution"
         }
     }
 }
