@@ -146,37 +146,6 @@ public struct DataAccess: Sendable {
         )
     }
 
-    /// Extract Range boundary value
-    ///
-    /// Extracts the lowerBound or upperBound from a Range-type field.
-    ///
-    /// **Supported Range types**:
-    /// - Range<Bound>: Half-open range [a, b)
-    /// - ClosedRange<Bound>: Closed range [a, b]
-    /// - PartialRangeFrom<Bound>: [a, ∞)
-    /// - PartialRangeThrough<Bound>: (-∞, b]
-    /// - PartialRangeUpTo<Bound>: (-∞, b)
-    ///
-    /// **Default Implementation**: Throws error (not supported)
-    /// Upper layers should implement Range-type field handling if needed.
-    ///
-    /// - Parameters:
-    ///   - item: The item to extract from
-    ///   - keyPath: The field name containing the Range type
-    ///   - component: The boundary component to extract (lowerBound/upperBound)
-    /// - Returns: Array containing the boundary value as TupleElement
-    /// - Throws: Error indicating Range fields are not supported
-    public static func extractRangeBoundary<Item: Persistable>(
-        from item: Item,
-        keyPath: String,
-        component: RangeComponent
-    ) throws -> [any TupleElement] {
-        throw DataAccessError.rangeFieldsNotSupported(
-            itemType: Item.persistableType,
-            suggestion: "Range-type fields are not yet supported in this version"
-        )
-    }
-
     // MARK: - Serialization
 
     /// Serialize an item to canonical compiled-entity bytes.
@@ -211,35 +180,6 @@ public struct DataAccess: Sendable {
         as type: any Persistable.Type
     ) throws -> any Persistable {
         try PersistableStorageCodec.decodeAny(type, from: bytes)
-    }
-
-    // MARK: - Covering Index Support (Optional)
-
-    /// Reconstruct an item from covering index key and value
-    ///
-    /// This method enables covering index optimization by reconstructing
-    /// items directly from index data without fetching from storage.
-    ///
-    /// **Default Implementation**: Throws error (not supported)
-    /// Upper layers should implement reconstruction if they support covering indexes.
-    ///
-    /// **Index Key Structure**: `<indexSubspace><rootExpression fields><id fields>`
-    ///
-    /// - Parameters:
-    ///   - indexKey: The index key (unpacked tuple)
-    ///   - indexValue: The index value (packed covering fields)
-    ///   - idExpression: ID expression for field extraction
-    /// - Returns: Reconstructed item
-    /// - Throws: Error indicating reconstruction is not supported
-    public static func reconstruct<Item: Persistable>(
-        indexKey: Tuple,
-        indexValue: Bytes,
-        idExpression: KeyExpression
-    ) throws -> Item {
-        throw DataAccessError.reconstructionNotSupported(
-            itemType: Item.persistableType,
-            suggestion: "Covering index reconstruction is not yet supported in this version"
-        )
     }
 
 }
@@ -286,14 +226,6 @@ private struct DataAccessEvaluator<Item: Persistable>: KeyExpressionVisitor {
         return []
     }
 
-    func visitRangeBoundary(_ fieldName: String, _ component: RangeComponent) throws -> [any TupleElement] {
-        return try DataAccess.extractRangeBoundary(
-            from: item,
-            keyPath: fieldName,
-            component: component
-        )
-    }
-
     func visitNest(_ parentField: String, _ child: KeyExpression) throws -> [any TupleElement] {
         // Build the full nested path by recursively flattening the expression
         let fullPath = try buildNestedPath(
@@ -330,8 +262,6 @@ private struct DataAccessEvaluator<Item: Persistable>: KeyExpressionVisitor {
 /// Errors that can occur during DataAccess operations
 public enum DataAccessError: Error, CustomStringConvertible {
     case fieldNotFound(itemType: String, keyPath: String)
-    case rangeFieldsNotSupported(itemType: String, suggestion: String)
-    case reconstructionNotSupported(itemType: String, suggestion: String)
     case typeMismatch(itemType: String, keyPath: String, expected: String, actual: String)
     case nilValueCannotBeIndexed
     case unsupportedType(actualType: String)
@@ -342,10 +272,6 @@ public enum DataAccessError: Error, CustomStringConvertible {
         switch self {
         case .fieldNotFound(let itemType, let keyPath):
             return "Field '\(keyPath)' not found in \(itemType)"
-        case .rangeFieldsNotSupported(let itemType, let suggestion):
-            return "Range fields not supported for \(itemType). \(suggestion)"
-        case .reconstructionNotSupported(let itemType, let suggestion):
-            return "Reconstruction not supported for \(itemType). \(suggestion)"
         case .typeMismatch(let itemType, let keyPath, let expected, let actual):
             return "Type mismatch for field '\(keyPath)' in \(itemType): expected \(expected), got \(actual)"
         case .nilValueCannotBeIndexed:

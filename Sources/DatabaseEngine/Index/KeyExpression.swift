@@ -90,29 +90,6 @@ public struct NestExpression: KeyExpression {
     }
 }
 
-// MARK: - Range Key Expression
-
-/// Expression that extracts a boundary from a Range-type field
-public struct RangeKeyExpression: KeyExpression {
-    public let fieldName: String
-    public let component: RangeComponent
-
-    public init(fieldName: String, component: RangeComponent) {
-        self.fieldName = fieldName
-        self.component = component
-    }
-
-    public var columnCount: Int { 1 }
-}
-
-// MARK: - Range Component
-
-/// Component of a Range to extract (lowerBound or upperBound)
-public enum RangeComponent: String, Sendable, Codable {
-    case lowerBound
-    case upperBound
-}
-
 // MARK: - KeyExpression Factory
 
 extension KeyExpression where Self == FieldKeyExpression {
